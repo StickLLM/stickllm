@@ -58,6 +58,13 @@ mkdir -p "$work/sq/etc/ssh/sshd_config.d" "$work/sq/opt/stickllm/ui" \
   "$work/sq/etc/stickllm/models"
 rsync -a "$STICKLLM/overlay/etc/ssh/sshd_config.d/stickllm.conf" "$work/sq/etc/ssh/sshd_config.d/"
 rsync -a "$STICKLLM/overlay/etc/modprobe.d/stickllm-nvidia-alias.conf" "$work/sq/etc/modprobe.d/"
+# Local NVIDIA DRM KMS for Wayland (included in live squashfs / initramfs path via overlay).
+if [[ -f "$STICKLLM/overlay/etc/modprobe.d/nvidia-drm.conf" ]]; then
+  rsync -a "$STICKLLM/overlay/etc/modprobe.d/nvidia-drm.conf" "$work/sq/etc/modprobe.d/"
+fi
+if [[ -f "$STICKLLM/overlay/etc/modprobe.d/stickllm-nvidia-drm.conf" ]]; then
+  rsync -a "$STICKLLM/overlay/etc/modprobe.d/stickllm-nvidia-drm.conf" "$work/sq/etc/modprobe.d/"
+fi
 rsync -a "$STICKLLM/overlay/etc/modules-load.d/stickllm-nvidia.conf" "$work/sq/etc/modules-load.d/"
 rsync -a "$STICKLLM/overlay/etc/sudoers.d/stickllm" "$work/sq/etc/sudoers.d/stickllm"
 rsync -a "$STICKLLM/config/models/catalog.toml" "$work/sq/etc/stickllm/models/catalog.toml"
@@ -104,6 +111,8 @@ chmod 755 \
 chmod 644 "$work/sq/etc/systemd/system/"stickllm-*.service
 chmod 644 "$work/sq/etc/ssh/sshd_config.d/stickllm.conf"
 chmod 644 "$work/sq/etc/modprobe.d/stickllm-nvidia-alias.conf"
+chmod 644 "$work/sq/etc/modprobe.d/nvidia-drm.conf" 2>/dev/null || true
+chmod 644 "$work/sq/etc/modprobe.d/stickllm-nvidia-drm.conf" 2>/dev/null || true
 chmod 644 "$work/sq/etc/modules-load.d/stickllm-nvidia.conf"
 chmod 644 "$work/sq/etc/stickllm/models/catalog.toml"
 chmod 440 "$work/sq/etc/sudoers.d/stickllm"

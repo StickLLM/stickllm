@@ -1,0 +1,36 @@
+[Unit]
+Description=StickLLM Local WebUI kiosk (Wayland browser on tty1)
+ConditionKernelCommandLine=|stickllm.kiosk
+ConditionKernelCommandLine=|stickllm.local
+ConditionPathExists=/run/stickllm/allow-local-chat
+After=stickllm-bootstatus.service stickllm-console-setup.service stickllm-ui.service seatd.service stickllm-llama.service
+Wants=stickllm-ui.service stickllm-llama.service seatd.service
+Conflicts=getty@tty1.service stickllm-local.service
+StartLimitIntervalSec=600
+StartLimitBurst=8
+
+[Service]
+Type=simple
+# Breadcrumb even if script fails to parse — proves unit started.
+ExecStartPre=/usr/bin/mkdir -p /run/stickllm/kiosk-profile /run/user/0
+ExecStartPre=/bin/sh -c 'printf "STICKLLM_KIOSK_UNIT_START\n" >/dev/ttyS0 2>/dev/null; printf "STICKLLM_KIOSK_UNIT_START\n" >>/run/stickllm/kiosk.log 2>/dev/null; true'
+ExecStart=/usr/local/bin/stickllm-kiosk
+Restart=on-failure
+RestartSec=20
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+# video/render for /dev/dri; do not DeviceAllow-pin cardN (breaks when nodes differ).
+SupplementaryGroups=video render
+Environment=STICKLLM_KIOSK_URL=http://127.0.0.1/
+Environment=STICKLLM_TTY=/dev/tty1
+Environment=XDG_RUNTIME_DIR=/run/user/0
+Environment=WLR_NO_HARDWARE_CURSORS=1
+Environment=LIBSEAT_BACKEND=seatd
+Environment=WLR_BACKENDS=drm
+
+[Install]
+WantedBy=multi-user.target
