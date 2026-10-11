@@ -367,13 +367,17 @@ try_launch() {
     app="$browser --kiosk --ozone-platform=wayland --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
   fi
 
+  # drop_root=1 → runuser as KIOSK_USER (required for cage).
+  # drop_root=0 → stay root (weston drm-backend needs root/logind; user path fails).
   _run() {
-    # timeout(1) cannot invoke shell functions — expand runuser here.
+    local drop_root="${1:-0}"
+    shift
     local -a prefix=()
     if [[ "$run_timeout" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
       prefix=(timeout "$run_timeout")
     fi
-    if [[ "$(id -u)" -eq 0 && "$KIOSK_USER" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+    if [[ "$drop_root" -eq 1 && "$(id -u)" -eq 0 && "$KIOSK_USER" != "root" ]] \
+      && command -v runuser >/dev/null 2>&1; then
       "${prefix[@]}" runuser -u "$KIOSK_USER" -- env \
         "HOME=/home/${KIOSK_USER}" \
         "USER=${KIOSK_USER}" \
@@ -393,6 +397,12 @@ try_launch() {
         "__GLX_VENDOR_LIBRARY_NAME=${__GLX_VENDOR_LIBRARY_NAME:-}" \
         "$@"
     else
+      # Root weston path: use root XDG runtime (seatd/logind-friendly).
+      if [[ "$drop_root" -eq 0 && "$(id -u)" -eq 0 ]]; then
+        export XDG_RUNTIME_DIR=/run/user/0
+        mkdir -p "$XDG_RUNTIME_DIR"
+        chmod 700 "$XDG_RUNTIME_DIR"
+      fi
       "${prefix[@]}" "$@"
     fi
   }
@@ -405,13 +415,14 @@ try_launch() {
         echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR WLR_RENDERER=$WLR_RENDERER WLR_DRM_DEVICES=$WLR_DRM_DEVICES"
         command -v cage; command -v seatd; ls -la /run/seatd.sock /var/run/seatd.sock 2>&1 || true
       } >>"$FAIL_LOG" 2>&1 || true
+      # cage refuses uid 0 → drop_root=1. Bookworm cage also needs Xwayland installed.
       if [[ "$browser" == "cog" ]]; then
         # stderr must land in kiosk-fail.log for Term-boot diagnosis
-        _run cage -s -- cog -P --enable-mediasource "$URL" >>"$FAIL_LOG" 2>&1
+        _run 1 cage -s -- cog -P --enable-mediasource "$URL" >>"$FAIL_LOG" 2>&1
         rc=$?
       else
         # shellcheck disable=SC2086
-        _run cage -s -- $browser \
+        _run 1 cage -s -- $browser \
           --kiosk \
           --ozone-platform=wayland \
           --disable-gpu \
@@ -430,11 +441,11 @@ try_launch() {
         serial_note "STICKLLM_KIOSK_PIXMAN_RETRY label=$label"
         export WLR_RENDERER=pixman
         if [[ "$browser" == "cog" ]]; then
-          _run cage -s -- cog -P --enable-mediasource "$URL" >>"$FAIL_LOG" 2>&1
+          _run 1 cage -s -- cog -P --enable-mediasource "$URL" >>"$FAIL_LOG" 2>&1
           rc=$?
         else
           # shellcheck disable=SC2086
-          _run cage -s -- $browser \
+          _run 1 cage -s -- $browser \
             --kiosk \
             --ozone-platform=wayland \
             --disable-gpu \
@@ -473,7 +484,8 @@ try_launch() {
         echo "ini=$WESTON_INI exec=$app"
         cat "$WESTON_INI" 2>/dev/null || true
       } >>"$FAIL_LOG" 2>&1 || true
-      _run weston "${_wargs[@]}" >>"$FAIL_LOG" 2>&1
+      # weston drm-backend as non-root needs logind; stay root (drop_root=0).
+      _run 0 weston "${_wargs[@]}" >>"$FAIL_LOG" 2>&1
       rc=$?
       ;;
     *)
