@@ -85,13 +85,66 @@ collect_drm_diag() {
   } >>"$FAIL_LOG" 2>/dev/null || true
 }
 
+# DRM card that already owns the Linux console (efifb/simpledrm/amdgpu fbcon).
+# Prefer this so cage never rebinds NVIDIA and kills HDMI.
+pick_console_drm() {
+  local fb link card path driver
+  for fb in /sys/class/graphics/fb[0-9]; do
+    [[ -e "$fb/device" ]] || continue
+    link="$(readlink -f "$fb/device" 2>/dev/null || true)"
+    [[ -n "$link" ]] || continue
+    card=""
+    if [[ "$link" =~ /drm/card[0-9]+ ]]; then
+      card="$(basename "$(echo "$link" | grep -oE 'card[0-9]+' | head -1)")"
+    else
+      # PCI device → matching DRM card
+      for c in /sys/class/drm/card[0-9]; do
+        [[ -d "$c" ]] || continue
+        if [[ "$(readlink -f "$c/device" 2>/dev/null)" == "$link" ]]; then
+          card="$(basename "$c")"
+          break
+        fi
+      done
+    fi
+    [[ -n "$card" ]] || continue
+    path="/dev/dri/$card"
+    [[ -e "$path" ]] || continue
+    if is_nvidia_path "$path"; then
+      fail_note "STICKLLM_KIOSK_CONSOLE_DRM_SKIP_NVIDIA $path"
+      continue
+    fi
+    fail_note "STICKLLM_KIOSK_CONSOLE_DRM $path fb=$(basename "$fb")"
+    printf '%s' "$path"
+    return 0
+  done
+  # boot_vga non-NVIDIA
+  for c in /sys/class/drm/card[0-9]; do
+    [[ -d "$c" ]] || continue
+    [[ "$(tr -d '[:space:]' <"$c/device/boot_vga" 2>/dev/null || true)" == "1" ]] || continue
+    path="/dev/dri/$(basename "$c")"
+    [[ -e "$path" ]] || continue
+    is_nvidia_path "$path" && continue
+    fail_note "STICKLLM_KIOSK_CONSOLE_DRM_BOOTVGA $path"
+    printf '%s' "$path"
+    return 0
+  done
+  return 1
+}
+
 # Prefer DRM card with a connected connector.
 # Hardware stick: AMD/Intel iGPU HDMI over NVIDIA dGPU (llama keeps CUDA).
-# QEMU Local: virtio_gpu is acceptable when no amdgpu/i915 is present.
+# Never pick NVIDIA when any non-NVIDIA card exists — modeset kills this panel.
+# QEMU Local: virtio_gpu / simpledrm is acceptable when no amdgpu/i915 is present.
 pick_display_drm() {
   local card driver path conn status
   local connected_igpu="" best_igpu="" connected_virtio="" best_virtio=""
-  local connected_other="" best_other="" connected_any="" best_any=""
+  local connected_other="" best_other="" connected_simple="" best_simple=""
+  local console_drm=""
+  console_drm="$(pick_console_drm || true)"
+  if [[ -n "$console_drm" ]]; then
+    printf '%s' "$console_drm"
+    return 0
+  fi
   for card in /sys/class/drm/card[0-9]; do
     [[ -d "$card" ]] || continue
     driver="$(basename "$(readlink -f "$card/device/driver" 2>/dev/null)" 2>/dev/null || true)"
@@ -108,35 +161,69 @@ pick_display_drm() {
     done
     case "$driver" in
       nvidia|nvidia-current|nvidia_drm|nvidia-drm)
-        [[ -z "$best_any" ]] && best_any="$path"
-        [[ "$has_connected" -eq 1 && -z "$connected_any" ]] && connected_any="$path"
+        # Never prefer NVIDIA for Local display — CUDA only.
+        fail_note "STICKLLM_KIOSK_DRM_SKIP_NVIDIA $path connected=$has_connected"
         continue
         ;;
       amdgpu|i915|xe)
         [[ -z "$best_igpu" ]] && best_igpu="$path"
         [[ "$has_connected" -eq 1 && -z "$connected_igpu" ]] && connected_igpu="$path"
         ;;
-      virtio_gpu|virtio-gpu)
+      virtio_gpu|virtio-gpu|virtio-pci)
         [[ -z "$best_virtio" ]] && best_virtio="$path"
         [[ "$has_connected" -eq 1 && -z "$connected_virtio" ]] && connected_virtio="$path"
+        ;;
+      simpledrm|efi-framebuffer|efifb)
+        [[ -z "$best_simple" ]] && best_simple="$path"
+        [[ "$has_connected" -eq 1 && -z "$connected_simple" ]] && connected_simple="$path"
         ;;
       *)
         [[ -z "$best_other" ]] && best_other="$path"
         [[ "$has_connected" -eq 1 && -z "$connected_other" ]] && connected_other="$path"
         ;;
     esac
-    [[ -z "$best_any" ]] && best_any="$path"
-    [[ "$has_connected" -eq 1 && -z "$connected_any" ]] && connected_any="$path"
   done
   if [[ -n "$connected_igpu" ]]; then printf '%s' "$connected_igpu"; return 0; fi
   if [[ -n "$best_igpu" ]]; then printf '%s' "$best_igpu"; return 0; fi
+  if [[ -n "$connected_simple" ]]; then printf '%s' "$connected_simple"; return 0; fi
+  if [[ -n "$best_simple" ]]; then printf '%s' "$best_simple"; return 0; fi
   if [[ -n "$connected_virtio" ]]; then printf '%s' "$connected_virtio"; return 0; fi
   if [[ -n "$best_virtio" ]]; then printf '%s' "$best_virtio"; return 0; fi
   if [[ -n "$connected_other" ]]; then printf '%s' "$connected_other"; return 0; fi
   if [[ -n "$best_other" ]]; then printf '%s' "$best_other"; return 0; fi
-  if [[ -n "$connected_any" ]]; then printf '%s' "$connected_any"; return 0; fi
-  if [[ -n "$best_any" ]]; then printf '%s' "$best_any"; return 0; fi
   return 1
+}
+
+# Kill compositors and force tty1/fbcon back so HDMI signal returns after a failed modeset.
+restore_display_console() {
+  local reason="${1:-kiosk-fail}"
+  fail_note "STICKLLM_KIOSK_RESTORE_CONSOLE reason=$reason"
+  serial_note "STICKLLM_KIOSK_RESTORE_CONSOLE reason=$reason"
+  # Drop DRM master: do not leave cage/weston holding CRTCs off.
+  pkill -x cage 2>/dev/null || true
+  pkill -x weston 2>/dev/null || true
+  pkill -x cog 2>/dev/null || true
+  pkill -x chromium 2>/dev/null || true
+  pkill -x chromium-browser 2>/dev/null || true
+  sleep 0.4
+  chvt 1 2>/dev/null || true
+  # Re-bind framebuffer consoles (simpledrm/efifb/amdgpu).
+  local vtcon
+  for vtcon in /sys/class/vtconsole/vtcon*; do
+    [[ -w "$vtcon/bind" ]] || continue
+    echo 1 >"$vtcon/bind" 2>/dev/null || true
+  done
+  # Touch connector status (hotplug kick on some drivers).
+  local conn
+  for conn in /sys/class/drm/card*-*/status; do
+    [[ -f "$conn" ]] || continue
+    cat "$conn" >/dev/null 2>&1 || true
+  done
+  # SysRq 'v' = forcefully restore framebuffer console (when enabled).
+  if [[ -w /proc/sysrq-trigger ]]; then
+    echo v >/proc/sysrq-trigger 2>/dev/null || true
+  fi
+  printf '\033c' >"$TTY" 2>/dev/null || true
 }
 
 is_nvidia_path() {
@@ -510,12 +597,15 @@ try_launch() {
       serial_note "FAIL| $_line"
       _n=$((_n + 1))
     done < <(tail -n 40 "$FAIL_LOG" 2>/dev/null || true)
+    # Never leave a dead DRM master / blank HDMI after a failed try.
+    restore_display_console "try-fail:$label:rc=$rc"
   fi
   return "$rc"
 }
 
 hold_error() {
   local reason="$1"
+  restore_display_console "hold_error"
   printf '\033c' >"$TTY" 2>/dev/null || true
   paint "========================================"
   paint "  StickLLM LOCAL — browser failed"
@@ -524,7 +614,8 @@ hold_error() {
   paint "  $reason"
   paint "  Target: $URL"
   paint "  Diag:   $FAIL_LOG"
-  paint "  Reboot menu 3 (Term) + SSH to inspect $FAIL_LOG"
+  paint "  Reboot menu 3 (Term) then:"
+  paint "    cat /run/stickllm/kiosk-fail.log"
   paint "  Retrying browser stack in 45s…"
   paint ""
   # Product is browser — do not exec tty chat. Exit non-zero so unit restarts ladder.
@@ -616,9 +707,16 @@ modprobe i915 2>/dev/null || true
 modprobe virtio_gpu 2>/dev/null || true
 sleep 1
 
+# Ensure tty1 still owns the panel before any compositor grabs DRM.
+restore_display_console "pre-launch"
+paint "  Console restored — selecting display DRM…"
+
 DISPLAY_DRM="$(pick_display_drm || true)"
 if [[ -z "${DISPLAY_DRM:-}" ]]; then
-  hold_error "no /dev/dri/card* found"
+  hold_error "no safe /dev/dri/card* (non-NVIDIA) found — plug HDMI into iGPU or see $FAIL_LOG"
+fi
+if is_nvidia_path "$DISPLAY_DRM"; then
+  hold_error "refusing NVIDIA DRM master (kills HDMI on this HW). Use iGPU HDMI. See $FAIL_LOG"
 fi
 fail_note "STICKLLM_KIOSK_DRM_PICK $DISPLAY_DRM"
 serial_note "STICKLLM_KIOSK_BROWSER $BROWSER $URL drm=$DISPLAY_DRM"
@@ -626,12 +724,17 @@ paint "  Display DRM: $DISPLAY_DRM"
 paint "  Launching browser…"
 
 # Strategy ladder — first long-running success is the product.
-# Order: iGPU/non-NVIDIA GLES → pixman → weston → chromium → NVIDIA DRM path.
+# Never add NVIDIA cards: modeset as DRM master blanks this panel.
 drm_list=("$DISPLAY_DRM")
-[[ -e /dev/dri/card0 && "$DISPLAY_DRM" != "/dev/dri/card0" ]] && drm_list+=("/dev/dri/card0")
-[[ -e /dev/dri/card1 && "$DISPLAY_DRM" != "/dev/dri/card1" ]] && drm_list+=("/dev/dri/card1")
+for _c in /dev/dri/card[0-9]; do
+  [[ -e "$_c" ]] || continue
+  [[ "$_c" == "$DISPLAY_DRM" ]] && continue
+  is_nvidia_path "$_c" && continue
+  drm_list+=("$_c")
+done
 
 for drm in "${drm_list[@]}"; do
+  is_nvidia_path "$drm" && continue
   # shellcheck disable=SC2206
   renderers=( $(renderer_order_for_drm "$drm") )
   for renderer in "${renderers[@]}"; do
@@ -641,6 +744,7 @@ for drm in "${drm_list[@]}"; do
       # rc=0 means browser exited cleanly — relaunch rather than giving up.
       if [[ "$rc" -eq 0 ]]; then
         serial_note "STICKLLM_KIOSK_BROWSER_EXIT_CLEAN relaunch"
+        restore_display_console "browser-clean-exit"
         continue
       fi
     fi
@@ -649,19 +753,21 @@ for drm in "${drm_list[@]}"; do
       rc=$?
       if [[ "$rc" -eq 0 ]]; then
         serial_note "STICKLLM_KIOSK_BROWSER_EXIT_CLEAN relaunch"
+        restore_display_console "browser-clean-exit"
         continue
       fi
     fi
   done
 done
 
-# If cog failed everywhere, try chromium under cage once per card.
+# If cog failed everywhere, try chromium under cage once per non-NVIDIA card.
 if [[ "$BROWSER" == "cog" ]]; then
   alt=""
   command -v chromium >/dev/null 2>&1 && alt=chromium
   command -v chromium-browser >/dev/null 2>&1 && alt=chromium-browser
   if [[ -n "$alt" ]]; then
     for drm in "${drm_list[@]}"; do
+      is_nvidia_path "$drm" && continue
       try_launch "cage+$alt/gles2@$(basename "$drm")" "$drm" gles2 cage "$alt"
       try_launch "cage+$alt/pixman@$(basename "$drm")" "$drm" pixman cage "$alt"
     done
@@ -670,4 +776,5 @@ fi
 
 n="$(bump_fails)"
 collect_drm_diag
+restore_display_console "all-backends-failed"
 hold_error "All browser backends failed (rc≠0). See $FAIL_LOG (attempt $n)."
