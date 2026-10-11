@@ -355,7 +355,8 @@ try_launch() {
   apply_env_for_drm "$drm" "$renderer"
   # QEMU virtio often hangs in gles/pixman without painting — bound tries so ladder advances.
   if is_virtio_or_qemu_drm "$drm"; then
-    run_timeout="${STICKLLM_KIOSK_VIRTIO_TRY_SECS:-40}"
+    # Chromium cold-start on software GL needs >40s before first paint in QEMU.
+    run_timeout="${STICKLLM_KIOSK_VIRTIO_TRY_SECS:-90}"
   fi
   chvt 1 2>/dev/null || true
   fail_note "STICKLLM_KIOSK_TRY label=$label drm=$drm renderer=$renderer comp=$comp browser=$browser timeout=$run_timeout"
