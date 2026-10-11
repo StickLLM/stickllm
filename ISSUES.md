@@ -35,6 +35,11 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 - Chat-UI-only / pair-browser-only, hide or remove LAN API hints?
 - Or optional advanced toggle with clear warnings?
 
+**Recommendation / lean** *(not a final decision)*
+- Raw LAN OpenAI API is a **privacy footgun**: uncontrolled clients can log chats while users assume “on the stick = private.”
+- Prefer StickLLM-controlled UI (Local kiosk / Server web chat) as the private path.
+- If API is kept: opt-in advanced only, **off by default**, loud warning, short-lived keys, no WAN by default — or drop it from the default Server story entirely.
+
 ---
 
 ### ISS-003 — “API Key” naming/UX confusing on Server
