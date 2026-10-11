@@ -12,6 +12,27 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-005 — Server console download progress/ETA stuck
+| | |
+|---|---|
+| **ID** | ISS-005 |
+| **Date** | 2026-10-11 |
+| **Mode** | Server (maybe Term) |
+| **Status** | Open |
+| **Summary** | Model download ETA on Server console doesn’t continually update / feels stuck while a model downloads. |
+
+**Notes / code peek**
+- User: model download ETA on Server screen doesn’t continually refresh.
+- `stickllm-bootstatus` `download_phase_msg` re-reads `download-progress.json` each poll (~3s) and builds a phase string with pct/bytes (`Downloading model… N% (…)`). Percent/bytes can refresh; the TIMER ETA path is separate.
+- `format_eta_line` / `eta_budget_secs`: **not** speed- or bytes-based. For `Downloading*` it uses a **fixed soft budget of 600s**, then each paint computes `left = budget - phase_elapsed`.
+- `ETA_PHASE` / `ETA_PHASE_START` reset whenever the **phase string changes**. Because the download phase string embeds percent/bytes, every progress tick can reset the ETA toward ~10m — so ETA looks stuck or jumps instead of smoothly counting down. Minute rounding (`ETA ~Nm left`) also makes small tick-down hard to see.
+- Same bootstatus path serves Term; confirm there if needed. Related cadence: ISS-002 (~3s vs target ~10s).
+
+**Ask**
+- ETA should refresh continuously from real download progress (bytes/speed) or at least tick down without resetting on each percent string change; keep progress % updating on Server (and Term if same UX).
+
+---
+
 ### ISS-003 — “API Key” naming/UX confusing on Server
 | | |
 |---|---|
