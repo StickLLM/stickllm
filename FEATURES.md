@@ -22,11 +22,13 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 ## Models
 - [x] Small model built into the stick
 - [x] Download models from menu to data partition
+- [ ] P0 Delete models from data partition
 - [ ] P0 Accurate loaded-model identity in UI/status (show what's actually loaded)
 - [ ] P0 Model load progress UX — clear Loading model / progress so Term/LAN 503 isn't mistaken for broken pairing
 - [ ] P0 Signed model catalog, pinned SHA-256, re-checked at load
 - [ ] P1 VRAM-based model suggestions
 - [ ] P1 Vision models (restore image input; mmproj hash-pinned)
+- [ ] P1 Download unsupported models with explicit warning
 - [ ] P2 Optional large MoE recipe (Strata-style) for high-RAM machines
 
 ## Settings (persist on writable partition)
