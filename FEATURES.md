@@ -72,7 +72,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P2 Self-hostable rendezvous
 - [ ] P2 Tor onion service for remote access (no open ports)
 - [ ] P2 Model downloads over Tor (hash-verified)
-- [ ] P2 OpenAI-compatible API for LAN apps (token from pairing) — open product question: keep/expose at all given uncontrolled clients? see ISS-004
+- [~] ~~P2 OpenAI-compatible API for LAN apps (token from pairing)~~ — **removed next version** (ISS-004): do not ship an external/OpenAI LAN API; privacy path = StickLLM-controlled UI only (Local + Server/Term web). Pairing may stay for the StickLLM web client if needed.
 - [ ] P2 Multi-user server, separate vault per client
 
 ## Mobile

@@ -116,10 +116,10 @@ Set the PC firmware to **boot the USB first** (see [docs/BOOT.md](docs/BOOT.md))
 |---|---|
 | `http://<lan-ip>/` | Chat UI (pair code on LAN) |
 | `http://127.0.0.1/` | Same UI on the stick (Local trusts loopback) |
-| `http://<lan-ip>/v1/chat/completions` | OpenAI-compatible API (gateway; pair Bearer required) |
-| `http://<lan-ip>:8080/v1/*` | Raw llama.cpp (no pair auth; no web lookup) |
+| `http://<lan-ip>/v1/chat/completions` | OpenAI-compatible API (gateway; pair Bearer required). **Present on current flash; deprecated — going away next version** (ISS-004: StickLLM UI only; no external clients). |
+| `http://<lan-ip>:8080/v1/*` | Raw llama.cpp (no pair auth; no web lookup). Not a supported product surface for apps. |
 
-After pairing, **Models → API key** shows the session token until reboot.
+After pairing, **Models → API key** shows the session token until reboot (naming/UX: ISS-003; third-party API story ends next version per ISS-004).
 
 Helpers on PATH: `stickllm-status`, `stickllm-persist`, `stickllm-download-model`, `stickllm-local-chat`.
 
@@ -134,7 +134,7 @@ Working on RTX 3090 HDMI with tag `v0.2.1-local-nvidia-kbd`:
 ## Working today (checkpoint)
 
 - Boot menu: Local / Server / Term (+ Failsafe)
-- Pair code → browser chat + Models menu; session token = API key
+- Pair code → browser chat + Models menu; session token shown as API key (third-party OpenAI LAN API deprecated — removed next version, ISS-004)
 - Term/Server LAN READY + pair + URL
 - Local cage + Chromium + keyboard on NVIDIA DRM
 - USB DATA claim; catalog downloads (27B → DATA when pinned/space allows)

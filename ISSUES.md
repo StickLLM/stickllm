@@ -12,36 +12,6 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
-### ISS-004 — Decide whether to keep/expose LAN OpenAI API
-| | |
-|---|---|
-| **ID** | ISS-004 |
-| **Date** | 2026-10-11 |
-| **Mode** | Server (also Term) |
-| **Status** | Open |
-| **Summary** | Open product question: whether StickLLM should support / advertise an OpenAI-compatible LAN API at all, given StickLLM does not control the client. |
-
-**Context**
-- Today the gateway exposes OpenAI-style `/v1/chat/completions` (and related) on the LAN; the pair token is presented as a Bearer “API key” (see ISS-003).
-- [FEATURES.md](FEATURES.md) lists “OpenAI-compatible API for LAN apps (token from pairing)” as **P2** — this issue is the go/no-go before investing in that surface.
-
-**Tension**
-- **Pro:** familiar integration for scripts, Open WebUI, local apps; Server mode’s natural “headless LLM box” story.
-- **Con:** clients are untrusted/uncontrolled (prompt injection, data exfil via tools/web, key reuse, buggy clients); StickLLM cannot ship or lock down those clients the way it can the on-stick Chat UI.
-- Security + product scope decision, not just naming (ISS-003) or docs.
-
-**Ask**
-- Keep and harden (scope: who may call, TLS, key lifetime, rate limits, disable-by-default)?
-- Chat-UI-only / pair-browser-only, hide or remove LAN API hints?
-- Or optional advanced toggle with clear warnings?
-
-**Recommendation / lean** *(not a final decision)*
-- Raw LAN OpenAI API is a **privacy footgun**: uncontrolled clients can log chats while users assume “on the stick = private.”
-- Prefer StickLLM-controlled UI (Local kiosk / Server web chat) as the private path.
-- If API is kept: opt-in advanced only, **off by default**, loud warning, short-lived keys, no WAN by default — or drop it from the default Server story entirely.
-
----
-
 ### ISS-003 — “API Key” naming/UX confusing on Server
 | | |
 |---|---|
@@ -54,11 +24,10 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 **Notes**
 - Console (`stickllm-bootstatus`) shows `API key:` / Bearer header after pair; Chat UI Models panel says “OpenAI-compatible… Use the pair token as a Bearer API key” plus “Copy API key”.
 - Users may think it is a cloud vendor key, a permanent credential, or something separate from pairing — not an ephemeral session token from PAIR CODE.
-- Related product fork: ISS-004 (whether to expose OpenAI API at all). If API stays, rename toward “pair token” / “session token”; if API goes, drop key copy UX and console Bearer hints.
+- **ISS-004 decided:** next version removes/disables the external OpenAI-compatible LAN API. Follow-up: drop “API key” / Bearer copy UX and console hints aimed at third-party clients; pairing stays for StickLLM web if needed (pair token / session wording only).
 
 **Ask**
-- Prefer copy that ties the secret to pairing (“Pair token”, “Session Bearer”) over “API Key”, unless ISS-004 keeps a true third-party API story.
-
+- Prefer copy that ties the secret to pairing (“Pair token”, “Session Bearer”) over “API Key”; no third-party API story after next version.
 ---
 
 ### ISS-002 — Server console refresh rate too aggressive
@@ -113,4 +82,19 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Closed
 
-_(none yet)_
+### ISS-004 — Decide whether to keep/expose LAN OpenAI API
+| | |
+|---|---|
+| **ID** | ISS-004 |
+| **Date** | 2026-10-11 |
+| **Mode** | Server (also Term) |
+| **Status** | Decided / Closed (for next version) |
+| **Summary** | **Do not ship** an OpenAI-compatible LAN API for external clients next version; privacy path = StickLLM-controlled UI only (Local + Server/Term web). |
+
+**Decision**
+- Next version: remove/disable the OpenAI-compatible LAN API surface for uncontrolled clients. No code rip-out in the current flash until that version ships.
+- Pairing may remain for the StickLLM web client if needed; it is not an invitation for third-party OpenAI clients.
+- User rationale (2026-10-11): *“kill API. It locks things down to what we can control. I can't control external clients.”*
+
+**Resolution**
+- Product go/no-go closed: prefer StickLLM UI only; see [FEATURES.md](FEATURES.md) (API item marked removed next version) and [README.md](README.md) (current flash still has the endpoint; deprecated for next version).
