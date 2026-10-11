@@ -14,6 +14,8 @@ WAIT_LLAMA_SECS="${STICKLLM_KIOSK_WAIT_LLAMA_SECS:-120}"
 FAIL_FILE="$RUN/kiosk-fail-count"
 PROFILE="$RUN/kiosk-profile"
 WESTON_INI="$RUN/weston.ini"
+# cage refuses to start as root ("Unable to drop root"); run compositor as live user.
+KIOSK_USER="${STICKLLM_KIOSK_USER:-user}"
 
 mkdir -p "$RUN" "$PROFILE"
 chmod 700 "$PROFILE"
@@ -147,10 +149,65 @@ is_nvidia_path() {
   return 1
 }
 
+prepare_kiosk_user() {
+  # Prefer Debian live default account; fall back to root only if missing.
+  if ! id "$KIOSK_USER" >/dev/null 2>&1; then
+    if id user >/dev/null 2>&1; then
+      KIOSK_USER=user
+    else
+      KIOSK_USER=root
+    fi
+  fi
+  if [[ "$KIOSK_USER" != "root" ]]; then
+    usermod -aG video,render,input "$KIOSK_USER" 2>/dev/null || true
+  fi
+  KIOSK_UID="$(id -u "$KIOSK_USER")"
+  export XDG_RUNTIME_DIR="/run/user/${KIOSK_UID}"
+  mkdir -p "$XDG_RUNTIME_DIR" "$PROFILE" "$PROFILE/cache"
+  chmod 700 "$XDG_RUNTIME_DIR"
+  if [[ "$KIOSK_USER" != "root" ]]; then
+    chown -R "${KIOSK_USER}:${KIOSK_USER}" "$XDG_RUNTIME_DIR" "$PROFILE" 2>/dev/null || true
+    # Allow the kiosk user to write fail/diag logs owned by the unit (root).
+    chmod 777 "$RUN" 2>/dev/null || true
+    touch "$LOG" "$FAIL_LOG" 2>/dev/null || true
+    chmod 666 "$LOG" "$FAIL_LOG" 2>/dev/null || true
+  fi
+  fail_note "STICKLLM_KIOSK_USER $KIOSK_USER uid=$KIOSK_UID XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+  serial_note "STICKLLM_KIOSK_USER $KIOSK_USER uid=$KIOSK_UID"
+}
+
 ensure_xdg_runtime() {
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+  if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+    prepare_kiosk_user
+  fi
   mkdir -p "$XDG_RUNTIME_DIR"
   chmod 700 "$XDG_RUNTIME_DIR"
+}
+
+# Run compositor/browser as KIOSK_USER — cage hard-refuses uid 0.
+run_kiosk_cmd() {
+  if [[ "$(id -u)" -eq 0 && "$KIOSK_USER" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+    runuser -u "$KIOSK_USER" -- env \
+      "HOME=/home/${KIOSK_USER}" \
+      "USER=${KIOSK_USER}" \
+      "LOGNAME=${KIOSK_USER}" \
+      "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" \
+      "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-wayland}" \
+      "LIBSEAT_BACKEND=${LIBSEAT_BACKEND:-seatd}" \
+      "WLR_NO_HARDWARE_CURSORS=${WLR_NO_HARDWARE_CURSORS:-1}" \
+      "WLR_BACKENDS=${WLR_BACKENDS:-drm}" \
+      "WLR_RENDERER=${WLR_RENDERER}" \
+      "WLR_DRM_DEVICES=${WLR_DRM_DEVICES}" \
+      "WLR_LIBINPUT_NO_DEVICES=${WLR_LIBINPUT_NO_DEVICES:-1}" \
+      "LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-}" \
+      "GALLIUM_DRIVER=${GALLIUM_DRIVER:-}" \
+      "MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-}" \
+      "GBM_BACKEND=${GBM_BACKEND:-}" \
+      "__GLX_VENDOR_LIBRARY_NAME=${__GLX_VENDOR_LIBRARY_NAME:-}" \
+      "$@"
+  else
+    "$@"
+  fi
 }
 
 apply_env_for_drm() {
@@ -218,6 +275,19 @@ ensure_seatd() {
 }
 
 pick_browser_bin() {
+  local prefer_chromium=0
+  # WPE/cog often fails to paint on virtio software GL; Chromium+ozone is more reliable in QEMU.
+  if [[ -e /dev/dri/card0 ]] && is_virtio_or_qemu_drm /dev/dri/card0; then
+    prefer_chromium=1
+  fi
+  if [[ "$prefer_chromium" -eq 1 ]]; then
+    if command -v chromium >/dev/null 2>&1; then
+      printf 'chromium'; return 0
+    fi
+    if command -v chromium-browser >/dev/null 2>&1; then
+      printf 'chromium-browser'; return 0
+    fi
+  fi
   if command -v cog >/dev/null 2>&1; then
     printf 'cog'
   elif command -v chromium >/dev/null 2>&1; then
@@ -298,10 +368,32 @@ try_launch() {
   fi
 
   _run() {
+    # timeout(1) cannot invoke shell functions — expand runuser here.
+    local -a prefix=()
     if [[ "$run_timeout" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
-      timeout "$run_timeout" "$@"
+      prefix=(timeout "$run_timeout")
+    fi
+    if [[ "$(id -u)" -eq 0 && "$KIOSK_USER" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+      "${prefix[@]}" runuser -u "$KIOSK_USER" -- env \
+        "HOME=/home/${KIOSK_USER}" \
+        "USER=${KIOSK_USER}" \
+        "LOGNAME=${KIOSK_USER}" \
+        "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" \
+        "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-wayland}" \
+        "LIBSEAT_BACKEND=${LIBSEAT_BACKEND:-seatd}" \
+        "WLR_NO_HARDWARE_CURSORS=${WLR_NO_HARDWARE_CURSORS:-1}" \
+        "WLR_BACKENDS=${WLR_BACKENDS:-drm}" \
+        "WLR_RENDERER=${WLR_RENDERER}" \
+        "WLR_DRM_DEVICES=${WLR_DRM_DEVICES}" \
+        "WLR_LIBINPUT_NO_DEVICES=${WLR_LIBINPUT_NO_DEVICES:-1}" \
+        "LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-}" \
+        "GALLIUM_DRIVER=${GALLIUM_DRIVER:-}" \
+        "MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-}" \
+        "GBM_BACKEND=${GBM_BACKEND:-}" \
+        "__GLX_VENDOR_LIBRARY_NAME=${__GLX_VENDOR_LIBRARY_NAME:-}" \
+        "$@"
     else
-      "$@"
+      "${prefix[@]}" "$@"
     fi
   }
 
@@ -309,7 +401,7 @@ try_launch() {
   case "$comp" in
     cage)
       {
-        echo "=== cage launch $(date -Is 2>/dev/null || date) renderer=$renderer ==="
+        echo "=== cage launch $(date -Is 2>/dev/null || date) renderer=$renderer user=$KIOSK_USER ==="
         echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR WLR_RENDERER=$WLR_RENDERER WLR_DRM_DEVICES=$WLR_DRM_DEVICES"
         command -v cage; command -v seatd; ls -la /run/seatd.sock /var/run/seatd.sock 2>&1 || true
       } >>"$FAIL_LOG" 2>&1 || true
@@ -369,6 +461,7 @@ try_launch() {
         app="${_br_bin} --kiosk --ozone-platform=wayland --disable-gpu --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
       fi
       write_weston_ini "$app"
+      chown "${KIOSK_USER}:${KIOSK_USER}" "$WESTON_INI" 2>/dev/null || true
       # bookworm weston 10: --drm-device=cardN, optional --use-pixman
       _card_base="$(basename "$drm")"
       _wargs=(--backend=drm-backend.so --shell=kiosk-shell.so --tty=1 --drm-device="$_card_base" -c "$WESTON_INI")
@@ -376,7 +469,7 @@ try_launch() {
         _wargs+=(--use-pixman)
       fi
       {
-        echo "=== weston launch $(date -Is 2>/dev/null || date) renderer=$renderer ==="
+        echo "=== weston launch $(date -Is 2>/dev/null || date) renderer=$renderer user=$KIOSK_USER ==="
         echo "ini=$WESTON_INI exec=$app"
         cat "$WESTON_INI" 2>/dev/null || true
       } >>"$FAIL_LOG" 2>&1 || true
@@ -432,7 +525,7 @@ if ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then
 fi
 
 mkdir -p "$RUN"
-ensure_xdg_runtime
+prepare_kiosk_user
 touch "$RUN/local-mode"
 serial_note "STICKLLM_KIOSK_START fails=$(fail_count)"
 collect_drm_diag
