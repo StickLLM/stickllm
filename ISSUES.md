@@ -37,16 +37,16 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 | **Date** | 2026-10-11 |
 | **Mode** | Server (also Term) |
 | **Status** | Open |
-| **Summary** | Server console/status screen refreshes too often; target ~every 5 seconds. |
+| **Summary** | Server console/status screen refreshes too often; target ~every 10 seconds. |
 
 **Notes / current interval**
-- User feedback: screen refreshes too often; suggest ~5s.
+- User feedback: screen refreshes too often; suggest ~10s.
 - `overlay/usr/local/bin/stickllm-bootstatus`: main loop uses **`sleep 3`** while loading (`paint_loading` each pass) and **`sleep 3`** in the READY watch loop (full `draw_ready` only when IP/pair/UI/API/key signature changes; otherwise breadcrumb only).
-- So poll/repaint cadence is **~3s** today (loading always clears/repaints; READY less often unless state flips). Target **~5s**.
+- So poll/repaint cadence is **~3s** today (loading always clears/repaints; READY less often unless state flips). Target **~10s**.
 - Chat UI `refreshStatus` is separate (`ui/app.js` ~8s) — this issue is the HDMI/console status screen.
 
 **Ask**
-- Lengthen bootstatus sleeps to ~5s (or make READY/loading intervals configurable); avoid full-screen clear/flicker when nothing changed.
+- Lengthen bootstatus sleeps to ~10s (or make READY/loading intervals configurable); avoid full-screen clear/flicker when nothing changed.
 
 ---
 
