@@ -13,8 +13,9 @@ on demand from a **pinned Hugging Face catalog**, with hashes that live on the U
 | **Base (default ship)** | ~4–6 GB ISO | **16 GB** USB is enough | OS + runtime + **lite** model (anything / RAM / 8 GB class) |
 | **Optional fat build** | ~18–22 GB | 32–64 GB | Base + large model pre-baked (power users / air-gap) |
 
-v0.1 today is still a fat-ish ~6.4 GB ISO with Qwen2.5-7B Q5 (~5 GB). Target base
-moves toward a **smaller lite GGUF** so a cheap **16 GB** stick is the retail SKU.
+Checkpoint `v0.2.1-local-nvidia-kbd` ships small text models on the ISO (3B + 7B class)
+and downloads larger catalog entries (e.g. 27B) to `STICKLLM-DATA` when space/VRAM allow.
+Target retail base still moves toward a cheaper **16 GB** stick + lite GGUF.
 
 ## First boot / “upgrade models” flow
 

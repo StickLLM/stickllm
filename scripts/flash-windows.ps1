@@ -8,8 +8,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+. (Join-Path $Root "scripts\lib\Require-ScreenshotProof.ps1")
+Assert-ScreenshotProof
+
 if (-not $Iso) {
-  $Iso = Join-Path $Root "out\stickllm-amd-rtx3090.hybrid.iso"
+  $checkpoint = Join-Path $Root "out\v0.2.1-local-nvidia-kbd\stickllm-amd-rtx3090-v0.2-local-nvidia-kbd.hybrid.iso"
+  $golden = Join-Path $Root "out\stickllm-amd-rtx3090.hybrid.iso"
+  if (Test-Path $checkpoint) { $Iso = $checkpoint }
+  else { $Iso = $golden }
 }
 
 if (-not (Test-Path $Iso)) {
@@ -30,17 +36,12 @@ Write-Host "This ERASES the USB and writes a raw hybrid ISO (DD mode)."
 $confirm = Read-Host "Type FLASH to continue"
 if ($confirm -ne "FLASH") { Write-Host "Aborted."; exit 1 }
 
-# Prefer WSL dd for reliable raw write
 $wslIso = (wsl wslpath -a "$Iso").Trim()
-$boot = Get-CimInstance Win32_DiskDrive | Where-Object { $_.InterfaceType -match 'USB|SCSI' } 
-# Map letter → physical disk via partition
 $part = Get-Partition -DriveLetter $letter
 $diskNumber = $part.DiskNumber
 $phys = "\\\\.\\PhysicalDrive$diskNumber"
 
 Write-Host "PhysicalDrive$diskNumber → $phys"
-
-# Use Rufus-like approach via WSL if the device is visible; else instruct Rufus
 Write-Host ""
 Write-Host "Recommended on Windows: use Rufus in DD Image mode."
 Write-Host "  ISO: $Iso"

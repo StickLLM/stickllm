@@ -1,30 +1,43 @@
 # StickLLM shipping baseline (v0.2)
 
-## What boots the working pair screen
+## Golden ship (immutable)
 
-- **Samsung Type-C USB** — golden runtime image. Never wipe it.
-- Image identity: hybrid ISO volume id `STICKLLM`, Drive **v0.2**.
-- **ISO SHA-256:** `4914087d502d13327dbbd9196c9a4a7df46ee079d423ff4b0bc6280e1c7b1a48`
-- Local copy path: `out/stickllm-amd-rtx3090.hybrid.iso` (must match that hash).
+- **Samsung Type-C USB** — golden runtime. Never wipe for experiments.
+- Drive ISO: `stickllm-amd-rtx3090-v0.2.hybrid.iso` (volume id `STICKLLM`)
+- **SHA-256:** `4914087d502d13327dbbd9196c9a4a7df46ee079d423ff4b0bc6280e1c7b1a48`
+- Local copy: `out/stickllm-amd-rtx3090.hybrid.iso` (must match that hash)
+- Git tag **`v0.2.0`** → commit **`c63fadc`** (branch `stickllm-v0.2-base`)
 
-## Source code that matches that stick
+Do **not** retag, rewrite checksums, or overwrite the Drive / Samsung v0.2 artifact.
 
-The stick is a **baked ISO**, not a git checkout. Map runtime → source as:
+## Local restore checkpoint (v0.2.1)
 
-- Git tag **`v0.2.0`** → commit **`c63fadc`**
-- Branch tip for development: **`main`** restored to that product tree (plus docs/checksums)
-- Exact tag pointer: branch **`stickllm-v0.2-base`**
+Separate from Drive golden — use when you need Local browser + keyboard on NVIDIA:
 
-Do **not** use unfinished v0.3 work as the base. Park experiments on **`wip/v0.3-broken`**.
+| | |
+|---|---|
+| Tag | `v0.2.1-local-nvidia-kbd` |
+| ISO dir | `out/v0.2.1-local-nvidia-kbd/` |
+| ISO file | `stickllm-amd-rtx3090-v0.2-local-nvidia-kbd.hybrid.iso` |
+| SHA-256 | `9F665ACAA0D60B9DE822781A3A3A3F56C6C4924536E677599C09DBC8D339A1FC` |
+| Checksum file | `checksums/v0.2-local-nvidia-kbd.sha256` |
+
+```bash
+git checkout v0.2.1-local-nvidia-kbd
+```
+
+Park unfinished experiments on `wip/…` branches. Do not treat them as shipping.
 
 ## Flash other sticks
 
-Prefer `dd`/raw write of the **hash-verified** hybrid ISO onto the spare stick (VendorCo).  
-Do not flash NVMe or the Seagate backup drive. Do not flash Samsung when cloning outward—read Samsung only if the local ISO hash does not match Drive.
+Prefer `dd`/Rufus DD of a **hash-verified** hybrid ISO onto a spare stick (e.g. VendorCo).  
+Do not flash NVMe or backup drives. Do not overwrite Samsung golden when cloning outward.
+
+Flash helpers refuse without screenshot proof (`out/ISO-READY.txt` with `SCREENSHOT_PROOF=PASS`). See [FLASH.md](FLASH.md).
 
 ## Boot back to the pair screen
 
-1. Plug the StickLLM USB (Samsung or VendorCo with v0.2).
-2. Host firmware: USB boot, **Secure Boot off** (see `docs/BOOT.md`).
-3. Boot menu entry for StickLLM live → wait for console **pair code**.
-4. Open the LAN UI and enter the pair code.
+1. Plug StickLLM USB (Samsung golden or a stick flashed from a verified ISO).
+2. Firmware: USB boot, **Secure Boot off** ([BOOT.md](BOOT.md)).
+3. Menu → Server or Term → wait for console **pair code** / READY.
+4. Open `http://<lan-ip>/` and enter the pair code.

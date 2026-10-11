@@ -5,10 +5,10 @@
 Plugging the stick in does **not** force USB boot by itself. The PC firmware
 boot order does.
 
-On the AMD/ROMED8 host (`.70`):
+On the AMD/ROMED8 host:
 
 1. Enter firmware setup (Del / F2).
-2. Put the **Samsung / STICKLLM USB** above the NVMe (Ubuntu).
+2. Put the **StickLLM USB** above the NVMe (Ubuntu).
 3. Save & exit.
 
 Until that is set, Ubuntu’s GRUB will keep winning after Ctrl+Alt+Del. You can
@@ -18,12 +18,12 @@ still chainload StickLLM from Ubuntu GRUB, but USB-first is the reliable default
 
 | # | Entry | What you get |
 |---|---|---|
-| **1** | **StickLLM Server** | LAN mode. Console: **Loading LLM…** → **READY** with Chat UI + API URLs (phone/browser). |
-| **2** | **StickLLM Local** | Same + console chat on this screen/keyboard. |
+| **1** | **StickLLM Server** | LAN mode. Console: **Loading…** → **READY** with Chat UI URL + pair code (phone/browser over HTTP). |
+| **2** | **StickLLM Local** | Same-box **cage + Chromium** on the GPU monitor path (checkpoint `v0.2.1-local-nvidia-kbd`). Keyboard via DRM + libinput. |
 | **3** | **StickLLM Term** | Console login or `ssh user@<ip>` — `nvidia-smi`, `stickllm-status`. |
-| **4** | **StickLLM Failsafe** | **Emergency mode:** NVIDIA drivers blacklisted (`nomodeset`). Use when the screen hangs on GPU init. You get Term/SSH to diagnose; CUDA/LLM usually will **not** work until you reboot normally. |
+| **4** | **StickLLM Failsafe** | **Emergency:** NVIDIA drivers blacklisted (`nomodeset`). Term/SSH to diagnose; CUDA/LLM usually will **not** work until a normal reboot. |
 
-Menu timeout ~**8–11s**; default is **1 StickLLM Server**. Splash branding is StickLLM (not Debian).
+Menu timeout ~**8–11s**; default is **1 StickLLM Server**.
 
 ### Terminal / SSH credentials (menu 3)
 
@@ -35,13 +35,21 @@ Menu timeout ~**8–11s**; default is **1 StickLLM Server**. Splash branding is 
 
 SSH is **off** unless you pick menu **3** (or failsafe).
 
+## NVIDIA / display (do / don’t)
+
+| Do | Don’t |
+|---|---|
+| Keep boot cmdline `nvidia-drm.modeset=0` so HDMI/console survives | Force `nvidia-drm.modeset=1` on **all** boot entries — blanks HDMI on this profile |
+| Let Local enable NVIDIA KMS at **runtime** for cage | Assume QEMU-only flags belong on hardware |
+| Real HW kiosk: `WLR_BACKENDS=drm,libinput` | Set `WLR_LIBINPUT_NO_DEVICES=1` on real hardware (QEMU proofs only) |
+
 ## Boot sequence (expected)
 
 1. Firmware boots the USB (or Ubuntu GRUB → StickLLM entry).
 2. StickLLM menu → pick 1 / 2 / 3.
-3. Console: **Loading LLM…** (3–6 min cold boot on a 3090 is normal).
-4. **READY** with `http://<lan-ip>/` and API on port **8080**.
-5. Blank cursor during NVIDIA load is normal; watch the status lines.
+3. Console: loading (cold boot on a 3090 can take several minutes).
+4. **Server/Term:** READY with `http://<lan-ip>/` and pair code.
+5. **Local (checkpoint):** cage + Chromium on the NVIDIA HDMI output; keyboard works.
 
 ## First checks
 
@@ -49,18 +57,13 @@ SSH is **off** unless you pick menu **3** (or failsafe).
 stickllm-status
 nvidia-smi
 curl -s localhost:8080/health
+curl -s localhost/api/health
 ```
 
-If chat is slow (~8 tok/s) and `nvidia-smi` shows **0 MiB** used, CUDA never attached.
-StickLLM should load `nvidia_uvm` before llama (`stickllm-nvidia-prep`). Check:
+If chat is slow and `nvidia-smi` shows **0 MiB** used, CUDA never attached.
+Check `nvidia_uvm`, `journalctl -u stickllm-llama -b`, and `/run/stickllm/cuda.env`.
 
-```bash
-ls -l /dev/nvidia-uvm
-journalctl -u stickllm-llama -b | grep -i cuda
-cat /run/stickllm/cuda.env
-```
-
-Phone on the same LAN: open the Chat UI URL from the READY screen.
+Phone on the same LAN: open the Chat UI URL from the READY screen and enter the pair code.
 
 ## If it fails
 
@@ -69,7 +72,9 @@ Phone on the same LAN: open the Chat UI URL from the READY screen.
 | Lands in Ubuntu | Firmware boot order — USB not first |
 | Firmware ignores USB | Wrong port; try USB2; Secure Boot |
 | Black screen, no status | GPU init hang — reboot, pick **4 failsafe** |
-| UI up, empty replies | Model missing — rebuild with model baked in |
+| Local blank / no browser | Wrong ISO (need Local checkpoint); modeset mistake; no DRM |
+| Local no keyboard | `WLR_LIBINPUT_NO_DEVICES=1` or missing libinput backend |
+| UI up, empty replies | Model missing or still loading |
 | Phone cannot connect | Wrong IP / AP client isolation |
 
 ## Persist vs ephemeral
