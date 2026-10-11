@@ -25,7 +25,7 @@ to the USB or internal disks unless you explicitly approve a write.
 | SHA-256 | [`checksums/v0.2.sha256`](checksums/v0.2.sha256) → `4914087d…` | [`checksums/v0.2-local-nvidia-kbd.sha256`](checksums/v0.2-local-nvidia-kbd.sha256) → `9F665ACA…` |
 | Role | Immutable ship — **do not overwrite** | Restore point for Local cage + Chromium + keyboard |
 
-Golden baseline details: [docs/BASELINE-v0.2.md](docs/BASELINE-v0.2.md). Roadmap: [FEATURES.md](FEATURES.md).
+Golden baseline details: [docs/BASELINE-v0.2.md](docs/BASELINE-v0.2.md). Roadmap: [FEATURES.md](FEATURES.md). Issues: [ISSUES.md](ISSUES.md).
 
 ## Download golden v0.2 ISO
 
@@ -68,6 +68,7 @@ stickllm/
 ├── config/profiles/amd-rtx3090.toml   # sole supported host profile
 ├── docs/                              # flash, boot, hardware, threat model
 ├── FEATURES.md                        # working vs planned roadmap
+├── ISSUES.md                          # open product/bug log
 ├── ui/                                # StickLLM chat UI (HTTP :80)
 ├── overlay/                           # files copied into the live rootfs
 ├── live-build/                        # Debian live-build hooks & package lists
