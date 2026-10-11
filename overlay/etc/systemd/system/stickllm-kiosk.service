@@ -30,7 +30,7 @@ Environment=STICKLLM_TTY=/dev/tty1
 Environment=XDG_RUNTIME_DIR=/run/user/0
 Environment=WLR_NO_HARDWARE_CURSORS=1
 Environment=LIBSEAT_BACKEND=seatd
-Environment=WLR_BACKENDS=drm
+Environment=WLR_BACKENDS=drm,libinput
 
 [Install]
 WantedBy=multi-user.target

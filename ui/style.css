@@ -153,6 +153,21 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .modelsPanel { padding: 1rem 1.15rem 0.85rem; margin: 0; }
 .modelsPanel h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
 .modelsBody { white-space: pre-wrap; font-size: 0.9rem; color: var(--ink); margin: 0.5rem 0; }
+.dlProgress { margin: 0.65rem 0 0.85rem; }
+.dlProgressLabel { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.35rem; }
+.dlProgressTrack {
+  height: 0.55rem;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.dlProgressFill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+.dlProgressMeta { font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; }
 .modelsHint { font-size: 0.8rem; color: var(--muted); line-height: 1.4; }
 .modelsHint code {
   display: block;
@@ -197,6 +212,29 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--ink);
 }
 .pairErr { color: var(--danger); font-size: 0.85rem; }
+
+.apiPanel {
+  margin: 0.75rem 0;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.apiPanel h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+.apiKeyShow {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--ink);
+  word-break: break-all;
+  margin: 0.4rem 0 0.55rem;
+  padding: 0.45rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
 
 @media (max-width: 640px) {
   .brand { font-size: 1.25rem; }

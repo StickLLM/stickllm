@@ -50,6 +50,15 @@
         <button type="button" id="actDownload" class="actionBtn">Download recommended</button>
         <button type="button" id="actRefresh" class="actionBtn">Refresh status</button>
       </div>
+      <div id="apiPanel" class="apiPanel" hidden>
+        <h3>API key (pair session)</h3>
+        <p class="modelsHint">
+          OpenAI-compatible chat. Use the pair token as a Bearer API key until reboot.
+        </p>
+        <code id="apiKeyShow" class="apiKeyShow">(pair first)</code>
+        <p class="modelsHint"><span id="apiCurlHint"></span></p>
+        <button type="button" id="apiKeyCopy" class="actionBtn">Copy API key</button>
+      </div>
       <p class="modelsHint">
         SSD encrypted cache is not enabled yet (opt-in later). Downloads go to USB DATA when claimed.
         Pairing required — no SSH/sudo.
@@ -64,14 +73,16 @@
   <main id="log" class="log" aria-live="polite"></main>
 
   <form id="composer" class="composer">
-    <textarea id="input" rows="2" placeholder="Ask anything (pair first if prompted)" autocomplete="off"></textarea>
+    <textarea id="input" rows="2" placeholder="Ask anything (pair first if prompted)" autocomplete="off" autofocus tabindex="0"></textarea>
     <button type="submit" id="send">Send</button>
   </form>
 
   <footer class="foot">
-    Paired LAN client · API <code id="apiHint">/v1</code> · reboot clears pair + session
+    Paired LAN client · API <code id="apiHint">/v1/chat/completions</code>
+    · key <code id="apiKeyHint">pair first</code>
+    · reboot clears pair + session
   </footer>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

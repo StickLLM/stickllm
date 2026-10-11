@@ -10,7 +10,8 @@ LOG="$RUN/kiosk.log"
 FAIL_LOG="$RUN/kiosk-fail.log"
 URL="${STICKLLM_KIOSK_URL:-http://127.0.0.1/}"
 WAIT_UI_SECS="${STICKLLM_KIOSK_WAIT_SECS:-180}"
-WAIT_LLAMA_SECS="${STICKLLM_KIOSK_WAIT_LLAMA_SECS:-120}"
+# Brief only — long waits left users on tty "Waiting for model" then a retry loop.
+WAIT_LLAMA_SECS="${STICKLLM_KIOSK_WAIT_LLAMA_SECS:-8}"
 FAIL_FILE="$RUN/kiosk-fail-count"
 PROFILE="$RUN/kiosk-profile"
 WESTON_INI="$RUN/weston.ini"
@@ -85,8 +86,40 @@ collect_drm_diag() {
   } >>"$FAIL_LOG" 2>/dev/null || true
 }
 
+is_nvidia_path() {
+  local p="$1" base driver
+  base="$(basename "$p")"
+  driver="$(basename "$(readlink -f "/sys/class/drm/${base}/device/driver" 2>/dev/null)" 2>/dev/null || true)"
+  case "$driver" in
+    nvidia|nvidia-current|nvidia_drm|nvidia-drm) return 0 ;;
+  esac
+  return 1
+}
+
+# simpledrm/efifb can own the console after nvidia-drm modeset=0, but cage/weston
+# need a real KMS driver (amdgpu/i915/virtio) to keep a browser on HDMI.
+is_weak_drm() {
+  local p="$1" driver
+  driver="$(drm_driver_name "$p")"
+  case "$driver" in
+    simpledrm|efi-framebuffer|efifb|bochs-drm|cirrus) return 0 ;;
+  esac
+  return 1
+}
+
+has_nvidia_drm() {
+  local c path
+  for c in /sys/class/drm/card[0-9]; do
+    [[ -d "$c" ]] || continue
+    path="/dev/dri/$(basename "$c")"
+    [[ -e "$path" ]] || continue
+    is_nvidia_path "$path" && return 0
+  done
+  return 1
+}
+
 # DRM card that already owns the Linux console (efifb/simpledrm/amdgpu fbcon).
-# Prefer this so cage never rebinds NVIDIA and kills HDMI.
+# Informational + fallback only — never beat a connected amdgpu/i915 HDMI.
 pick_console_drm() {
   local fb link card path driver
   for fb in /sys/class/graphics/fb[0-9]; do
@@ -113,7 +146,7 @@ pick_console_drm() {
       fail_note "STICKLLM_KIOSK_CONSOLE_DRM_SKIP_NVIDIA $path"
       continue
     fi
-    fail_note "STICKLLM_KIOSK_CONSOLE_DRM $path fb=$(basename "$fb")"
+    fail_note "STICKLLM_KIOSK_CONSOLE_DRM $path fb=$(basename "$fb") driver=$(drm_driver_name "$path")"
     printf '%s' "$path"
     return 0
   done
@@ -132,19 +165,19 @@ pick_console_drm() {
 }
 
 # Prefer DRM card with a connected connector.
-# Hardware stick: AMD/Intel iGPU HDMI over NVIDIA dGPU (llama keeps CUDA).
-# Never pick NVIDIA when any non-NVIDIA card exists — modeset kills this panel.
-# QEMU Local: virtio_gpu / simpledrm is acceptable when no amdgpu/i915 is present.
+# Pragmatic order for now:
+#   1) connected AMD/Intel iGPU
+#   2) connected NVIDIA (monitor on dGPU / 3090 HDMI — needs nvidia-drm modeset=1)
+#   3) virtio (QEMU), console DRM, simpledrm fallbacks
+# TODO(future): single helper that returns the card owning the first
+# status=connected connector (any vendor), then preference only as tie-break.
 pick_display_drm() {
   local card driver path conn status
   local connected_igpu="" best_igpu="" connected_virtio="" best_virtio=""
   local connected_other="" best_other="" connected_simple="" best_simple=""
-  local console_drm=""
+  local connected_nvidia="" best_nvidia=""
+  local console_drm="" pick=""
   console_drm="$(pick_console_drm || true)"
-  if [[ -n "$console_drm" ]]; then
-    printf '%s' "$console_drm"
-    return 0
-  fi
   for card in /sys/class/drm/card[0-9]; do
     [[ -d "$card" ]] || continue
     driver="$(basename "$(readlink -f "$card/device/driver" 2>/dev/null)" 2>/dev/null || true)"
@@ -161,9 +194,13 @@ pick_display_drm() {
     done
     case "$driver" in
       nvidia|nvidia-current|nvidia_drm|nvidia-drm)
-        # Never prefer NVIDIA for Local display — CUDA only.
-        fail_note "STICKLLM_KIOSK_DRM_SKIP_NVIDIA $path connected=$has_connected"
-        continue
+        [[ -z "$best_nvidia" ]] && best_nvidia="$path"
+        if [[ "$has_connected" -eq 1 && -z "$connected_nvidia" ]]; then
+          connected_nvidia="$path"
+          fail_note "STICKLLM_KIOSK_DRM_NVIDIA_CONNECTED $path"
+        else
+          fail_note "STICKLLM_KIOSK_DRM_NVIDIA_SEEN $path connected=$has_connected"
+        fi
         ;;
       amdgpu|i915|xe)
         [[ -z "$best_igpu" ]] && best_igpu="$path"
@@ -183,14 +220,67 @@ pick_display_drm() {
         ;;
     esac
   done
-  if [[ -n "$connected_igpu" ]]; then printf '%s' "$connected_igpu"; return 0; fi
-  if [[ -n "$best_igpu" ]]; then printf '%s' "$best_igpu"; return 0; fi
-  if [[ -n "$connected_simple" ]]; then printf '%s' "$connected_simple"; return 0; fi
-  if [[ -n "$best_simple" ]]; then printf '%s' "$best_simple"; return 0; fi
-  if [[ -n "$connected_virtio" ]]; then printf '%s' "$connected_virtio"; return 0; fi
-  if [[ -n "$best_virtio" ]]; then printf '%s' "$best_virtio"; return 0; fi
-  if [[ -n "$connected_other" ]]; then printf '%s' "$connected_other"; return 0; fi
-  if [[ -n "$best_other" ]]; then printf '%s' "$best_other"; return 0; fi
+  if [[ -n "$connected_igpu" ]]; then pick="$connected_igpu"
+  elif [[ -n "$connected_nvidia" ]]; then pick="$connected_nvidia"
+  elif [[ -n "$best_igpu" ]]; then pick="$best_igpu"
+  elif [[ -n "$console_drm" ]] && ! is_weak_drm "$console_drm"; then pick="$console_drm"
+  elif [[ -n "$connected_virtio" ]]; then pick="$connected_virtio"
+  elif [[ -n "$best_virtio" ]]; then pick="$best_virtio"
+  elif [[ -n "$connected_simple" ]]; then pick="$connected_simple"
+  elif [[ -n "$best_simple" ]]; then pick="$best_simple"
+  elif [[ -n "$connected_other" ]]; then pick="$connected_other"
+  elif [[ -n "$best_other" ]]; then pick="$best_other"
+  elif [[ -n "$best_nvidia" ]]; then pick="$best_nvidia"
+  elif [[ -n "$console_drm" ]]; then pick="$console_drm"
+  else
+    return 1
+  fi
+  if [[ -n "$console_drm" && "$pick" != "$console_drm" ]]; then
+    fail_note "STICKLLM_KIOSK_DRM_OVERRIDE console=$console_drm pick=$pick"
+    serial_note "STICKLLM_KIOSK_DRM_OVERRIDE console=$console_drm pick=$pick"
+  fi
+  fail_note "STICKLLM_KIOSK_DRM_PICK_FINAL $pick driver=$(drm_driver_name "$pick")"
+  printf '%s' "$pick"
+  return 0
+}
+
+# Cage/Weston need KMS connectors. hdmi-recovery boots modeset=0 so text console
+# survives; when the monitor is on a 3090, reload nvidia-drm with modeset=1 so
+# the connected HDMI/DP connector appears before we pick/launch.
+ensure_nvidia_kms() {
+  local modeset="" has_conn=0
+  has_nvidia_drm || return 0
+  for s in /sys/class/drm/card*-*/status; do
+    [[ -f "$s" ]] || continue
+    if [[ "$(tr -d '[:space:]' <"$s" 2>/dev/null || true)" == "connected" ]]; then
+      has_conn=1
+      break
+    fi
+  done
+  [[ "$has_conn" -eq 1 ]] && return 0
+  modeset="$(tr -d '[:space:]' </sys/module/nvidia_drm/parameters/modeset 2>/dev/null || true)"
+  if [[ "$modeset" == "Y" || "$modeset" == "1" ]]; then
+    fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_ON_BUT_NO_CONN"
+    return 0
+  fi
+  fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_RELOAD"
+  serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_RELOAD"
+  paint "  Enabling NVIDIA KMS for display…"
+  # llama holds the driver; briefly stop so nvidia_drm can reload.
+  systemctl stop stickllm-llama.service 2>/dev/null || true
+  sleep 1
+  rmmod nvidia_drm 2>/dev/null || true
+  if modprobe nvidia_drm modeset=1 2>>"$FAIL_LOG"; then
+    sleep 2
+    fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_OK now=$(cat /sys/module/nvidia_drm/parameters/modeset 2>/dev/null || true)"
+    serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_OK"
+    systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+    return 0
+  fi
+  fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_FAIL"
+  serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_FAIL"
+  modprobe nvidia_drm 2>/dev/null || true
+  systemctl start --no-block stickllm-llama.service 2>/dev/null || true
   return 1
 }
 
@@ -226,14 +316,23 @@ restore_display_console() {
   printf '\033c' >"$TTY" 2>/dev/null || true
 }
 
-is_nvidia_path() {
-  local p="$1" base driver
-  base="$(basename "$p")"
-  driver="$(basename "$(readlink -f "/sys/class/drm/${base}/device/driver" 2>/dev/null)" 2>/dev/null || true)"
-  case "$driver" in
-    nvidia|nvidia-current|nvidia_drm|nvidia-drm) return 0 ;;
-  esac
-  return 1
+# Unbind fbcon so cage/weston can become DRM master on the iGPU.
+# Call immediately before compositor start (inverse of restore_display_console).
+release_display_for_compositor() {
+  local vtcon name
+  fail_note "STICKLLM_KIOSK_RELEASE_FOR_COMP"
+  serial_note "STICKLLM_KIOSK_RELEASE_FOR_COMP"
+  chvt 1 2>/dev/null || true
+  for vtcon in /sys/class/vtconsole/vtcon*; do
+    [[ -w "$vtcon/bind" ]] || continue
+    name="$(tr -d '[:space:]' <"$vtcon/name" 2>/dev/null || true)"
+    # Unbind framebuffer consoles only (keep VGA text vtcon0 if present).
+    if printf '%s' "$name" | grep -qiE 'frame|dummy|drm'; then
+      echo 0 >"$vtcon/bind" 2>/dev/null || true
+      fail_note "STICKLLM_KIOSK_VTCON_UNBIND $(basename "$vtcon") name=$name"
+    fi
+  done
+  sleep 0.2
 }
 
 prepare_kiosk_user() {
@@ -282,18 +381,40 @@ run_kiosk_cmd() {
       "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-wayland}" \
       "LIBSEAT_BACKEND=${LIBSEAT_BACKEND:-seatd}" \
       "WLR_NO_HARDWARE_CURSORS=${WLR_NO_HARDWARE_CURSORS:-1}" \
-      "WLR_BACKENDS=${WLR_BACKENDS:-drm}" \
+      "WLR_BACKENDS=${WLR_BACKENDS:-drm,libinput}" \
       "WLR_RENDERER=${WLR_RENDERER}" \
       "WLR_DRM_DEVICES=${WLR_DRM_DEVICES}" \
-      "WLR_LIBINPUT_NO_DEVICES=${WLR_LIBINPUT_NO_DEVICES:-1}" \
+      "WLR_LIBINPUT_NO_DEVICES=${WLR_LIBINPUT_NO_DEVICES:-}" \
       "LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-}" \
       "GALLIUM_DRIVER=${GALLIUM_DRIVER:-}" \
       "MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-}" \
       "GBM_BACKEND=${GBM_BACKEND:-}" \
       "__GLX_VENDOR_LIBRARY_NAME=${__GLX_VENDOR_LIBRARY_NAME:-}" \
+      "__EGL_VENDOR_LIBRARY_FILENAMES=${__EGL_VENDOR_LIBRARY_FILENAMES:-}" \
       "$@"
   else
     "$@"
+  fi
+}
+
+# Force Mesa EGL/GLX so NVIDIA GLVND ICDs (modeset=0) cannot steal the compositor.
+force_mesa_glvnd() {
+  local mesa_egl="" f
+  unset GBM_BACKEND 2>/dev/null || true
+  export __GLX_VENDOR_LIBRARY_NAME=mesa
+  for f in \
+    /usr/share/glvnd/egl_vendor.d/50_mesa.json \
+    /usr/share/glvnd/egl_vendor.d/*mesa*.json; do
+    [[ -f "$f" ]] || continue
+    mesa_egl="$f"
+    break
+  done
+  if [[ -n "$mesa_egl" ]]; then
+    export __EGL_VENDOR_LIBRARY_FILENAMES="$mesa_egl"
+    fail_note "STICKLLM_KIOSK_FORCE_MESA egl=$mesa_egl"
+  else
+    unset __EGL_VENDOR_LIBRARY_FILENAMES 2>/dev/null || true
+    fail_note "STICKLLM_KIOSK_FORCE_MESA egl=missing"
   fi
 }
 
@@ -303,21 +424,39 @@ apply_env_for_drm() {
   export XDG_SESSION_TYPE=wayland
   export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-seatd}"
   export WLR_NO_HARDWARE_CURSORS=1
-  export WLR_BACKENDS=drm
+  # drm alone disables libinput → no keyboard/VT. Always include libinput on HW.
+  export WLR_BACKENDS="${WLR_BACKENDS:-drm,libinput}"
   export WLR_RENDERER="$renderer"
   export WLR_DRM_DEVICES="$drm"
-  # No keyboard/mouse in many VM proofs — do not block compositor start.
-  export WLR_LIBINPUT_NO_DEVICES="${WLR_LIBINPUT_NO_DEVICES:-1}"
+  # QEMU often has no keyboard — allow start without devices there only.
+  # On real USB keyboards, WLR_LIBINPUT_NO_DEVICES=1 can leave cage with zero
+  # input (keys never reach Chromium). Default off unless virtio/QEMU.
+  unset WLR_LIBINPUT_NO_DEVICES 2>/dev/null || true
+  if is_virtio_or_qemu_drm "$drm"; then
+    export WLR_LIBINPUT_NO_DEVICES="${WLR_LIBINPUT_NO_DEVICES:-1}"
+  elif [[ -n "${STICKLLM_KIOSK_LIBINPUT_NO_DEVICES:-}" ]]; then
+    export WLR_LIBINPUT_NO_DEVICES="$STICKLLM_KIOSK_LIBINPUT_NO_DEVICES"
+  fi
   unset GBM_BACKEND __GLX_VENDOR_LIBRARY_NAME __EGL_VENDOR_LIBRARY_FILENAMES 2>/dev/null || true
   unset WAYLAND_DISPLAY DISPLAY 2>/dev/null || true
+  unset LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE 2>/dev/null || true
   if is_nvidia_path "$drm"; then
-    export GBM_BACKEND=nvidia-drm
+    # Proprietary GLX/EGL; avoid forcing GBM_BACKEND=nvidia-drm when the
+    # nvidia-drm_gbm.so shim is missing (Debian 535 often lacks it) — pixman still works.
     export __GLX_VENDOR_LIBRARY_NAME=nvidia
+    if [[ -e /usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so ]]; then
+      export GBM_BACKEND=nvidia-drm
+    fi
   elif is_virtio_or_qemu_drm "$drm"; then
     # virtio-vga often has no host GL — force Mesa software so WPE/cog can paint.
+    force_mesa_glvnd
     export LIBGL_ALWAYS_SOFTWARE=1
     export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
     export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
+  else
+    # Hybrid AMD+NVIDIA with nvidia-drm modeset=0: GLVND still prefers NVIDIA EGL
+    # which fails without KMS — pin Mesa so cage/weston gles2/pixman use amdgpu.
+    force_mesa_glvnd
   fi
 }
 
@@ -363,8 +502,12 @@ ensure_seatd() {
 
 pick_browser_bin() {
   local prefer_chromium=0
-  # WPE/cog often fails to paint on virtio software GL; Chromium+ozone is more reliable in QEMU.
+  # WPE/cog is flaky on virtio soft-GL and on hybrid NVIDIA GLVND (modeset=0).
+  # Chromium+ozone+--disable-gpu is the product-stable path for Local.
   if [[ -e /dev/dri/card0 ]] && is_virtio_or_qemu_drm /dev/dri/card0; then
+    prefer_chromium=1
+  fi
+  if has_nvidia_drm; then
     prefer_chromium=1
   fi
   if [[ "$prefer_chromium" -eq 1 ]]; then
@@ -375,12 +518,12 @@ pick_browser_bin() {
       printf 'chromium-browser'; return 0
     fi
   fi
-  if command -v cog >/dev/null 2>&1; then
-    printf 'cog'
-  elif command -v chromium >/dev/null 2>&1; then
+  if command -v chromium >/dev/null 2>&1; then
     printf 'chromium'
   elif command -v chromium-browser >/dev/null 2>&1; then
     printf 'chromium-browser'
+  elif command -v cog >/dev/null 2>&1; then
+    printf 'cog'
   else
     return 1
   fi
@@ -421,15 +564,20 @@ is_virtio_or_qemu_drm() {
   return 1
 }
 
-# Renderer order: real iGPU prefers GLES; virtio/QEMU is pixman-only —
-# gles2 hangs on non-GL virtio-vga and never reaches a working soft path.
+# Renderer order: virtio/QEMU is pixman-only (gles2 hangs).
+# NVIDIA-as-display: pixman first (GBM/EGLStreams varies by driver/cage).
+# Clean amdgpu/i915 alone: gles2 then pixman.
 # stdout MUST be only the renderer tokens (no serial_note here).
 renderer_order_for_drm() {
   local drm="$1" driver
   driver="$(drm_driver_name "$drm")"
   fail_note "STICKLLM_KIOSK_DRM_DRIVER $drm driver=${driver:-unknown}"
-  if is_virtio_or_qemu_drm "$drm"; then
+  if is_virtio_or_qemu_drm "$drm" || is_weak_drm "$drm"; then
     printf '%s' "pixman"
+  elif is_nvidia_path "$drm"; then
+    printf '%s' "pixman gles2"
+  elif has_nvidia_drm; then
+    printf '%s' "pixman gles2"
   else
     printf '%s' "gles2 pixman vulkan"
   fi
@@ -446,6 +594,7 @@ try_launch() {
     run_timeout="${STICKLLM_KIOSK_VIRTIO_TRY_SECS:-90}"
   fi
   chvt 1 2>/dev/null || true
+  release_display_for_compositor
   fail_note "STICKLLM_KIOSK_TRY label=$label drm=$drm renderer=$renderer comp=$comp browser=$browser timeout=$run_timeout"
   paint "  Trying $label…"
 
@@ -474,15 +623,16 @@ try_launch() {
         "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-wayland}" \
         "LIBSEAT_BACKEND=${LIBSEAT_BACKEND:-seatd}" \
         "WLR_NO_HARDWARE_CURSORS=${WLR_NO_HARDWARE_CURSORS:-1}" \
-        "WLR_BACKENDS=${WLR_BACKENDS:-drm}" \
+        "WLR_BACKENDS=${WLR_BACKENDS:-drm,libinput}" \
         "WLR_RENDERER=${WLR_RENDERER}" \
         "WLR_DRM_DEVICES=${WLR_DRM_DEVICES}" \
-        "WLR_LIBINPUT_NO_DEVICES=${WLR_LIBINPUT_NO_DEVICES:-1}" \
+        "WLR_LIBINPUT_NO_DEVICES=${WLR_LIBINPUT_NO_DEVICES:-}" \
         "LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-}" \
         "GALLIUM_DRIVER=${GALLIUM_DRIVER:-}" \
         "MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-}" \
         "GBM_BACKEND=${GBM_BACKEND:-}" \
         "__GLX_VENDOR_LIBRARY_NAME=${__GLX_VENDOR_LIBRARY_NAME:-}" \
+        "__EGL_VENDOR_LIBRARY_FILENAMES=${__EGL_VENDOR_LIBRARY_FILENAMES:-}" \
         "$@"
     else
       # Root weston path: use root XDG runtime (seatd/logind-friendly).
@@ -514,6 +664,7 @@ try_launch() {
           --kiosk \
           --ozone-platform=wayland \
           --disable-gpu \
+          --no-sandbox \
           --no-first-run \
           --disable-infobars \
           --disable-session-crashed-bubble \
@@ -537,6 +688,7 @@ try_launch() {
             --kiosk \
             --ozone-platform=wayland \
             --disable-gpu \
+            --no-sandbox \
             --no-first-run \
             --disable-infobars \
             --disable-session-crashed-bubble \
@@ -557,7 +709,7 @@ try_launch() {
       else
         _br_bin="$(command -v "$browser" || true)"
         [[ -n "$_br_bin" ]] || _br_bin="$browser"
-        app="${_br_bin} --kiosk --ozone-platform=wayland --disable-gpu --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
+        app="${_br_bin} --kiosk --ozone-platform=wayland --disable-gpu --no-sandbox --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
       fi
       write_weston_ini "$app"
       chown "${KIOSK_USER}:${KIOSK_USER}" "$WESTON_INI" 2>/dev/null || true
@@ -670,8 +822,9 @@ for i in $(seq 1 "$WAIT_UI_SECS"); do
 done
 [[ "$ui_ready" -eq 1 ]] || hold_error "UI never returned HTTP 200 (last=$code)"
 
-# Best-effort: wait for llama so the page is useful, but do not block browser forever.
-# Skip long wait when llama unit is masked (typical QEMU Local proof).
+# Product = browser chat UI. Nudge llama but do not block on tty for minutes —
+# the page can show model-loading state. Long waits left users stuck on
+# "Waiting for model" then a clear+retry loop when the compositor failed.
 llama_ready=0
 _llama_en="$(systemctl is-enabled stickllm-llama.service 2>&1 || true)"
 _llama_st="$(systemctl status stickllm-llama.service 2>&1 || true)"
@@ -679,22 +832,22 @@ if printf '%s\n%s\n' "$_llama_en" "$_llama_st" | grep -qi masked; then
   paint "  Model unit masked — opening browser without llama wait."
   serial_note "STICKLLM_KIOSK_LLAMA_SKIPPED_MASKED"
 else
-  paint "  Waiting for model (up to ${WAIT_LLAMA_SECS}s)…"
-  for i in $(seq 1 "$WAIT_LLAMA_SECS"); do
+  systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+  # Brief poll only (default 8s); never the old 90–120s tty hold.
+  _brief_llama="${STICKLLM_KIOSK_WAIT_LLAMA_SECS:-8}"
+  [[ "$_brief_llama" -gt 20 ]] && _brief_llama=8
+  paint "  Checking model (up to ${_brief_llama}s)…"
+  for i in $(seq 1 "$_brief_llama"); do
     if [[ "$(http_code "http://127.0.0.1:8080/health")" == "200" ]]; then
       llama_ready=1
       serial_note "STICKLLM_KIOSK_LLAMA_READY after=${i}s"
       break
     fi
-    systemctl start --no-block stickllm-llama.service 2>/dev/null || true
-    if (( i == 1 || i % 15 == 0 )); then
-      paint "  Waiting for model… ${i}s"
-    fi
     sleep 1
   done
   if [[ "$llama_ready" -ne 1 ]]; then
-    paint "  Model still loading — opening browser anyway."
-    serial_note "STICKLLM_KIOSK_LLAMA_WAIT_TIMEOUT"
+    paint "  Model still loading — opening browser now."
+    serial_note "STICKLLM_KIOSK_LLAMA_WAIT_SHORT_TIMEOUT"
   fi
 fi
 
@@ -705,73 +858,97 @@ ensure_seatd || fail_note "STICKLLM_KIOSK_SEATD_WARN seatd not confirmed at laun
 modprobe amdgpu 2>/dev/null || true
 modprobe i915 2>/dev/null || true
 modprobe virtio_gpu 2>/dev/null || true
+# Monitor on 3090: modeset=0 hides connectors — enable KMS before pick.
+ensure_nvidia_kms || fail_note "STICKLLM_KIOSK_NVIDIA_KMS_WARN"
 sleep 1
 
-# Ensure tty1 still owns the panel before any compositor grabs DRM.
+# Restore fbcon so status text is visible while we pick DRM, then release in try_launch.
 restore_display_console "pre-launch"
 paint "  Console restored — selecting display DRM…"
 
 DISPLAY_DRM="$(pick_display_drm || true)"
 if [[ -z "${DISPLAY_DRM:-}" ]]; then
-  hold_error "no safe /dev/dri/card* (non-NVIDIA) found — plug HDMI into iGPU or see $FAIL_LOG"
-fi
-if is_nvidia_path "$DISPLAY_DRM"; then
-  hold_error "refusing NVIDIA DRM master (kills HDMI on this HW). Use iGPU HDMI. See $FAIL_LOG"
+  hold_error "no /dev/dri/card* with a usable display found — see $FAIL_LOG"
 fi
 fail_note "STICKLLM_KIOSK_DRM_PICK $DISPLAY_DRM"
-serial_note "STICKLLM_KIOSK_BROWSER $BROWSER $URL drm=$DISPLAY_DRM"
-paint "  Display DRM: $DISPLAY_DRM"
+serial_note "STICKLLM_KIOSK_BROWSER $BROWSER $URL drm=$DISPLAY_DRM driver=$(drm_driver_name "$DISPLAY_DRM")"
+paint "  Display DRM: $DISPLAY_DRM ($(drm_driver_name "$DISPLAY_DRM"))"
 paint "  Launching browser…"
 
+# Keep a working stack forever: rc=0 (clean browser exit) relaunches SAME combo.
+# Do not advance the ladder on success — that caused clear+retry loops.
+run_stack_forever() {
+  local label="$1" drm="$2" renderer="$3" comp="$4" browser="$5"
+  local rc=1
+  while true; do
+    try_launch "$label" "$drm" "$renderer" "$comp" "$browser"
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      return "$rc"
+    fi
+    serial_note "STICKLLM_KIOSK_BROWSER_EXIT_CLEAN relaunch_same label=$label"
+    restore_display_console "browser-clean-exit"
+    paint "  Browser exited — relaunching $label…"
+    sleep 1
+  done
+}
+
 # Strategy ladder — first long-running success is the product.
-# Never add NVIDIA cards: modeset as DRM master blanks this panel.
+# Include the picked card even when it is NVIDIA (3090-as-display).
 drm_list=("$DISPLAY_DRM")
 for _c in /dev/dri/card[0-9]; do
   [[ -e "$_c" ]] || continue
   [[ "$_c" == "$DISPLAY_DRM" ]] && continue
+  # Skip other NVIDIA cards when display is already a specific nvidia card.
+  if is_nvidia_path "$_c" && is_nvidia_path "$DISPLAY_DRM"; then
+    continue
+  fi
+  if is_nvidia_path "$_c" && ! is_nvidia_path "$DISPLAY_DRM"; then
+    continue
+  fi
+  is_weak_drm "$_c" && continue
+  drm_list+=("$_c")
+done
+for _c in /dev/dri/card[0-9]; do
+  [[ -e "$_c" ]] || continue
+  [[ "$_c" == "$DISPLAY_DRM" ]] && continue
   is_nvidia_path "$_c" && continue
+  is_weak_drm "$_c" || continue
   drm_list+=("$_c")
 done
 
 for drm in "${drm_list[@]}"; do
-  is_nvidia_path "$drm" && continue
   # shellcheck disable=SC2206
   renderers=( $(renderer_order_for_drm "$drm") )
   for renderer in "${renderers[@]}"; do
     if command -v cage >/dev/null 2>&1; then
-      try_launch "cage+$BROWSER/$renderer@$(basename "$drm")" "$drm" "$renderer" cage "$BROWSER"
-      rc=$?
-      # rc=0 means browser exited cleanly — relaunch rather than giving up.
-      if [[ "$rc" -eq 0 ]]; then
-        serial_note "STICKLLM_KIOSK_BROWSER_EXIT_CLEAN relaunch"
-        restore_display_console "browser-clean-exit"
-        continue
-      fi
+      run_stack_forever "cage+$BROWSER/$renderer@$(basename "$drm")" "$drm" "$renderer" cage "$BROWSER" \
+        && exit 0
     fi
     if command -v weston >/dev/null 2>&1; then
-      try_launch "weston+$BROWSER/$renderer@$(basename "$drm")" "$drm" "$renderer" weston "$BROWSER"
-      rc=$?
-      if [[ "$rc" -eq 0 ]]; then
-        serial_note "STICKLLM_KIOSK_BROWSER_EXIT_CLEAN relaunch"
-        restore_display_console "browser-clean-exit"
-        continue
-      fi
+      run_stack_forever "weston+$BROWSER/$renderer@$(basename "$drm")" "$drm" "$renderer" weston "$BROWSER" \
+        && exit 0
     fi
   done
 done
 
-# If cog failed everywhere, try chromium under cage once per non-NVIDIA card.
+# If primary browser failed everywhere, try the other engine once per DRM in list.
+alt=""
 if [[ "$BROWSER" == "cog" ]]; then
-  alt=""
   command -v chromium >/dev/null 2>&1 && alt=chromium
   command -v chromium-browser >/dev/null 2>&1 && alt=chromium-browser
-  if [[ -n "$alt" ]]; then
-    for drm in "${drm_list[@]}"; do
-      is_nvidia_path "$drm" && continue
-      try_launch "cage+$alt/gles2@$(basename "$drm")" "$drm" gles2 cage "$alt"
-      try_launch "cage+$alt/pixman@$(basename "$drm")" "$drm" pixman cage "$alt"
-    done
-  fi
+else
+  command -v cog >/dev/null 2>&1 && alt=cog
+fi
+if [[ -n "$alt" ]]; then
+  for drm in "${drm_list[@]}"; do
+    is_weak_drm "$drm" && continue
+    run_stack_forever "cage+$alt/pixman@$(basename "$drm")" "$drm" pixman cage "$alt" && exit 0
+    run_stack_forever "cage+$alt/gles2@$(basename "$drm")" "$drm" gles2 cage "$alt" && exit 0
+    if command -v weston >/dev/null 2>&1; then
+      run_stack_forever "weston+$alt/pixman@$(basename "$drm")" "$drm" pixman weston "$alt" && exit 0
+    fi
+  done
 fi
 
 n="$(bump_fails)"

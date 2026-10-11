@@ -18,10 +18,46 @@
   const pairErr = document.getElementById("pairErr");
 
   const API_BASE = window.STICKLLM_API || "";
-  apiHint.textContent = `${location.origin}/v1`;
+  const apiKeyHint = document.getElementById("apiKeyHint");
+  const apiPanel = document.getElementById("apiPanel");
+  const apiKeyShow = document.getElementById("apiKeyShow");
+  const apiCurlHint = document.getElementById("apiCurlHint");
+  const apiKeyCopy = document.getElementById("apiKeyCopy");
 
   const TOKEN_KEY = "stickllm_pair_token";
   let token = localStorage.getItem(TOKEN_KEY) || "";
+  let dlProgress = document.getElementById("dlProgress");
+  let dlProgressLabel = document.getElementById("dlProgressLabel");
+  let dlProgressFill = document.getElementById("dlProgressFill");
+  let dlProgressBar = document.getElementById("dlProgressBar");
+  let dlProgressMeta = document.getElementById("dlProgressMeta");
+  let lastDownload = {};
+  let dlPollTimer = null;
+
+  function chatCompletionsUrl() {
+    return `${location.origin}/v1/chat/completions`;
+  }
+
+  function refreshApiHints() {
+    const url = chatCompletionsUrl();
+    if (apiHint) apiHint.textContent = url;
+    if (apiKeyHint) {
+      apiKeyHint.textContent = token
+        ? `${token.slice(0, 8)}…${token.slice(-4)}`
+        : "pair first";
+      apiKeyHint.title = token
+        ? "Full key in Models → API key (pair session)"
+        : "Pair this browser to get an API key";
+    }
+    if (apiPanel) apiPanel.hidden = !token;
+    if (apiKeyShow) apiKeyShow.textContent = token || "(pair first)";
+    if (apiCurlHint) {
+      apiCurlHint.textContent = token
+        ? `curl -sS ${url} -H "Authorization: Bearer <API_KEY>" -H "Content-Type: application/json" -d '{"model":"stickllm","messages":[{"role":"user","content":"hi"}],"max_tokens":64}'`
+        : "Pair first, then copy the key for curl / OpenAI clients.";
+    }
+  }
+  refreshApiHints();
 
   const messages = [
     {
@@ -55,20 +91,33 @@
     return r.json();
   }
 
+  function clearPairSession() {
+    token = "";
+    localStorage.removeItem(TOKEN_KEY);
+    refreshApiHints();
+  }
+
+  async function sessionStillValid() {
+    if (!token) return false;
+    const t = await fetch("/api/storage", {
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    if (t.status === 401) {
+      clearPairSession();
+      return false;
+    }
+    return t.ok;
+  }
+
   async function ensurePaired(force = false) {
     const st = await pairStatus();
-    if (!st.require_pair) return true;
-    if (st.paired && token && !force) {
-      // token may still be valid
-      return true;
-    }
+    // Local on-stick browser (loopback) reports require_pair=false / local=true.
+    if (!st.require_pair || st.local) return true;
+    // Never trust localStorage alone: remint/re-pair can leave a stale Bearer
+    // while /health still reports paired:true for a newer session.
     if (!force && token) {
-      // try a cheap authed call
-      const t = await fetch("/api/storage", {
-        headers: authHeaders(),
-        cache: "no-store",
-      });
-      if (t.ok) return true;
+      if (await sessionStillValid()) return true;
     }
     pairErr.hidden = true;
     pairCode.value = "";
@@ -82,8 +131,13 @@
       const r = await fetch(`/health`, { cache: "no-store" });
       if (!r.ok) throw new Error(`health ${r.status}`);
       const j = await r.json();
-      const paired = j.pair?.paired && token;
-      statusLine.textContent = paired
+      let sessionOk = false;
+      if (token && j.pair?.require_pair) {
+        sessionOk = await sessionStillValid();
+      } else if (token && !j.pair?.require_pair) {
+        sessionOk = true;
+      }
+      statusLine.textContent = sessionOk
         ? j.web
           ? "paired · web on"
           : "paired · LAN only"
@@ -100,11 +154,8 @@
           if (meta.version) modeBadge.title = `v${meta.version}`;
         }
       } catch (_) {}
-      if (j.pair?.require_pair && !token) {
-        // soft prompt once
-        if (!pairDialog.open) {
-          /* wait for user action */
-        }
+      if (j.pair?.require_pair && !token && !pairDialog.open) {
+        /* wait for user action / Pair button */
       }
     } catch (e) {
       statusLine.textContent = "waiting for model…";
@@ -118,14 +169,118 @@
       body: JSON.stringify({ action, params }),
     });
     if (r.status === 401) {
-      token = "";
-      localStorage.removeItem(TOKEN_KEY);
+      clearPairSession();
+      statusLine.textContent = "needs pair code (see stick screen)";
       await ensurePaired(true);
       throw new Error("Pair required");
     }
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
     return j;
+  }
+
+  function ensureDlProgressDom() {
+    if (dlProgress && dlProgressFill) return;
+    const panel = modelsDialog?.querySelector(".modelsPanel");
+    if (!panel || !modelsBody) return;
+    const box = document.createElement("div");
+    box.id = "dlProgress";
+    box.className = "dlProgress";
+    box.hidden = true;
+    box.innerHTML =
+      '<div class="dlProgressLabel" id="dlProgressLabel">Downloading…</div>' +
+      '<div class="dlProgressTrack" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="dlProgressBar">' +
+      '<div class="dlProgressFill" id="dlProgressFill"></div></div>' +
+      '<div class="dlProgressMeta" id="dlProgressMeta"></div>';
+    modelsBody.insertAdjacentElement("afterend", box);
+    dlProgress = box;
+    dlProgressLabel = document.getElementById("dlProgressLabel");
+    dlProgressFill = document.getElementById("dlProgressFill");
+    dlProgressBar = document.getElementById("dlProgressBar");
+    dlProgressMeta = document.getElementById("dlProgressMeta");
+  }
+
+  function fmtBytes(n) {
+    if (!n || n < 0) return "—";
+    const gb = n / 1024 ** 3;
+    if (gb >= 1) return `${gb.toFixed(2)} GB`;
+    const mb = n / 1024 ** 2;
+    return `${mb.toFixed(0)} MB`;
+  }
+
+  function renderDownload(d) {
+    ensureDlProgressDom();
+    lastDownload = d || {};
+    if (!dlProgress) return false;
+    const state = d?.state || "idle";
+    if (state === "idle" || !state) {
+      dlProgress.hidden = true;
+      return false;
+    }
+    if (state === "done") {
+      dlProgress.hidden = false;
+      dlProgressLabel.textContent = `Downloaded: ${d.name || d.id || "model"}`;
+      dlProgressFill.style.width = "100%";
+      dlProgressFill.style.opacity = "1";
+      dlProgressBar.setAttribute("aria-valuenow", "100");
+      dlProgressMeta.textContent = "Complete — hash verified";
+      return true;
+    }
+    if (!["downloading", "verifying", "starting", "failed"].includes(state)) {
+      dlProgress.hidden = true;
+      return false;
+    }
+    dlProgress.hidden = false;
+    const pct = d.percent == null ? null : Number(d.percent);
+    const label =
+      state === "verifying"
+        ? `Verifying ${d.name || d.id || "model"}…`
+        : state === "failed"
+          ? `Download failed: ${d.name || d.id || "model"}`
+          : `Downloading ${d.name || d.id || "model"}…`;
+    dlProgressLabel.textContent = label;
+    if (pct == null) {
+      dlProgressFill.style.width = "15%";
+      dlProgressFill.style.opacity = "0.6";
+      dlProgressBar.setAttribute("aria-valuenow", "0");
+      dlProgressMeta.textContent = d.note || "in progress…";
+    } else {
+      dlProgressFill.style.width = `${Math.max(2, Math.min(100, pct))}%`;
+      dlProgressFill.style.opacity = "1";
+      dlProgressBar.setAttribute("aria-valuenow", String(Math.round(pct)));
+      const bits = [`${pct}%`, `${fmtBytes(d.bytes_done)} / ${fmtBytes(d.bytes_total)}`];
+      if (d.note) bits.push(d.note);
+      dlProgressMeta.textContent = bits.join(" · ");
+    }
+    return true;
+  }
+
+  function stopDlPoll() {
+    if (dlPollTimer) {
+      clearInterval(dlPollTimer);
+      dlPollTimer = null;
+    }
+  }
+
+  function startDlPoll() {
+    stopDlPoll();
+    dlPollTimer = setInterval(async () => {
+      if (!modelsDialog?.open) {
+        stopDlPoll();
+        return;
+      }
+      try {
+        const st = await control("status");
+        renderStatus(st);
+        const active = renderDownload(st.download || {});
+        if (!active && (st.download?.state === "idle" || !st.download?.state)) {
+          /* keep polling briefly after start */
+        }
+        if (st.download?.state === "done") {
+          renderCatalog(st.catalog || []);
+        }
+      } catch (_) {}
+    }, 2000);
   }
 
   function renderStatus(j) {
@@ -144,6 +299,7 @@
       p.dest ? `Download dest: ${p.dest}` : "",
     ].filter(Boolean);
     modelsBody.textContent = lines.join("\n");
+    renderDownload(j.download || {});
   }
 
   function renderCatalog(models) {
@@ -203,10 +359,10 @@
           dlBtn.disabled = true;
           dlBtn.textContent = "Downloading…";
           try {
-            modelsBody.textContent = `Downloading ${m.id}… (may take a long time)`;
+            modelsBody.textContent = `Starting download: ${m.id}…`;
             const res = await control("model_download", { id: m.id });
-            modelsBody.textContent =
-              (res.stdout || "").slice(-1200) || JSON.stringify(res, null, 2);
+            renderDownload(res.download || { state: "starting", id: m.id, name: m.name });
+            startDlPoll();
             await openModels();
           } catch (e) {
             modelsBody.textContent = `Error: ${e.message}`;
@@ -241,11 +397,16 @@
     if (!(await ensurePaired())) return;
     modelsBody.textContent = "Loading…";
     catalogList.textContent = "";
+    refreshApiHints();
     modelsDialog.showModal();
     try {
       const st = await control("status");
       renderStatus(st);
       renderCatalog(st.catalog || []);
+      const d = st.download || {};
+      if (["downloading", "starting", "verifying", "failed"].includes(d.state)) {
+        startDlPoll();
+      }
     } catch (e) {
       modelsBody.textContent = `Could not load: ${e.message}`;
     }
@@ -272,8 +433,8 @@
         }),
       });
       if (r.status === 401) {
-        token = "";
-        localStorage.removeItem(TOKEN_KEY);
+        clearPairSession();
+        statusLine.textContent = "needs pair code (see stick screen)";
         assistantEl.lastChild.textContent = "Pair required — enter the code from the stick screen.";
         await ensurePaired(true);
         return;
@@ -335,9 +496,13 @@
       if (!r.ok) throw new Error(j.message || j.error || "Pair failed");
       token = j.token;
       localStorage.setItem(TOKEN_KEY, token);
+      refreshApiHints();
       pairDialog.close();
       statusLine.textContent = "paired";
-      addBubble("system", "Paired with StickLLM. Chat and Models menu are unlocked until reboot.");
+      addBubble(
+        "system",
+        "Paired. Chat + Models unlocked until reboot. API key (Bearer) is in Models → API key, or the footer."
+      );
     } catch (e) {
       pairErr.textContent = e.message;
       pairErr.hidden = false;
@@ -346,9 +511,23 @@
 
   modelsBtn?.addEventListener("click", () => openModels());
   pairBtn?.addEventListener("click", () => ensurePaired(true));
-  document.getElementById("modelsClose")?.addEventListener("click", () =>
-    modelsDialog.close()
-  );
+  apiKeyCopy?.addEventListener("click", async () => {
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(token);
+      apiKeyCopy.textContent = "Copied";
+      setTimeout(() => {
+        apiKeyCopy.textContent = "Copy API key";
+      }, 1500);
+    } catch (_) {
+      apiKeyCopy.textContent = "Select key above";
+    }
+  });
+  document.getElementById("modelsClose")?.addEventListener("click", () => {
+    stopDlPoll();
+    modelsDialog.close();
+  });
+  modelsDialog?.addEventListener("close", () => stopDlPoll());
 
   document.getElementById("actClaim")?.addEventListener("click", async () => {
     modelsBody.textContent = "Claiming USB free space…";
@@ -370,12 +549,13 @@
     }
   });
   document.getElementById("actDownload")?.addEventListener("click", async () => {
-    modelsBody.textContent = "Downloading recommended model…";
+    modelsBody.textContent = "Starting recommended download…";
     try {
       const st = await control("status");
       const id = st.probe?.recommend_id;
       const res = await control("model_download", id ? { id } : {});
-      modelsBody.textContent = (res.stdout || JSON.stringify(res, null, 2)).slice(-1500);
+      renderDownload(res.download || { state: "starting", id: id || "" });
+      startDlPoll();
       await openModels();
     } catch (e) {
       modelsBody.textContent = `Error: ${e.message}`;
@@ -390,4 +570,21 @@
   refreshStatus();
   setInterval(refreshStatus, 8000);
   ensurePaired(false);
+  // Local kiosk often has no mouse — keep chat box focused for keyboard-only use.
+  const focusChat = () => {
+    try {
+      if (pairDialog?.open) return;
+      if (modelsDialog?.open) return;
+      input?.focus({ preventScroll: true });
+    } catch (_) {
+      input?.focus();
+    }
+  };
+  focusChat();
+  setTimeout(focusChat, 300);
+  setTimeout(focusChat, 1200);
+  window.addEventListener("focus", focusChat);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) focusChat();
+  });
 })();
