@@ -32,6 +32,7 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 - `NetworkManager-wait-online` is masked; UI starts without network-online. On Local, NM may never be kicked the way Server/Term do.
 - Likely failure mode: outbound HTTPS/DNS to DuckDuckGo fails (no default route / DNS yet, or never brought up) → gateway returns `search error` / empty-looking answers while the checkbox stays checked.
 - Confirm on a Local session: `curl` to `html.duckduckgo.com` and `http://127.0.0.1/api/web/search?q=…` once chat is up; compare with Server/Term on the same host.
+- **Related / dependency:** many hosts are WiFi-only; today StickLLM is Ethernet DHCP only (no credentials UI). WiFi setup (SSID + password) is now a **P0** in [FEATURES.md](FEATURES.md) under Client and networking — needed for Local Web / outbound internet when no wired link exists.
 
 **Repro (expected)**
 1. Boot menu → **Local**.

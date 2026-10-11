@@ -63,6 +63,8 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P2 Image input (upload, paste, phone camera)
 
 ## Client and networking
+- [ ] P0 WiFi setup (SSID + password) — credentials UI for StickLLM, especially Local Web / outbound internet
+  - Today: Ethernet DHCP only; no WiFi credentials UI
 - [ ] P0 Client USB stick (boots straight to browser)
 - [ ] P0 Pairing via QR / on-screen code with pinned TLS cert
 - [ ] P1 Plain browser access without cert warnings (local CA via pairing, or in-page encryption)
