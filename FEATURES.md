@@ -40,6 +40,11 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P1 Vault on/off; wipe-after-N-failed-tries (configurable or off)
 - [ ] P1 Manual display/GPU override
 - [ ] P1 Settings page + reset to defaults
+- [ ] P1 Advanced settings panel (per-model inference params)
+  - Defaults from per-model presets in the signed catalog (template via --jinja, sampling, auto-sized context from free VRAM); see Models → Signed model catalog
+  - Exposes: temperature, top_p, top_k, context size, KV cache type, MoE expert offload, system prompt, thinking toggle
+  - Changes save per model in settings; reset-to-preset option
+  - UI shows active context size and warns near the limit
 - Rule: settings hold nothing revealing; anything sensitive lives in the vault
 
 ## Vault and security
