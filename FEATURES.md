@@ -69,7 +69,12 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
   - Today: Ethernet DHCP only; no WiFi credentials UI
 - [ ] P0 Client USB stick (boots straight to browser)
 - [ ] P0 Pairing via QR / on-screen code with pinned TLS cert
-- [ ] P1 Plain browser access without cert warnings (local CA via pairing, or in-page encryption)
+- [ ] P1 Trusted HTTPS with no browser warnings (Plex-style; StickLLM web clients only)
+  - Each server gets a subdomain (e.g. a1b2c3.stickllm.net) pointing at its LAN IP
+  - Let's Encrypt cert via DNS-01 through the rendezvous service
+  - QR code opens that https URL directly
+  - Fallback for routers that block private-IP DNS answers: in-page encryption using the key from the QR code
+  - Concrete design for warning-free browser access; pairs with P0 QR/TLS pairing and P2 WAN rendezvous
 - [ ] P2 WAN: rendezvous + hole punching, relay fallback
 - [ ] P2 Self-hostable rendezvous
 - [ ] P2 Tor onion service for remote access (no open ports)
