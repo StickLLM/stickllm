@@ -12,6 +12,240 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### Security / hardening
+
+### ISS-006 — llama binds 0.0.0.0:8080 as root, no auth
+| | |
+|---|---|
+| **ID** | ISS-006 |
+| **Date** | 2026-10-11 |
+| **Mode** | all |
+| **Severity** | CRITICAL |
+| **Status** | Open |
+| **Summary** | `stickllm-llama.service` binds `--host 0.0.0.0` on port **8080** with **no auth** and runs as **root**, so anything on the LAN can reach the model and bypass pairing. |
+
+**Notes**
+- Pairing only gates the gateway/UI path; direct access to llama on `:8080` skips it.
+- Service runs privileged while exposing an unauthenticated inference port on all interfaces.
+
+**Ask**
+- Bind to **127.0.0.1** only, and run the llama unit **unprivileged** (dedicated user).
+
+---
+
+### ISS-007 — Hardcoded stickllm password + SSH password login
+| | |
+|---|---|
+| **ID** | ISS-007 |
+| **Date** | 2026-10-11 |
+| **Mode** | all |
+| **Severity** | HIGH |
+| **Status** | Open |
+| **Summary** | Hardcoded `user:stickllm` with sudo, and SSH allows password login — anyone who knows the public password gets root. |
+
+**Notes**
+- Default credentials are fixed in the image; SSH password auth is enabled.
+- Combined with sudo access, LAN/SSH exposure is full root compromise.
+
+**Ask**
+- Use a **random per-boot password**, or **SSH keys only** (disable password login).
+
+---
+
+### ISS-008 — sudoers.d/stickllm NOPASSWD is overly broad
+| | |
+|---|---|
+| **ID** | ISS-008 |
+| **Date** | 2026-10-11 |
+| **Mode** | all |
+| **Severity** | HIGH |
+| **Status** | Open |
+| **Summary** | `sudoers.d/stickllm` **NOPASSWD** allows any arguments, and is pointless while `stickllm` is also in the **sudo** group. |
+
+**Notes**
+- Broad NOPASSWD + group membership = passwordless root for the stickllm account.
+- Does not meaningfully constrain what can be run via sudo.
+
+**Ask**
+- Tighten or remove the NOPASSWD drop-in; do not combine unrestricted NOPASSWD with sudo-group membership.
+
+---
+
+### ISS-009 — Gateway 0.0.0.0:80 pairing / token weaknesses
+| | |
+|---|---|
+| **ID** | ISS-009 |
+| **Date** | 2026-10-11 |
+| **Mode** | all (Term / Server especially) |
+| **Severity** | HIGH |
+| **Status** | Open |
+| **Summary** | Gateway binds **0.0.0.0:80**. Pairing uses a **6-digit code**, unsalted **SHA-256** compared with `!=`, **no attempt limit or expiry**, token stored in **plaintext** in `auth.json`, and **no CSP** header. |
+
+**Notes**
+- Small code space + no rate limit / expiry → brute-force friendly on the LAN.
+- Unsalted hash compare and plaintext token on disk weaken the pairing story.
+- Missing CSP leaves the web UI without a baseline content-security policy.
+
+**Ask**
+- Harden bind/auth: stronger pairing (or rate-limit + expiry), proper secret compare, stop plaintext token storage, add CSP; reconsider binding all interfaces if loopback/UI-only is enough.
+
+---
+
+### ISS-010 — Build cannot reproduce the working kiosk
+| | |
+|---|---|
+| **ID** | ISS-010 |
+| **Date** | 2026-10-11 |
+| **Mode** | Local |
+| **Severity** | HIGH |
+| **Status** | Open |
+| **Summary** | Build cannot reproduce the working kiosk: `docker-build-live.sh` writes its own **inline package list** and ignores `stickllm.list.chroot`; **cage**, **chromium**, **seatd**, and **libinput** are in **no** list; the kiosk script and unit are only installed by the **patch** scripts. |
+
+**Notes**
+- Declared package list (`live-build/package-lists/stickllm.list.chroot`) is not what the Docker build path actually installs.
+- Critical Local/kiosk packages missing from any maintained list.
+- Kiosk script + systemd unit live outside the normal overlay/hook install path (patch-ISO only).
+
+**Ask**
+- Make the live-build path the single source of truth: honor `stickllm.list.chroot` (or delete the inline list), package cage/chromium/seatd/libinput there, and install kiosk script/unit from overlay/hooks — not patch scripts.
+
+---
+
+### ISS-011 — stickllm-download-model only warns on missing sha256
+| | |
+|---|---|
+| **ID** | ISS-011 |
+| **Date** | 2026-10-11 |
+| **Mode** | all |
+| **Severity** | MEDIUM |
+| **Status** | Open |
+| **Summary** | `stickllm-download-model` only **warns** on a missing sha256; missing or mismatched hash should be fatal, and verified on the `.partial` file before `mv`. |
+
+**Notes**
+- Integrity check is optional in practice today.
+- Moving an unverified download into place risks a bad/corrupt model becoming the active file.
+
+**Ask**
+- Make missing or mismatched sha256 **fatal**; verify hash on the `.partial` before `mv` into the final path.
+
+---
+
+### ISS-012 — stickllm-kiosk usermod + world-writable /run/stickllm
+| | |
+|---|---|
+| **ID** | ISS-012 |
+| **Date** | 2026-10-11 |
+| **Mode** | Local |
+| **Severity** | MEDIUM |
+| **Status** | Open |
+| **Summary** | `stickllm-kiosk` runs **usermod** at runtime and does `chmod 777 /run/stickllm` plus **666** on logs; pair files live there. |
+
+**Notes**
+- Runtime usermod is fragile and privilege-heavy for a kiosk boot path.
+- World-writable runtime dir + loose log perms expose pair/session material under `/run/stickllm`.
+
+**Ask**
+- Use a dedicated **kiosk user created at build time**; tighten `/run/stickllm` and log permissions (no 777/666).
+
+---
+
+### ISS-013 — Chromium launched with --no-sandbox
+| | |
+|---|---|
+| **ID** | ISS-013 |
+| **Date** | 2026-10-11 |
+| **Mode** | Local |
+| **Severity** | MEDIUM |
+| **Status** | Open |
+| **Summary** | Chromium is launched with `--no-sandbox`. |
+
+**Notes**
+- Disables Chromium’s process sandbox on the Local kiosk browser.
+- Raises impact of any renderer/compromise bug against the stick.
+
+**Ask**
+- Remove `--no-sandbox` (fix user/namespaces/permissions so the sandbox can work).
+
+---
+
+### ISS-014 — Hardcoded DRM/NVIDIA/threads/model/runtime/serial paths
+| | |
+|---|---|
+| **ID** | ISS-014 |
+| **Date** | 2026-10-11 |
+| **Mode** | all |
+| **Severity** | LOW |
+| **Status** | Open |
+| **Summary** | Hardcoded `/dev/dri/card0` (ASPEED BMC can be card0), `/dev/nvidia0-3`, `--threads 8`, a default **7B** path, `XDG_RUNTIME_DIR=/run/user/0`, and writes to `/dev/ttyS0`. |
+
+**Notes**
+- Wrong DRM card breaks display on BMC/IPMI hosts where card0 is ASPEED.
+- Fixed NVIDIA device indices and thread count don’t match all SKUs.
+- Root runtime dir and ttyS0 assumptions couple the product to one console layout.
+
+**Ask**
+- Detect DRM/GPU devices; make threads/model defaults profile-driven; avoid hardcoding `/run/user/0` and `/dev/ttyS0` where possible.
+
+---
+
+### ISS-015 — Build hook || true, chmod gaps, services, MOTD, hosts
+| | |
+|---|---|
+| **ID** | ISS-015 |
+| **Date** | 2026-10-11 |
+| **Mode** | all |
+| **Severity** | LOW |
+| **Status** | Open |
+| **Summary** | Build hook ends every command in `|| true`; chmod list incomplete; **control** and **usb** services not enabled; MOTD says **v0.1**; `/etc/hosts` appended without checking for an existing line. |
+
+**Notes**
+- `|| true` hides real setup failures in the chroot hook.
+- Incomplete chmod leave permissions wrong on some installed paths.
+- Missing enable for control/usb units; stale MOTD version; duplicate hosts lines possible on rebuild.
+
+**Ask**
+- Fail the hook on real errors; complete chmod coverage; enable control/usb; bump MOTD; idempotent `/etc/hosts` update.
+
+---
+
+### ISS-016 — Conflicting nvidia-drm modprobe confs
+| | |
+|---|---|
+| **ID** | ISS-016 |
+| **Date** | 2026-10-11 |
+| **Mode** | all (GPU hosts) |
+| **Severity** | LOW |
+| **Status** | Open |
+| **Summary** | Two conflicting **nvidia-drm** modprobe confs. Keep the one the **v0.2** ISO used. |
+
+**Notes**
+- Duplicate/conflicting `nvidia-drm` options can fight at boot.
+- Shipping v0.2 behavior is the known-good reference (do not disturb golden artifacts).
+
+**Ask**
+- Keep a single modprobe conf matching the v0.2 ISO; remove the other.
+
+---
+
+### ISS-017 — Delete patch-iso scripts and weston/cog/pixman fallbacks
+| | |
+|---|---|
+| **ID** | ISS-017 |
+| **Date** | 2026-10-11 |
+| **Mode** | Local |
+| **Severity** | CLEANUP |
+| **Status** | Open |
+| **Summary** | Delete the **patch-iso** scripts and the **weston**, **cog**, and **pixman** fallback code once **ISS-010** (build/kiosk reproducibility) is fixed. |
+
+**Notes**
+- Patch scripts and compositor fallbacks exist because the normal build path cannot reproduce the working kiosk (see ISS-010).
+- After ISS-010, this dead path is maintenance debt and confusion.
+
+**Ask**
+- After ISS-010 lands: remove patch-iso scripts and weston/cog/pixman fallback code.
+
+---
+
 ### ISS-005 — Server console download progress/ETA stuck
 | | |
 |---|---|
