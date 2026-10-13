@@ -1,0 +1,16 @@
+#!/bin/bash
+# Random per-boot SSH password for user stickllm (shown on Term console).
+set -euo pipefail
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+mkdir -p "$RUN"
+PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)"
+if [[ ${#PASS} -lt 12 ]]; then
+  PASS="$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)"
+fi
+echo "stickllm:${PASS}" | chpasswd
+umask 077
+printf '%s\n' "$PASS" >"$RUN/ssh-password.txt"
+chmod 600 "$RUN/ssh-password.txt"
+# Drop any stale world-readable copies.
+rm -f /etc/stickllm/ssh-password.txt 2>/dev/null || true
+echo "stickllm-ssh-bootstrap: password written to $RUN/ssh-password.txt" >&2

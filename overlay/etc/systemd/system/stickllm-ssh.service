@@ -2,13 +2,14 @@
 Description=StickLLM OpenSSH (terminal + SSH boot menu)
 Documentation=file:///etc/motd
 ConditionKernelCommandLine=stickllm.ssh
-After=network-online.target stickllm-console-setup.service
-Wants=network-online.target stickllm-console-setup.service
+After=network.target stickllm-console-setup.service
+Wants=network.target stickllm-console-setup.service
 
 [Service]
 Type=simple
-ExecStartPre=/bin/mkdir -p /run/sshd
+ExecStartPre=/bin/mkdir -p /run/sshd /run/stickllm
 ExecStartPre=/usr/bin/ssh-keygen -A
+ExecStartPre=/usr/local/bin/stickllm-ssh-bootstrap
 ExecStart=/usr/sbin/sshd -D -e
 Restart=on-failure
 RestartSec=2

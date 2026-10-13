@@ -16,14 +16,12 @@
   const pairForm = document.getElementById("pairForm");
   const pairCode = document.getElementById("pairCode");
   const pairErr = document.getElementById("pairErr");
+  const netStatus = document.getElementById("netStatus");
+  const wifiSsid = document.getElementById("wifiSsid");
+  const wifiPass = document.getElementById("wifiPass");
+  const wifiConnect = document.getElementById("wifiConnect");
 
   const API_BASE = window.STICKLLM_API || "";
-  const apiKeyHint = document.getElementById("apiKeyHint");
-  const apiPanel = document.getElementById("apiPanel");
-  const apiKeyShow = document.getElementById("apiKeyShow");
-  const apiCurlHint = document.getElementById("apiCurlHint");
-  const apiKeyCopy = document.getElementById("apiKeyCopy");
-
   const TOKEN_KEY = "stickllm_pair_token";
   let token = localStorage.getItem(TOKEN_KEY) || "";
   let dlProgress = document.getElementById("dlProgress");
@@ -34,30 +32,21 @@
   let lastDownload = {};
   let dlPollTimer = null;
 
-  function chatCompletionsUrl() {
-    return `${location.origin}/v1/chat/completions`;
+  function authHeaders(extra = {}) {
+    const h = {
+      "X-StickLLM-Client": "ui",
+      ...extra,
+    };
+    if (token) h.Authorization = `Bearer ${token}`;
+    return h;
   }
 
-  function refreshApiHints() {
-    const url = chatCompletionsUrl();
-    if (apiHint) apiHint.textContent = url;
-    if (apiKeyHint) {
-      apiKeyHint.textContent = token
-        ? `${token.slice(0, 8)}…${token.slice(-4)}`
-        : "pair first";
-      apiKeyHint.title = token
-        ? "Full key in Models → API key (pair session)"
-        : "Pair this browser to get an API key";
-    }
-    if (apiPanel) apiPanel.hidden = !token;
-    if (apiKeyShow) apiKeyShow.textContent = token || "(pair first)";
-    if (apiCurlHint) {
-      apiCurlHint.textContent = token
-        ? `curl -sS ${url} -H "Authorization: Bearer <API_KEY>" -H "Content-Type: application/json" -d '{"model":"stickllm","messages":[{"role":"user","content":"hi"}],"max_tokens":64}'`
-        : "Pair first, then copy the key for curl / OpenAI clients.";
+  function refreshSessionHints() {
+    if (apiHint) {
+      apiHint.textContent = token ? "session active" : "pair if prompted";
     }
   }
-  refreshApiHints();
+  refreshSessionHints();
 
   const messages = [
     {
@@ -66,12 +55,6 @@
         "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
     },
   ];
-
-  function authHeaders(extra = {}) {
-    const h = { ...extra };
-    if (token) h.Authorization = `Bearer ${token}`;
-    return h;
-  }
 
   function addBubble(role, text) {
     const el = document.createElement("div");
@@ -94,7 +77,7 @@
   function clearPairSession() {
     token = "";
     localStorage.removeItem(TOKEN_KEY);
-    refreshApiHints();
+    refreshSessionHints();
   }
 
   async function sessionStillValid() {
@@ -112,10 +95,7 @@
 
   async function ensurePaired(force = false) {
     const st = await pairStatus();
-    // Local on-stick browser (loopback) reports require_pair=false / local=true.
     if (!st.require_pair || st.local) return true;
-    // Never trust localStorage alone: remint/re-pair can leave a stale Bearer
-    // while /health still reports paired:true for a newer session.
     if (!force && token) {
       if (await sessionStillValid()) return true;
     }
@@ -128,24 +108,26 @@
 
   async function refreshStatus() {
     try {
-      const r = await fetch(`/health`, { cache: "no-store" });
-      if (!r.ok) throw new Error(`health ${r.status}`);
+      const r = await fetch(`/api/health`, { cache: "no-store" });
+      if (!r.ok && r.status !== 503) throw new Error(`health ${r.status}`);
       const j = await r.json();
       let sessionOk = false;
       if (token && j.pair?.require_pair) {
         sessionOk = await sessionStillValid();
-      } else if (token && !j.pair?.require_pair) {
+      } else if (!j.pair?.require_pair) {
         sessionOk = true;
       }
-      statusLine.textContent = sessionOk
-        ? j.web
-          ? "paired · web on"
-          : "paired · LAN only"
-        : j.pair?.require_pair
-          ? "needs pair code (see stick screen)"
-          : j.web
-            ? "model ready · web on"
-            : "model ready";
+      const online = j.online || j.web;
+      const modelBit = j.llama_ok ? "model ready" : "model loading";
+      if (sessionOk) {
+        statusLine.textContent = online
+          ? `${modelBit} · online`
+          : `${modelBit} · no uplink`;
+      } else if (j.pair?.require_pair) {
+        statusLine.textContent = "needs pair code (see stick screen)";
+      } else {
+        statusLine.textContent = modelBit;
+      }
       try {
         const m = await fetch("/stickllm.json", { cache: "no-store" });
         if (m.ok) {
@@ -154,11 +136,8 @@
           if (meta.version) modeBadge.title = `v${meta.version}`;
         }
       } catch (_) {}
-      if (j.pair?.require_pair && !token && !pairDialog.open) {
-        /* wait for user action / Pair button */
-      }
     } catch (e) {
-      statusLine.textContent = "waiting for model…";
+      statusLine.textContent = "waiting for gateway…";
     }
   }
 
@@ -179,27 +158,6 @@
     return j;
   }
 
-  function ensureDlProgressDom() {
-    if (dlProgress && dlProgressFill) return;
-    const panel = modelsDialog?.querySelector(".modelsPanel");
-    if (!panel || !modelsBody) return;
-    const box = document.createElement("div");
-    box.id = "dlProgress";
-    box.className = "dlProgress";
-    box.hidden = true;
-    box.innerHTML =
-      '<div class="dlProgressLabel" id="dlProgressLabel">Downloading…</div>' +
-      '<div class="dlProgressTrack" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="dlProgressBar">' +
-      '<div class="dlProgressFill" id="dlProgressFill"></div></div>' +
-      '<div class="dlProgressMeta" id="dlProgressMeta"></div>';
-    modelsBody.insertAdjacentElement("afterend", box);
-    dlProgress = box;
-    dlProgressLabel = document.getElementById("dlProgressLabel");
-    dlProgressFill = document.getElementById("dlProgressFill");
-    dlProgressBar = document.getElementById("dlProgressBar");
-    dlProgressMeta = document.getElementById("dlProgressMeta");
-  }
-
   function fmtBytes(n) {
     if (!n || n < 0) return "—";
     const gb = n / 1024 ** 3;
@@ -209,7 +167,6 @@
   }
 
   function renderDownload(d) {
-    ensureDlProgressDom();
     lastDownload = d || {};
     if (!dlProgress) return false;
     const state = d?.state || "idle";
@@ -221,7 +178,6 @@
       dlProgress.hidden = false;
       dlProgressLabel.textContent = `Downloaded: ${d.name || d.id || "model"}`;
       dlProgressFill.style.width = "100%";
-      dlProgressFill.style.opacity = "1";
       dlProgressBar.setAttribute("aria-valuenow", "100");
       dlProgressMeta.textContent = "Complete — hash verified";
       return true;
@@ -241,14 +197,13 @@
     dlProgressLabel.textContent = label;
     if (pct == null) {
       dlProgressFill.style.width = "15%";
-      dlProgressFill.style.opacity = "0.6";
       dlProgressBar.setAttribute("aria-valuenow", "0");
       dlProgressMeta.textContent = d.note || "in progress…";
     } else {
       dlProgressFill.style.width = `${Math.max(2, Math.min(100, pct))}%`;
-      dlProgressFill.style.opacity = "1";
       dlProgressBar.setAttribute("aria-valuenow", String(Math.round(pct)));
       const bits = [`${pct}%`, `${fmtBytes(d.bytes_done)} / ${fmtBytes(d.bytes_total)}`];
+      if (d.eta_secs != null) bits.push(`ETA ~${Math.ceil(d.eta_secs / 60)}m`);
       if (d.note) bits.push(d.note);
       dlProgressMeta.textContent = bits.join(" · ");
     }
@@ -272,10 +227,7 @@
       try {
         const st = await control("status");
         renderStatus(st);
-        const active = renderDownload(st.download || {});
-        if (!active && (st.download?.state === "idle" || !st.download?.state)) {
-          /* keep polling briefly after start */
-        }
+        renderDownload(st.download || {});
         if (st.download?.state === "done") {
           renderCatalog(st.catalog || []);
         }
@@ -286,19 +238,32 @@
   function renderStatus(j) {
     const s = j.storage || {};
     const p = j.probe || {};
-    const active = j.active_model || "(default baked)";
+    const loaded = j.loaded || {};
+    const loadLine = loaded.running
+      ? `Running: ${loaded.name || loaded.id || loaded.path} (health ok)`
+      : loaded.path
+        ? `Loading: ${loaded.name || loaded.id || loaded.path} — ${loaded.health || "waiting /health"}`
+        : "Loaded: (none)";
     const lines = [
       s.mounted
         ? `USB DATA: mounted (${s.free_gb ?? "?"} GiB free)`
         : `USB DATA: ${s.note || "not claimed"}`,
-      `VRAM: ${j.vram_gb ?? p.vram_gb ?? "?"} GB`,
+      j.backend === "cpu"
+        ? `Backend: CPU · RAM ~${j.ram_gb ?? "?"} GB`
+        : `Backend: CUDA · VRAM ~${j.vram_gb ?? p.vram_gb ?? "?"} GB`,
       p.recommend_name
         ? `Optimum: ${p.recommend_name} (~${p.recommend_size_gb} GB)`
         : "Optimum: unknown",
-      `Running: ${active}`,
+      loadLine,
       p.dest ? `Download dest: ${p.dest}` : "",
     ].filter(Boolean);
     modelsBody.textContent = lines.join("\n");
+    if (netStatus) {
+      const ssid = j.wifi?.ssid || "";
+      netStatus.textContent = j.online
+        ? `Online: yes${ssid ? ` · WiFi ${ssid}` : ""}`
+        : `Online: no uplink${ssid ? ` · WiFi profile ${ssid}` : " · connect Ethernet or WiFi"}`;
+    }
     renderDownload(j.download || {});
   }
 
@@ -313,15 +278,16 @@
       row.className = "catalogRow";
       const meta = document.createElement("div");
       const flags = [
-        m.active ? "ACTIVE" : null,
+        m.running ? "RUNNING" : m.active ? "LOADING" : null,
         m.installed ? "downloaded" : "not downloaded",
-        m.fits_vram ? null : `needs ${m.min_vram_gb}GB VRAM`,
+        m.fits ? null : m.fit_note || `needs ${m.min_vram_gb}GB`,
+        m.backend === "cpu" ? "CPU" : null,
         m.vision ? "vision" : null,
         m.pinned ? null : "not pinned",
       ]
         .filter(Boolean)
         .join(" · ");
-      meta.innerHTML = `<strong>${m.name}</strong><br/><span class="muted">${m.id} · ~${m.approx_size_gb} GB · min ${m.min_vram_gb} GB VRAM · ${flags}</span>`;
+      meta.innerHTML = `<strong>${m.name}</strong><br/><span class="muted">${m.id} · ~${m.approx_size_gb} GB · ${flags}</span>`;
 
       const actions = document.createElement("div");
       actions.className = "catalogActions";
@@ -330,16 +296,18 @@
         const runBtn = document.createElement("button");
         runBtn.type = "button";
         runBtn.className = "actionBtn";
-        runBtn.textContent = m.active ? "Running" : "Use this";
-        runBtn.disabled = !!m.active;
+        runBtn.textContent = m.running ? "Running" : m.active ? "Loading…" : "Use this";
+        runBtn.disabled = !!m.running;
         runBtn.addEventListener("click", async () => {
           runBtn.disabled = true;
-          runBtn.textContent = "Switching…";
+          runBtn.textContent = "Loading…";
           try {
-            modelsBody.textContent = `Activating ${m.id}…`;
+            modelsBody.textContent = `Loading model ${m.name || m.id}…`;
             const res = await control("model_activate", { id: m.id });
             if (!res.ok && res.error) throw new Error(res.error);
-            modelsBody.textContent = `Now running: ${res.active_model || m.id}`;
+            modelsBody.textContent = res.running
+              ? `Now running: ${res.name || res.active_model || m.id}`
+              : `Loading: ${res.name || m.id} — waiting for /health`;
             await openModels();
           } catch (e) {
             modelsBody.textContent = `Error: ${e.message}`;
@@ -378,13 +346,34 @@
         na.textContent = "Unavailable";
         na.disabled = true;
         actions.appendChild(na);
-      } else if (m.installed && !m.fits_vram) {
+      } else if (m.installed && !m.fits) {
         const na = document.createElement("button");
         na.type = "button";
         na.className = "actionBtn";
-        na.textContent = "Won't fit VRAM";
+        na.textContent = m.backend === "cpu" ? "Won't fit RAM" : "Won't fit VRAM";
         na.disabled = true;
         actions.appendChild(na);
+      }
+
+      if (m.deletable) {
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "actionBtn";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", async () => {
+          if (!confirm(`Delete downloaded files for ${m.name || m.id}?`)) return;
+          delBtn.disabled = true;
+          try {
+            const res = await control("model_delete", { id: m.id });
+            if (!res.ok && res.error) throw new Error(res.error);
+            modelsBody.textContent = `Deleted ${m.id}`;
+            await openModels();
+          } catch (e) {
+            modelsBody.textContent = `Error: ${e.message}`;
+            delBtn.disabled = false;
+          }
+        });
+        actions.appendChild(delBtn);
       }
 
       row.appendChild(meta);
@@ -397,7 +386,7 @@
     if (!(await ensurePaired())) return;
     modelsBody.textContent = "Loading…";
     catalogList.textContent = "";
-    refreshApiHints();
+    refreshSessionHints();
     modelsDialog.showModal();
     try {
       const st = await control("status");
@@ -421,7 +410,7 @@
     const web = webToggle?.checked ? "on" : "off";
 
     try {
-      const r = await fetch(`${API_BASE}/v1/chat/completions`, {
+      const r = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
@@ -435,13 +424,20 @@
       if (r.status === 401) {
         clearPairSession();
         statusLine.textContent = "needs pair code (see stick screen)";
-        assistantEl.lastChild.textContent = "Pair required — enter the code from the stick screen.";
+        assistantEl.lastChild.textContent =
+          "Pair required — enter the code from the stick screen.";
         await ensurePaired(true);
         return;
       }
       if (!r.ok) {
-        const t = await r.text();
-        throw new Error(t || `HTTP ${r.status}`);
+        let msg = `HTTP ${r.status}`;
+        try {
+          const err = await r.json();
+          msg = err.message || err.error || msg;
+        } catch (_) {
+          msg = (await r.text()) || msg;
+        }
+        throw new Error(msg);
       }
       const data = await r.json();
       let reply =
@@ -489,20 +485,20 @@
     try {
       const r = await fetch("/api/pair", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-StickLLM-Client": "ui",
+        },
         body: JSON.stringify({ code }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.message || j.error || "Pair failed");
       token = j.token;
       localStorage.setItem(TOKEN_KEY, token);
-      refreshApiHints();
+      refreshSessionHints();
       pairDialog.close();
       statusLine.textContent = "paired";
-      addBubble(
-        "system",
-        "Paired. Chat + Models unlocked until reboot. API key (Bearer) is in Models → API key, or the footer."
-      );
+      addBubble("system", "Paired. Chat + Models unlocked until reboot.");
     } catch (e) {
       pairErr.textContent = e.message;
       pairErr.hidden = false;
@@ -511,23 +507,33 @@
 
   modelsBtn?.addEventListener("click", () => openModels());
   pairBtn?.addEventListener("click", () => ensurePaired(true));
-  apiKeyCopy?.addEventListener("click", async () => {
-    if (!token) return;
-    try {
-      await navigator.clipboard.writeText(token);
-      apiKeyCopy.textContent = "Copied";
-      setTimeout(() => {
-        apiKeyCopy.textContent = "Copy API key";
-      }, 1500);
-    } catch (_) {
-      apiKeyCopy.textContent = "Select key above";
-    }
-  });
   document.getElementById("modelsClose")?.addEventListener("click", () => {
     stopDlPoll();
     modelsDialog.close();
   });
   modelsDialog?.addEventListener("close", () => stopDlPoll());
+
+  wifiConnect?.addEventListener("click", async () => {
+    const ssid = (wifiSsid?.value || "").trim();
+    const password = wifiPass?.value || "";
+    if (!ssid) {
+      if (netStatus) netStatus.textContent = "Enter a WiFi SSID.";
+      return;
+    }
+    if (netStatus) netStatus.textContent = `Connecting to ${ssid}…`;
+    try {
+      const res = await control("wifi_connect", { ssid, password });
+      if (!res.ok && res.error) throw new Error(res.error);
+      if (netStatus) {
+        netStatus.textContent = res.online
+          ? `Online via WiFi ${ssid}`
+          : `WiFi profile saved for ${ssid} — waiting for uplink`;
+      }
+      await openModels();
+    } catch (e) {
+      if (netStatus) netStatus.textContent = `WiFi error: ${e.message}`;
+    }
+  });
 
   document.getElementById("actClaim")?.addEventListener("click", async () => {
     modelsBody.textContent = "Claiming USB free space…";
@@ -565,12 +571,11 @@
 
   addBubble(
     "system",
-    "StickLLM v0.2 — pair with the code on the computer screen, then use Models for USB/downloads (no SSH)."
+    "StickLLM v0.3 — pair with the code on the computer screen, then use Models for USB/WiFi/downloads."
   );
   refreshStatus();
   setInterval(refreshStatus, 8000);
   ensurePaired(false);
-  // Local kiosk often has no mouse — keep chat box focused for keyboard-only use.
   const focusChat = () => {
     try {
       if (pairDialog?.open) return;

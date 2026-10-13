@@ -1,2 +1,3 @@
-# Live user may run StickLLM explicit-write tools without a password prompt spam.
-user ALL=(root) NOPASSWD: /usr/local/bin/stickllm-persist, /usr/local/bin/stickllm-download-model, /usr/local/bin/stickllm-usb-claim, /usr/local/bin/stickllm-vault, /usr/local/bin/stickllm-model-probe, /usr/local/bin/stickllm-status
+# Narrow NOPASSWD: only StickLLM helpers (no shell wildcards / ALL).
+# User is NOT in the sudo group — do not broaden this.
+stickllm ALL=(root) NOPASSWD: /usr/local/bin/stickllm-persist, /usr/local/bin/stickllm-download-model, /usr/local/bin/stickllm-usb-claim, /usr/local/bin/stickllm-vault, /usr/local/bin/stickllm-model-probe, /usr/local/bin/stickllm-status, /usr/local/bin/stickllm-wifi-apply

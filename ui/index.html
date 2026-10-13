@@ -12,7 +12,7 @@
     <div class="meta">
       <button type="button" id="modelsBtn" class="linkBtn" title="Models & storage">Models</button>
       <button type="button" id="pairBtn" class="linkBtn" title="Pair with stick">Pair</button>
-      <label class="webToggle" title="Look up live web results when needed">
+      <label class="webToggle" title="Look up live web results when needed (needs internet)">
         <input type="checkbox" id="webToggle" checked />
         Web
       </label>
@@ -44,24 +44,37 @@
     <div class="modelsPanel">
       <h2>Models &amp; storage</h2>
       <p id="modelsBody" class="modelsBody">Loading…</p>
+      <div id="dlProgress" class="dlProgress" hidden>
+        <div id="dlProgressLabel" class="dlProgressLabel">Download</div>
+        <div id="dlProgressBar" class="dlProgressBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="dlProgressFill" class="dlProgressFill"></div>
+        </div>
+        <div id="dlProgressMeta" class="dlProgressMeta"></div>
+      </div>
       <div class="modelsActions">
         <button type="button" id="actClaim" class="actionBtn">Claim USB free space</button>
         <button type="button" id="actProbe" class="actionBtn">Probe VRAM / recommend</button>
         <button type="button" id="actDownload" class="actionBtn">Download recommended</button>
         <button type="button" id="actRefresh" class="actionBtn">Refresh status</button>
       </div>
-      <div id="apiPanel" class="apiPanel" hidden>
-        <h3>API key (pair session)</h3>
+      <div id="netPanel" class="apiPanel">
+        <h3>Network / WiFi</h3>
         <p class="modelsHint">
-          OpenAI-compatible chat. Use the pair token as a Bearer API key until reboot.
+          Ethernet uses DHCP automatically. For WiFi-only hosts, enter SSID + password
+          (saved on STICKLLM-DATA when claimed). Web lookup needs an uplink.
         </p>
-        <code id="apiKeyShow" class="apiKeyShow">(pair first)</code>
-        <p class="modelsHint"><span id="apiCurlHint"></span></p>
-        <button type="button" id="apiKeyCopy" class="actionBtn">Copy API key</button>
+        <p id="netStatus" class="modelsHint">Online: …</p>
+        <label class="pairLabel">SSID
+          <input id="wifiSsid" autocomplete="off" placeholder="Network name" />
+        </label>
+        <label class="pairLabel">Password
+          <input id="wifiPass" type="password" autocomplete="off" placeholder="WiFi password" />
+        </label>
+        <button type="button" id="wifiConnect" class="actionBtn">Connect WiFi</button>
       </div>
       <p class="modelsHint">
         SSD encrypted cache is not enabled yet (opt-in later). Downloads go to USB DATA when claimed.
-        Pairing required — no SSH/sudo.
+        Pairing required on LAN — StickLLM UI only (no third-party API).
       </p>
       <div id="catalogList" class="catalogList"></div>
       <menu>
@@ -78,11 +91,9 @@
   </form>
 
   <footer class="foot">
-    Paired LAN client · API <code id="apiHint">/v1/chat/completions</code>
-    · key <code id="apiKeyHint">pair first</code>
-    · reboot clears pair + session
+    StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

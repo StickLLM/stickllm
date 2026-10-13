@@ -12,31 +12,55 @@ from pathlib import Path
 
 RUN = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 AUTH = RUN / "auth.json"
+CODE_TTL = 900
 
 
 def main() -> int:
     RUN.mkdir(parents=True, exist_ok=True)
+    code_path = RUN / "pair-code.txt"
+    force = "--force" in sys.argv or os.environ.get("STICKLLM_PAIR_FORCE") == "1"
+
+    if not force and AUTH.is_file():
+        try:
+            doc = json.loads(AUTH.read_text(encoding="utf-8"))
+            if doc.get("paired") and doc.get("token_hash"):
+                print("PAIRED", flush=True)
+                return 0
+        except Exception:
+            pass
+
+    if not force and AUTH.is_file() and code_path.is_file():
+        try:
+            doc = json.loads(AUTH.read_text(encoding="utf-8"))
+            code = code_path.read_text(encoding="utf-8").strip()
+            created = int(doc.get("created") or 0)
+            fresh = created <= 0 or (time.time() - created) < CODE_TTL
+            if code and not doc.get("paired") and fresh:
+                print(code)
+                return 0
+        except Exception:
+            pass
+
     code = f"{secrets.randbelow(1_000_000):06d}"
-    token = secrets.token_urlsafe(32)
-    # Store hash of code; plaintext code only printed to stdout for bootstatus
     code_hash = hashlib.sha256(code.encode()).hexdigest()
+    # Hashes only on disk — session token is minted at successful pair (ISS-009).
     doc = {
-        "version": 1,
+        "version": 2,
         "created": int(time.time()),
         "code_hash": code_hash,
-        "token_hash": hashlib.sha256(token.encode()).hexdigest(),
-        # token kept for gateway to issue after successful pair (rotated on pair)
-        "pending_token": token,
+        "token_hash": "",
         "paired": False,
         "require_pair": True,
     }
     AUTH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     os.chmod(AUTH, 0o600)
-    # Machine-readable for bootstatus
-    # World-readable on the stick only — code is meant to be seen on the console.
-    # auth.json stays 0600 (hashes / token material).
-    (RUN / "pair-code.txt").write_text(code + "\n", encoding="utf-8")
-    os.chmod(RUN / "pair-code.txt", 0o644)
+    code_path.write_text(code + "\n", encoding="utf-8")
+    os.chmod(code_path, 0o644)
+    for stale in ("api-key.txt", "pair-rate.json"):
+        try:
+            (RUN / stale).unlink(missing_ok=True)
+        except Exception:
+            pass
     print(code)
     return 0
 
