@@ -12,6 +12,31 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-018 — CPU fallback broken (ASUS laptop, no NVIDIA)
+| | |
+|---|---|
+| **ID** | ISS-018 |
+| **Date** | 2026-10-12 |
+| **Mode** | all (Local / Term / Server — llama unit) |
+| **Severity** | CRITICAL |
+| **Status** | Open |
+| **Summary** | On CPU-only hardware (e.g. ASUS laptop, no NVIDIA), UI shows Qwen2.5-3B **"Running"** but chat gets **Connection refused** on `127.0.0.1:8080` — `llama-server` is not up. |
+
+**Notes**
+- Blocks no-GPU / CPU-only hosts; product falsely reports the model as running.
+- Related feature work: [FEATURES.md](FEATURES.md) P1 AMD / Intel Arc / **CPU-only fallback**.
+- Related issue: [ISS-014](#iss-014--hardcoded-drmnvidiathreadsmodelruntimeserial-paths) (hardcoded `/dev/nvidia0-3`).
+
+**Ask**
+1. Check `journalctl -u stickllm-llama -b`. Likely CUDA build fails with no nvidia device, or unit Requires/BindsTo `/dev/nvidia*`.
+2. Ship a CPU (and later Vulkan) llama-server build; pick when no NVIDIA GPU found; run with `-ngl 0` and threads = physical cores.
+3. Remove hard `/dev/nvidia0-3` requirements from the unit.
+4. Only show "Running" after `/health` returns ok; otherwise show the real error.
+5. "Fits" check: no GPU → compare model size against free system RAM, not VRAM.
+6. Gateway should return a readable error instead of a Python traceback in chat.
+
+---
+
 ### Security / hardening
 
 ### ISS-006 — llama binds 0.0.0.0:8080 as root, no auth
