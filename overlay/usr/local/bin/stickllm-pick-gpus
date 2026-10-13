@@ -1,19 +1,42 @@
 #!/bin/bash
 # Pick a single large NVIDIA GPU for llama.cpp CUDA (multi-GPU is opt-in).
-set -euo pipefail
+# Always exit 0: QEMU Local blacklists nvidia; nvidia-smi exit 9 must never
+# block stickllm-llama. No set -e / pipefail around GPU probes.
+set -u
 
 mkdir -p /run/stickllm
 OUT=/run/stickllm/cuda.env
 
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-  echo "# no nvidia-smi" >"$OUT"
+write_env() {
+  # $1 = CUDA_VISIBLE_DEVICES value (may be empty); $2 = STICKLLM_BACKEND
+  {
+    printf 'CUDA_VISIBLE_DEVICES=%s\n' "$1"
+    printf 'STICKLLM_BACKEND=%s\n' "$2"
+  } >"$OUT" 2>/dev/null || true
+  chmod 644 "$OUT" 2>/dev/null || true
+}
+
+fallback_cpu() {
+  local reason="$1"
+  write_env "" cpu
+  echo "stickllm-pick-gpus: ${reason}; STICKLLM_BACKEND=cpu CUDA_VISIBLE_DEVICES=" >&2
   exit 0
+}
+
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  fallback_cpu "nvidia-smi missing"
+fi
+
+# Do not use set -e/pipefail here — nvidia-smi returns 9 with no usable GPU.
+if ! nvidia-smi -L >/dev/null 2>&1; then
+  fallback_cpu "nvidia-smi failed (no GPU / blacklisted)"
 fi
 
 mapfile -t LARGE < <(
   nvidia-smi --query-gpu=index,memory.total --format=csv,noheader,nounits 2>/dev/null \
-    | awk -F',' '{gsub(/ /,"",$1); gsub(/ /,"",$2); if ($2+0 >= 16000) print $1}'
-)
+    | awk -F',' '{gsub(/ /,"",$1); gsub(/ /,"",$2); if ($2+0 >= 16000) print $1}' \
+    || true
+) || true
 
 ids=""
 if [[ "${STICKLLM_MULTI_GPU:-0}" == "1" && ${#LARGE[@]} -gt 1 ]]; then
@@ -22,14 +45,13 @@ elif [[ ${#LARGE[@]} -ge 1 ]]; then
   # Default: first big GPU only (stable on ROMED8 2×3090 + odd third card)
   ids="${LARGE[0]}"
 else
-  ids="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | head -1)"
+  ids="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | head -1 || true)"
 fi
 
-if [[ -n "${ids}" ]]; then
-  printf 'CUDA_VISIBLE_DEVICES=%s\n' "$ids" >"$OUT"
-else
-  echo "# no GPUs listed" >"$OUT"
+if [[ -z "${ids}" ]]; then
+  fallback_cpu "no GPUs listed"
 fi
 
-chmod 644 "$OUT"
-cat "$OUT"
+write_env "$ids" cuda
+echo "stickllm-pick-gpus: STICKLLM_BACKEND=cuda CUDA_VISIBLE_DEVICES=${ids}" >&2
+exit 0

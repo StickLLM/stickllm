@@ -17,19 +17,23 @@ EnvironmentFile=-/run/stickllm/model.env
 Environment=LD_LIBRARY_PATH=/opt/stickllm/lib
 Environment=STICKLLM_LLAMA_HOST=127.0.0.1
 Environment=STICKLLM_LLAMA_PORT=8080
-# Prep needs root (modprobe); + ignores User=. No-ops cleanly without NVIDIA.
-ExecStartPre=+/usr/local/bin/stickllm-nvidia-prep
-ExecStartPre=+/usr/local/bin/stickllm-pick-gpus
+# Ensure run dir writable before pick-gpus (runs as User=stickllm-llama).
+ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true'
+# Prep needs root (modprobe); + ignores User=. Soft-fail — never block CPU.
+ExecStartPre=+/bin/bash -c '/usr/local/bin/stickllm-nvidia-prep || true'
+# Leading - : failure never blocks start (also always exits 0 by contract).
+ExecStartPre=-/usr/local/bin/stickllm-pick-gpus
 ExecStart=/usr/local/bin/stickllm-llama-start
 Restart=on-failure
 RestartSec=5
-# Optional NVIDIA device access when present; unit must still start without them.
-DeviceAllow=char-nvidia-frontend rw
-DeviceAllow=char-nvidia-uvm rw
-ReadWritePaths=/tmp /run /var/tmp /mnt/stickllm-data /opt/stickllm
+# Do not DeviceAllow-pin NVIDIA nodes — missing devices + sandbox can break CPU start.
+# -/path = ignore if missing (avoids 226/NAMESPACE when DATA not mounted).
+ReadWritePaths=/tmp /run /var/tmp -/mnt/stickllm-data /opt/stickllm -/var/lib/stickllm
 ProtectSystem=full
 ProtectHome=true
 NoNewPrivileges=true
+# Keep llama on Local handoff: bootstatus exits after ui=1; unit must stay enabled.
+RemainAfterExit=no
 
 [Install]
 WantedBy=multi-user.target
