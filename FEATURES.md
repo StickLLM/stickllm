@@ -39,7 +39,8 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P1 Tor: off / web only / everything
 - [ ] P1 Vault on/off; wipe-after-N-failed-tries (configurable or off)
 - [ ] P1 Manual display/GPU override
-- [ ] P1 Settings page + reset to defaults
+- [x] P1 Settings menu (split from Models) — Network/WiFi, claim USB; stubs for context size / SSD vault / setup AP (v0.3.1)
+- [ ] P1 Settings page + reset to defaults (persist all prefs)
 - [ ] P1 Advanced settings panel (per-model inference params)
   - Defaults from per-model presets in the signed catalog (template via --jinja, sampling, auto-sized context from free VRAM); see Models → Signed model catalog
   - Exposes: temperature, top_p, top_k, context size, KV cache type, MoE expert offload, system prompt, thinking toggle
@@ -70,8 +71,11 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P2 Image input (upload, paste, phone camera)
 
 ## Client and networking
-- [x] P0 WiFi setup (SSID + password) — Models → Network UI; NM profile on STICKLLM-DATA (v0.3; Local WiFi HW OK)
-  - Ethernet DHCP still default; WiFi credentials via Chat UI
+- [x] P0 WiFi setup (SSID + password) — Settings → Network (when LAN already up); NM profile on STICKLLM-DATA (v0.3; Local WiFi HW OK)
+  - Ethernet DHCP still default; web WiFi form works on Local / Server / Term browsers after uplink exists
+- [x] P0 Console WiFi bootstrap (no browser) — `stickllm-wifi-setup` on Term/tty2 (scan + password); same `stickllm-wifi-apply` profile (v0.3.1)
+  - Server with no Ethernet: Ctrl+Alt+F2 → `user` / `stickllm` → `stickllm-wifi-setup`; or Local-first WiFi then reboot Server; or one-time Ethernet
+  - Setup AP for first-time config: deferred (stub in Settings only)
 - [ ] P0 Client USB stick (boots straight to browser)
 - [ ] P0 Pairing via QR / on-screen code with pinned TLS cert
 - [ ] P1 Trusted HTTPS with no browser warnings (Plex-style; StickLLM web clients only)

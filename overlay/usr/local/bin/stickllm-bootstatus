@@ -422,7 +422,7 @@ draw_connect_steps() {
     say "    Phone/LAN:  not required for Local mode"
     return
   fi
-  say "  How to connect (same Wi‑Fi / LAN):"
+  say "  How to connect (same LAN; WiFi: Settings or stickllm-wifi-setup):"
   if [[ -n "${ip:-}" ]]; then
     say "    LAN IP:     ${ip}"
     say "    Browser:    ${SCHEME}://${ip}/"
@@ -659,7 +659,7 @@ draw_ready() {
     say "  Browser:  ${SCHEME}://${ip}/"
     say "  URL:      ${SCHEME}://${ip}/"
   else
-    say "  LAN IP:   (waiting — check cable / DHCP / WiFi in Chat UI)"
+    say "  LAN IP:   (waiting — Ethernet DHCP, or WiFi bootstrap below)"
     say "  Browser:  ${SCHEME}://<lan-ip>/"
     say "  URL:      ${SCHEME}://<lan-ip>/"
   fi
@@ -667,10 +667,17 @@ draw_ready() {
   say ""
   draw_pair_box "$ui_ok"
   say ""
-  say "  How to connect:"
-  say "    1. Open Browser/URL above on same Wi‑Fi/LAN"
-  say "    2. Enter PAIR CODE (or already paired)"
-  say "    3. Chat + Models in the StickLLM web UI"
+  if [[ -z "${ip:-}" ]]; then
+    say "  No network yet (browser Settings cannot reach the stick):"
+    say "    Ctrl+Alt+F2 → login user / stickllm → stickllm-wifi-setup"
+    say "    Or: Local once to save WiFi on DATA, then reboot Server"
+    say "    Or: plug Ethernet once, then Settings → Network in the UI"
+  else
+    say "  How to connect:"
+    say "    1. Open Browser/URL above on same Wi‑Fi/LAN"
+    say "    2. Enter PAIR CODE (or already paired)"
+    say "    3. Chat · Models · Settings (WiFi) in the StickLLM web UI"
+  fi
   if [[ "$mode" == "ssh" ]]; then
     SSH_PASS="$(cat "$RUN/ssh-password.txt" 2>/dev/null | tr -d '[:space:]' || true)"
     if [[ -n "${SSH_PASS:-}" ]]; then

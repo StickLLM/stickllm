@@ -1,3 +1,6 @@
 # Narrow NOPASSWD: only StickLLM helpers (no shell wildcards / ALL).
-# User is NOT in the sudo group — do not broaden this.
-stickllm ALL=(root) NOPASSWD: /usr/local/bin/stickllm-persist, /usr/local/bin/stickllm-download-model, /usr/local/bin/stickllm-usb-claim, /usr/local/bin/stickllm-vault, /usr/local/bin/stickllm-model-probe, /usr/local/bin/stickllm-status, /usr/local/bin/stickllm-wifi-apply
+# Users are NOT in the sudo group — do not broaden this.
+# `user` (tty2 console) and `stickllm` (SSH/Term) both need WiFi bootstrap without a LAN browser.
+Cmnd_Alias STICKLLM_HELPERS = /usr/local/bin/stickllm-persist, /usr/local/bin/stickllm-download-model, /usr/local/bin/stickllm-usb-claim, /usr/local/bin/stickllm-vault, /usr/local/bin/stickllm-model-probe, /usr/local/bin/stickllm-status, /usr/local/bin/stickllm-wifi-apply, /usr/local/bin/stickllm-wifi-setup
+stickllm ALL=(root) NOPASSWD: STICKLLM_HELPERS
+user ALL=(root) NOPASSWD: /usr/local/bin/stickllm-wifi-apply, /usr/local/bin/stickllm-wifi-setup

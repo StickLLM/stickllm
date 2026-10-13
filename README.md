@@ -10,7 +10,7 @@ to the USB or internal disks unless you explicitly approve a write.
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
 | Shipping golden | **v0.2.0** (Drive / Samsung — immutable) |
-| Current line | **v0.3.0** (harden + CPU fallback + Local WiFi/UI) |
+| Current line | **v0.3.0** (harden + CPU fallback + Local WiFi/UI); polish toward **v0.3.1** |
 | Checkpoint | **v0.2.1-local-nvidia-kbd** (Local browser + keyboard on NVIDIA) |
 | Profile | **AMD desktop CPU · 32 GB RAM · NVIDIA RTX 3090 (24 GB)** |
 | Release | [v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) · [v0.3.0](https://github.com/StickLLM/stickllm/releases/tag/v0.3.0) |
@@ -135,8 +135,17 @@ Set the PC firmware to **boot the USB first** (see [docs/BOOT.md](docs/BOOT.md))
 |---|---|
 | **1 StickLLM Server** | Console READY + pair code; phone/LAN browser chat over **HTTP**. |
 | **2 StickLLM Local** | Same-box **cage + Chromium** on the NVIDIA HDMI path (checkpoint). Keyboard via DRM + libinput. Loopback UI; no pair on this box. |
-| **3 StickLLM Term** | Console login or `ssh user@<ip>` (password `stickllm`) — `nvidia-smi`, etc. |
+| **3 StickLLM Term** | Console (tty2) or SSH — diagnose, `stickllm-wifi-setup`, `nvidia-smi`. SSH password is **random per boot** (shown on console). |
 | **4 StickLLM Failsafe** | No NVIDIA — recover from GPU/black-screen hangs (Term/SSH only). |
+
+### WiFi (Server / Term / Local)
+
+| Situation | What to do |
+|---|---|
+| Stick already has LAN (Ethernet or saved WiFi) | Browser → **Settings → Network** (after Pair on Server/Term; Local needs no pair) |
+| Server/Term with **no** uplink (no Ethernet) | `Ctrl+Alt+F2` → login `user` / `stickllm` → run **`stickllm-wifi-setup`** (scan + password). Same NM profile as the web form. |
+| Alternate bootstrap | Boot **Local** once, connect WiFi (saves on DATA when claimed), reboot into Server; or plug Ethernet once, then Settings → Network |
+| Not yet | Temporary setup AP — Settings stub only |
 
 | Endpoint | Purpose |
 |---|---|
@@ -145,9 +154,9 @@ Set the PC firmware to **boot the USB first** (see [docs/BOOT.md](docs/BOOT.md))
 | `http://<lan-ip>/v1/chat/completions` | OpenAI-compatible API (gateway; pair Bearer required). **Present on current flash; deprecated — going away next version** (ISS-004: StickLLM UI only; no external clients). |
 | `http://<lan-ip>:8080/v1/*` | Raw llama.cpp (no pair auth; no web lookup). Not a supported product surface for apps. |
 
-After pairing, **Models → API key** shows the session token until reboot (naming/UX: ISS-003; third-party API story ends next version per ISS-004).
+**Models** = catalog / download / activate / delete. **Settings** = Network/WiFi, claim USB, future stubs (context, SSD vault). Local hides the Pair button.
 
-Helpers on PATH: `stickllm-status`, `stickllm-persist`, `stickllm-download-model`, `stickllm-local-chat`.
+Helpers on PATH: `stickllm-status`, `stickllm-persist`, `stickllm-download-model`, `stickllm-local-chat`, `stickllm-wifi-setup`, `stickllm-wifi-apply`.
 
 ### Local (NVIDIA) notes — checkpoint
 
@@ -160,8 +169,8 @@ Working on RTX 3090 HDMI with tag `v0.2.1-local-nvidia-kbd`:
 ## Working today (checkpoint)
 
 - Boot menu: Local / Server / Term (+ Failsafe)
-- Pair code → browser chat + Models menu; session token shown as API key (third-party OpenAI LAN API deprecated — removed next version, ISS-004)
-- Term/Server LAN READY + pair + URL
+- Pair code → browser chat (Local: no pair chrome); Models + Settings menus
+- Term/Server LAN READY + pair + URL; console `stickllm-wifi-setup` when no uplink
 - Local cage + Chromium + keyboard on NVIDIA DRM
 - USB DATA claim; catalog downloads (27B → DATA when pinned/space allows)
 - Ephemeral by default

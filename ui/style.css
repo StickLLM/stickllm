@@ -211,7 +211,31 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--bg);
   color: var(--ink);
 }
+.fieldLabel { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9rem; margin: 0.75rem 0; }
+.fieldLabel input {
+  font: inherit;
+  font-size: 1rem;
+  letter-spacing: normal;
+  text-align: left;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+}
 .pairErr { color: var(--danger); font-size: 0.85rem; }
+.futurePanel { opacity: 0.85; }
+.futureTag {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  padding: 0.1rem 0.35rem;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+}
+.linkBtn[hidden] { display: none !important; }
 
 .apiPanel {
   margin: 0.75rem 0;

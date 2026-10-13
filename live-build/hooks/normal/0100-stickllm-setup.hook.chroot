@@ -16,6 +16,7 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-llama-start \
           /usr/local/bin/stickllm-ssh-bootstrap \
           /usr/local/bin/stickllm-wifi-apply \
+          /usr/local/bin/stickllm-wifi-setup \
           /usr/local/bin/stickllm-nvidia-prep \
           /usr/local/bin/stickllm-pick-gpus || true
 
@@ -109,8 +110,9 @@ fi
 
 cat >/etc/motd <<'EOF'
 
-  StickLLM v0.3 — local Privacy AI (amd-rtx3090)
+  StickLLM v0.3.1 — local Privacy AI (amd-rtx3090)
   Ephemeral by default. Run: stickllm-status
+  No LAN?  stickllm-wifi-setup   (scan SSID + password; same profile as Settings → Network)
   SSH password (Term menu) is random per boot — see console /run/stickllm/ssh-password.txt
 
 EOF

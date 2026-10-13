@@ -10,7 +10,8 @@
   <header class="top">
     <div class="brand">StickLLM</div>
     <div class="meta">
-      <button type="button" id="modelsBtn" class="linkBtn" title="Models & storage">Models</button>
+      <button type="button" id="modelsBtn" class="linkBtn" title="Models">Models</button>
+      <button type="button" id="settingsBtn" class="linkBtn" title="Settings">Settings</button>
       <button type="button" id="pairBtn" class="linkBtn" title="Pair with stick">Pair</button>
       <label class="webToggle" title="Look up live web results when needed (needs internet)">
         <input type="checkbox" id="webToggle" checked />
@@ -42,7 +43,7 @@
 
   <dialog id="modelsDialog" class="modelsDialog modelsWide">
     <div class="modelsPanel">
-      <h2>Models &amp; storage</h2>
+      <h2>Models</h2>
       <p id="modelsBody" class="modelsBody">Loading…</p>
       <div id="dlProgress" class="dlProgress" hidden>
         <div id="dlProgressLabel" class="dlProgressLabel">Download</div>
@@ -52,29 +53,12 @@
         <div id="dlProgressMeta" class="dlProgressMeta"></div>
       </div>
       <div class="modelsActions">
-        <button type="button" id="actClaim" class="actionBtn">Claim USB free space</button>
         <button type="button" id="actProbe" class="actionBtn">Probe VRAM / recommend</button>
         <button type="button" id="actDownload" class="actionBtn">Download recommended</button>
-        <button type="button" id="actRefresh" class="actionBtn">Refresh status</button>
-      </div>
-      <div id="netPanel" class="apiPanel">
-        <h3>Network / WiFi</h3>
-        <p class="modelsHint">
-          Ethernet uses DHCP automatically. For WiFi-only hosts, enter SSID + password
-          (saved on STICKLLM-DATA when claimed). Web lookup needs an uplink.
-        </p>
-        <p id="netStatus" class="modelsHint">Online: …</p>
-        <label class="pairLabel">SSID
-          <input id="wifiSsid" autocomplete="off" placeholder="Network name" />
-        </label>
-        <label class="pairLabel">Password
-          <input id="wifiPass" type="password" autocomplete="off" placeholder="WiFi password" />
-        </label>
-        <button type="button" id="wifiConnect" class="actionBtn">Connect WiFi</button>
+        <button type="button" id="actRefresh" class="actionBtn">Refresh</button>
       </div>
       <p class="modelsHint">
-        SSD encrypted cache is not enabled yet (opt-in later). Downloads go to USB DATA when claimed.
-        Pairing required on LAN — StickLLM UI only (no third-party API).
+        Download, delete, and activate models here. Storage and network live under Settings.
       </p>
       <div id="catalogList" class="catalogList"></div>
       <menu>
@@ -83,10 +67,57 @@
     </div>
   </dialog>
 
+  <dialog id="settingsDialog" class="modelsDialog modelsWide">
+    <div class="modelsPanel">
+      <h2>Settings</h2>
+      <p id="settingsBody" class="modelsBody">Loading…</p>
+
+      <div id="netPanel" class="apiPanel">
+        <h3>Network / WiFi</h3>
+        <p class="modelsHint">
+          Use this when the stick already has LAN (Ethernet or a saved WiFi profile).
+          If there is <strong>no</strong> network yet, use Term console:
+          <code>stickllm-wifi-setup</code>
+          (or boot Local once to join WiFi, then reboot Server).
+        </p>
+        <p id="netStatus" class="modelsHint">Online: …</p>
+        <label class="fieldLabel">SSID
+          <input id="wifiSsid" autocomplete="off" placeholder="Network name" />
+        </label>
+        <label class="fieldLabel">Password
+          <input id="wifiPass" type="password" autocomplete="off" placeholder="WiFi password" />
+        </label>
+        <button type="button" id="wifiConnect" class="actionBtn">Connect WiFi</button>
+      </div>
+
+      <div class="apiPanel">
+        <h3>Storage</h3>
+        <p class="modelsHint">Claim free space on the StickLLM USB for model downloads.</p>
+        <div class="modelsActions">
+          <button type="button" id="actClaim" class="actionBtn">Claim USB free space</button>
+          <button type="button" id="actSettingsRefresh" class="actionBtn">Refresh</button>
+        </div>
+      </div>
+
+      <div class="apiPanel futurePanel">
+        <h3>Coming later</h3>
+        <p class="modelsHint">
+          Context size / inference defaults — future Settings.<br/>
+          SSD encrypted vault partition — future opt-in (faster model load).<br/>
+          Setup WiFi access point — future bootstrap if no Ethernet (not built yet).
+        </p>
+      </div>
+
+      <menu>
+        <button type="button" id="settingsClose">Close</button>
+      </menu>
+    </div>
+  </dialog>
+
   <main id="log" class="log" aria-live="polite"></main>
 
   <form id="composer" class="composer">
-    <textarea id="input" rows="2" placeholder="Ask anything (pair first if prompted)" autocomplete="off" autofocus tabindex="0"></textarea>
+    <textarea id="input" rows="2" placeholder="Ask anything" autocomplete="off" autofocus tabindex="0"></textarea>
     <button type="submit" id="send">Send</button>
   </form>
 
@@ -94,6 +125,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>

@@ -8,9 +8,12 @@
   const apiHint = document.getElementById("apiHint");
   const webToggle = document.getElementById("webToggle");
   const modelsBtn = document.getElementById("modelsBtn");
+  const settingsBtn = document.getElementById("settingsBtn");
   const pairBtn = document.getElementById("pairBtn");
   const modelsDialog = document.getElementById("modelsDialog");
+  const settingsDialog = document.getElementById("settingsDialog");
   const modelsBody = document.getElementById("modelsBody");
+  const settingsBody = document.getElementById("settingsBody");
   const catalogList = document.getElementById("catalogList");
   const pairDialog = document.getElementById("pairDialog");
   const pairForm = document.getElementById("pairForm");
@@ -24,6 +27,7 @@
   const API_BASE = window.STICKLLM_API || "";
   const TOKEN_KEY = "stickllm_pair_token";
   let token = localStorage.getItem(TOKEN_KEY) || "";
+  let isLocalMode = false;
   let dlProgress = document.getElementById("dlProgress");
   let dlProgressLabel = document.getElementById("dlProgressLabel");
   let dlProgressFill = document.getElementById("dlProgressFill");
@@ -41,8 +45,20 @@
     return h;
   }
 
+  function applyLocalChrome(local) {
+    isLocalMode = !!local;
+    if (pairBtn) pairBtn.hidden = isLocalMode;
+    if (input && isLocalMode) {
+      input.placeholder = "Ask anything";
+    }
+    refreshSessionHints();
+  }
+
   function refreshSessionHints() {
-    if (apiHint) {
+    if (!apiHint) return;
+    if (isLocalMode) {
+      apiHint.textContent = "local — no pair";
+    } else {
       apiHint.textContent = token ? "session active" : "pair if prompted";
     }
   }
@@ -95,6 +111,7 @@
 
   async function ensurePaired(force = false) {
     const st = await pairStatus();
+    if (st.local) applyLocalChrome(true);
     if (!st.require_pair || st.local) return true;
     if (!force && token) {
       if (await sessionStillValid()) return true;
@@ -134,8 +151,12 @@
           const meta = await m.json();
           if (meta.mode) modeBadge.textContent = meta.mode;
           if (meta.version) modeBadge.title = `v${meta.version}`;
+          if (String(meta.mode || "").toLowerCase() === "local") {
+            applyLocalChrome(true);
+          }
         }
       } catch (_) {}
+      if (j.pair?.local) applyLocalChrome(true);
     } catch (e) {
       statusLine.textContent = "waiting for gateway…";
     }
@@ -226,7 +247,7 @@
       }
       try {
         const st = await control("status");
-        renderStatus(st);
+        renderModelsStatus(st);
         renderDownload(st.download || {});
         if (st.download?.state === "done") {
           renderCatalog(st.catalog || []);
@@ -235,8 +256,7 @@
     }, 2000);
   }
 
-  function renderStatus(j) {
-    const s = j.storage || {};
+  function renderModelsStatus(j) {
     const p = j.probe || {};
     const loaded = j.loaded || {};
     const loadLine = loaded.running
@@ -245,9 +265,6 @@
         ? `Loading: ${loaded.name || loaded.id || loaded.path} — ${loaded.health || "waiting /health"}`
         : "Loaded: (none)";
     const lines = [
-      s.mounted
-        ? `USB DATA: mounted (${s.free_gb ?? "?"} GiB free)`
-        : `USB DATA: ${s.note || "not claimed"}`,
       j.backend === "cpu"
         ? `Backend: CPU · RAM ~${j.ram_gb ?? "?"} GB`
         : `Backend: CUDA · VRAM ~${j.vram_gb ?? p.vram_gb ?? "?"} GB`,
@@ -258,13 +275,24 @@
       p.dest ? `Download dest: ${p.dest}` : "",
     ].filter(Boolean);
     modelsBody.textContent = lines.join("\n");
+    renderDownload(j.download || {});
+  }
+
+  function renderSettingsStatus(j) {
+    const s = j.storage || {};
+    const lines = [
+      s.mounted
+        ? `USB DATA: mounted (${s.free_gb ?? "?"} GiB free)`
+        : `USB DATA: ${s.note || "not claimed"}`,
+      j.online ? "Uplink: online" : "Uplink: none (Ethernet or console WiFi first)",
+    ];
+    if (settingsBody) settingsBody.textContent = lines.join("\n");
     if (netStatus) {
       const ssid = j.wifi?.ssid || "";
       netStatus.textContent = j.online
         ? `Online: yes${ssid ? ` · WiFi ${ssid}` : ""}`
-        : `Online: no uplink${ssid ? ` · WiFi profile ${ssid}` : " · connect Ethernet or WiFi"}`;
+        : `Online: no uplink${ssid ? ` · WiFi profile ${ssid}` : " · connect Ethernet or console WiFi"}`;
     }
-    renderDownload(j.download || {});
   }
 
   function renderCatalog(models) {
@@ -390,7 +418,7 @@
     modelsDialog.showModal();
     try {
       const st = await control("status");
-      renderStatus(st);
+      renderModelsStatus(st);
       renderCatalog(st.catalog || []);
       const d = st.download || {};
       if (["downloading", "starting", "verifying", "failed"].includes(d.state)) {
@@ -398,6 +426,19 @@
       }
     } catch (e) {
       modelsBody.textContent = `Could not load: ${e.message}`;
+    }
+  }
+
+  async function openSettings() {
+    if (!(await ensurePaired())) return;
+    if (settingsBody) settingsBody.textContent = "Loading…";
+    refreshSessionHints();
+    settingsDialog.showModal();
+    try {
+      const st = await control("status");
+      renderSettingsStatus(st);
+    } catch (e) {
+      if (settingsBody) settingsBody.textContent = `Could not load: ${e.message}`;
     }
   }
 
@@ -498,7 +539,7 @@
       refreshSessionHints();
       pairDialog.close();
       statusLine.textContent = "paired";
-      addBubble("system", "Paired. Chat + Models unlocked until reboot.");
+      addBubble("system", "Paired. Chat, Models, and Settings unlocked until reboot.");
     } catch (e) {
       pairErr.textContent = e.message;
       pairErr.hidden = false;
@@ -506,10 +547,14 @@
   });
 
   modelsBtn?.addEventListener("click", () => openModels());
+  settingsBtn?.addEventListener("click", () => openSettings());
   pairBtn?.addEventListener("click", () => ensurePaired(true));
   document.getElementById("modelsClose")?.addEventListener("click", () => {
     stopDlPoll();
     modelsDialog.close();
+  });
+  document.getElementById("settingsClose")?.addEventListener("click", () => {
+    settingsDialog.close();
   });
   modelsDialog?.addEventListener("close", () => stopDlPoll());
 
@@ -529,20 +574,22 @@
           ? `Online via WiFi ${ssid}`
           : `WiFi profile saved for ${ssid} — waiting for uplink`;
       }
-      await openModels();
+      await openSettings();
     } catch (e) {
       if (netStatus) netStatus.textContent = `WiFi error: ${e.message}`;
     }
   });
 
   document.getElementById("actClaim")?.addEventListener("click", async () => {
-    modelsBody.textContent = "Claiming USB free space…";
+    if (settingsBody) settingsBody.textContent = "Claiming USB free space…";
     try {
       const res = await control("usb_claim");
-      modelsBody.textContent = (res.stdout || JSON.stringify(res, null, 2)).slice(-1500);
-      await openModels();
+      if (settingsBody) {
+        settingsBody.textContent = (res.stdout || JSON.stringify(res, null, 2)).slice(-1500);
+      }
+      await openSettings();
     } catch (e) {
-      modelsBody.textContent = `Error: ${e.message}`;
+      if (settingsBody) settingsBody.textContent = `Error: ${e.message}`;
     }
   });
   document.getElementById("actProbe")?.addEventListener("click", async () => {
@@ -571,15 +618,23 @@
 
   addBubble(
     "system",
-    "StickLLM v0.3 — pair with the code on the computer screen, then use Models for USB/WiFi/downloads."
+    isLocalMode
+      ? "StickLLM v0.3.1 — Models for downloads; Settings for WiFi / USB (Local needs no pair)."
+      : "StickLLM v0.3.1 — pair with the code on the stick screen. Models = catalog; Settings = WiFi / USB. No LAN yet? Use console stickllm-wifi-setup."
   );
   refreshStatus();
   setInterval(refreshStatus, 8000);
-  ensurePaired(false);
+  ensurePaired(false).then(async () => {
+    try {
+      const st = await pairStatus();
+      if (st.local) applyLocalChrome(true);
+    } catch (_) {}
+  });
   const focusChat = () => {
     try {
       if (pairDialog?.open) return;
       if (modelsDialog?.open) return;
+      if (settingsDialog?.open) return;
       input?.focus({ preventScroll: true });
     } catch (_) {
       input?.focus();

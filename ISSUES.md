@@ -104,6 +104,10 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 | **Status** | Closed (v0.3) |
 | **Resolution** | bootstatus poll/repaint ~10s. |
 
+### ISS-017 — Server/Term WiFi needs LAN browser (chicken-and-egg)
+| **Status** | Closed (v0.3.1) |
+| **Resolution** | Console `stickllm-wifi-setup` (tty2 / Term) writes same NM profile as Settings → Network; READY/motd document Local-first / Ethernet alternatives. Web Settings remains for when uplink already exists. Setup AP deferred. |
+
 ### ISS-001 — Web lookup broken on Local
 | **Status** | Closed (v0.3) |
 | **Resolution** | Local `ensure_network`; WiFi UI → NM profile on DATA; status `online` bit; Web needs uplink. |
