@@ -112,7 +112,9 @@ if ($BootMode -eq "chat" -or $BootMode -eq "local") {
 $append = ($append -replace '\s+', ' ').Trim()
 
 function Start-Qemu([string]$accel, [string]$cpu) {
-  $netdev = "user,id=n0,hostfwd=tcp:127.0.0.1:${HostFwdPort}-:80"
+  # :80 = UI/gateway; :8080 = llama /health (gate). HostFwdPort+1 maps guest 8080.
+  $apiFwd = $HostFwdPort + 1
+  $netdev = "user,id=n0,hostfwd=tcp:127.0.0.1:${HostFwdPort}-:80,hostfwd=tcp:127.0.0.1:${apiFwd}-:8080"
   # Always virtio-vga + QMP for screendump (Local needs DRM; Term/Server need on-screen READY).
   $gpu = if ($isLocal) { "-device virtio-vga -display none" } else { "-device virtio-vga -display none" }
   # Chat/Local need headroom for CPU llama (3B Q4 + 4k ctx); Term can stay leaner.
@@ -137,11 +139,8 @@ $accelList = if ($env:STICKLLM_QEMU_ACCEL -eq "tcg") {
 } else {
   @("whpx,kernel-irqchip=off", "tcg")
 }
-$cpuList = if ($isLocal) {
-  @("host", "max", "EPYC")
-} else {
-  @("host", "max", "EPYC", "qemu64")
-}
+# Never qemu64 for Local/Chat (AVX llama). Same for Term proofs that hit llama.
+$cpuList = @("host", "max", "EPYC")
 :bootforeach foreach ($accel in $accelList) {
   foreach ($cpu in $cpuList) {
     # TCG cannot usefully do -cpu host; skip to max/EPYC.
@@ -168,6 +167,7 @@ $sawLanUrl = $false; $sawPairUsable = $false; $sawPairMint = $false
 $sawLocalMode = $false; $sawLocalHandoff = $false; $sawLocalChat = $false
 $sawKioskBrowser = $false; $sawKioskUiReady = $false; $sawNoDri = $false
 $curlOk = $false; $curlBody = ""; $nmHang = $false; $nmFirstSeen = $null
+$script:llamaHealth = $false; $script:sawUiApi = $false
 $screen = @{ Ok = $false; Detail = "not_attempted"; Path = $null }
 
 while ((Get-Date) -lt $deadline) {
@@ -199,8 +199,9 @@ while ((Get-Date) -lt $deadline) {
     }
   }
 
+  # Gate: UI :80 + llama :8080/health (hostfwd HostFwdPort / HostFwdPort+1).
   if (-not $curlOk) {
-    $rootOk = $false; $healthOk = $false
+    $rootOk = $false; $gwOk = $false; $llamaOk = $false
     try {
       $respRoot = Invoke-WebRequest -Uri "http://127.0.0.1:$HostFwdPort/" -UseBasicParsing -TimeoutSec 2
       if ($respRoot.StatusCode -eq 200) { $rootOk = $true }
@@ -208,30 +209,26 @@ while ((Get-Date) -lt $deadline) {
     try {
       $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$HostFwdPort/api/health" -UseBasicParsing -TimeoutSec 2
       if ($resp.StatusCode -eq 200 -and $resp.Content -match '"gateway"\s*:\s*"ok"') {
-        $healthOk = $true
+        $gwOk = $true
         $curlBody = $resp.Content.Substring(0, [Math]::Min(200, $resp.Content.Length))
       }
     } catch { }
-    if ($rootOk -and $healthOk) {
+    try {
+      $respL = Invoke-WebRequest -Uri "http://127.0.0.1:$($HostFwdPort+1)/health" -UseBasicParsing -TimeoutSec 2
+      if ($respL.StatusCode -eq 200) { $llamaOk = $true; $script:llamaHealth = $true }
+    } catch { }
+    if ($rootOk -and $gwOk -and $llamaOk) {
       $curlOk = $true
-      Write-Host "HOST_CURL_OK / + /api/health"
+      Write-Host "HOST_CURL_OK / + /api/health + :8080/health"
     }
   }
 
   if ($text -match "STICKLLM_HEALTH[^\r\n]*ui=1[^\r\n]*api=1") { $script:sawUiApi = $true }
-  if ($BootMode -eq "chat") {
-    # Chat status proof: pair + LAN + ui=1 + host curl. Prefer api=1, but do not
-    # block forever — QEMU CPU llama can be slow; HW uses NVIDIA. Screendump must
-    # show pair/IP/model/how-to-connect (agent Read + -ScreenshotProofPass).
-    if ($sawModel -and $sawLanUrl -and $curlOk -and $sawPairUsable -and $sawHealthUi) {
-      Start-Sleep 12
-      $screen = Invoke-QmpScreendump -Port $QmpPort -PngPath $ScreenPng -PpmPath $ScreenPpm
-      Write-Host "SCREENDUMP $($screen.Detail)"
-      break
-    }
-  } elseif ($isLocal) {
-    if ($sawModel -and $curlOk -and ($sawLocalHandoff -or $sawLocalChat) -and ($sawKioskBrowser -or $sawNoDri -or $sawKioskUiReady)) {
-      Start-Sleep 15
+  # Chat/Local gate: ISO booted + UI:80 + llama:8080 + ready for screendump.
+  # Do not paper over VM-only failures (SIGILL/no DRI/no NVIDIA) — report and stop.
+  if ($BootMode -eq "chat" -or $isLocal) {
+    if ($curlOk -and $sawHealthUi) {
+      Start-Sleep 8
       $screen = Invoke-QmpScreendump -Port $QmpPort -PngPath $ScreenPng -PpmPath $ScreenPpm
       Write-Host "SCREENDUMP $($screen.Detail)"
       break
@@ -266,19 +263,15 @@ if ($nmHang) {
 }
 
 $failReasons = @()
-if (-not $curlOk) { $failReasons += "host_curl_failed" }
+if (-not $curlOk) { $failReasons += "host_curl_failed_need_ui80_and_llama8080" }
 if (-not $screen.Ok) { $failReasons += "screendump_failed" }
-if ($BootMode -eq "chat") {
-  if (-not $sawModel) { $failReasons += "no_model_loading_phase" }
-  if (-not $sawLanUrl) { $failReasons += "no_lan_ip_or_url" }
-  if (-not $sawPairUsable) { $failReasons += "no_usable_pair_code" }
+if ($text -match "signal=ILL|status=4/ILL|Illegal instruction") {
+  $failReasons += "VM_SPECIFIC_SIGILL_cpu_flags"
+}
+if ($sawNoDri) { $failReasons += "VM_SPECIFIC_no_dev_dri" }
+if ($BootMode -eq "chat" -or $isLocal) {
   if (-not $sawHealthUi) { $failReasons += "no_ui1_health" }
-  if (-not $script:sawUiApi) { Write-Host "NOTE: api=1 not seen yet (CPU llama still loading); Chat status screendump still required" }
-} elseif ($isLocal) {
-  if (-not $sawModel) { $failReasons += "no_model_loading_phase" }
-  if (-not ($sawLocalHandoff -or $sawLocalChat)) { $failReasons += "no_local_handoff_or_chat" }
-  if ($sawNoDri) { $failReasons += "no_dev_dri_card" }
-  if (-not $sawKioskBrowser) { $failReasons += "no_STICKLLM_KIOSK_BROWSER" }
+  if (-not $script:llamaHealth -and -not $script:sawUiApi) { $failReasons += "llama_8080_health_not_200" }
 } else {
   if (-not $sawNetwork) { $failReasons += "no_network_loading_phase" }
   if (-not $sawModel) { $failReasons += "no_model_loading_phase" }
@@ -300,7 +293,16 @@ if ($ScreenshotProofPass) {
 
 if ($failReasons.Count -gt 0) {
   Write-Host "--- serial tail ---"
-  if (Test-Path $Serial) { Get-Content $Serial -Tail 80 | Write-Host }
+  if (Test-Path $Serial) {
+    $serText = Get-Content $Serial -Raw -ErrorAction SilentlyContinue
+    if ($serText) {
+      $healthLines = [regex]::Matches($serText, "STICKLLM_HEALTH[^\r\n]*")
+      if ($healthLines.Count -gt 0) {
+        Write-Host ("LAST_STICKLLM_HEALTH=" + $healthLines[$healthLines.Count - 1].Value)
+      }
+    }
+    Get-Content $Serial -Tail 40 | Write-Host
+  }
   Write-Host "READ_THIS_PNG=$shotPath"
   Write-Fail ($failReasons -join "+")
   exit 1

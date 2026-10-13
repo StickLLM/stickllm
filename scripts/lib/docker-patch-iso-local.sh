@@ -24,6 +24,8 @@ test -f "$SQ"
 
 echo "[stickllm] unsquashfs..."
 unsquashfs -f -d "$work/sq" "$SQ" >/dev/null
+# Drop extracted squashfs copy early — frees ~8GB before overlay/mksquashfs.
+rm -f "$SQ"
 
 echo "[stickllm] injecting overlay..."
 rsync -a \
@@ -135,7 +137,10 @@ fi
 echo "[stickllm] mksquashfs..."
 rm -f "$work/new/filesystem.squashfs"
 mksquashfs "$work/sq" "$work/new/filesystem.squashfs" -comp xz -b 1M -Xdict-size 100% -noappend >/dev/null
+rm -rf "$work/sq"
+mkdir -p "$work/iso/live"
 cp -f "$work/new/filesystem.squashfs" "$work/iso/live/filesystem.squashfs"
+rm -f "$work/new/filesystem.squashfs"
 
 echo "[stickllm] rebuilding hybrid ISO..."
 rm -f "$OUT"
