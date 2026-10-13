@@ -13,7 +13,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P1 Distinct failsafe/survival Local path vs full Local browser product UI
 - [ ] P1 AMD GPUs (ROCm or Vulkan)
 - [ ] P1 Intel Arc / iGPU (Vulkan or SYCL)
-- [x] P1 CPU-only fallback (v0.3: CPU llama binary + `-ngl 0`, RAM fits check)
+- [x] P1 CPU-only fallback (v0.3: CPU llama binary + `-ngl 0`, RAM fits check; HW OK on Asus no-NVIDIA)
 - [ ] P1 Auto-detect which GPU the monitor is on; pick DRM device automatically
 - [ ] P2 Multi-GPU model splitting
 - [ ] P2 GPU power/thermal limits (laptops)
@@ -70,7 +70,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P2 Image input (upload, paste, phone camera)
 
 ## Client and networking
-- [x] P0 WiFi setup (SSID + password) — Models → Network UI; NM profile on STICKLLM-DATA (v0.3)
+- [x] P0 WiFi setup (SSID + password) — Models → Network UI; NM profile on STICKLLM-DATA (v0.3; Local WiFi HW OK)
   - Ethernet DHCP still default; WiFi credentials via Chat UI
 - [ ] P0 Client USB stick (boots straight to browser)
 - [ ] P0 Pairing via QR / on-screen code with pinned TLS cert

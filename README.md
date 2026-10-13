@@ -13,7 +13,7 @@ to the USB or internal disks unless you explicitly approve a write.
 | Current line | **v0.3.0** (harden + CPU fallback + Local WiFi/UI) |
 | Checkpoint | **v0.2.1-local-nvidia-kbd** (Local browser + keyboard on NVIDIA) |
 | Profile | **AMD desktop CPU · 32 GB RAM · NVIDIA RTX 3090 (24 GB)** |
-| Release | [v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) · tag `v0.3.0` when proven |
+| Release | [v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) · [v0.3.0](https://github.com/StickLLM/stickllm/releases/tag/v0.3.0) |
 | X / Twitter | [@stickllm](https://x.com/stickllm) |
 | Web | [stickllm.org](https://stickllm.org) |
 
@@ -56,9 +56,10 @@ Tag:      git checkout v0.2.1-local-nvidia-kbd
 
 ## v0.3.0 notes
 
-- ISO: `out/v0.3.0/stickllm-amd-rtx3090-v0.3.hybrid.iso` + [`checksums/v0.3.sha256`](checksums/v0.3.sha256) — **does not** overwrite Drive golden v0.2.
+- ISO: `stickllm-amd-rtx3090-v0.3-apiready.hybrid.iso` + [`checksums/v0.3.sha256`](checksums/v0.3.sha256) (`f3db9113…`) — **does not** overwrite Drive golden v0.2.
 - llama binds **127.0.0.1:8080** only; CPU fallback when no NVIDIA; external OpenAI LAN API removed (StickLLM UI only).
 - SSH: random per-boot password; pairing rate-limit/expiry/CSP; WiFi SSID UI; model delete; kiosk packages in live-build list.
+- HW: RTX 3090 desktop + Asus laptop (no NVIDIA); Local WiFi OK; CPU path OK.
 - See [ISSUES.md](ISSUES.md) / [FEATURES.md](FEATURES.md) for what landed vs deferred.
 
 ## Threat model (summary)

@@ -66,6 +66,7 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 ### ISS-018 — CPU fallback broken (no NVIDIA)
 | **Status** | Closed (v0.3) |
 | **Resolution** | Ship `llama-server-cpu`; `stickllm-llama-start` picks CUDA vs `-ngl 0`; no hard `/dev/nvidia*` unit deps; Running only after `/health`; RAM fits on CPU; gateway friendly errors. |
+| **HW** | Validated on Asus laptop (no NVIDIA) with v0.3 apiready ISO. |
 
 ### ISS-011 — download-model sha256 only warned
 | **Status** | Closed (v0.3) |
@@ -106,6 +107,7 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 ### ISS-001 — Web lookup broken on Local
 | **Status** | Closed (v0.3) |
 | **Resolution** | Local `ensure_network`; WiFi UI → NM profile on DATA; status `online` bit; Web needs uplink. |
+| **HW** | Local WiFi validated on HW with v0.3 apiready ISO. |
 
 ### ISS-016 — Conflicting nvidia-drm modprobe confs
 | **Status** | Closed (v0.3) |
