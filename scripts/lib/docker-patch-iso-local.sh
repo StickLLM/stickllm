@@ -43,6 +43,8 @@ rsync -a \
   "$STICKLLM/overlay/usr/local/bin/stickllm-control" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-wifi-apply" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-wifi-setup" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-kiosk" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-llama-start" \
   "$work/sq/usr/local/bin/"
 rsync -a \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-bootstatus.service" \
@@ -75,46 +77,19 @@ rsync -a "$STICKLLM/ui/" "$work/sq/opt/stickllm/ui/"
 printf '%s\n' '{"mode":"ephemeral","profile":"amd-rtx3090","version":"0.3.1"}' \
   >"$work/sq/opt/stickllm/ui/stickllm.json"
 
+# Strip CRLF from every StickLLM helper (Windows checkout -> exec 127 on shebang).
+find "$work/sq/usr/local/bin" -maxdepth 1 -type f -name 'stickllm-*' -exec sed -i 's/\r$//' {} +
 sed -i 's/\r$//' \
-  "$work/sq/usr/local/bin/stickllm-bootstatus" \
-  "$work/sq/usr/local/bin/stickllm-local-chat" \
-  "$work/sq/usr/local/bin/stickllm-console-setup" \
-  "$work/sq/usr/local/bin/stickllm-gateway" \
-  "$work/sq/usr/local/bin/stickllm-nvidia-prep" \
-  "$work/sq/usr/local/bin/stickllm-pick-gpus" \
-  "$work/sq/usr/local/bin/stickllm-usb-claim" \
-  "$work/sq/usr/local/bin/stickllm-model-probe" \
-  "$work/sq/usr/local/bin/stickllm-download-model" \
-  "$work/sq/usr/local/bin/stickllm-vault" \
-  "$work/sq/usr/local/bin/stickllm-persist" \
-  "$work/sq/usr/local/bin/stickllm-status" \
-  "$work/sq/usr/local/bin/stickllm-pair" \
-  "$work/sq/usr/local/bin/stickllm-control" \
-  "$work/sq/usr/local/bin/stickllm-wifi-apply" \
-  "$work/sq/usr/local/bin/stickllm-wifi-setup" \
   "$work/sq/etc/systemd/system/"stickllm-*.service \
   "$work/sq/etc/ssh/sshd_config.d/stickllm.conf" \
   "$work/sq/etc/modprobe.d/stickllm-nvidia-alias.conf" \
   "$work/sq/etc/modules-load.d/stickllm-nvidia.conf" \
   "$work/sq/etc/sudoers.d/stickllm" \
-  "$work/sq/etc/stickllm/models/catalog.toml"
-chmod 755 \
-  "$work/sq/usr/local/bin/stickllm-bootstatus" \
-  "$work/sq/usr/local/bin/stickllm-local-chat" \
-  "$work/sq/usr/local/bin/stickllm-console-setup" \
-  "$work/sq/usr/local/bin/stickllm-gateway" \
-  "$work/sq/usr/local/bin/stickllm-nvidia-prep" \
-  "$work/sq/usr/local/bin/stickllm-pick-gpus" \
-  "$work/sq/usr/local/bin/stickllm-usb-claim" \
-  "$work/sq/usr/local/bin/stickllm-model-probe" \
-  "$work/sq/usr/local/bin/stickllm-download-model" \
-  "$work/sq/usr/local/bin/stickllm-vault" \
-  "$work/sq/usr/local/bin/stickllm-persist" \
-  "$work/sq/usr/local/bin/stickllm-status" \
-  "$work/sq/usr/local/bin/stickllm-pair" \
-  "$work/sq/usr/local/bin/stickllm-control" \
-  "$work/sq/usr/local/bin/stickllm-wifi-apply" \
-  "$work/sq/usr/local/bin/stickllm-wifi-setup"
+  "$work/sq/etc/stickllm/models/catalog.toml" \
+  "$work/sq/opt/stickllm/ui/"*.js \
+  "$work/sq/opt/stickllm/ui/"*.html \
+  "$work/sq/opt/stickllm/ui/"*.css 2>/dev/null || true
+find "$work/sq/usr/local/bin" -maxdepth 1 -type f -name 'stickllm-*' -exec chmod 755 {} +
 chmod 644 "$work/sq/etc/systemd/system/"stickllm-*.service
 chmod 644 "$work/sq/etc/ssh/sshd_config.d/stickllm.conf"
 chmod 644 "$work/sq/etc/modprobe.d/stickllm-nvidia-alias.conf"

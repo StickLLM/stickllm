@@ -57,12 +57,14 @@ refresh_model_label() {
   if [[ ! -f "$MODEL_PATH" ]]; then
     if [[ -f /opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf ]]; then
       MODEL_PATH="/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf"
-      MODEL_NAME="Qwen2.5-3B (baked default)"
+      MODEL_NAME="Qwen2.5-3B Instruct Q4_K_M"
     elif [[ -f /opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf ]]; then
       MODEL_PATH="/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
-      MODEL_NAME="Qwen2.5-7B (baked)"
+      MODEL_NAME="Qwen2.5-7B Instruct Q5_K_M"
     fi
   fi
+  # Persist for kiosk / gateway status (actual loaded model, not catalog id).
+  printf '%s\n' "${MODEL_NAME:-}" >"$RUN/model-label.txt" 2>/dev/null || true
 }
 refresh_model_label
 
@@ -188,18 +190,38 @@ emit_net_probe() {
 ensure_pair() {
   PAIR_CODE=""
   PAIR_STATE="none"
+  local pair_out=""
+  mkdir -p "$RUN"
   # Never mint a new code once a browser has paired - that used to wipe the session
   # every READY redraw (pair-code.txt is deleted on successful pair).
   if [[ -f "$RUN/auth.json" ]] && python3 -c 'import json,sys;d=json.load(open("'"$RUN"'/auth.json"));sys.exit(0 if d.get("paired") else 1)' 2>/dev/null; then
     PAIR_STATE="paired"
     return
   fi
-  if [[ ! -s "$RUN/pair-code.txt" ]] || [[ ! -f "$RUN/auth.json" ]]; then
-    /usr/local/bin/stickllm-pair >/dev/null 2>&1 || true
+  # Usable code = digits only (reject PAIRED / whitespace / CRLF junk).
+  PAIR_CODE="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
+  if [[ ! "${PAIR_CODE:-}" =~ ^[0-9]{4,8}$ ]]; then
+    rm -f "$RUN/pair-code.txt"
+    sed -i 's/\r$//' /usr/local/bin/stickllm-pair 2>/dev/null || true
+    chmod 755 /usr/local/bin/stickllm-pair 2>/dev/null || true
+    # Prefer env python3 so a CRLF shebang cannot yield exec 127.
+    pair_out="$(/usr/bin/env python3 /usr/local/bin/stickllm-pair --force 2>&1)" || \
+      pair_out="$(/usr/local/bin/stickllm-pair --force 2>&1)" || true
+    PAIR_CODE="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
+    if [[ ! "${PAIR_CODE:-}" =~ ^[0-9]{4,8}$ ]]; then
+      if [[ "${pair_out:-}" =~ ^[0-9]{4,8}$ ]]; then
+        PAIR_CODE="$pair_out"
+        printf '%s\n' "$PAIR_CODE" >"$RUN/pair-code.txt" 2>/dev/null || true
+      else
+        serial_only "STICKLLM_PAIR_FAIL ${pair_out:-no_output}"
+        printf 'STICKLLM_PAIR_FAIL %s\n' "${pair_out:-no_output}" >>"$LOG" 2>/dev/null || true
+        PAIR_CODE=""
+      fi
+    fi
   fi
-  PAIR_CODE="$(tr -d '[:space:]' <"$RUN/pair-code.txt" 2>/dev/null || true)"
-  if [[ -n "${PAIR_CODE:-}" ]]; then
+  if [[ "${PAIR_CODE:-}" =~ ^[0-9]{4,8}$ ]]; then
     PAIR_STATE="code"
+    serial_only "STICKLLM_PAIR_MINTED $PAIR_CODE"
   fi
 }
 
@@ -418,10 +440,16 @@ draw_connect_steps() {
   local ip="$1" ui_ok="$2" ready="$3"
   url_scheme
   if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
-    say "  How to use (Local - this PC):"
-    say "    Chat:       browser on this screen when READY"
-    say "    Pair:       not needed"
-    say "    Phone/LAN:  not required for Local mode"
+    say "  How to connect (Chat = this screen + LAN):"
+    say "    This screen: http://127.0.0.1/  (no pair)"
+    if [[ -n "${ip:-}" ]]; then
+      say "    LAN IP:     ${ip}"
+      say "    Phone/LAN:  ${SCHEME}://${ip}/  (enter PAIR CODE below)"
+    else
+      say "    LAN IP:     (waiting - Ethernet or stickllm-wifi-setup)"
+      say "    Phone/LAN:  ${SCHEME}://<lan-ip>/ + PAIR CODE"
+    fi
+    say "    Models / Settings in the StickLLM web UI"
     return
   fi
   say "  How to connect (same LAN; WiFi: Settings or stickllm-wifi-setup):"
@@ -470,21 +498,29 @@ draw_pair_box() {
     return
   fi
   ensure_pair
+  if [[ "$PAIR_STATE" != "code" && "$PAIR_STATE" != "paired" ]]; then
+    serial_only "STICKLLM_PAIR_RECOVER"
+    rm -f "$RUN/pair-code.txt"
+    /usr/bin/env python3 /usr/local/bin/stickllm-pair --force >/dev/null 2>&1 || \
+      /usr/local/bin/stickllm-pair --force >/dev/null 2>&1 || true
+    ensure_pair
+  fi
   case "$PAIR_STATE" in
     paired)
-      say "  ┌─────────────────────────┐"
-      say "  │  PAIRED - browser OK    │"
-      say "  └─────────────────────────┘"
+      say "  +-------------------------+"
+      say "  |  PAIRED - browser OK    |"
+      say "  +-------------------------+"
       say "  StickLLM web UI unlocked until reboot"
       ;;
     code)
-      say "  ┌─────────────────────────┐"
-      say "  │  PAIR CODE:  ${PAIR_CODE}     │"
-      say "  └─────────────────────────┘"
+      say "  +-------------------------+"
+      say "  |  PAIR CODE:  ${PAIR_CODE}     |"
+      say "  +-------------------------+"
       say "  Enter this code in the browser Pair screen"
       ;;
     *)
-      say "  PAIR CODE: generating…"
+      say "  PAIR CODE: generating..."
+      serial_only "STICKLLM_PAIR_STILL_EMPTY hex=$(od -An -tx1 "$RUN/pair-code.txt" 2>/dev/null | tr -s ' ' | head -c 80)"
       ;;
   esac
 }

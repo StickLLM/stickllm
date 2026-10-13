@@ -6,7 +6,8 @@ Before=stickllm-ui.service
 [Service]
 Type=simple
 ExecStartPre=/usr/bin/mkdir -p /run/stickllm
-ExecStartPre=/usr/local/bin/stickllm-pair
+# Prefix '-' so a bad shebang/exit never blocks control; console-setup also mints.
+ExecStartPre=-/usr/local/bin/stickllm-pair --force
 ExecStart=/usr/local/bin/stickllm-control
 Restart=on-failure
 RestartSec=2

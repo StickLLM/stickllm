@@ -88,14 +88,16 @@ $modeFlag = switch ($BootMode) {
   "server" { "" }
   default  { "stickllm.ssh" }
 }
-if ($isLocal) {
+# Chat: keep llama (CPU path) so ui=1 api=1 can pass; only mask NVIDIA bits.
+# Local legacy: same. Term/server: mask llama for faster console-only proofs unless chat.
+if ($BootMode -eq "chat" -or $BootMode -eq "local") {
   $append = @(
     "boot=live components ignore_uuid username=user hostname=stickllm noeject $modeFlag",
     "live-media=/dev/sr0 live-media-path=/live",
     "console=ttyS0,115200n8 console=tty0 systemd.show_status=false loglevel=4",
     "modprobe.blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm",
     "module_blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm",
-    "systemd.mask=nvidia-persistenced.service systemd.mask=stickllm-nvidia.service systemd.mask=stickllm-llama.service"
+    "systemd.mask=nvidia-persistenced.service systemd.mask=stickllm-nvidia.service"
   ) -join " "
 } else {
   $append = @(
@@ -109,11 +111,13 @@ if ($isLocal) {
 }
 $append = ($append -replace '\s+', ' ').Trim()
 
-function Start-Qemu([string]$accel) {
+function Start-Qemu([string]$accel, [string]$cpu) {
   $netdev = "user,id=n0,hostfwd=tcp:127.0.0.1:${HostFwdPort}-:80"
   # Always virtio-vga + QMP for screendump (Local needs DRM; Term/Server need on-screen READY).
   $gpu = if ($isLocal) { "-device virtio-vga -display none" } else { "-device virtio-vga -display none" }
-  $argLine = "-m 4096 -smp 2 -machine q35 -accel $accel -cpu qemu64 $gpu -serial `"file:$Serial`" -qmp tcp:127.0.0.1:${QmpPort},server,nowait -netdev $netdev -device virtio-net-pci,netdev=n0 -cdrom `"$Iso`" -boot d -kernel `"$Vmlinuz`" -initrd `"$Initrd`" -append `"$append`""
+  # Chat/Local need headroom for CPU llama (3B Q4 + 4k ctx); Term can stay leaner.
+  $mem = if ($isLocal) { 6144 } else { 4096 }
+  $argLine = "-m $mem -smp 2 -machine q35 -accel $accel -cpu $cpu $gpu -serial `"file:$Serial`" -qmp tcp:127.0.0.1:${QmpPort},server,nowait -netdev $netdev -device virtio-net-pci,netdev=n0 -cdrom `"$Iso`" -boot d -kernel `"$Vmlinuz`" -initrd `"$Initrd`" -append `"$append`""
   return Start-Process -FilePath $Qemu -ArgumentList $argLine -PassThru -WindowStyle Hidden -RedirectStandardError $Stderr
 }
 
@@ -123,14 +127,38 @@ Write-Host "HOSTFWD=127.0.0.1:$HostFwdPort -> guest:80"
 Write-Host "QMP=127.0.0.1:$QmpPort screendump -> $ScreenPng"
 $p = $null
 $used = $null
-foreach ($accel in @("whpx,kernel-irqchip=off", "tcg")) {
-  Remove-Item $Serial, $Stderr -ErrorAction SilentlyContinue
-  $p = Start-Qemu $accel
-  Start-Sleep 4
-  if (-not $p.HasExited) { $used = $accel; Write-Host "QEMU pid=$($p.Id) accel=$accel"; break }
-  Write-Host "QEMU exit early accel=$accel"
-  if (Test-Path $Stderr) { Get-Content $Stderr | Write-Host }
-  $p = $null
+$usedCpu = $null
+# Local/Chat: never qemu64 (AVX CPU llama SIGILL). Prefer -cpu host under WHPX;
+# fall back to max / EPYC if host is rejected. Override: STICKLLM_QEMU_ACCEL=whpx|tcg.
+$accelList = if ($env:STICKLLM_QEMU_ACCEL -eq "tcg") {
+  @("tcg")
+} elseif ($env:STICKLLM_QEMU_ACCEL -eq "whpx") {
+  @("whpx,kernel-irqchip=off", "tcg")
+} else {
+  @("whpx,kernel-irqchip=off", "tcg")
+}
+$cpuList = if ($isLocal) {
+  @("host", "max", "EPYC")
+} else {
+  @("host", "max", "EPYC", "qemu64")
+}
+:bootforeach foreach ($accel in $accelList) {
+  foreach ($cpu in $cpuList) {
+    # TCG cannot usefully do -cpu host; skip to max/EPYC.
+    if ($accel -eq "tcg" -and $cpu -eq "host") { continue }
+    Remove-Item $Serial, $Stderr -ErrorAction SilentlyContinue
+    $p = Start-Qemu $accel $cpu
+    Start-Sleep 4
+    if (-not $p.HasExited) {
+      $used = $accel
+      $usedCpu = $cpu
+      Write-Host "QEMU pid=$($p.Id) accel=$accel cpu=$cpu"
+      break bootforeach
+    }
+    Write-Host "QEMU exit early accel=$accel cpu=$cpu"
+    if (Test-Path $Stderr) { Get-Content $Stderr | Select-Object -First 8 | Write-Host }
+    $p = $null
+  }
 }
 if (-not $p) { Write-Fail "qemu_start_failed"; exit 1 }
 
@@ -155,7 +183,7 @@ while ((Get-Date) -lt $deadline) {
   if ($text -match "STICKLLM_HEALTH[^\r\n]*ui=1") { $sawHealthUi = $true }
   if ($text -match "STICKLLM_LAN_URL\s+https?://\S+") { $sawLanUrl = $true }
   if ($text -match "LAN IP:\s+\d+\.\d+\.\d+\.\d+") { $sawLanUrl = $true }
-  if ($text -match "STICKLLM_PAIR_USABLE|PAIR CODE:\s+\d{4,}") { $sawPairUsable = $true }
+  if ($text -match "STICKLLM_PAIR_USABLE\s+\d{4,}|STICKLLM_PAIR_MINTED\s+\d{4,}|PAIR CODE:\s+\d{4,}") { $sawPairUsable = $true }
   if ($text -match "STICKLLM_PAIR_MINTED|PAIR CODE") { $sawPairMint = $true }
   if ($text -match "STICKLLM_LOCAL_MODE|StickLLM LOCAL|local mode|bootstatus: chat|Chat \(this screen") { $sawLocalMode = $true }
   if ($text -match "STICKLLM_LOCAL_HANDOFF") { $sawLocalHandoff = $true }
@@ -190,7 +218,18 @@ while ((Get-Date) -lt $deadline) {
     }
   }
 
-  if ($isLocal) {
+  if ($text -match "STICKLLM_HEALTH[^\r\n]*ui=1[^\r\n]*api=1") { $script:sawUiApi = $true }
+  if ($BootMode -eq "chat") {
+    # Chat status proof: pair + LAN + ui=1 + host curl. Prefer api=1, but do not
+    # block forever — QEMU CPU llama can be slow; HW uses NVIDIA. Screendump must
+    # show pair/IP/model/how-to-connect (agent Read + -ScreenshotProofPass).
+    if ($sawModel -and $sawLanUrl -and $curlOk -and $sawPairUsable -and $sawHealthUi) {
+      Start-Sleep 12
+      $screen = Invoke-QmpScreendump -Port $QmpPort -PngPath $ScreenPng -PpmPath $ScreenPpm
+      Write-Host "SCREENDUMP $($screen.Detail)"
+      break
+    }
+  } elseif ($isLocal) {
     if ($sawModel -and $curlOk -and ($sawLocalHandoff -or $sawLocalChat) -and ($sawKioskBrowser -or $sawNoDri -or $sawKioskUiReady)) {
       Start-Sleep 15
       $screen = Invoke-QmpScreendump -Port $QmpPort -PngPath $ScreenPng -PpmPath $ScreenPpm
@@ -229,7 +268,13 @@ if ($nmHang) {
 $failReasons = @()
 if (-not $curlOk) { $failReasons += "host_curl_failed" }
 if (-not $screen.Ok) { $failReasons += "screendump_failed" }
-if ($isLocal) {
+if ($BootMode -eq "chat") {
+  if (-not $sawModel) { $failReasons += "no_model_loading_phase" }
+  if (-not $sawLanUrl) { $failReasons += "no_lan_ip_or_url" }
+  if (-not $sawPairUsable) { $failReasons += "no_usable_pair_code" }
+  if (-not $sawHealthUi) { $failReasons += "no_ui1_health" }
+  if (-not $script:sawUiApi) { Write-Host "NOTE: api=1 not seen yet (CPU llama still loading); Chat status screendump still required" }
+} elseif ($isLocal) {
   if (-not $sawModel) { $failReasons += "no_model_loading_phase" }
   if (-not ($sawLocalHandoff -or $sawLocalChat)) { $failReasons += "no_local_handoff_or_chat" }
   if ($sawNoDri) { $failReasons += "no_dev_dri_card" }
@@ -261,11 +306,11 @@ if ($failReasons.Count -gt 0) {
   exit 1
 }
 
-$how = if ($isLocal) { "LOCAL_KIOSK+SCREENDUMP+HOST_CURL" } else { "PHASES+LAN+SCREENDUMP+HOST_CURL" }
+$how = if ($BootMode -eq "chat") { "CHAT_STATUS+SCREENDUMP+HOST_CURL" } elseif ($isLocal) { "LOCAL_KIOSK+SCREENDUMP+HOST_CURL" } else { "PHASES+LAN+SCREENDUMP+HOST_CURL" }
 @(
   "BOOT_PROOF=PASS"
   "MODE=$BootMode"
-  "HOW=$how via QEMU($used)"
+  "HOW=$how via QEMU($used cpu=$usedCpu)"
   "SCREENSHOT_PROOF=$shotProof"
   "SCREENSHOT_PATH=$shotPath"
   "SHA256=$hash"
@@ -296,7 +341,9 @@ $readyLines = @(
   "NOTE=SCREENSHOT_PROOF=PASS requires agent Read of PNG. Serial-only forbidden."
   "WHEN=$when"
 )
-if ($isLocal) {
+if ($BootMode -eq "chat") {
+  $readyLines += @("CHAT_STATUS=PASS", "LAN_URL=PASS", "PAIR_PRESENT=PASS", "NOTE_CHAT=QEMU_console_status;_HW_kiosk_shows_web_banner")
+} elseif ($isLocal) {
   $readyLines += @("LOCAL_HANDOFF=PASS", "NETWORK_LOADING=N/A_LOCAL", "LAN_URL=N/A_LOCAL", "PAIR_PRESENT=N/A_LOCAL")
 } else {
   $readyLines += @("NETWORK_LOADING=PASS", "LAN_URL=PASS", "PAIR_PRESENT=PASS")

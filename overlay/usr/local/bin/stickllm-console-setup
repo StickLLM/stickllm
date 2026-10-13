@@ -1,26 +1,28 @@
 #!/bin/bash
 # Live user + quiet console. Never daemon-reload (cancels pending bootstatus).
-set -euo pipefail
+set -uo pipefail
+# Note: not using set -e — optional systemctl/useradd must not fail the oneshot.
 
 if ! getent passwd user >/dev/null 2>&1; then
   useradd -m -s /bin/bash -G sudo,video,render user 2>/dev/null || true
 fi
 
 if getent passwd user >/dev/null 2>&1; then
-  echo 'user:stickllm' | chpasswd
+  echo 'user:stickllm' | chpasswd || true
   usermod -aG sudo,video,render user 2>/dev/null || true
 fi
 
 cat >/etc/sudoers.d/stickllm-user <<'EOF'
 user ALL=(ALL) NOPASSWD:ALL
 EOF
-chmod 440 /etc/sudoers.d/stickllm-user
+chmod 440 /etc/sudoers.d/stickllm-user || true
 
 cat >/etc/motd <<'EOF'
 
-  StickLLM v0.2
+  StickLLM v0.3.1
   tty1 = loading + LAN URL + PAIR CODE
   tty2 = login (Ctrl+Alt+F2)   SSH = Term menu only
+  No LAN?  stickllm-wifi-setup
   user / stickllm
 
 EOF
@@ -29,37 +31,44 @@ sysctl -w kernel.printk="3 4 1 3" >/dev/null 2>&1 || true
 dmesg -n err >/dev/null 2>&1 || true
 plymouth quit --wait >/dev/null 2>&1 || true
 
-# Serial-only — never /dev/console (aliases HDMI/tty1 with console=tty0).
 if [[ -w /dev/ttyS0 ]]; then
   printf '%s\n' "STICKLLM_CONSOLE_SETUP_OK" >/dev/ttyS0 2>/dev/null || true
 fi
 
-# CRITICAL: Before=getty@tty2 — blocking start deadlocks this oneshot.
-# Keep tty1 for loading + PAIR CODE (getty only if /run/stickllm/allow-getty-tty1).
 rm -f /run/stickllm/allow-getty-tty1 2>/dev/null || true
 systemctl enable getty@tty2.service 2>/dev/null || true
 systemctl start --no-block getty@tty2.service 2>/dev/null || true
 systemctl stop --no-block getty@tty1.service 2>/dev/null || true
 systemctl reset-failed stickllm-bootstatus.service 2>/dev/null || true
 systemctl start --no-block stickllm-bootstatus.service 2>/dev/null || true
-# Prefer the physical console over leftover live-boot "Finished" scrollback.
 chvt 1 2>/dev/null || true
 
-# Serial-only breadcrumb. Do NOT write REQUEUED/PAIR to tty1/tty0/console —
-# those are often the same physical HDMI screen and used to stamp the pair
-# code three times, then overwrite bootstatus's Network/Model loading UI.
 mkdir -p /run/stickllm
-if ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then
-  /usr/local/bin/stickllm-pair >/dev/null 2>&1 || true
-  _code="$(tr -d '[:space:]' </run/stickllm/pair-code.txt 2>/dev/null || true)"
-  if [[ -w /dev/ttyS0 ]]; then
-    printf 'STICKLLM_BOOTSTATUS_REQUEUED\n' >/dev/ttyS0 2>/dev/null || true
-    if [[ -n "$_code" ]]; then
-      printf 'STICKLLM_PAIR_MINTED %s (usable when UI up)\n' "$_code" >/dev/ttyS0 2>/dev/null || true
-    fi
-  fi
-else
-  if [[ -w /dev/ttyS0 ]]; then
-    printf 'STICKLLM_BOOTSTATUS_REQUEUED\nSTICKLLM_LOCAL_MODE\n' >/dev/ttyS0 2>/dev/null || true
+# Invoke via python3 so a CRLF shebang (Windows checkout) cannot cause exec 127.
+# Do not sed -i the squashfs path (read-only root).
+rm -f /run/stickllm/pair-code.txt
+/usr/bin/env python3 /usr/local/bin/stickllm-pair --force \
+  >/run/stickllm/pair-mint.out 2>/run/stickllm/pair-mint.err \
+  || true
+_code="$(tr -d '\r\n\t ' </run/stickllm/pair-code.txt 2>/dev/null || true)"
+if [[ ! "$_code" =~ ^[0-9]{4,8}$ ]]; then
+  _code="$(tr -d '\r\n\t ' </run/stickllm/pair-mint.out 2>/dev/null || true)"
+  if [[ "$_code" =~ ^[0-9]{4,8}$ ]]; then
+    printf '%s\n' "$_code" >/run/stickllm/pair-code.txt
   fi
 fi
+if [[ -w /dev/ttyS0 ]]; then
+  printf 'STICKLLM_BOOTSTATUS_REQUEUED\n' >/dev/ttyS0 2>/dev/null || true
+  if [[ "$_code" =~ ^[0-9]{4,8}$ ]]; then
+    printf 'STICKLLM_PAIR_MINTED %s (usable when UI up)\n' "$_code" >/dev/ttyS0 2>/dev/null || true
+  else
+    printf 'STICKLLM_PAIR_FAIL out=%s err=%s\n' \
+      "$(tr -d '\r\n' </run/stickllm/pair-mint.out 2>/dev/null | head -c 80)" \
+      "$(tr -d '\r\n' </run/stickllm/pair-mint.err 2>/dev/null | head -c 80)" \
+      >/dev/ttyS0 2>/dev/null || true
+  fi
+  if grep -Eqw 'stickllm\.(chat|local|kiosk)' /proc/cmdline 2>/dev/null; then
+    printf 'STICKLLM_CHAT_OR_LOCAL\n' >/dev/ttyS0 2>/dev/null || true
+  fi
+fi
+exit 0
