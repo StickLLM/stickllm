@@ -22,8 +22,50 @@ html, body {
 
 body {
   display: grid;
-  grid-template-rows: auto 1fr auto auto;
+  grid-template-rows: auto auto 1fr auto auto;
   min-height: 100%;
+}
+
+.connectPanel {
+  margin: 0;
+  padding: 0.65rem 1.25rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(26, 34, 28, 0.85);
+}
+.connectGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem 1rem;
+}
+.connectWide { grid-column: 1 / -1; }
+.connectLabel {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+}
+.connectValue {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ink);
+  word-break: break-word;
+}
+.connectPair {
+  font-family: var(--mono);
+  font-size: 1.35rem;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+}
+.connectHow { font-weight: 500; font-size: 0.88rem; color: var(--muted); }
+.connectUrl {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--accent);
+  margin-top: 0.25rem;
+}
+@media (max-width: 720px) {
+  .connectGrid { grid-template-columns: 1fr 1fr; }
 }
 
 .top {

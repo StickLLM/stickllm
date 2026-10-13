@@ -1,6 +1,7 @@
 [Unit]
 Description=StickLLM local console chat fallback (tty1; used if kiosk/browser missing)
-ConditionKernelCommandLine=stickllm.local
+ConditionKernelCommandLine=|stickllm.local
+ConditionKernelCommandLine=|stickllm.chat
 # Only when kiosk unit cannot start — primary Local UI is stickllm-kiosk.
 ConditionPathExists=/run/stickllm/allow-local-chat-fallback
 After=stickllm-bootstatus.service stickllm-console-setup.service stickllm-ui.service

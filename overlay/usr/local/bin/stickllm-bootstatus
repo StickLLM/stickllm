@@ -71,9 +71,10 @@ touch "$LOG"
 # Local: paint loading on tty1 until READY, then yield to stickllm-local-chat
 # (direct AI on this PC - no LAN browser / pair flow).
 LOCAL_YIELD=0
-if grep -Eqw 'stickllm\.(kiosk|local)' /proc/cmdline 2>/dev/null; then
+# Chat: on-stick kiosk when display present + LAN UI. local/kiosk = aliases.
+if grep -Eqw 'stickllm\.(chat|kiosk|local)' /proc/cmdline 2>/dev/null; then
   LOCAL_YIELD=1
-  echo "bootstatus: local mode - loading then yield to console chat" >>"$LOG"
+  echo "bootstatus: chat - loading then yield to on-stick browser" >>"$LOG"
 fi
 # Prefer VT1 (product screen). Never paint /dev/tty0 or /dev/console -
 # with console=tty0 those alias the same HDMI and double every line.
@@ -87,19 +88,20 @@ clear_tty() {
   printf '%s' "$seq" >"$TTY" 2>/dev/null || true
 }
 
-mode="lan"
-mode_label="LAN Server (phone/browser chat)"
-grep -qw 'stickllm.local' /proc/cmdline 2>/dev/null && {
-  mode="local"
-  mode_label="Local (console AI chat on this PC)"
-}
-grep -qw 'stickllm.kiosk' /proc/cmdline 2>/dev/null && {
-  mode="local"
-  mode_label="Local (console AI chat on this PC)"
+mode="chat"
+mode_label="Chat (this screen + LAN)"
+# Default menu is Chat (stickllm.chat). local/kiosk remain aliases.
+grep -Eqw 'stickllm\.(chat|local|kiosk)' /proc/cmdline 2>/dev/null && {
+  mode="chat"
+  mode_label="Chat (this screen + LAN)"
 }
 grep -qw 'stickllm.ssh' /proc/cmdline 2>/dev/null && {
   mode="ssh"
-  mode_label="Term (SSH + tty2 login)"
+  mode_label="Term (SSH + console; no browser)"
+}
+grep -qw 'stickllm.client' /proc/cmdline 2>/dev/null && {
+  mode="client"
+  mode_label="Client (coming soon)"
 }
 
 PAIR_STATE="none" # none | code | paired | waiting_ui
@@ -349,7 +351,7 @@ detect_phase() {
   fi
 
   # Local: no phone/LAN pair - never block on LAN IP. Show model loading, then hand off.
-  if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+  if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     if [[ ! -f "$MODEL_PATH" ]] && \
        [[ ! -f /opt/stickllm/models/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf ]] && \
        [[ ! -f /opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf ]]; then
@@ -415,7 +417,7 @@ draw_header() {
 draw_connect_steps() {
   local ip="$1" ui_ok="$2" ready="$3"
   url_scheme
-  if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+  if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     say "  How to use (Local - this PC):"
     say "    Chat:       browser on this screen when READY"
     say "    Pair:       not needed"
@@ -454,12 +456,9 @@ draw_connect_steps() {
 draw_pair_box() {
   local ui_ok="${1:-0}"
   # Local = keyboard chat on this machine; Server/Term use LAN browser + pair.
-  if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
-    say "  ┌─────────────────────────┐"
-    say "  │  LOCAL - no pair needed │"
-    say "  └─────────────────────────┘"
-    say "  Chat with the AI on this screen when READY"
-    return
+  # Chat on-stick UI needs no pair (loopback). Still show code for LAN clients.
+  if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+    :
   fi
   # Do not present a pair code as usable until the gateway/UI answers.
   if [[ "$ui_ok" -ne 1 ]]; then
@@ -614,7 +613,7 @@ draw() {
   say ""
   draw_pair_box "$ui_ok"
   say ""
-  if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+  if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     say "  Loading… console AI chat starts when READY."
   elif [[ "$phase" == "STICKLLM Network Loading" ]]; then
     say "  Network Loading - waiting for LAN IP (cable / DHCP)."
@@ -633,7 +632,7 @@ draw_ready() {
   printf 'READY\n' >"$RUN/boot-phase.txt"
   printf '%s\n' "${ip:-}" >"$RUN/lan-ip.txt"
   url_scheme
-  if [[ "$mode" != "local" && "$LOCAL_YIELD" -ne 1 && "$ui_ok" -eq 1 ]]; then
+  if [[ "$ui_ok" -eq 1 ]]; then
     ensure_pair
   fi
   clear_tty
@@ -645,9 +644,25 @@ draw_ready() {
   say "  Model: $MODEL_NAME"
   say "  Boot: ${elapsed}s  |  $(usb_line)"
   say ""
-  if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
-    say "  Local browser chat starting on this screen…"
-    say "  UI: http://127.0.0.1/  (no pair code)"
+  if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+    # Chat: show pair/IP/model for LAN; on-stick browser skips pair (loopback).
+    ensure_pair
+    refresh_model_label
+    say "  Model: $MODEL_NAME"
+    if [[ -n "${ip:-}" ]]; then
+      say "  LAN IP:   ${ip}"
+      say "  Browser:  ${SCHEME}://${ip}/  (phone/LAN - pair required)"
+      say "  URL:      ${SCHEME}://${ip}/"
+    else
+      say "  LAN IP:   (waiting - Ethernet, or Term: stickllm-wifi-setup)"
+      say "  Browser:  ${SCHEME}://<lan-ip>/"
+      say "  URL:      ${SCHEME}://<lan-ip>/"
+    fi
+    say "  Local UI: http://127.0.0.1/  (this screen - no pair)"
+    say ""
+    draw_pair_box "$ui_ok"
+    say ""
+    say "  On-stick browser starting on this screen..."
     say "  (falls back to console chat if browser packages missing)"
     emit_health_breadcrumb "$ip" 1 "$api_ok" "READY"
     return
@@ -690,11 +705,25 @@ draw_ready() {
   emit_health_breadcrumb "$ip" "$ui_ok" "$api_ok" "READY"
 }
 
-# Mint pair early for Server/Term only (Local skips LAN pair).
-# Code is held until UI is up before we present it as usable.
-if [[ "$mode" != "local" && "$LOCAL_YIELD" -ne 1 ]]; then
-  ensure_pair
+# Client USB product - later release placeholder (no Chromium).
+if [[ "$mode" == "client" ]]; then
+  clear_tty
+  say "========================================"
+  say "  StickLLM Client - coming soon"
+  say "========================================"
+  say "  Mode: $mode_label"
+  say ""
+  say "  Later: boot this USB on a laptop to pair with"
+  say "  the Chat stick (not the host OS browser)."
+  say "  Not implemented in this release."
+  say ""
+  say "  Reboot and choose 1 Chat or 2 Term."
+  printf 'CLIENT_SOON\n' >"$RUN/boot-phase.txt" 2>/dev/null || true
+  while true; do sleep 3600; done
 fi
+
+# Mint pair for Chat/Term LAN clients (loopback kiosk skips pair in gateway).
+ensure_pair
 
 LAST_SIG=""
 LAST_FORCE=-999
@@ -712,7 +741,7 @@ paint_loading() {
 }
 
 # Immediate first paint (don't wait for network/GPU).
-if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
   paint_loading 0 "STICKLLM Model (${MODEL_NAME}) Loading" "" 0 0
 else
   paint_loading 0 "STICKLLM Network Loading" "" 0 0
@@ -746,14 +775,14 @@ while (( SECONDS < deadline )); do
   if [[ -z "${ip:-}" ]]; then
     ensure_network
     ip="$(lan_ip)"
-  elif [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+  elif [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     # Still nudge NM so WiFi profiles from DATA can come up.
     ensure_network
   fi
   # Keep gateway up even while waiting for DHCP.
   systemctl start --no-block stickllm-control.service stickllm-ui.service 2>/dev/null || true
   # Local QEMU: also keep llama (CPU) started for api=1.
-  if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+  if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     systemctl start --no-block stickllm-llama.service 2>/dev/null || true
   fi
   probe_services
@@ -764,11 +793,11 @@ while (( SECONDS < deadline )); do
   fi
 
   phase="$(detect_phase "$ui_ok" "$api_ok" "${ip:-}")"
-  if [[ "$mode" != "local" && "$LOCAL_YIELD" -ne 1 && "$ui_ok" -eq 1 ]]; then
+  if [[ "$ui_ok" -eq 1 ]]; then
     ensure_pair
   fi
   if [[ "$phase" == "READY" ]]; then
-    if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+    if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
       # Local: ui+api both required (detect_phase); then hand off to kiosk/chat.
       draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
       ready_drawn=1

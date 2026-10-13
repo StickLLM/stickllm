@@ -22,6 +22,28 @@
     </div>
   </header>
 
+  <section id="connectPanel" class="connectPanel" aria-label="Connection status">
+    <div class="connectGrid">
+      <div>
+        <div class="connectLabel">Pair code</div>
+        <div id="connectPair" class="connectValue connectPair">…</div>
+      </div>
+      <div>
+        <div class="connectLabel">LAN IP</div>
+        <div id="connectIp" class="connectValue">…</div>
+      </div>
+      <div>
+        <div class="connectLabel">Model</div>
+        <div id="connectModel" class="connectValue">…</div>
+      </div>
+      <div class="connectWide">
+        <div class="connectLabel">How to connect</div>
+        <div id="connectHow" class="connectValue connectHow">…</div>
+        <div id="connectUrl" class="connectUrl"></div>
+      </div>
+    </div>
+  </section>
+
   <dialog id="pairDialog" class="modelsDialog">
     <form method="dialog" class="modelsPanel" id="pairForm">
       <h2>Pair this browser</h2>
@@ -78,7 +100,7 @@
           Use this when the stick already has LAN (Ethernet or a saved WiFi profile).
           If there is <strong>no</strong> network yet, use Term console:
           <code>stickllm-wifi-setup</code>
-          (or boot Local once to join WiFi, then reboot Server).
+          (or boot Chat once to join WiFi, then reboot; or one-time Ethernet).
         </p>
         <p id="netStatus" class="modelsHint">Online: …</p>
         <label class="fieldLabel">SSID
@@ -125,6 +147,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=11"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>

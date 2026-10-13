@@ -4,7 +4,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$Iso,
   [int]$TimeoutSec = 360,
-  [ValidateSet("term", "local", "server")][string]$BootMode = "term",
+  [ValidateSet("term", "local", "server", "chat")][string]$BootMode = "term",
   [int]$HostFwdPort = 18080,
   [int]$QmpPort = 4445,
   # Set ONLY after a human/agent Read of the screendump PNG confirms UI pixels.
@@ -40,7 +40,7 @@ Remove-Item $Serial, $Stderr, $Result, $ScreenPng, $ScreenPpm -ErrorAction Silen
 $hash = (Get-FileHash -Algorithm SHA256 $Iso).Hash.ToUpperInvariant()
 $name = [IO.Path]::GetFileName($Iso)
 $driveHash = "4914087D502D13327DBBD9196C9A4A7DF46EE079D423FF4B0BC6280E1C7B1A48"
-$isLocal = ($BootMode -eq "local")
+$isLocal = ($BootMode -eq "local" -or $BootMode -eq "chat")
 
 function Write-Fail([string]$why) {
   $when = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -84,6 +84,7 @@ if ($needExtract) {
 
 $modeFlag = switch ($BootMode) {
   "local"  { "stickllm.local" }
+  "chat"   { "stickllm.chat" }
   "server" { "" }
   default  { "stickllm.ssh" }
 }
@@ -156,7 +157,7 @@ while ((Get-Date) -lt $deadline) {
   if ($text -match "LAN IP:\s+\d+\.\d+\.\d+\.\d+") { $sawLanUrl = $true }
   if ($text -match "STICKLLM_PAIR_USABLE|PAIR CODE:\s+\d{4,}") { $sawPairUsable = $true }
   if ($text -match "STICKLLM_PAIR_MINTED|PAIR CODE") { $sawPairMint = $true }
-  if ($text -match "STICKLLM_LOCAL_MODE|StickLLM LOCAL|local mode") { $sawLocalMode = $true }
+  if ($text -match "STICKLLM_LOCAL_MODE|StickLLM LOCAL|local mode|bootstatus: chat|Chat \(this screen") { $sawLocalMode = $true }
   if ($text -match "STICKLLM_LOCAL_HANDOFF") { $sawLocalHandoff = $true }
   if ($text -match "STICKLLM_LOCAL_CHAT_START|StickLLM Local") { $sawLocalChat = $true }
   if ($text -match "STICKLLM_KIOSK_BROWSER") { $sawKioskBrowser = $true }

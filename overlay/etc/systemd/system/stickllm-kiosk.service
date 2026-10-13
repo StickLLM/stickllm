@@ -2,6 +2,7 @@
 Description=StickLLM Local WebUI kiosk (Wayland browser on tty1)
 ConditionKernelCommandLine=|stickllm.kiosk
 ConditionKernelCommandLine=|stickllm.local
+ConditionKernelCommandLine=|stickllm.chat
 ConditionPathExists=/run/stickllm/allow-local-chat
 After=stickllm-bootstatus.service stickllm-console-setup.service stickllm-ui.service seatd.service stickllm-llama.service
 Wants=stickllm-ui.service stickllm-llama.service seatd.service

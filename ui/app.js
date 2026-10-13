@@ -23,6 +23,11 @@
   const wifiSsid = document.getElementById("wifiSsid");
   const wifiPass = document.getElementById("wifiPass");
   const wifiConnect = document.getElementById("wifiConnect");
+  const connectPair = document.getElementById("connectPair");
+  const connectIp = document.getElementById("connectIp");
+  const connectModel = document.getElementById("connectModel");
+  const connectHow = document.getElementById("connectHow");
+  const connectUrl = document.getElementById("connectUrl");
 
   const API_BASE = window.STICKLLM_API || "";
   const TOKEN_KEY = "stickllm_pair_token";
@@ -47,6 +52,7 @@
 
   function applyLocalChrome(local) {
     isLocalMode = !!local;
+    // On-stick Chat UI: hide Pair button (loopback needs no pair), keep connect banner.
     if (pairBtn) pairBtn.hidden = isLocalMode;
     if (input && isLocalMode) {
       input.placeholder = "Ask anything";
@@ -57,12 +63,37 @@
   function refreshSessionHints() {
     if (!apiHint) return;
     if (isLocalMode) {
-      apiHint.textContent = "local — no pair";
+      apiHint.textContent = "this screen — no pair; LAN clients pair";
     } else {
       apiHint.textContent = token ? "session active" : "pair if prompted";
     }
   }
   refreshSessionHints();
+
+  function renderConnect(j) {
+    const c = j.connect || {};
+    if (connectPair) {
+      connectPair.textContent =
+        c.pair_code ||
+        (isLocalMode ? "…" : "(see stick screen)") ||
+        "…";
+    }
+    if (connectIp) {
+      connectIp.textContent = c.ip || (j.online ? "(checking…)" : "(no uplink yet)");
+    }
+    if (connectModel) {
+      const ready = j.llama_ok ? "" : " (loading)";
+      connectModel.textContent = (c.model || "…") + ready;
+    }
+    if (connectHow) {
+      connectHow.textContent =
+        c.how ||
+        "Open the URL below on the same LAN and enter the PAIR CODE from the stick.";
+    }
+    if (connectUrl) {
+      connectUrl.textContent = c.url || c.local_url || "";
+    }
+  }
 
   const messages = [
     {
@@ -135,7 +166,14 @@
         sessionOk = true;
       }
       const online = j.online || j.web;
-      const modelBit = j.llama_ok ? "model ready" : "model loading";
+      const modelName = j.connect?.model;
+      const modelBit = j.llama_ok
+        ? modelName
+          ? `model ready · ${modelName}`
+          : "model ready"
+        : modelName
+          ? `model loading · ${modelName}`
+          : "model loading";
       if (sessionOk) {
         statusLine.textContent = online
           ? `${modelBit} · online`
@@ -145,18 +183,20 @@
       } else {
         statusLine.textContent = modelBit;
       }
+      if (j.pair?.local) applyLocalChrome(true);
+      renderConnect(j);
       try {
         const m = await fetch("/stickllm.json", { cache: "no-store" });
         if (m.ok) {
           const meta = await m.json();
           if (meta.mode) modeBadge.textContent = meta.mode;
           if (meta.version) modeBadge.title = `v${meta.version}`;
-          if (String(meta.mode || "").toLowerCase() === "local") {
+          const mode = String(meta.mode || "").toLowerCase();
+          if (mode === "local" || mode === "chat") {
             applyLocalChrome(true);
           }
         }
       } catch (_) {}
-      if (j.pair?.local) applyLocalChrome(true);
     } catch (e) {
       statusLine.textContent = "waiting for gateway…";
     }
@@ -618,9 +658,7 @@
 
   addBubble(
     "system",
-    isLocalMode
-      ? "StickLLM v0.3.1 — Models for downloads; Settings for WiFi / USB (Local needs no pair)."
-      : "StickLLM v0.3.1 — pair with the code on the stick screen. Models = catalog; Settings = WiFi / USB. No LAN yet? Use console stickllm-wifi-setup."
+    "StickLLM v0.3.1 — see Pair / IP / Model / URL above. Models = catalog; Settings = WiFi / USB. No LAN? Term console: stickllm-wifi-setup."
   );
   refreshStatus();
   setInterval(refreshStatus, 8000);

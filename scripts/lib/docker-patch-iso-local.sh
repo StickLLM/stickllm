@@ -47,6 +47,7 @@ rsync -a \
 rsync -a \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-bootstatus.service" \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-local.service" \
+  "$STICKLLM/overlay/etc/systemd/system/stickllm-kiosk.service" \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-console-setup.service" \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-ssh.service" \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-ui.service" \

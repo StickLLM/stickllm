@@ -133,9 +133,9 @@ Set the PC firmware to **boot the USB first** (see [docs/BOOT.md](docs/BOOT.md))
 
 | Entry | What you get |
 |---|---|
-| **1 StickLLM Server** | Console READY + pair code; phone/LAN browser chat over **HTTP**. |
-| **2 StickLLM Local** | Same-box **cage + Chromium** on the NVIDIA HDMI path (checkpoint). Keyboard via DRM + libinput. Loopback UI; no pair on this box. |
-| **3 StickLLM Term** | Console (tty2) or SSH — diagnose, `stickllm-wifi-setup`, `nvidia-smi`. SSH password is **random per boot** (shown on console). |
+| **1 StickLLM Chat** | On-stick browser (when display present) + LAN UI. Loopback needs no pair; phone/LAN uses pair code. Status banner shows pair / IP / model / URL. |
+| **2 StickLLM Term** | Console (tty2) or SSH — diagnose, `stickllm-wifi-setup`, `nvidia-smi`. SSH password is **random per boot** (shown on console). |
+| **3 StickLLM Client** | Coming later (menu stub). |
 | **4 StickLLM Failsafe** | No NVIDIA — recover from GPU/black-screen hangs (Term/SSH only). |
 
 ### WiFi (Server / Term / Local)
