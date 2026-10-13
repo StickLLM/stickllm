@@ -24,9 +24,7 @@
   const wifiPass = document.getElementById("wifiPass");
   const wifiConnect = document.getElementById("wifiConnect");
   const connectPair = document.getElementById("connectPair");
-  const connectIp = document.getElementById("connectIp");
   const connectModel = document.getElementById("connectModel");
-  const connectHow = document.getElementById("connectHow");
   const connectUrl = document.getElementById("connectUrl");
 
   const API_BASE = window.STICKLLM_API || "";
@@ -78,20 +76,29 @@
         (isLocalMode ? "…" : "(see stick screen)") ||
         "…";
     }
-    if (connectIp) {
-      connectIp.textContent = c.ip || (j.online ? "(checking…)" : "(no uplink yet)");
+    if (connectUrl) {
+      const url = c.url || (c.ip ? `http://${c.ip}/` : "") || c.local_url || "";
+      connectUrl.textContent = url || "…";
+      if (url && /^https?:\/\//i.test(url)) {
+        connectUrl.href = url;
+        connectUrl.removeAttribute("aria-disabled");
+      } else {
+        connectUrl.href = "#";
+        connectUrl.setAttribute("aria-disabled", "true");
+      }
     }
     if (connectModel) {
-      const ready = j.llama_ok ? "" : " (loading)";
-      connectModel.textContent = (c.model || "…") + ready;
-    }
-    if (connectHow) {
-      connectHow.textContent =
-        c.how ||
-        "Open the URL below on the same LAN and enter the PAIR CODE from the stick.";
-    }
-    if (connectUrl) {
-      connectUrl.textContent = c.url || c.local_url || "";
+      let name = (c.model || "").trim();
+      const placeholder = !name || /^loading/i.test(name) || name === "…";
+      if (j.llama_ok) {
+        if (placeholder) {
+          const path = (c.model_path || "").trim();
+          name = path ? path.split(/[/\\]/).pop() : "ready";
+        }
+        connectModel.textContent = name;
+      } else {
+        connectModel.textContent = placeholder ? "loading…" : `${name} (loading)`;
+      }
     }
   }
 
@@ -658,7 +665,7 @@
 
   addBubble(
     "system",
-    "StickLLM v0.3.1 — see Pair / IP / Model / URL above. Models = catalog; Settings = WiFi / USB. No LAN? Term console: stickllm-wifi-setup."
+    "StickLLM v0.3.1 — see Pair / URL / Model above.\n\nHow to connect: open the URL on the same LAN and enter the PAIR CODE from the stick screen.\n\nModels = catalog; Settings = WiFi / USB. No LAN? Term console: stickllm-wifi-setup."
   );
   refreshStatus();
   setInterval(refreshStatus, 8000);

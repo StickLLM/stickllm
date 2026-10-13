@@ -18,7 +18,7 @@ Environment=LD_LIBRARY_PATH=/opt/stickllm/lib
 Environment=STICKLLM_LLAMA_HOST=127.0.0.1
 Environment=STICKLLM_LLAMA_PORT=8080
 # Ensure run dir writable before pick-gpus (runs as User=stickllm-llama).
-ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true'
+ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true; if [[ ! -s /run/stickllm/model.env ]]; then cp -a /etc/stickllm/default-model.env /run/stickllm/model.env 2>/dev/null || true; chmod 644 /run/stickllm/model.env 2>/dev/null || true; fi'
 # Prep needs root (modprobe); + ignores User=. Soft-fail — never block CPU.
 ExecStartPre=+/bin/bash -c '/usr/local/bin/stickllm-nvidia-prep || true'
 # Leading - : failure never blocks start (also always exits 0 by contract).

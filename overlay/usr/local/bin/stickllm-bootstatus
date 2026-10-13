@@ -198,24 +198,34 @@ ensure_pair() {
     PAIR_STATE="paired"
     return
   fi
-  # Usable code = digits only (reject PAIRED / whitespace / CRLF junk).
+  sed -i 's/\r$//' /usr/local/bin/stickllm-pair 2>/dev/null || true
+  chmod 755 /usr/local/bin/stickllm-pair 2>/dev/null || true
+  # stickllm-pair keeps a fresh code or remints when TTL elapsed so HDMI + auth.json stay in sync.
+  pair_out="$(/usr/bin/env python3 /usr/local/bin/stickllm-pair 2>&1)" || \
+    pair_out="$(/usr/local/bin/stickllm-pair 2>&1)" || true
+  if [[ "${pair_out:-}" == "PAIRED" ]]; then
+    PAIR_STATE="paired"
+    return
+  fi
   PAIR_CODE="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
   if [[ ! "${PAIR_CODE:-}" =~ ^[0-9]{4,8}$ ]]; then
-    rm -f "$RUN/pair-code.txt"
-    sed -i 's/\r$//' /usr/local/bin/stickllm-pair 2>/dev/null || true
-    chmod 755 /usr/local/bin/stickllm-pair 2>/dev/null || true
-    # Prefer env python3 so a CRLF shebang cannot yield exec 127.
-    pair_out="$(/usr/bin/env python3 /usr/local/bin/stickllm-pair --force 2>&1)" || \
-      pair_out="$(/usr/local/bin/stickllm-pair --force 2>&1)" || true
-    PAIR_CODE="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
-    if [[ ! "${PAIR_CODE:-}" =~ ^[0-9]{4,8}$ ]]; then
-      if [[ "${pair_out:-}" =~ ^[0-9]{4,8}$ ]]; then
-        PAIR_CODE="$pair_out"
-        printf '%s\n' "$PAIR_CODE" >"$RUN/pair-code.txt" 2>/dev/null || true
-      else
-        serial_only "STICKLLM_PAIR_FAIL ${pair_out:-no_output}"
-        printf 'STICKLLM_PAIR_FAIL %s\n' "${pair_out:-no_output}" >>"$LOG" 2>/dev/null || true
-        PAIR_CODE=""
+    if [[ "${pair_out:-}" =~ ^[0-9]{4,8}$ ]]; then
+      PAIR_CODE="$pair_out"
+      printf '%s\n' "$PAIR_CODE" >"$RUN/pair-code.txt" 2>/dev/null || true
+    else
+      rm -f "$RUN/pair-code.txt"
+      pair_out="$(/usr/bin/env python3 /usr/local/bin/stickllm-pair --force 2>&1)" || \
+        pair_out="$(/usr/local/bin/stickllm-pair --force 2>&1)" || true
+      PAIR_CODE="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
+      if [[ ! "${PAIR_CODE:-}" =~ ^[0-9]{4,8}$ ]]; then
+        if [[ "${pair_out:-}" =~ ^[0-9]{4,8}$ ]]; then
+          PAIR_CODE="$pair_out"
+          printf '%s\n' "$PAIR_CODE" >"$RUN/pair-code.txt" 2>/dev/null || true
+        else
+          serial_only "STICKLLM_PAIR_FAIL ${pair_out:-no_output}"
+          printf 'STICKLLM_PAIR_FAIL %s\n' "${pair_out:-no_output}" >>"$LOG" 2>/dev/null || true
+          PAIR_CODE=""
+        fi
       fi
     fi
   fi

@@ -23,24 +23,21 @@
   </header>
 
   <section id="connectPanel" class="connectPanel" aria-label="Connection status">
-    <div class="connectGrid">
-      <div>
-        <div class="connectLabel">Pair code</div>
-        <div id="connectPair" class="connectValue connectPair">…</div>
-      </div>
-      <div>
-        <div class="connectLabel">LAN IP</div>
-        <div id="connectIp" class="connectValue">…</div>
-      </div>
-      <div>
-        <div class="connectLabel">Model</div>
-        <div id="connectModel" class="connectValue">…</div>
-      </div>
-      <div class="connectWide">
-        <div class="connectLabel">How to connect</div>
-        <div id="connectHow" class="connectValue connectHow">…</div>
-        <div id="connectUrl" class="connectUrl"></div>
-      </div>
+    <div class="connectLine">
+      <span class="connectCell">
+        <span class="connectLabel">Pair</span>
+        <span id="connectPair" class="connectValue connectPair">…</span>
+      </span>
+      <span class="connectSep" aria-hidden="true">|</span>
+      <span class="connectCell">
+        <span class="connectLabel">URL</span>
+        <a id="connectUrl" class="connectValue connectUrl" href="#" target="_blank" rel="noopener">…</a>
+      </span>
+      <span class="connectSep" aria-hidden="true">|</span>
+      <span class="connectCell">
+        <span class="connectLabel">Model</span>
+        <span id="connectModel" class="connectValue">…</span>
+      </span>
     </div>
   </section>
 
@@ -147,6 +144,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>

@@ -28,44 +28,59 @@ body {
 
 .connectPanel {
   margin: 0;
-  padding: 0.65rem 1.25rem 0.75rem;
+  padding: 0.4rem 1.25rem;
   border-bottom: 1px solid var(--line);
   background: rgba(26, 34, 28, 0.85);
 }
-.connectGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.65rem 1rem;
+.connectLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.65rem;
+  font-size: 0.9rem;
+  line-height: 1.35;
 }
-.connectWide { grid-column: 1 / -1; }
+.connectCell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.connectSep {
+  color: var(--line);
+  font-weight: 600;
+  user-select: none;
+}
 .connectLabel {
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
-  margin-bottom: 0.2rem;
+  flex-shrink: 0;
 }
 .connectValue {
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-weight: 600;
   color: var(--ink);
-  word-break: break-word;
+  word-break: break-all;
 }
 .connectPair {
   font-family: var(--mono);
-  font-size: 1.35rem;
-  letter-spacing: 0.12em;
+  font-size: 1rem;
+  letter-spacing: 0.1em;
   color: var(--accent);
 }
-.connectHow { font-weight: 500; font-size: 0.88rem; color: var(--muted); }
 .connectUrl {
   font-family: var(--mono);
-  font-size: 0.85rem;
+  font-size: 0.88rem;
+  font-weight: 600;
   color: var(--accent);
-  margin-top: 0.25rem;
+  text-decoration: none;
 }
+.connectUrl:hover { text-decoration: underline; }
 @media (max-width: 720px) {
-  .connectGrid { grid-template-columns: 1fr 1fr; }
+  .connectSep { display: none; }
+  .connectLine { gap: 0.25rem 1rem; }
 }
 
 .top {

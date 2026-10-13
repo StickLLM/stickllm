@@ -97,26 +97,50 @@ def read_text_safe(path: Path) -> str:
         return ""
 
 
-def connect_info(loopback: bool) -> dict:
-    """IP / model / URL (+ pair code on loopback only) for the on-stick status banner."""
-    ip = read_text_safe(RUN_DIR / "lan-ip.txt")
+def _parse_env_kv(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def resolve_model() -> tuple[str, str]:
+    """Return (display_name, model_path) from runtime env, defaults, or llama breadcrumb."""
     model_name = ""
     model_path = ""
-    envf = RUN_DIR / "model.env"
-    if envf.is_file():
-        for line in read_text_safe(envf).splitlines():
-            if "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            k, v = k.strip(), v.strip().strip('"').strip("'")
-            if k == "STICKLLM_MODEL_NAME":
-                model_name = v
-            elif k == "STICKLLM_MODEL":
-                model_path = v
+    for envf in (RUN_DIR / "model.env", Path("/etc/stickllm/default-model.env")):
+        if not envf.is_file():
+            continue
+        kv = _parse_env_kv(read_text_safe(envf))
+        if not model_name:
+            model_name = kv.get("STICKLLM_MODEL_NAME") or ""
+        if not model_path:
+            model_path = kv.get("STICKLLM_MODEL") or ""
+        if model_name and model_path:
+            break
+    if not model_path:
+        rt = RUN_DIR / "llama-runtime.env"
+        if rt.is_file():
+            kv = _parse_env_kv(read_text_safe(rt))
+            model_path = kv.get("model") or kv.get("STICKLLM_MODEL") or ""
     if not model_name and model_path:
         model_name = Path(model_path).name
+    return model_name, model_path
+
+
+def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
+    """IP / model / URL (+ pair code on loopback only) for the on-stick status banner."""
+    ip = read_text_safe(RUN_DIR / "lan-ip.txt")
+    model_name, model_path = resolve_model()
     if not model_name:
-        model_name = "loading…"
+        # llama ready but env missing → still show a real label, not a stuck "loading…"
+        model_name = "ready" if llama_ok else "loading…"
+    elif model_name.lower().startswith("loading") and llama_ok:
+        model_name = Path(model_path).name if model_path else "ready"
     scheme = "https" if (RUN_DIR / "tls.enabled").is_file() else "http"
     url = f"{scheme}://{ip}/" if ip else f"{scheme}://<lan-ip>/"
     local_url = "http://127.0.0.1/"
@@ -431,7 +455,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "llama_ok": llama_ok,
                 "pair": pair,
                 "external_api": False,
-                "connect": connect_info(self._is_loopback()),
+                "connect": connect_info(self._is_loopback(), llama_ok=llama_ok),
             }
             if path == "/api/health":
                 self._json(200, data)
@@ -509,7 +533,14 @@ class Handler(SimpleHTTPRequestHandler):
             if not auth.get("code_hash"):
                 self._json(503, {"error": "pairing not initialized — reboot stick"})
                 return
-            if code_expired(auth):
+            expect = str(auth.get("code_hash") or "")
+            got = hashlib.sha256(code.encode()).hexdigest()
+            # Accept the code currently shown on the stick even after TTL.
+            # TTL only drives remint (stickllm-pair / bootstatus); rejecting a
+            # still-displayed matching code caused "expired" while the HDMI code worked.
+            if expect and hmac.compare_digest(got, expect):
+                pass
+            elif code_expired(auth):
                 pair_rate_fail()
                 self._json(
                     403,
@@ -519,9 +550,7 @@ class Handler(SimpleHTTPRequestHandler):
                     },
                 )
                 return
-            expect = str(auth.get("code_hash") or "")
-            got = hashlib.sha256(code.encode()).hexdigest()
-            if not expect or not hmac.compare_digest(got, expect):
+            elif not expect or not hmac.compare_digest(got, expect):
                 pair_rate_fail()
                 self._json(403, {"error": "bad_code", "message": "Wrong code — check the stick screen."})
                 return
