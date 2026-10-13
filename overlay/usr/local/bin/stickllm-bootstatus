@@ -245,9 +245,17 @@ probe_services() {
   [[ "$gw_ok" -eq 0 ]] && curl -fkS --max-time 1 "https://127.0.0.1/api/pair/status" >/dev/null 2>&1 && gw_ok=1
   [[ "$gw_ok" -eq 0 ]] && curl -fsS --max-time 1 "http://127.0.0.1/api/health" >/dev/null 2>&1 && gw_ok=1
   [[ "$ui_ok" -eq 1 || "$gw_ok" -eq 1 ]] && ui_ok=1
-  # Model readiness = llama :8080 (not gateway /health, which is 503 while loading).
-  curl -fsS --max-time 1 "http://127.0.0.1:8080/health" >/dev/null 2>&1 && api_ok=1
-  [[ "$api_ok" -eq 0 ]] && curl -fsS --max-time 1 "$API/health" >/dev/null 2>&1 && api_ok=1
+  # Model readiness = llama :8080 /health (not gateway — /api/health is always HTTP 200).
+  curl -fsS --max-time 2 "http://127.0.0.1:8080/health" >/dev/null 2>&1 && api_ok=1
+  [[ "$api_ok" -eq 0 ]] && curl -fsS --max-time 2 "$API/health" >/dev/null 2>&1 && api_ok=1
+  # After API-kill, never treat OpenAI /v1 as readiness — only llama_ok on gateway.
+  if [[ "$api_ok" -eq 0 ]]; then
+    local gw_body
+    gw_body="$(curl -fsS --max-time 2 "http://127.0.0.1/api/health" 2>/dev/null || true)"
+    if printf '%s' "$gw_body" | grep -Eq '"llama_ok"[[:space:]]*:[[:space:]]*true'; then
+      api_ok=1
+    fi
+  fi
 }
 
 handoff_local_chat() {
@@ -256,6 +264,9 @@ handoff_local_chat() {
   mkdir -p "$RUN"
   touch "$RUN/allow-local-chat"
   touch "$RUN/local-mode"
+  # Keep llama starting even after we leave the loading loop (ui can precede api).
+  systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+  dump_svc_diag
   serial_only "STICKLLM_LOCAL_HANDOFF"
   printf 'STICKLLM_LOCAL_HANDOFF\n' >>"$LOG" 2>/dev/null || true
   # Prefer on-stick browser kiosk; do not start tty local-chat in parallel (blank fight).
@@ -345,9 +356,10 @@ detect_phase() {
       echo "STICKLLM Model (${MODEL_NAME}) Loading"
       return
     fi
-    # Hand off to on-stick browser kiosk once gateway is up OR model already answers.
-    # Kiosk owns tty1 (cage+cog); falls back to local-chat if packages missing.
-    if [[ "$api_ok" -eq 1 || "$ui_ok" -eq 1 ]]; then
+    # Require BOTH gateway UI and llama /health. Yielding on ui-only froze
+    # STICKLLM_HEALTH at api=0 while CPU model was still loading (~100s in QEMU).
+    # Kiosk owns tty1 after READY (cage+cog); falls back to local-chat if missing.
+    if [[ "$api_ok" -eq 1 && "$ui_ok" -eq 1 ]]; then
       echo "READY"
       return
     fi
@@ -704,6 +716,23 @@ ready_drawn=0
 ui_ok=0
 api_ok=0
 gw_ok=0
+_svc_diag_dumped=0
+dump_svc_diag() {
+  [[ -w /dev/ttyS0 ]] || return 0
+  {
+    printf '\n===== STICKLLM_SVC_DIAG BEGIN =====\n'
+    printf 'elapsed=%s ui=%s api=%s\n' "${SECONDS}" "${ui_ok}" "${api_ok}"
+    printf 'passwd stickllm-llama: '; getent passwd stickllm-llama || echo MISSING
+    ls -la /usr/local/bin/stickllm-llama-start 2>&1 || true
+    ls -lad /var/lib/stickllm /mnt/stickllm-data 2>&1 || true
+    ls -la /opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf 2>&1 || true
+    systemctl status stickllm-ui.service --no-pager -l 2>&1 | head -50 || true
+    systemctl status stickllm-llama.service --no-pager -l 2>&1 | head -50 || true
+    journalctl -b -u stickllm-ui.service --no-pager -n 50 2>&1 || true
+    journalctl -b -u stickllm-llama.service --no-pager -n 50 2>&1 || true
+    printf '===== STICKLLM_SVC_DIAG END =====\n'
+  } >/dev/ttyS0 2>/dev/null || true
+}
 while (( SECONDS < deadline )); do
   ip="$(lan_ip)"
   # Local also needs uplink for Web lookup (ISS-001) — kick ETH/WiFi NM.
@@ -716,7 +745,16 @@ while (( SECONDS < deadline )); do
   fi
   # Keep gateway up even while waiting for DHCP.
   systemctl start --no-block stickllm-control.service stickllm-ui.service 2>/dev/null || true
+  # Local QEMU: also keep llama (CPU) started for api=1.
+  if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+    systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+  fi
   probe_services
+  # Delayed serial dump if UI or API still down (captures 226/NAMESPACE / llama fail).
+  if [[ "$_svc_diag_dumped" -eq 0 && "$SECONDS" -ge 45 && ( "$ui_ok" -eq 0 || "$api_ok" -eq 0 ) ]]; then
+    _svc_diag_dumped=1
+    dump_svc_diag
+  fi
 
   phase="$(detect_phase "$ui_ok" "$api_ok" "${ip:-}")"
   if [[ "$mode" != "local" && "$LOCAL_YIELD" -ne 1 && "$ui_ok" -eq 1 ]]; then
@@ -724,7 +762,7 @@ while (( SECONDS < deadline )); do
   fi
   if [[ "$phase" == "READY" ]]; then
     if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
-      # Local: UI or model is enough to leave the loading screen and start console chat.
+      # Local: ui+api both required (detect_phase); then hand off to kiosk/chat.
       draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
       ready_drawn=1
       sleep 2

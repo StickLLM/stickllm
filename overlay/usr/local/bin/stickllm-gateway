@@ -351,10 +351,12 @@ class Handler(SimpleHTTPRequestHandler):
             llama: dict = {}
             llama_ok = False
             try:
+                # Probe llama.cpp /health only (never /v1 — external API surface is killed).
                 llama = http_json(LLAMA + "/health", timeout=3)
                 st = str(llama.get("status") or "").lower()
-                llama_ok = st in ("ok", "healthy", "") or llama.get("error") in (None, "")
-                if "error" in llama and llama.get("error"):
+                # Require explicit healthy status — empty/missing must not count as ready.
+                llama_ok = st in ("ok", "healthy")
+                if llama.get("error"):
                     llama_ok = False
             except Exception as e:
                 llama = {"status": "down", "error": friendly_llama_error(e)}
