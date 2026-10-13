@@ -12,6 +12,28 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-019 — GRUB theme selected entry invisible (pixmap style)
+| | |
+|---|---|
+| **ID** | ISS-019 |
+| **Date** | 2026-10-12 |
+| **Mode** | all (boot menu) |
+| **Severity** | MEDIUM |
+| **Status** | Open |
+| **Summary** | GRUB theme `selected_item_pixmap_style` (and/or `item_pixmap_style` / menu `pixmap_style`) is effectively `/boot/grub/` with no `*`, so GRUB errors **"missing '*' in box pixmap pattern"** and draws the selected menu entry invisible. |
+
+**Notes**
+- Confirmed in repo: [`boot/grub/theme.txt`](boot/grub/theme.txt) — `selected_item_pixmap_style = ""` (empty; GRUB treats as `/boot/grub/` / non-pattern). No 9-slice `select_*.png` pieces present.
+- Also has `selected_item_color = #0f1410` (near-black); even without pixmap, selection may stay hard to see — set a clearly visible selected color.
+- UX/boot-menu only; does not block boot if the default entry is correct.
+
+**Ask**
+1. Either point `selected_item_pixmap_style` at real 9-slice images (e.g. `themes/stickllm/select_*.png` with `_n`, `_ne`, `_e`, `_se`, `_s`, `_sw`, `_w`, `_nw`, `_c`) **or** remove the line and rely on `selected_item_color` only.
+2. Set a **visible** `selected_item_color` (contrast against splash / menu band).
+3. Test in QEMU with the highlight on each boot-menu entry (screenshot proof).
+
+---
+
 ### ISS-018 — CPU fallback broken (ASUS laptop, no NVIDIA)
 | | |
 |---|---|
