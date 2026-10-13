@@ -1,0 +1,44 @@
+---
+description: Shipping versions are immutable; never overwrite released v0.2 artifacts when building later versions
+alwaysApply: true
+---
+
+# Preserve shipping versions
+
+Shipping releases are immutable. Versions exist so a known-good ship stays recoverable.
+
+## N-2 rolling window + golden
+
+Keep the **last two** recoverable ships (**N** and **N-1**) plus Drive golden forever. See [docs/RESTORE.md](docs/RESTORE.md).
+
+Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship):
+
+- **Golden (forever):** `v0.2.0` / Drive ISO / `checksums/v0.2.sha256`
+- **N-1:** `v0.2.1-local-nvidia-kbd` / `out/v0.2.1-local-nvidia-kbd/` / `checksums/v0.2-local-nvidia-kbd.sha256`
+- **N:** `v0.3.0` / `out/v0.3.0/` apiready ISO / `checksums/v0.3.sha256` (`f3db9113…`)
+
+## Never overwrite
+
+- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.2.1-local-nvidia-kbd`, `v0.3.0`, or any published shipping tag.
+- Do **not** change or replace published checksum files once shipped.
+- Do **not** overwrite the Drive / StickLLM-releases **v0.2** ISO artifact (hash `4914087d…`).
+- Do **not** flash or publish a later build under an existing release name if contents differ.
+- When cutting **v0.4+**, do **not** delete N/N-1 tags or their `out/<version>/` ISO directories.
+
+## New work gets new names
+
+- New product work → new tag (`v0.4.0`, `v0.3.1`, …), new `out/<version>/` ISO filename, new checksum file.
+- Rebuilds of an older line → distinct name, e.g. `out/stickllm-amd-rtx3090-v0.2-rebuild.iso`. Compare hash to the shipping checksum; report bit-identical if equal.
+- WIP / abandoned experiments → branch only (`wip/…`); never replace a shipping tag or Drive ISO.
+
+## Examples
+
+```text
+❌ BAD: build v0.4 and delete out/v0.3.0/ or tag -d v0.3.0
+❌ BAD: build v0.3 and write over out/stickllm-amd-rtx3090.hybrid.iso (the v0.2 Drive ship)
+❌ BAD: git tag -f v0.2.0 <new-commit>
+❌ BAD: edit checksums/v0.2.sha256 to match a different ISO
+
+✅ GOOD: out/v0.3.0/…apiready…iso + checksums/v0.3.sha256 + tag v0.3.0
+✅ GOOD: out/v0.4.0/… + checksums/v0.4.sha256 + tag v0.4.0 (keep v0.3.0 + v0.2.1 dirs/tags)
+```

@@ -17,16 +17,20 @@ to the USB or internal disks unless you explicitly approve a write.
 | X / Twitter | [@stickllm](https://x.com/stickllm) |
 | Web | [stickllm.org](https://stickllm.org) |
 
-## Shipping vs checkpoint
+## Shipping vs N-2 restore
 
-| | Drive golden **v0.2.0** | Checkpoint **v0.2.1-local-nvidia-kbd** |
-|---|---|---|
-| Tag | [`v0.2.0`](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) (`c63fadc`) | [`v0.2.1-local-nvidia-kbd`](https://github.com/StickLLM/stickllm/releases/tag/v0.2.1-local-nvidia-kbd) |
-| ISO | `stickllm-amd-rtx3090-v0.2.hybrid.iso` (Google Drive) | `out/v0.2.1-local-nvidia-kbd/stickllm-amd-rtx3090-v0.2-local-nvidia-kbd.hybrid.iso` |
-| SHA-256 | [`checksums/v0.2.sha256`](checksums/v0.2.sha256) → `4914087d…` | [`checksums/v0.2-local-nvidia-kbd.sha256`](checksums/v0.2-local-nvidia-kbd.sha256) → `9F665ACA…` |
-| Role | Immutable ship — **do not overwrite** | Restore point for Local cage + Chromium + keyboard |
+Keep the **last two recoverable ships** (N and N-1) plus the Drive golden forever. Details: [docs/RESTORE.md](docs/RESTORE.md).
 
-Golden baseline details: [docs/BASELINE-v0.2.md](docs/BASELINE-v0.2.md). Roadmap: [FEATURES.md](FEATURES.md). Issues: [ISSUES.md](ISSUES.md).
+| | Drive golden **v0.2.0** | **N-1** `v0.2.1-local-nvidia-kbd` | **N** `v0.3.0` |
+|---|---|---|---|
+| Tag | [`v0.2.0`](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) | [`v0.2.1-local-nvidia-kbd`](https://github.com/StickLLM/stickllm/releases/tag/v0.2.1-local-nvidia-kbd) | [`v0.3.0`](https://github.com/StickLLM/stickllm/releases/tag/v0.3.0) |
+| ISO | Drive `stickllm-amd-rtx3090-v0.2.hybrid.iso` | `out/v0.2.1-local-nvidia-kbd/…v0.2-local-nvidia-kbd.hybrid.iso` | `out/v0.3.0/…v0.3-apiready.hybrid.iso` |
+| SHA-256 | [`checksums/v0.2.sha256`](checksums/v0.2.sha256) → `4914087d…` | [`checksums/v0.2-local-nvidia-kbd.sha256`](checksums/v0.2-local-nvidia-kbd.sha256) → `9F665ACA…` | [`checksums/v0.3.sha256`](checksums/v0.3.sha256) → `f3db9113…` |
+| Role | Immutable forever | Previous ship — do not delete when cutting v0.4 | Current ship |
+
+When cutting **v0.4+**: new tag + new `out/<version>/` + new checksum; **never** delete N/N-1 tags or ISO dirs; **never** overwrite Drive `v0.2.0`.
+
+Golden baseline: [docs/BASELINE-v0.2.md](docs/BASELINE-v0.2.md). Roadmap: [FEATURES.md](FEATURES.md). Issues: [ISSUES.md](ISSUES.md).
 
 ## Download golden v0.2 ISO
 
@@ -54,9 +58,22 @@ Tag:      git checkout v0.2.1-local-nvidia-kbd
 # expect 9F665ACAA0D60B9DE822781A3A3A3F56C6C4924536E677599C09DBC8D339A1FC
 ```
 
+## Restore v0.3.0 (N)
+
+```text
+ISO:      out/v0.3.0/stickllm-amd-rtx3090-v0.3-apiready.hybrid.iso
+Checksum: checksums/v0.3.sha256
+Tag:      git checkout v0.3.0
+```
+
+```powershell
+(Get-FileHash .\out\v0.3.0\stickllm-amd-rtx3090-v0.3-apiready.hybrid.iso -Algorithm SHA256).Hash
+# expect F3DB91133AE6FD1CAACAFD385A61DA6949064F32AC60045378BE4D69441FC218
+```
+
 ## v0.3.0 notes
 
-- ISO: `stickllm-amd-rtx3090-v0.3-apiready.hybrid.iso` + [`checksums/v0.3.sha256`](checksums/v0.3.sha256) (`f3db9113…`) — **does not** overwrite Drive golden v0.2.
+- ISO: `out/v0.3.0/stickllm-amd-rtx3090-v0.3-apiready.hybrid.iso` + [`checksums/v0.3.sha256`](checksums/v0.3.sha256) (`f3db9113…`) — **does not** overwrite Drive golden v0.2.
 - llama binds **127.0.0.1:8080** only; CPU fallback when no NVIDIA; external OpenAI LAN API removed (StickLLM UI only).
 - SSH: random per-boot password; pairing rate-limit/expiry/CSP; WiFi SSID UI; model delete; kiosk packages in live-build list.
 - HW: RTX 3090 desktop + Asus laptop (no NVIDIA); Local WiFi OK; CPU path OK.
