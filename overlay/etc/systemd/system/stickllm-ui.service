@@ -1,7 +1,10 @@
 [Unit]
 Description=StickLLM chat UI + web gateway (HTTP :80)
-After=network-online.target stickllm-llama.service stickllm-control.service
-Wants=network-online.target stickllm-control.service
+# Start as soon as control/pair exists — do not wait for llama or network-online.
+# LAN browsers need the pair page while the model is still loading.
+After=local-fs.target stickllm-console-setup.service stickllm-control.service network-pre.target
+Wants=stickllm-control.service
+# Never block UI on NetworkManager-wait-online (masked) or DHCP.
 
 [Service]
 Type=simple
@@ -9,12 +12,14 @@ Environment=STICKLLM_UI=/opt/stickllm/ui
 Environment=STICKLLM_API=http://127.0.0.1:8080
 Environment=STICKLLM_BIND=0.0.0.0
 Environment=STICKLLM_PORT=80
+ExecStartPre=/usr/bin/mkdir -p /run/stickllm
 ExecStart=/usr/local/bin/stickllm-gateway
 Restart=on-failure
-RestartSec=3
-# Needs outbound HTTPS when Web lookup is used
+RestartSec=2
+# Bind :80 as root; keep UI readable under ProtectSystem.
 ProtectSystem=full
 ProtectHome=true
+ReadWritePaths=/run/stickllm /var/lib/stickllm /tmp
 NoNewPrivileges=true
 
 [Install]

@@ -6,7 +6,7 @@ default_mode = "ephemeral"
 
 [inference]
 binary = "/opt/stickllm/bin/llama-server"
-model = "/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
+model = "/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 host = "0.0.0.0"
 port = 8080
 ctx_size = 8192

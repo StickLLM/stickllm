@@ -2,7 +2,7 @@
 Description=StickLLM console/SSH user setup
 DefaultDependencies=no
 After=local-fs.target
-Before=stickllm-bootstatus.service ssh.service sshd.service getty@tty1.service
+Before=stickllm-bootstatus.service ssh.service sshd.service getty@tty1.service getty@tty2.service
 
 [Service]
 Type=oneshot

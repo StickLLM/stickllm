@@ -1,10 +1,11 @@
 [Unit]
-Description=StickLLM local console chat (this PC screen/keyboard)
+Description=StickLLM local console chat fallback (tty1; used if kiosk/browser missing)
 ConditionKernelCommandLine=stickllm.local
-After=stickllm-llama.service stickllm-ui.service stickllm-bootstatus.service stickllm-console-setup.service
-Wants=stickllm-llama.service stickllm-ui.service
-Conflicts=getty@tty1.service
-ConditionPathExists=/usr/local/bin/stickllm-local-chat
+# Only when kiosk unit cannot start — primary Local UI is stickllm-kiosk.
+ConditionPathExists=/run/stickllm/allow-local-chat-fallback
+After=stickllm-bootstatus.service stickllm-console-setup.service stickllm-ui.service
+Wants=stickllm-ui.service stickllm-llama.service
+Conflicts=getty@tty1.service stickllm-kiosk.service
 
 [Service]
 Type=simple
@@ -13,11 +14,12 @@ Restart=on-failure
 RestartSec=2
 StandardInput=tty
 StandardOutput=tty
-StandardError=tty
+StandardError=journal
 TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
 Environment=STICKLLM_API=http://127.0.0.1
+Environment=STICKLLM_LLAMA=http://127.0.0.1:8080
 Environment=STICKLLM_TTY=/dev/tty1
 
 [Install]

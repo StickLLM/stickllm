@@ -1,4 +1,4 @@
-# StickLLM v0.1 amd-rtx3090
+# StickLLM amd-rtx3090 — single source of truth for live-build packages (ISS-010).
 live-boot
 live-config
 live-config-systemd
@@ -24,9 +24,22 @@ libgomp1
 firmware-linux
 firmware-linux-nonfree
 firmware-misc-nonfree
+firmware-iwlwifi
+firmware-realtek
+firmware-atheros
+wpasupplicant
+wireless-tools
 nvidia-driver
 nvidia-driver-libs
 nvidia-kernel-dkms
 nvidia-smi
 libcuda1
 nvidia-persistenced
+# Local-mode kiosk (cage Wayland + Chromium + seatd/libinput)
+cage
+chromium
+seatd
+libinput-bin
+libinput10
+xwayland
+fonts-dejavu-core

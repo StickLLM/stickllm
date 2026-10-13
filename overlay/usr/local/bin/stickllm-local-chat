@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Fullscreen console chat on tty1 — for StickLLM local boot mode."""
+"""Fullscreen console chat on tty1 — StickLLM Local boot mode (no LAN pair).
+
+Waits for llama to answer /health (gateway-up alone is NOT chat-ready).
+Shows real llama/GPU hints so Local does not look hung for 10+ minutes.
+"""
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 
-# Prefer gateway (:80) so local chat can use web lookup too.
 API = os.environ.get("STICKLLM_API", "http://127.0.0.1").rstrip("/")
+LLAMA = os.environ.get("STICKLLM_LLAMA", "http://127.0.0.1:8080").rstrip("/")
 TTY = os.environ.get("STICKLLM_TTY", "/dev/tty1")
+RUN = os.environ.get("STICKLLM_RUN", "/run/stickllm")
+WAIT_SECS = int(os.environ.get("STICKLLM_LOCAL_CHAT_WAIT_SECS", "600"))
 
 
 def open_tty():
@@ -26,23 +33,169 @@ def write(stream, msg: str = "") -> None:
     stream.flush()
 
 
-def wait_ready(stream) -> None:
-    write(stream, "StickLLM local — waiting for model…")
-    deadline = time.time() + 600
-    while time.time() < deadline:
+def serial(msg: str) -> None:
+    print(msg, flush=True)
+    try:
+        with open("/dev/ttyS0", "w", encoding="utf-8", errors="replace") as ser:
+            ser.write(msg + "\n")
+            ser.flush()
+    except Exception:
+        pass
+
+
+def http_json(url: str, timeout: float = 2.0):
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            body = r.read().decode("utf-8", "replace")
+            if r.status != 200:
+                return None, r.status, body[:200]
+            try:
+                return json.loads(body), r.status, body[:200]
+            except Exception:
+                return {"raw": True}, r.status, body[:200]
+    except urllib.error.HTTPError as e:
         try:
-            with urllib.request.urlopen(API + "/health", timeout=2) as r:
-                if r.status == 200:
-                    write(stream, "Model ready. Type a message (empty line quits).")
-                    write(stream, "LAN UI still available on port 80.\n")
-                    return
+            body = e.read().decode("utf-8", "replace")
+        except Exception:
+            body = str(e)
+        try:
+            return json.loads(body), e.code, body[:200]
+        except Exception:
+            return None, e.code, body[:200]
+    except Exception as e:
+        return None, 0, str(e)[:200]
+
+
+def http_ok(url: str, timeout: float = 2.0) -> bool:
+    data, status, _ = http_json(url, timeout=timeout)
+    return status == 200 and data is not None
+
+
+def kick_llama() -> None:
+    try:
+        subprocess.run(
+            ["systemctl", "start", "stickllm-llama.service"],
+            timeout=15,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
+def llama_unit_state() -> str:
+    try:
+        r = subprocess.run(
+            ["systemctl", "is-active", "stickllm-llama.service"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return (r.stdout or r.stderr or "unknown").strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def nvidia_hint() -> str:
+    for cmd in (
+        ["nvidia-smi", "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader"],
+        ["nvidia-smi", "-L"],
+    ):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=8, check=False)
+            line = (r.stdout or "").strip().splitlines()
+            if line:
+                return line[0][:80]
+        except Exception:
+            continue
+    if os.path.exists("/dev/nvidia0"):
+        return "nvidia0 present"
+    return "no nvidia device"
+
+
+def model_hint() -> str:
+    envf = os.path.join(RUN, "model.env")
+    if os.path.isfile(envf):
+        try:
+            for line in open(envf, encoding="utf-8", errors="replace"):
+                if line.startswith("STICKLLM_MODEL="):
+                    path = line.split("=", 1)[1].strip().strip('"')
+                    if path:
+                        return f"{path} exists={os.path.isfile(path)}"
         except Exception:
             pass
-        stream.write(".")
-        stream.flush()
+    baked3 = "/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+    baked7 = "/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
+    if os.path.isfile(baked3):
+        return f"{baked3} exists=True (default)"
+    return f"{baked7} exists={os.path.isfile(baked7)}"
+
+
+def wait_ready(stream) -> None:
+    write(stream, "StickLLM Local — on this PC (no phone pair)")
+    write(stream, "Waiting for model (console chat)…")
+    write(stream, "Note: Local mode has no SSH — use menu 3 Term if you need remote debug.")
+    serial("STICKLLM_LOCAL_CHAT_START")
+    kick_llama()
+
+    deadline = time.time() + WAIT_SECS
+    n = 0
+    last_kick = 0.0
+    while time.time() < deadline:
+        if http_ok(LLAMA + "/health"):
+            write(stream, "")
+            write(stream, "Model ready. Type a message (empty line quits).")
+            write(stream, "Chat is on this keyboard/screen — no pair code.\n")
+            serial("STICKLLM_LOCAL_CHAT_READY")
+            return
+
+        n += 1
+        now = time.time()
+        # Re-kick llama periodically if the unit is dead.
+        unit = llama_unit_state()
+        if unit not in ("active", "activating") and (now - last_kick) > 20:
+            kick_llama()
+            last_kick = now
+
+        if n == 1 or n % 5 == 0:
+            gw_data, gw_status, _ = http_json(API + "/api/health")
+            gw = "up" if gw_status == 200 else f"http_{gw_status}"
+            llama_note = "down"
+            if isinstance(gw_data, dict):
+                if gw_data.get("llama_ok"):
+                    llama_note = "ok"
+                else:
+                    llama = gw_data.get("llama") or {}
+                    err = ""
+                    if isinstance(llama, dict):
+                        err = str(llama.get("error") or llama.get("status") or "")[:60]
+                    llama_note = f"down:{err}" if err else "down"
+            elapsed = n * 2
+            write(
+                stream,
+                f"  status: waiting for model…  gateway={gw}  llama={llama_note}  unit={unit}  ({elapsed}s)",
+            )
+            if n == 1 or n % 15 == 0:
+                write(stream, f"  gpu: {nvidia_hint()}")
+                write(stream, f"  model: {model_hint()}")
+                if elapsed >= 120 and unit not in ("active", "activating"):
+                    write(stream, "  hint: llama unit not active — GPU driver or model path may be failing.")
+                    write(stream, "  hint: reboot menu 3 Term + SSH for journalctl -u stickllm-llama")
         time.sleep(2)
-    write(stream, "\nTimed out. Check stickllm-status / LAN http://IP/")
-    sys.exit(1)
+
+    write(stream, "")
+    write(stream, "Timed out waiting for model.")
+    write(stream, f"  llama unit: {llama_unit_state()}")
+    write(stream, f"  gpu: {nvidia_hint()}")
+    write(stream, f"  model: {model_hint()}")
+    write(stream, "  Reboot menu 3 (Term) for SSH diagnostics, or power-cycle and retry Local.")
+    write(stream, "  Staying on this screen (not looping).")
+    serial("STICKLLM_LOCAL_CHAT_TIMEOUT")
+    # Hold tty — do not exit non-zero (avoids service reopen spam).
+    while True:
+        time.sleep(3600)
 
 
 def chat(messages: list[dict], prompt: str) -> str:
@@ -75,7 +228,6 @@ def main() -> int:
         stream = sys.stdout
         stdin = sys.stdin
     else:
-        # Drive the console from the TTY for input as well.
         sys.stdin = stream
         stdin = stream
 
@@ -84,6 +236,7 @@ def main() -> int:
         write(stream, "========================================")
         write(stream, "  StickLLM LOCAL")
         write(stream, "========================================")
+        write(stream, "")
         wait_ready(stream)
         messages = [
             {

@@ -13,7 +13,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P1 Distinct failsafe/survival Local path vs full Local browser product UI
 - [ ] P1 AMD GPUs (ROCm or Vulkan)
 - [ ] P1 Intel Arc / iGPU (Vulkan or SYCL)
-- [ ] P1 CPU-only fallback
+- [x] P1 CPU-only fallback (v0.3: CPU llama binary + `-ngl 0`, RAM fits check)
 - [ ] P1 Auto-detect which GPU the monitor is on; pick DRM device automatically
 - [ ] P2 Multi-GPU model splitting
 - [ ] P2 GPU power/thermal limits (laptops)
@@ -22,10 +22,10 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 ## Models
 - [x] Small model built into the stick
 - [x] Download models from menu to data partition
-- [ ] P0 Delete models from data partition
-- [ ] P0 Accurate loaded-model identity in UI/status (show what's actually loaded)
-- [ ] P0 Model load progress UX — clear Loading model / progress so Term/LAN 503 isn't mistaken for broken pairing
-- [ ] P0 Signed model catalog, pinned SHA-256, re-checked at load
+- [x] P0 Delete models from data partition (v0.3; baked-in models protected)
+- [x] P0 Accurate loaded-model identity in UI/status (show what's actually loaded)
+- [x] P0 Model load progress UX — clear Loading model / progress so Term/LAN 503 isn't mistaken for broken pairing
+- [x] P0 Signed model catalog, pinned SHA-256, re-checked at load (v0.3: fatal sha256 on download)
 - [ ] P1 VRAM-based model suggestions
 - [ ] P1 Vision models (restore image input; mmproj hash-pinned)
 - [ ] P1 Download unsupported models with explicit warning
@@ -70,8 +70,8 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P2 Image input (upload, paste, phone camera)
 
 ## Client and networking
-- [ ] P0 WiFi setup (SSID + password) — credentials UI for StickLLM, especially Local Web / outbound internet
-  - Today: Ethernet DHCP only; no WiFi credentials UI
+- [x] P0 WiFi setup (SSID + password) — Models → Network UI; NM profile on STICKLLM-DATA (v0.3)
+  - Ethernet DHCP still default; WiFi credentials via Chat UI
 - [ ] P0 Client USB stick (boots straight to browser)
 - [ ] P0 Pairing via QR / on-screen code with pinned TLS cert
 - [ ] P1 Trusted HTTPS with no browser warnings (Plex-style; StickLLM web clients only)
@@ -84,7 +84,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P2 Self-hostable rendezvous
 - [ ] P2 Tor onion service for remote access (no open ports)
 - [ ] P2 Model downloads over Tor (hash-verified)
-- [~] ~~P2 OpenAI-compatible API for LAN apps (token from pairing)~~ — **removed next version** (ISS-004): do not ship an external/OpenAI LAN API; privacy path = StickLLM-controlled UI only (Local + Server/Term web). Pairing may stay for the StickLLM web client if needed.
+- [x] ~~P2 OpenAI-compatible API for LAN apps~~ — **removed in v0.3** (ISS-004): StickLLM UI only (`/api/chat` + `X-StickLLM-Client`); `/v1/chat/completions` returns 410 for third parties.
 - [ ] P2 Multi-user server, separate vault per client
 
 ## Mobile

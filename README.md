@@ -9,10 +9,11 @@ to the USB or internal disks unless you explicitly approve a write.
 | | |
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
-| Shipping | **v0.2.0** (Drive / Samsung golden) |
+| Shipping golden | **v0.2.0** (Drive / Samsung — immutable) |
+| Current line | **v0.3.0** (harden + CPU fallback + Local WiFi/UI) |
 | Checkpoint | **v0.2.1-local-nvidia-kbd** (Local browser + keyboard on NVIDIA) |
 | Profile | **AMD desktop CPU · 32 GB RAM · NVIDIA RTX 3090 (24 GB)** |
-| Release | [v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) |
+| Release | [v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) · tag `v0.3.0` when proven |
 | X / Twitter | [@stickllm](https://x.com/stickllm) |
 | Web | [stickllm.org](https://stickllm.org) |
 
@@ -53,10 +54,17 @@ Tag:      git checkout v0.2.1-local-nvidia-kbd
 # expect 9F665ACAA0D60B9DE822781A3A3A3F56C6C4924536E677599C09DBC8D339A1FC
 ```
 
+## v0.3.0 notes
+
+- ISO: `out/v0.3.0/stickllm-amd-rtx3090-v0.3.hybrid.iso` + [`checksums/v0.3.sha256`](checksums/v0.3.sha256) — **does not** overwrite Drive golden v0.2.
+- llama binds **127.0.0.1:8080** only; CPU fallback when no NVIDIA; external OpenAI LAN API removed (StickLLM UI only).
+- SSH: random per-boot password; pairing rate-limit/expiry/CSP; WiFi SSID UI; model delete; kiosk packages in live-build list.
+- See [ISSUES.md](ISSUES.md) / [FEATURES.md](FEATURES.md) for what landed vs deferred.
+
 ## Threat model (summary)
 
 - Default session is **ephemeral** (RAM overlay; reboot clears chats/config).
-- Inference is **local**; UI/API are **LAN HTTP + pair code** (TLS later) — no cloud API.
+- Inference is **local**; StickLLM web UI + pair code on LAN (no third-party OpenAI API).
 - **Persist config** and **Download model** require explicit confirmation.
 - Local ≠ safe against LAN sniffers, GPU/firmware vendors, phones, or physical access.
 - **Journalists / gov / high-risk:** [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).

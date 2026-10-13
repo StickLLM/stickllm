@@ -1,16 +1,22 @@
 [Unit]
-Description=StickLLM console boot status (tty1)
-After=network-online.target stickllm-console-setup.service
-Wants=network-online.target
-Before=stickllm-local.service
+Description=StickLLM console status on tty1 (pair + loading)
+DefaultDependencies=no
+After=local-fs.target stickllm-console-setup.service
+Wants=stickllm-console-setup.service
+Before=getty@tty1.service stickllm-local.service NetworkManager.service
+Conflicts=getty@tty1.service
 
 [Service]
-Type=oneshot
+Type=simple
+ExecStartPre=/usr/bin/mkdir -p /run/stickllm
+ExecStartPre=-/bin/bash -c 'plymouth quit --wait 2>/dev/null; true'
 ExecStart=/usr/local/bin/stickllm-bootstatus
-RemainAfterExit=yes
-StandardOutput=tty
-StandardError=tty
-TTYPath=/dev/tty1
+Restart=on-failure
+RestartSec=2
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+Environment=STICKLLM_TTY=/dev/tty1
 
 [Install]
 WantedBy=multi-user.target

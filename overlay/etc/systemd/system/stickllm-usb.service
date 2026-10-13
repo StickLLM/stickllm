@@ -8,8 +8,9 @@ Before=stickllm-llama.service stickllm-bootstatus.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/stickllm-usb-claim --auto --yes
-# Non-zero if no free space yet is OK on tiny sticks — don't block boot
-SuccessExitStatus=0 1
+# Soft-fail: DATA claim is best-effort (tiny sticks / isohybrid / mount race).
+# 0=ok, 1=soft miss, 2=usage, 32=mount errno — never fail the boot UX.
+SuccessExitStatus=0 1 2 32
 
 [Install]
 WantedBy=multi-user.target

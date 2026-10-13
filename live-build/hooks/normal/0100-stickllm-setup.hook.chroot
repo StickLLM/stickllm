@@ -8,8 +8,14 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-download-model \
           /usr/local/bin/stickllm-bootstatus \
           /usr/local/bin/stickllm-local-chat \
+          /usr/local/bin/stickllm-kiosk \
           /usr/local/bin/stickllm-console-setup \
           /usr/local/bin/stickllm-gateway \
+          /usr/local/bin/stickllm-control \
+          /usr/local/bin/stickllm-pair \
+          /usr/local/bin/stickllm-llama-start \
+          /usr/local/bin/stickllm-ssh-bootstrap \
+          /usr/local/bin/stickllm-wifi-apply \
           /usr/local/bin/stickllm-nvidia-prep \
           /usr/local/bin/stickllm-pick-gpus || true
 
@@ -19,17 +25,27 @@ if [[ -f /etc/sudoers.d/stickllm ]]; then
   chmod 440 /etc/sudoers.d/stickllm
 fi
 if [[ -f /etc/sudoers.d/stickllm-user ]]; then
-  sed -i 's/\r$//' /etc/sudoers.d/stickllm-user
-  chmod 440 /etc/sudoers.d/stickllm-user
+  # Legacy broad sudoers — remove so ISS-008 narrow file is authoritative.
+  rm -f /etc/sudoers.d/stickllm-user
 fi
 sed -i 's/\r$//' /etc/modprobe.d/stickllm-nvidia*.conf 2>/dev/null || true
 sed -i 's/\r$//' /etc/modules-load.d/stickllm-nvidia.conf 2>/dev/null || true
 
+# ISS-016: single nvidia-drm modprobe conf (v0.2 behavior).
+rm -f /etc/modprobe.d/nvidia-drm.conf 2>/dev/null || true
+if [[ -f /etc/modprobe.d/stickllm-nvidia-drm.conf ]]; then
+  sed -i 's/\r$//' /etc/modprobe.d/stickllm-nvidia-drm.conf
+fi
+
 if [[ -x /opt/stickllm/bin/llama-server ]]; then
   chmod 755 /opt/stickllm/bin/llama-server
 fi
+if [[ -x /opt/stickllm/bin/llama-server-cpu ]]; then
+  chmod 755 /opt/stickllm/bin/llama-server-cpu
+fi
 
 find /etc/systemd/system -name 'stickllm*.service' -exec chmod 644 {} + 2>/dev/null || true
+find /etc/ssh/sshd_config.d -type f -exec chmod 644 {} + 2>/dev/null || true
 
 # Prefer NVIDIA proprietary over nouveau
 mkdir -p /etc/modprobe.d
@@ -38,9 +54,34 @@ blacklist nouveau
 options nouveau modeset=0
 EOF
 
-# Hostname
+# Hostname (idempotent hosts line)
 echo "stickllm" > /etc/hostname
-echo "10.0.0.1 stickllm" >> /etc/hosts || true
+if ! grep -qE '[[:space:]]stickllm([[:space:]]|$)' /etc/hosts 2>/dev/null; then
+  echo "10.0.0.1 stickllm" >> /etc/hosts
+fi
+
+# Dedicated llama runtime user (unprivileged; video/render for CUDA) — ISS-006
+if ! getent passwd stickllm-llama >/dev/null 2>&1; then
+  useradd --system --home /nonexistent --shell /usr/sbin/nologin \
+    --comment "StickLLM llama-server" stickllm-llama || true
+fi
+usermod -aG video,render stickllm-llama 2>/dev/null || true
+
+# Interactive SSH/console user — NOT in sudo group (ISS-007/008)
+if ! getent passwd stickllm >/dev/null 2>&1; then
+  useradd -m -s /bin/bash stickllm || true
+fi
+usermod -aG video,render stickllm 2>/dev/null || true
+gpasswd -d stickllm sudo 2>/dev/null || true
+# Password is randomized per SSH boot by stickllm-ssh-bootstrap (not baked).
+passwd -l stickllm 2>/dev/null || true
+
+# Live user convenience (live-config may create user "user") — no password sudo
+if getent passwd user >/dev/null 2>&1; then
+  usermod -aG video,render user || true
+  gpasswd -d user sudo 2>/dev/null || true
+  passwd -l user 2>/dev/null || true
+fi
 
 # Do not auto-start SSH on every boot — only menu entry 3 (stickllm.ssh)
 systemctl disable ssh.service 2>/dev/null || true
@@ -51,27 +92,36 @@ systemctl enable stickllm-console-setup.service || true
 systemctl enable stickllm-nvidia.service || true
 systemctl enable stickllm-llama.service || true
 systemctl enable stickllm-ui.service || true
+systemctl enable stickllm-control.service || true
+systemctl enable stickllm-usb.service || true
 systemctl enable stickllm-bootstatus.service || true
 systemctl enable stickllm-local.service || true
+systemctl enable stickllm-kiosk.service || true
+systemctl enable seatd.service 2>/dev/null || true
 systemctl enable stickllm-ssh.service || true
 systemctl enable NetworkManager.service || true
 systemctl enable nvidia-persistenced.service || true
 
-# Live user convenience (live-config creates user "user")
-if getent passwd user >/dev/null 2>&1; then
-  usermod -aG sudo,video,render user || true
-  echo 'user:stickllm' | chpasswd || true
+# NM system-connections must be 600
+if [[ -d /etc/NetworkManager/system-connections ]]; then
+  find /etc/NetworkManager/system-connections -type f -name '*.nmconnection' -exec chmod 600 {} + 2>/dev/null || true
 fi
 
 cat >/etc/motd <<'EOF'
 
-  StickLLM v0.1 — local Privacy AI (amd-rtx3090)
+  StickLLM v0.3 — local Privacy AI (amd-rtx3090)
   Ephemeral by default. Run: stickllm-status
+  SSH password (Term menu) is random per boot — see console /run/stickllm/ssh-password.txt
 
 EOF
 
 mkdir -p /opt/stickllm/models
 mkdir -p /opt/stickllm/ui
 mkdir -p /etc/ssh/sshd_config.d
+mkdir -p /run/stickllm
+
+# Verify kiosk bits landed from overlay (ISS-010)
+test -x /usr/local/bin/stickllm-kiosk
+test -f /etc/systemd/system/stickllm-kiosk.service
 
 echo "[stickllm] chroot hook: done"

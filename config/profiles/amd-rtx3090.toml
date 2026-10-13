@@ -29,16 +29,23 @@ n_gpu_layers = -1  # offload all layers to GPU
 threads = 8
 
 [model]
-# Fits comfortably in 24 GB VRAM with headroom for 8k context.
-# Upstream ships Q5_K_M as two GGUF shards; service points at shard 1.
-filename = "Qwen2.5-7B-Instruct-Q5_K_M.gguf"
+# Default: small 3B Q4_K_M (fast first boot). 7B Q5_K_M also baked for upgrade.
+id = "qwen25-3b-q4km"
+filename = "qwen2.5-3b-instruct-q4_k_m.gguf"
+hf_repo = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+hf_files = ["qwen2.5-3b-instruct-q4_k_m.gguf"]
+approx_size_gb = 2.0
+sha256 = "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
+
+[model_also_baked]
+id = "qwen25-7b-q5km"
+filename = "qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
 hf_repo = "Qwen/Qwen2.5-7B-Instruct-GGUF"
 hf_files = [
   "qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf",
   "qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf",
 ]
-approx_size_gb = 5.4
-sha256 = ""  # filled by download-model.sh after first fetch
+approx_size_gb = 5.1
 
 [ui]
 bind = "0.0.0.0"

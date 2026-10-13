@@ -50,6 +50,17 @@ write_status() {
 EOF
 }
 
+# --auto boot path: never fail the systemd unit (HDMI must not show FAILED).
+soft_exit() {
+  local note="$1" disk="${2:-}"
+  write_status false 0 "$disk" "$note"
+  echo "USB DATA soft-fail: $note (OK — continue without DATA)"
+  if [[ "$AUTO" -eq 1 ]]; then
+    exit 0
+  fi
+  exit 1
+}
+
 part_path() {
   local disk="$1" num="$2"
   if [[ "$disk" == nvme* || "$disk" == mmcblk* || "$disk" == loop* ]]; then
@@ -63,7 +74,27 @@ part_path() {
 EXISTING="$(blkid -L "$LABEL" 2>/dev/null || true)"
 if [[ -n "$EXISTING" ]]; then
   if ! findmnt -n "$MNT" >/dev/null 2>&1; then
-    mount "$EXISTING" "$MNT"
+    if ! mount "$EXISTING" "$MNT" 2>/tmp/stickllm-mount.err; then
+      echo "Mount failed for $EXISTING: $(head -c 240 /tmp/stickllm-mount.err 2>/dev/null || true)"
+      # Corrupt journal after unclean power-loss is common on live USB DATA.
+      if command -v e2fsck >/dev/null; then
+        echo "Attempting e2fsck -fy on $EXISTING…"
+        e2fsck -fy "$EXISTING" 2>&1 | tail -20 || true
+      fi
+      if ! mount "$EXISTING" "$MNT" 2>/tmp/stickllm-mount.err; then
+        DISK="$(lsblk -no PKNAME "$EXISTING" 2>/dev/null | head -1)"
+        # Never-mounted / unrecoverable: recreate when auto+yes (empty DATA only).
+        if [[ "$AUTO" -eq 1 && "$YES" -eq 1 ]]; then
+          echo "Recreating corrupt $LABEL on $EXISTING (was never mountable)…"
+          mkfs.ext4 -F -L "$LABEL" "$EXISTING"
+          if ! mount "$EXISTING" "$MNT" 2>/tmp/stickllm-mount.err; then
+            soft_exit "Existing $LABEL corrupt and remount failed after mkfs" "${DISK:-unknown}"
+          fi
+        else
+          soft_exit "Existing $LABEL present but unmountable (corrupt journal — re-run with --auto --yes)" "${DISK:-unknown}"
+        fi
+      fi
+    fi
   fi
   mkdir -p "$MNT/models" "$MNT/vault" "$MNT/etc/stickllm"
   FREE_KB="$(df -Pk "$MNT" | awk 'NR==2{print $4}')"
@@ -98,9 +129,7 @@ if [[ -z "$BOOT_PART" ]]; then
   if [[ ${#REM[@]} -eq 1 ]]; then
     DISK="${REM[0]}"
   else
-    write_status false 0 "" "Could not identify StickLLM boot USB"
-    echo "Could not identify StickLLM boot USB. Plug the stick and retry."
-    exit 1
+    soft_exit "Could not identify StickLLM boot USB"
   fi
 else
   DISK="$(lsblk -no PKNAME "$BOOT_PART" 2>/dev/null | head -1)"
@@ -108,25 +137,19 @@ else
 fi
 
 if [[ ! -b "/dev/$DISK" ]]; then
-  write_status false 0 "" "Not a block device: $DISK"
-  echo "Not a block device: /dev/$DISK"
-  exit 1
+  soft_exit "Not a block device: $DISK"
 fi
 
 RM="$(lsblk -dn -o RM "/dev/$DISK" 2>/dev/null | tr -d '[:space:]' || echo 0)"
 # Some USB bridges report RM=0; still allow if it holds the live medium
 if [[ "$RM" != "1" && -z "$MEDIUM" ]]; then
-  write_status false 0 "$DISK" "Refusing non-removable disk without live medium"
-  echo "Refusing: /dev/$DISK is not removable and is not the live medium."
-  exit 1
+  soft_exit "Refusing non-removable disk without live medium" "$DISK"
 fi
 
 # Size check: refuse huge disks (likely internal mistaken)
 BYTES="$(lsblk -dn -b -o SIZE "/dev/$DISK" | tr -d '[:space:]')"
 if (( BYTES > 512*1024*1024*1024 )); then
-  write_status false 0 "$DISK" "Disk too large; refusing auto claim"
-  echo "Refusing: /dev/$DISK is larger than 512 GiB (won't auto-claim)."
-  exit 1
+  soft_exit "Disk too large; refusing auto claim" "$DISK"
 fi
 
 DISK_MIB=$(( BYTES / 1024 / 1024 ))
@@ -153,10 +176,9 @@ if [[ -n "$FREE_LINE" ]]; then
 fi
 
 if (( SIZE_MIB < 1024 )); then
-  write_status false 0 "$DISK" "Free space only ${SIZE_MIB} MiB — need ≥1 GiB"
   echo "Free space only ${SIZE_MIB} MiB — need at least 1 GiB."
   echo "Disk ${DISK_MIB} MiB, partitions ~${USED_MIB} MiB."
-  exit 1
+  soft_exit "Free space only ${SIZE_MIB} MiB — need ≥1 GiB" "$DISK"
 fi
 
 echo "StickLLM USB claim (v0.2)"
@@ -198,9 +220,8 @@ if [[ "$created" -ne 1 ]] && command -v sfdisk >/dev/null; then
 fi
 
 if [[ "$created" -ne 1 ]]; then
-  write_status false 0 "$DISK" "Could not create DATA partition (isohybrid table)"
   echo "Could not create partition on /dev/$DISK."
-  exit 1
+  soft_exit "Could not create DATA partition (isohybrid table)" "$DISK"
 fi
 
 sleep 2
@@ -223,23 +244,33 @@ PART="$(lsblk -nbr -o NAME,SIZE,TYPE "/dev/$DISK" | awk -v med="$MEDIUM_DEV" '
   END { print p }
 ')"
 if [[ -z "$PART" || ! -b "$PART" ]]; then
-  write_status false 0 "$DISK" "Partition node missing after create (reboot may be required)"
   echo "Partition created but kernel node missing. Reboot into Term and re-run claim."
   lsblk -o NAME,SIZE,TYPE,LABEL "/dev/$DISK" || true
-  exit 1
+  soft_exit "Partition node missing after create (reboot may be required)" "$DISK"
 fi
 PSIZE="$(lsblk -bno SIZE "$PART" | tr -d '[:space:]')"
 if (( PSIZE < 1024*1024*1024 )); then
-  write_status false 0 "$DISK" "Refusing to format tiny partition $PART"
   echo "Refusing to format $PART (only $PSIZE bytes) — likely EFI."
-  exit 1
+  soft_exit "Refusing to format tiny partition $PART" "$DISK"
 fi
 
 echo "Formatting $PART as ext4 label=$LABEL …"
 mkfs.ext4 -F -L "$LABEL" "$PART"
 # Ensure mountpoint is not a leftover empty dir on overlay
 umount "$MNT" 2>/dev/null || true
-mount "$PART" "$MNT"
+# Isohybrid + busy live medium: re-probe before mount (mount errno 32 is common).
+partprobe "/dev/$DISK" 2>/dev/null || true
+partx -u "/dev/$DISK" 2>/dev/null || true
+udevadm settle 2>/dev/null || true
+sleep 1
+if ! mount "$PART" "$MNT" 2>/tmp/stickllm-mount.err; then
+  echo "mount failed: $(head -c 200 /tmp/stickllm-mount.err 2>/dev/null || true)"
+  # Retry once after short settle — then soft-fail for --auto boot UX.
+  sleep 2
+  if ! mount "$PART" "$MNT" 2>/tmp/stickllm-mount.err; then
+    soft_exit "Created $LABEL but mount failed (reboot may attach it)" "$DISK"
+  fi
+fi
 mkdir -p "$MNT/models" "$MNT/vault" "$MNT/etc/stickllm"
 cat >"$MNT/README.txt" <<'EOF'
 StickLLM data partition (v0.2)

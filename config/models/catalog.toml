@@ -5,7 +5,7 @@ version = 1
 family = "qwen"
 
 base_image = "lite"
-base_model_id = "qwen25-7b-q5km"
+base_model_id = "qwen25-3b-q4km"
 base_model_target_id = "qwen25-3b-q4km"
 optional_fat_default_id = "qwen38-27b-q4km"
 family_policy = "qwen_only"
@@ -88,7 +88,7 @@ sha256 = [
   "beba9d4f2f5a1fe7d144dcae332e68b52c26705c5310dece2e5d1997e091e134",
 ]
 vision = false
-notes = "Baked on current ISO; also re-downloadable"
+notes = "Also baked on ISO (upgrade from default 3B); re-downloadable"
 
 [[model]]
 id = "qwen25-3b-q4km"
@@ -101,7 +101,7 @@ hf_repo = "Qwen/Qwen2.5-3B-Instruct-GGUF"
 hf_files = ["qwen2.5-3b-instruct-q4_k_m.gguf"]
 sha256 = ["626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"]
 vision = false
-notes = "Lite / CPU-friendly; target base stick model"
+notes = "Default baked base model — loads quickly; download larger models later"
 
 [usb_data]
 label = "STICKLLM-DATA"

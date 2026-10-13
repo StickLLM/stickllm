@@ -3,6 +3,7 @@
 # /stickllm = repo (ro), /work = Linux filesystem volume (rw) for live-build.
 set -euo pipefail
 
+MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
 MODEL_SHARD1="qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
 MODEL_SHARD2="qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf"
 
@@ -54,40 +55,17 @@ echo "[stickllm] mirrors: $MIRROR / $SEC_MIRROR"
 cat config/archives/*.list.chroot 2>/dev/null || true
 
 mkdir -p config/package-lists
-# Write package list inside the Linux volume (never copy CRLF from Windows).
-cat > config/package-lists/stickllm.list.chroot <<'PKGS'
-# StickLLM v0.1 amd-rtx3090
-live-boot
-live-config
-live-config-systemd
-systemd-sysv
-sudo
-curl
-wget
-ca-certificates
-pciutils
-usbutils
-network-manager
-openssh-client
-parted
-e2fsprogs
-fdisk
-util-linux
-python3
-jq
-iproute2
-iputils-ping
-libgomp1
-firmware-linux
-firmware-linux-nonfree
-firmware-misc-nonfree
-nvidia-driver
-nvidia-driver-libs
-nvidia-kernel-dkms
-nvidia-smi
-libcuda1
-nvidia-persistenced
-PKGS
+# Honor tracked package list (ISS-010) — strip CRLF from Windows checkouts.
+if [[ -f /stickllm/live-build/package-lists/stickllm.list.chroot ]]; then
+  tr -d '\r' < /stickllm/live-build/package-lists/stickllm.list.chroot \
+    > config/package-lists/stickllm.list.chroot
+else
+  echo "ERROR: missing /stickllm/live-build/package-lists/stickllm.list.chroot" >&2
+  exit 1
+fi
+grep -q '^chromium$' config/package-lists/stickllm.list.chroot
+grep -q '^cage$' config/package-lists/stickllm.list.chroot
+grep -q '^seatd$' config/package-lists/stickllm.list.chroot
 
 mkdir -p config/hooks/normal
 for h in /stickllm/live-build/hooks/normal/*.hook.chroot; do
@@ -108,15 +86,25 @@ mkdir -p config/includes.chroot/opt/stickllm/ui
 rsync -a /stickllm/ui/ config/includes.chroot/opt/stickllm/ui/
 
 mkdir -p config/includes.chroot/opt/stickllm/models
+cp "/stickllm/models/${MODEL_3B}" config/includes.chroot/opt/stickllm/models/
 cp "/stickllm/models/${MODEL_SHARD1}" config/includes.chroot/opt/stickllm/models/
 cp "/stickllm/models/${MODEL_SHARD2}" config/includes.chroot/opt/stickllm/models/
 
-mkdir -p config/includes.chroot/etc/stickllm
+mkdir -p config/includes.chroot/etc/stickllm config/includes.chroot/etc/stickllm/models
 cp /stickllm/config/profiles/amd-rtx3090.toml config/includes.chroot/etc/stickllm/profile.toml
+cp /stickllm/config/models/catalog.toml config/includes.chroot/etc/stickllm/models/catalog.toml
 
 test -x config/includes.chroot/opt/stickllm/bin/llama-server
+test -x config/includes.chroot/opt/stickllm/bin/llama-server-cpu
 test -f config/includes.chroot/opt/stickllm/lib/libllama-server-impl.so
+test -f "config/includes.chroot/opt/stickllm/models/${MODEL_3B}"
 test -f "config/includes.chroot/opt/stickllm/models/${MODEL_SHARD1}"
+test -f "config/includes.chroot/opt/stickllm/models/${MODEL_SHARD2}"
+test -x config/includes.chroot/usr/local/bin/stickllm-kiosk
+test -f config/includes.chroot/etc/systemd/system/stickllm-kiosk.service
+grep -q 'base_model_id = "qwen25-3b-q4km"' config/includes.chroot/etc/stickllm/models/catalog.toml
+grep -q 'stickllm-llama-start' config/includes.chroot/etc/systemd/system/stickllm-llama.service
+grep -q 'STICKLLM_LLAMA_HOST=127.0.0.1' config/includes.chroot/etc/systemd/system/stickllm-llama.service
 
 mkdir -p config/bootloaders/grub-pc config/bootloaders/grub-efi
 # Prefer tracked boot/grub.cfg (LF). Fall back to inline copy if missing.
@@ -141,6 +129,13 @@ if [[ -f /stickllm/boot/isolinux/splash.png ]]; then
 fi
 if [[ -f /stickllm/boot/grub.cfg ]]; then
   tr -d '\r' < /stickllm/boot/grub.cfg > config/includes.binary/boot/grub/grub.cfg
+fi
+# GRUB theme (ISS-019): visible selected_item_color; no empty pixmap_style.
+if [[ -f /stickllm/boot/grub/theme.txt ]]; then
+  tr -d '\r' < /stickllm/boot/grub/theme.txt > config/includes.binary/boot/grub/theme.txt
+fi
+if [[ -f /stickllm/boot/grub/splash.png ]]; then
+  cp -f /stickllm/boot/grub/splash.png config/includes.binary/boot/grub/splash.png
 fi
 
 echo "[stickllm] lb build (long)…"

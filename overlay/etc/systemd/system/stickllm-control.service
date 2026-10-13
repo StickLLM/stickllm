@@ -1,7 +1,7 @@
 [Unit]
 Description=StickLLM privileged control API (localhost)
 After=local-fs.target stickllm-console-setup.service
-Before=stickllm-ui.service stickllm-bootstatus.service
+Before=stickllm-ui.service
 
 [Service]
 Type=simple
@@ -10,7 +10,6 @@ ExecStartPre=/usr/local/bin/stickllm-pair
 ExecStart=/usr/local/bin/stickllm-control
 Restart=on-failure
 RestartSec=2
-# Root intentionally — performs USB/model writes after pair-auth via gateway
 
 [Install]
 WantedBy=multi-user.target

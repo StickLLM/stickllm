@@ -20,11 +20,15 @@ else
 fi
 echo
 
-MODEL="/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
-if [[ -f "$MODEL" ]]; then
-  echo "model:    present ($(du -h "$MODEL" | awk '{print $1}'))"
+MODEL_3B="/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+MODEL_7B="/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
+if [[ -f "$MODEL_3B" ]]; then
+  echo "model:    default 3B present ($(du -h "$MODEL_3B" | awk '{print $1}'))"
 else
-  echo "model:    MISSING — run stickllm-download-model (explicit)"
+  echo "model:    DEFAULT 3B MISSING — run stickllm-download-model (explicit)"
+fi
+if [[ -f "$MODEL_7B" ]]; then
+  echo "model:    7B also present ($(du -h "$MODEL_7B" | awk '{print $1}'))"
 fi
 
 echo "llama:    $(systemctl is-active stickllm-llama.service 2>/dev/null || echo unknown)"
@@ -34,10 +38,14 @@ echo
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 if [[ -n "${IP:-}" ]]; then
   echo "Chat UI:  http://${IP}/"
-  echo "API:      http://${IP}:8080/v1/chat/completions"
+  echo "API:      http://${IP}/v1/chat/completions"
+  echo "Auth:     Authorization: Bearer <pair token from Chat UI → Models>"
+  echo "Raw LLM:  http://${IP}:8080/v1/chat/completions  (no pair auth)"
 else
   echo "Chat UI:  http://127.0.0.1/"
-  echo "API:      http://127.0.0.1:8080/v1/chat/completions"
+  echo "API:      http://127.0.0.1/v1/chat/completions"
+  echo "Auth:     Authorization: Bearer <pair token from Chat UI → Models>"
+  echo "Raw LLM:  http://127.0.0.1:8080/v1/chat/completions  (no pair auth)"
 fi
 
 if [[ -d /lib/live/mount/persistence ]] || mount | grep -q persistence; then
