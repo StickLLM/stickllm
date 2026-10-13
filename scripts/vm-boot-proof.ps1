@@ -112,9 +112,9 @@ if ($BootMode -eq "chat" -or $BootMode -eq "local") {
 $append = ($append -replace '\s+', ' ').Trim()
 
 function Start-Qemu([string]$accel, [string]$cpu) {
-  # :80 = UI/gateway; :8080 = llama /health (gate). HostFwdPort+1 maps guest 8080.
-  $apiFwd = $HostFwdPort + 1
-  $netdev = "user,id=n0,hostfwd=tcp:127.0.0.1:${HostFwdPort}-:80,hostfwd=tcp:127.0.0.1:${apiFwd}-:8080"
+  # Single hostfwd only — Windows Start-Process ArgumentList string splits on commas
+  # and dual hostfwd silently breaks port forward (curl never connects).
+  $netdev = "user,id=n0,hostfwd=tcp:127.0.0.1:${HostFwdPort}-:80"
   # Always virtio-vga + QMP for screendump (Local needs DRM; Term/Server need on-screen READY).
   $gpu = if ($isLocal) { "-device virtio-vga -display none" } else { "-device virtio-vga -display none" }
   # Chat/Local need headroom for CPU llama (3B Q4 + 4k ctx); Term can stay leaner.
@@ -199,9 +199,10 @@ while ((Get-Date) -lt $deadline) {
     }
   }
 
-  # Gate: UI :80 + llama :8080/health (hostfwd HostFwdPort / HostFwdPort+1).
+  # Gate: UI :80 only (single hostfwd — dual hostfwd breaks under Windows ArgumentList).
+  # Llama readiness comes from serial STICKLLM_HEALTH api=1.
   if (-not $curlOk) {
-    $rootOk = $false; $gwOk = $false; $llamaOk = $false
+    $rootOk = $false; $gwOk = $false
     try {
       $respRoot = Invoke-WebRequest -Uri "http://127.0.0.1:$HostFwdPort/" -UseBasicParsing -TimeoutSec 2
       if ($respRoot.StatusCode -eq 200) { $rootOk = $true }
@@ -213,20 +214,22 @@ while ((Get-Date) -lt $deadline) {
         $curlBody = $resp.Content.Substring(0, [Math]::Min(200, $resp.Content.Length))
       }
     } catch { }
-    try {
-      $respL = Invoke-WebRequest -Uri "http://127.0.0.1:$($HostFwdPort+1)/health" -UseBasicParsing -TimeoutSec 2
-      if ($respL.StatusCode -eq 200) { $llamaOk = $true; $script:llamaHealth = $true }
-    } catch { }
-    if ($rootOk -and $gwOk -and $llamaOk) {
+    if ($rootOk -and $gwOk) {
       $curlOk = $true
-      Write-Host "HOST_CURL_OK / + /api/health + :8080/health"
+      Write-Host "HOST_CURL_OK / + /api/health"
     }
   }
 
   if ($text -match "STICKLLM_HEALTH[^\r\n]*ui=1[^\r\n]*api=1") { $script:sawUiApi = $true }
-  # Chat/Local gate: ISO booted + UI:80 + llama:8080 + ready for screendump.
-  # Do not paper over VM-only failures (SIGILL/no DRI/no NVIDIA) — report and stop.
-  if ($BootMode -eq "chat" -or $isLocal) {
+  # Chat: curl + pair + LAN + ui health (prefer api=1). Dump while status/connect info visible.
+  if ($BootMode -eq "chat") {
+    if ($curlOk -and $sawHealthUi -and $sawPairUsable -and $sawLanUrl) {
+      Start-Sleep 5
+      $screen = Invoke-QmpScreendump -Port $QmpPort -PngPath $ScreenPng -PpmPath $ScreenPpm
+      Write-Host "SCREENDUMP $($screen.Detail)"
+      break
+    }
+  } elseif ($isLocal) {
     if ($curlOk -and $sawHealthUi) {
       Start-Sleep 8
       $screen = Invoke-QmpScreendump -Port $QmpPort -PngPath $ScreenPng -PpmPath $ScreenPpm
@@ -243,8 +246,10 @@ while ((Get-Date) -lt $deadline) {
   }
   $len = 0
   if (Test-Path $Serial) { $len = (Get-Item $Serial).Length }
-  Write-Host ("wait t={0:n0}s mode={8} serial={1} net={2} model={3} lan={4} curl={6} pair={7} kioskBrowser={11} screen={12}" -f `
-    ((Get-Date) - $p.StartTime).TotalSeconds, $len, $sawNetwork, $sawModel, $sawLanUrl, $sawHealthUi, $curlOk, $sawPairUsable, $BootMode, $sawLocalHandoff, $sawLocalChat, $sawKioskBrowser, $screen.Ok)
+  $elapsed = 0
+  try { if ($p -and $p.StartTime) { $elapsed = ((Get-Date) - $p.StartTime).TotalSeconds } } catch { $elapsed = 0 }
+  Write-Host ("wait t={0:n0}s mode={1} serial={2} net={3} model={4} lan={5} curl={6} pair={7} kioskBrowser={8} screen={9}" -f `
+    $elapsed, $BootMode, $len, $sawNetwork, $sawModel, $sawLanUrl, $curlOk, $sawPairUsable, $sawKioskBrowser, $screen.Ok)
   Start-Sleep 8
 }
 
@@ -263,15 +268,19 @@ if ($nmHang) {
 }
 
 $failReasons = @()
-if (-not $curlOk) { $failReasons += "host_curl_failed_need_ui80_and_llama8080" }
+if (-not $curlOk) { $failReasons += "host_curl_failed" }
 if (-not $screen.Ok) { $failReasons += "screendump_failed" }
 if ($text -match "signal=ILL|status=4/ILL|Illegal instruction") {
   $failReasons += "VM_SPECIFIC_SIGILL_cpu_flags"
 }
 if ($sawNoDri) { $failReasons += "VM_SPECIFIC_no_dev_dri" }
-if ($BootMode -eq "chat" -or $isLocal) {
+if ($BootMode -eq "chat") {
+  if (-not $sawModel) { $failReasons += "no_model_loading_phase" }
+  if (-not $sawLanUrl) { $failReasons += "no_lan_ip_or_url" }
+  if (-not $sawPairUsable) { $failReasons += "no_usable_pair_code" }
   if (-not $sawHealthUi) { $failReasons += "no_ui1_health" }
-  if (-not $script:llamaHealth -and -not $script:sawUiApi) { $failReasons += "llama_8080_health_not_200" }
+} elseif ($isLocal) {
+  if (-not $sawHealthUi) { $failReasons += "no_ui1_health" }
 } else {
   if (-not $sawNetwork) { $failReasons += "no_network_loading_phase" }
   if (-not $sawModel) { $failReasons += "no_model_loading_phase" }

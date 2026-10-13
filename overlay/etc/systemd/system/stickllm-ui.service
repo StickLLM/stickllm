@@ -12,14 +12,16 @@ Environment=STICKLLM_UI=/opt/stickllm/ui
 Environment=STICKLLM_API=http://127.0.0.1:8080
 Environment=STICKLLM_BIND=0.0.0.0
 Environment=STICKLLM_PORT=80
-ExecStartPre=/usr/bin/mkdir -p /run/stickllm
+# Create paths before ProtectSystem namespace (missing RW path => status=226/NAMESPACE).
+ExecStartPre=/usr/bin/mkdir -p /run/stickllm /var/lib/stickllm
 ExecStart=/usr/local/bin/stickllm-gateway
 Restart=on-failure
 RestartSec=2
 # Bind :80 as root; keep UI readable under ProtectSystem.
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/run/stickllm /var/lib/stickllm /tmp
+# "-" = optional if absent at unit load; console-setup also mkdirs these.
+ReadWritePaths=/run/stickllm -/var/lib/stickllm /tmp
 NoNewPrivileges=true
 
 [Install]

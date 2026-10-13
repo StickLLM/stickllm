@@ -62,7 +62,7 @@ rsync -a \
   "$work/sq/etc/systemd/system/"
 mkdir -p "$work/sq/etc/ssh/sshd_config.d" "$work/sq/opt/stickllm/ui" \
   "$work/sq/etc/modprobe.d" "$work/sq/etc/modules-load.d" "$work/sq/etc/sudoers.d" \
-  "$work/sq/etc/stickllm/models"
+  "$work/sq/etc/stickllm/models" "$work/sq/var/lib/stickllm" "$work/sq/run/stickllm"
 rsync -a "$STICKLLM/overlay/etc/ssh/sshd_config.d/stickllm.conf" "$work/sq/etc/ssh/sshd_config.d/"
 rsync -a "$STICKLLM/overlay/etc/modprobe.d/stickllm-nvidia-alias.conf" "$work/sq/etc/modprobe.d/"
 # Local NVIDIA DRM KMS for Wayland (included in live squashfs / initramfs path via overlay).

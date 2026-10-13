@@ -43,7 +43,7 @@ systemctl reset-failed stickllm-bootstatus.service 2>/dev/null || true
 systemctl start --no-block stickllm-bootstatus.service 2>/dev/null || true
 chvt 1 2>/dev/null || true
 
-mkdir -p /run/stickllm
+mkdir -p /run/stickllm /var/lib/stickllm
 # Invoke via python3 so a CRLF shebang (Windows checkout) cannot cause exec 127.
 # Do not sed -i the squashfs path (read-only root).
 rm -f /run/stickllm/pair-code.txt
