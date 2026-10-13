@@ -133,10 +133,9 @@ Set the PC firmware to **boot the USB first** (see [docs/BOOT.md](docs/BOOT.md))
 
 | Entry | What you get |
 |---|---|
-| **1 StickLLM Chat** | On-stick browser (when display present) + LAN UI. Loopback needs no pair; phone/LAN uses pair code. Status banner shows pair / IP / model / URL. |
-| **2 StickLLM Term** | Console (tty2) or SSH — diagnose, `stickllm-wifi-setup`, `nvidia-smi`. SSH password is **random per boot** (shown on console). |
-| **3 StickLLM Client** | Coming later (menu stub). |
-| **4 StickLLM Failsafe** | No NVIDIA — recover from GPU/black-screen hangs (Term/SSH only). |
+| **1 Server / Local** | On-stick browser (when display present) + LAN UI. Loopback needs no pair; phone/LAN uses pair code. Status banner shows pair / IP / model / URL. |
+| **2 Secure Client** | Coming later (menu stub). |
+| **3 Terminal** | Console (tty2) or SSH — diagnose, `stickllm-wifi-setup`, `nvidia-smi`. SSH password is **random per boot** (shown on console). |
 
 ### WiFi (Server / Term / Local)
 
@@ -168,7 +167,7 @@ Working on RTX 3090 HDMI with tag `v0.2.1-local-nvidia-kbd`:
 
 ## Working today (checkpoint)
 
-- Boot menu: Local / Server / Term (+ Failsafe)
+- Boot menu: Server / Local, Secure Client, Terminal
 - Pair code → browser chat (Local: no pair chrome); Models + Settings menus
 - Term/Server LAN READY + pair + URL; console `stickllm-wifi-setup` when no uplink
 - Local cage + Chromium + keyboard on NVIDIA DRM

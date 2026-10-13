@@ -18,22 +18,21 @@ still chainload StickLLM from Ubuntu GRUB, but USB-first is the reliable default
 
 | # | Entry | What you get |
 |---|---|---|
-| **1** | **StickLLM Server** | LAN mode. Console: **Loading…** → **READY** with Chat UI URL + pair code (phone/browser over HTTP). |
-| **2** | **StickLLM Local** | Same-box **cage + Chromium** on the GPU monitor path (checkpoint `v0.2.1-local-nvidia-kbd`). Keyboard via DRM + libinput. |
-| **3** | **StickLLM Term** | Console login or `ssh user@<ip>` — `nvidia-smi`, `stickllm-status`. |
-| **4** | **StickLLM Failsafe** | **Emergency:** NVIDIA drivers blacklisted (`nomodeset`). Term/SSH to diagnose; CUDA/LLM usually will **not** work until a normal reboot. |
+| **1** | **Server / Local** | On-stick browser when a display is present + LAN UI (`stickllm.chat`). Loopback needs no pair; phone/LAN uses pair code. |
+| **2** | **Secure Client** | Menu stub for now (`stickllm.client`) — dedicated client stick in a later release. |
+| **3** | **Terminal** | Console login or `ssh user@<ip>` — `nvidia-smi`, `stickllm-status` (`stickllm.ssh`). |
 
-Menu timeout ~**8–11s**; default is **1 StickLLM Server**.
+Menu timeout ~**20s**; default is **1 Server / Local**.
 
 ### Terminal / SSH credentials (menu 3)
 
 | | |
 |---|---|
 | User | `user` |
-| Password | `stickllm` |
+| Password | Random per boot (shown on console) |
 | Useful | `stickllm-status` · `nvidia-smi` · `curl -s localhost:8080/health` |
 
-SSH is **off** unless you pick menu **3** (or failsafe).
+SSH is **off** unless you pick menu **3**.
 
 ## NVIDIA / display (do / don’t)
 
@@ -46,10 +45,10 @@ SSH is **off** unless you pick menu **3** (or failsafe).
 ## Boot sequence (expected)
 
 1. Firmware boots the USB (or Ubuntu GRUB → StickLLM entry).
-2. StickLLM menu → pick 1 / 2 / 3.
+2. StickLLM menu → pick **1** (Server / Local), **2** (Secure Client stub), or **3** (Terminal).
 3. Console: loading (cold boot on a 3090 can take several minutes).
-4. **Server/Term:** READY with `http://<lan-ip>/` and pair code.
-5. **Local (checkpoint):** cage + Chromium on the NVIDIA HDMI output; keyboard works.
+4. **Server / Local / Terminal:** READY with `http://<lan-ip>/` and pair code when the UI path is up.
+5. **Local path (checkpoint):** cage + Chromium on the NVIDIA HDMI output; keyboard works.
 
 ## First checks
 
@@ -71,7 +70,7 @@ Phone on the same LAN: open the Chat UI URL from the READY screen and enter the 
 |---|---|
 | Lands in Ubuntu | Firmware boot order — USB not first |
 | Firmware ignores USB | Wrong port; try USB2; Secure Boot |
-| Black screen, no status | GPU init hang — reboot, pick **4 failsafe** |
+| Black screen, no status | GPU init hang — reboot; try Terminal (menu **3**) to diagnose |
 | Local blank / no browser | Wrong ISO (need Local checkpoint); modeset mistake; no DRM |
 | Local no keyboard | `WLR_LIBINPUT_NO_DEVICES=1` or missing libinput backend |
 | UI up, empty replies | Model missing or still loading |

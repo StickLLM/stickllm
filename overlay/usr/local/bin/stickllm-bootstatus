@@ -91,19 +91,19 @@ clear_tty() {
 }
 
 mode="chat"
-mode_label="Chat (this screen + LAN)"
-# Default menu is Chat (stickllm.chat). local/kiosk remain aliases.
+mode_label="Server / Local"
+# Default menu is Server / Local (stickllm.chat). local/kiosk remain aliases.
 grep -Eqw 'stickllm\.(chat|local|kiosk)' /proc/cmdline 2>/dev/null && {
   mode="chat"
-  mode_label="Chat (this screen + LAN)"
+  mode_label="Server / Local"
 }
 grep -qw 'stickllm.ssh' /proc/cmdline 2>/dev/null && {
   mode="ssh"
-  mode_label="Term (SSH + console; no browser)"
+  mode_label="Terminal (SSH + console; no browser)"
 }
 grep -qw 'stickllm.client' /proc/cmdline 2>/dev/null && {
   mode="client"
-  mode_label="Client (coming soon)"
+  mode_label="Secure Client (coming soon)"
 }
 
 PAIR_STATE="none" # none | code | paired | waiting_ui
