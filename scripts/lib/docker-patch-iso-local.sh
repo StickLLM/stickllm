@@ -41,6 +41,8 @@ rsync -a \
   "$STICKLLM/overlay/usr/local/bin/stickllm-status" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-pair" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-control" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-wifi-apply" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-wifi-setup" \
   "$work/sq/usr/local/bin/"
 rsync -a \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-bootstatus.service" \
@@ -69,7 +71,7 @@ rsync -a "$STICKLLM/overlay/etc/modules-load.d/stickllm-nvidia.conf" "$work/sq/e
 rsync -a "$STICKLLM/overlay/etc/sudoers.d/stickllm" "$work/sq/etc/sudoers.d/stickllm"
 rsync -a "$STICKLLM/config/models/catalog.toml" "$work/sq/etc/stickllm/models/catalog.toml"
 rsync -a "$STICKLLM/ui/" "$work/sq/opt/stickllm/ui/"
-printf '%s\n' '{"mode":"ephemeral","profile":"amd-rtx3090","version":"0.2.0"}' \
+printf '%s\n' '{"mode":"ephemeral","profile":"amd-rtx3090","version":"0.3.1"}' \
   >"$work/sq/opt/stickllm/ui/stickllm.json"
 
 sed -i 's/\r$//' \
@@ -87,6 +89,8 @@ sed -i 's/\r$//' \
   "$work/sq/usr/local/bin/stickllm-status" \
   "$work/sq/usr/local/bin/stickllm-pair" \
   "$work/sq/usr/local/bin/stickllm-control" \
+  "$work/sq/usr/local/bin/stickllm-wifi-apply" \
+  "$work/sq/usr/local/bin/stickllm-wifi-setup" \
   "$work/sq/etc/systemd/system/"stickllm-*.service \
   "$work/sq/etc/ssh/sshd_config.d/stickllm.conf" \
   "$work/sq/etc/modprobe.d/stickllm-nvidia-alias.conf" \
@@ -107,7 +111,9 @@ chmod 755 \
   "$work/sq/usr/local/bin/stickllm-persist" \
   "$work/sq/usr/local/bin/stickllm-status" \
   "$work/sq/usr/local/bin/stickllm-pair" \
-  "$work/sq/usr/local/bin/stickllm-control"
+  "$work/sq/usr/local/bin/stickllm-control" \
+  "$work/sq/usr/local/bin/stickllm-wifi-apply" \
+  "$work/sq/usr/local/bin/stickllm-wifi-setup"
 chmod 644 "$work/sq/etc/systemd/system/"stickllm-*.service
 chmod 644 "$work/sq/etc/ssh/sshd_config.d/stickllm.conf"
 chmod 644 "$work/sq/etc/modprobe.d/stickllm-nvidia-alias.conf"

@@ -10,10 +10,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PROFILE="amd-rtx3090"
-# v0.3 ships under out/v0.3.0/ — never overwrite Drive golden
-# out/stickllm-amd-rtx3090.hybrid.iso (v0.2).
-VERSION_DIR="v0.3.0"
-ISO_NAME="stickllm-${PROFILE}-v0.3.hybrid.iso"
+# v0.3.1 ships under out/v0.3.1/ — never overwrite Drive golden v0.2
+# or published out/v0.3.0 / checksums/v0.3.sha256.
+VERSION_DIR="v0.3.1"
+ISO_NAME="stickllm-${PROFILE}-v0.3.1.hybrid.iso"
+CHECKSUM_FILE="checksums/v0.3.1.sha256"
 MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
 MODEL_SHARD1="qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
 MODEL_SHARD2="qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf"
@@ -77,9 +78,10 @@ cp -f "$SRC_ISO" "out/${ISO_NAME}"
   cd "out/${VERSION_DIR}"
   sha256sum "${ISO_NAME}" > "SHA256SUMS"
 )
-cp -f "out/${VERSION_DIR}/SHA256SUMS" "checksums/v0.3.sha256"
+cp -f "out/${VERSION_DIR}/SHA256SUMS" "$CHECKSUM_FILE"
 
 ls -lh "out/${VERSION_DIR}/${ISO_NAME}"
 echo "=== Build complete: out/${VERSION_DIR}/${ISO_NAME} ==="
-echo "Checksum: checksums/v0.3.sha256"
+echo "Checksum: ${CHECKSUM_FILE}"
 echo "Flash with docs/FLASH.md (Windows: .\\scripts\\flash-windows.ps1 -DriveLetter E)"
+echo "Note: does not overwrite checksums/v0.3.sha256 (v0.3.0 N ship) or Drive golden."
