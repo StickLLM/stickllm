@@ -5,12 +5,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 OUT_BIN="overlay/opt/stickllm/bin/llama-server"
+OUT_CPU="overlay/opt/stickllm/bin/llama-server-cpu"
 OUT_LIB="overlay/opt/stickllm/lib"
 mkdir -p overlay/opt/stickllm/bin "$OUT_LIB"
 
 # On Windows/Git Bash, -x can be flaky for ELF binaries; size check is enough.
-if [[ -f "$OUT_BIN" && -s "$OUT_BIN" && -f "$OUT_LIB/libllama-server-impl.so" && "${STICKLLM_FORCE_LLAMA_BUILD:-}" != "1" ]]; then
-  echo "llama-server already built: $OUT_BIN"
+if [[ -f "$OUT_BIN" && -s "$OUT_BIN" && -f "$OUT_CPU" && -s "$OUT_CPU" \
+  && -f "$OUT_LIB/libllama-server-impl.so" && "${STICKLLM_FORCE_LLAMA_BUILD:-}" != "1" ]]; then
+  echo "llama-server already built: $OUT_BIN (+ cpu $OUT_CPU)"
   exit 0
 fi
 

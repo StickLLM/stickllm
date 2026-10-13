@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -16,6 +17,7 @@ CATALOG = Path(os.environ.get("STICKLLM_CATALOG", "/etc/stickllm/models/catalog.
 MNT = Path(os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data"))
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("STICKLLM_CONTROL_PORT", "8091"))
+BAKED_3B = Path("/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf")
 BAKED_7B = Path("/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf")
 
 
@@ -79,6 +81,81 @@ def detect_vram_gb() -> float:
         return 0.0
 
 
+def detect_ram_gb() -> float:
+    try:
+        meminfo = Path("/proc/meminfo").read_text(encoding="utf-8")
+        for line in meminfo.splitlines():
+            if line.startswith("MemAvailable:"):
+                kb = float(line.split()[1])
+                return kb / (1024.0 * 1024.0)
+            if line.startswith("MemTotal:"):
+                kb = float(line.split()[1])
+                # Prefer Available; fall back to ~85% of total.
+                return (kb / (1024.0 * 1024.0)) * 0.85
+    except Exception:
+        pass
+    return 0.0
+
+
+def has_nvidia() -> bool:
+    if detect_vram_gb() > 0.5:
+        return True
+    return Path("/dev/nvidia0").exists() or Path("/dev/nvidiactl").exists()
+
+
+def llama_health_ok() -> tuple[bool, str]:
+    try:
+        p = subprocess.run(
+            ["curl", "-fsS", "--max-time", "2", "http://127.0.0.1:8080/health"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if p.returncode != 0:
+            return False, (p.stderr or p.stdout or "llama /health failed").strip()[:200]
+        try:
+            data = json.loads(p.stdout or "{}")
+        except Exception:
+            return True, "ok"
+        err = data.get("error")
+        if err:
+            return False, str(err)[:200]
+        st = str(data.get("status") or "ok").lower()
+        if st in ("ok", "healthy", ""):
+            return True, st or "ok"
+        return False, st
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def active_model_identity() -> dict:
+    path = active_model_path()
+    mid = ""
+    name = ""
+    env = RUN / "model.env"
+    if env.is_file():
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line.startswith("STICKLLM_MODEL_ID="):
+                mid = line.split("=", 1)[1].strip()
+            elif line.startswith("STICKLLM_MODEL_NAME="):
+                name = line.split("=", 1)[1].strip()
+    if not mid and path:
+        base = os.path.basename(path).lower()
+        if "3b" in base:
+            mid, name = "qwen25-3b-q4km", "Qwen2.5 3B Instruct (baked)"
+        elif "7b" in base:
+            mid, name = "qwen25-7b-q5km", "Qwen2.5 7B Instruct"
+    healthy, health_msg = llama_health_ok()
+    return {
+        "path": path,
+        "id": mid,
+        "name": name or (os.path.basename(path) if path else ""),
+        "running": healthy,
+        "health": health_msg,
+    }
+
+
 def active_model_path() -> str:
     env = RUN / "model.env"
     if env.is_file():
@@ -91,6 +168,8 @@ def active_model_path() -> str:
             return str(cur.resolve())
         except Exception:
             pass
+    if BAKED_3B.is_file():
+        return str(BAKED_3B)
     if BAKED_7B.is_file():
         return str(BAKED_7B)
     return ""
@@ -139,23 +218,178 @@ def parse_catalog() -> list[dict]:
     return out
 
 
+def download_running() -> bool:
+    try:
+        p = subprocess.run(
+            ["pgrep", "-f", "stickllm-download-model|curl.*huggingface"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return p.returncode == 0 and bool(p.stdout.strip())
+    except Exception:
+        return False
+
+
+def download_progress() -> dict:
+    """Best-effort download progress from progress file or *.partial sizes."""
+    prog = read_json(RUN / "download-progress.json")
+    if prog.get("state") in ("downloading", "verifying", "starting"):
+        mid = prog.get("id") or ""
+        still_partial = False
+        for d in model_dirs():
+            try:
+                if any(d.glob("*.partial")):
+                    still_partial = True
+                    break
+            except OSError:
+                pass
+        if not still_partial and mid and not download_running():
+            for m in parse_catalog():
+                if m.get("id") == mid:
+                    files = m.get("hf_files") or []
+                    if files and all(find_file(f) for f in files):
+                        return {
+                            "state": "done",
+                            "id": mid,
+                            "name": m.get("name", mid),
+                            "percent": 100.0,
+                            "bytes_done": prog.get("bytes_total") or 0,
+                            "bytes_total": prog.get("bytes_total") or 0,
+                            "note": "complete",
+                        }
+        return prog
+
+    if prog.get("state") == "failed":
+        return prog
+    if prog.get("state") == "done":
+        return prog
+
+    partials: list[tuple[Path, int]] = []
+    for d in model_dirs():
+        try:
+            for p in d.glob("*.partial"):
+                try:
+                    partials.append((p, p.stat().st_size))
+                except OSError:
+                    pass
+        except OSError:
+            pass
+    if not partials:
+        if download_running():
+            return {
+                "state": "downloading",
+                "id": prog.get("id") or "",
+                "name": prog.get("name") or "model download",
+                "percent": None,
+                "bytes_done": 0,
+                "bytes_total": 0,
+                "note": "download running (size unknown yet)",
+            }
+        return {"state": "idle"}
+
+    partials.sort(key=lambda x: -x[1])
+    path, done = partials[0]
+    base = path.name[: -len(".partial")] if path.name.endswith(".partial") else path.name
+    match = None
+    for m in parse_catalog():
+        files = m.get("hf_files") or []
+        if base in files or any(base == f or f.endswith(base) for f in files):
+            match = m
+            break
+    total = int(float((match or {}).get("approx_size_gb") or 0) * (1024**3))
+    pct = None
+    if total > 0:
+        pct = max(0.0, min(99.9, round(100.0 * done / total, 1)))
+    return {
+        "state": "downloading",
+        "id": (match or {}).get("id", prog.get("id") or ""),
+        "name": (match or {}).get("name", prog.get("name") or base),
+        "file": base,
+        "percent": pct,
+        "bytes_done": done,
+        "bytes_total": total,
+        "path": str(path),
+        "note": "partial on disk",
+        "updated": int(time.time()),
+    }
+
+
+def maybe_resume_stalled_download() -> dict:
+    """Restart download if a .partial exists and the downloader died."""
+    if download_running():
+        return {"resumed": False}
+    partial = None
+    for d in model_dirs():
+        try:
+            for p in sorted(d.glob("*.partial"), key=lambda x: -x.stat().st_size):
+                partial = p
+                break
+        except OSError:
+            pass
+        if partial:
+            break
+    if not partial:
+        return {"resumed": False}
+    prog = read_json(RUN / "download-progress.json")
+    base = partial.name[: -len(".partial")] if partial.name.endswith(".partial") else partial.name
+    mid = str(prog.get("id") or "").strip()
+    if not mid:
+        for m in parse_catalog():
+            if base in (m.get("hf_files") or []):
+                mid = m["id"]
+                break
+    if not mid:
+        return {"resumed": False, "note": "partial without catalog match"}
+    updated = int(prog.get("updated") or 0)
+    stale = (time.time() - updated) > 180 if updated else True
+    state = prog.get("state") or ""
+    if state not in ("failed", "idle", "downloading", "starting", "verifying", "") and not stale:
+        return {"resumed": False}
+    if state in ("downloading", "starting", "verifying") and not stale:
+        return {"resumed": False}
+    RUN.mkdir(parents=True, exist_ok=True)
+    logf = open(RUN / "download.log", "a", encoding="utf-8")
+    subprocess.Popen(
+        ["/usr/local/bin/stickllm-download-model", "--i-understand", "--id", mid],
+        stdout=logf,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    return {"resumed": True, "id": mid}
+
+
 def enrich_models(vram_gb: float | None = None) -> list[dict]:
     if vram_gb is None:
         vram_gb = detect_vram_gb()
+    ram_gb = detect_ram_gb()
+    gpu = has_nvidia()
     active = active_model_path()
+    healthy, _ = llama_health_ok()
     models = parse_catalog()
     for m in models:
         files = m.get("hf_files") or []
         paths = [find_file(f) for f in files] if files else []
         installed = bool(files) and all(p is not None for p in paths)
-        # Also treat baked single-file presence
         if not installed and m["id"] == "qwen25-7b-q5km" and BAKED_7B.is_file():
             installed = True
             paths = [BAKED_7B]
+        if not installed and m["id"] == "qwen25-3b-q4km" and BAKED_3B.is_file():
+            installed = True
+            paths = [BAKED_3B]
         first = next((str(p) for p in paths if p), "")
-        fits = vram_gb + 0.01 >= float(m.get("min_vram_gb") or 0)
-        # CPU/RAM: allow min_vram 0 even with no GPU
-        if float(m.get("min_vram_gb") or 0) == 0:
+        need = float(m.get("min_vram_gb") or 0)
+        size_gb = float(m.get("approx_size_gb") or need or 0)
+        if gpu:
+            fits = vram_gb + 0.01 >= need
+            fit_note = f"VRAM ~{vram_gb:.1f} GB"
+        else:
+            # CPU path: model weights must fit in available system RAM (ISS-018).
+            budget = max(size_gb, need) * 1.15 + 1.5
+            fits = ram_gb + 0.01 >= budget or need == 0 and size_gb <= ram_gb
+            fit_note = f"RAM ~{ram_gb:.1f} GB available (CPU)"
+        if need == 0 and gpu:
             fits = True
         runnable = installed and fits
         is_active = False
@@ -166,14 +400,25 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
                 is_active = os.path.basename(active) == os.path.basename(first)
         elif active and m["id"] == "qwen25-7b-q5km" and "qwen2.5-7b" in active:
             is_active = True
+        elif active and m["id"] == "qwen25-3b-q4km" and "3b" in active.lower():
+            is_active = True
+        # "Running" only when this model is active AND llama /health is ok.
+        running = bool(is_active and healthy)
+        deletable = installed and not str(first).startswith("/opt/stickllm/models/")
         m.update(
             {
                 "installed": installed,
                 "runnable": runnable,
                 "active": is_active,
+                "running": running,
                 "fits_vram": fits,
+                "fits": fits,
+                "fit_note": fit_note,
                 "path": first,
                 "vram_gb": round(vram_gb, 1),
+                "ram_gb": round(ram_gb, 1),
+                "backend": "cuda" if gpu else "cpu",
+                "deletable": deletable,
             }
         )
     return models
@@ -186,7 +431,15 @@ def activate_model(model_id: str) -> dict:
         return {"ok": False, "error": f"unknown model: {model_id}"}
     if not m.get("installed"):
         return {"ok": False, "error": "model not downloaded yet"}
-    if not m.get("fits_vram"):
+    if not m.get("fits"):
+        if m.get("backend") == "cpu":
+            return {
+                "ok": False,
+                "error": (
+                    f"needs ~{m.get('approx_size_gb')} GB RAM on CPU; "
+                    f"this host has ~{m.get('ram_gb')} GB available"
+                ),
+            }
         return {
             "ok": False,
             "error": f"needs {m['min_vram_gb']} GB VRAM; this host has ~{m['vram_gb']} GB",
@@ -195,7 +448,16 @@ def activate_model(model_id: str) -> dict:
     if not path or not Path(path).is_file():
         return {"ok": False, "error": "model file missing"}
     RUN.mkdir(parents=True, exist_ok=True)
-    (RUN / "model.env").write_text(f"STICKLLM_MODEL={path}\n", encoding="utf-8")
+    (RUN / "model.env").write_text(
+        f"STICKLLM_MODEL={path}\n"
+        f"STICKLLM_MODEL_ID={model_id}\n"
+        f"STICKLLM_MODEL_NAME={m.get('name') or model_id}\n",
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(RUN / "model.env", 0o644)
+    except Exception:
+        pass
     try:
         cur = RUN / "current.gguf"
         if cur.exists() or cur.is_symlink():
@@ -204,17 +466,130 @@ def activate_model(model_id: str) -> dict:
     except Exception:
         pass
     r = sh(["systemctl", "restart", "stickllm-llama.service"], timeout=60)
+    # Wait briefly for /health so UI can show Loading vs Running.
+    healthy = False
+    health_msg = "starting"
+    for _ in range(40):
+        time.sleep(0.5)
+        healthy, health_msg = llama_health_ok()
+        if healthy:
+            break
     r["ok"] = r.get("code", 1) == 0
     r["active_model"] = path
     r["id"] = model_id
+    r["name"] = m.get("name") or model_id
+    r["running"] = healthy
+    r["health"] = health_msg
+    r["load_state"] = "running" if healthy else "loading"
     r["models"] = enrich_models()
+    return r
+
+
+def delete_model(model_id: str) -> dict:
+    models = enrich_models()
+    m = next((x for x in models if x["id"] == model_id), None)
+    if not m:
+        return {"ok": False, "error": f"unknown model: {model_id}"}
+    if not m.get("installed"):
+        return {"ok": False, "error": "model not installed"}
+    files = m.get("hf_files") or []
+    removed: list[str] = []
+    blocked: list[str] = []
+    for f in files:
+        p = find_file(f)
+        if not p:
+            continue
+        if str(p).startswith("/opt/stickllm/models/"):
+            blocked.append(str(p))
+            continue
+        try:
+            p.unlink()
+            removed.append(str(p))
+        except Exception as e:
+            return {"ok": False, "error": f"failed to delete {p}: {e}", "removed": removed}
+        # Also drop sibling .partial
+        try:
+            partial = Path(str(p) + ".partial")
+            if partial.is_file():
+                partial.unlink()
+        except Exception:
+            pass
+    if blocked and not removed:
+        return {"ok": False, "error": "baked-in models cannot be deleted", "blocked": blocked}
+    # If we deleted the active model, fall back to baked 3B.
+    active = active_model_path()
+    if active and any(active == r or active.endswith(os.path.basename(r)) for r in removed):
+        if BAKED_3B.is_file():
+            activate_model("qwen25-3b-q4km")
+    return {
+        "ok": True,
+        "removed": removed,
+        "blocked": blocked,
+        "catalog": enrich_models(),
+        "loaded": active_model_identity(),
+    }
+
+
+def wifi_connect(ssid: str, password: str) -> dict:
+    ssid = (ssid or "").strip()
+    if not ssid:
+        return {"ok": False, "error": "ssid required"}
+    r = sh(["/usr/local/bin/stickllm-wifi-apply", ssid, password or ""], timeout=120)
+    online = False
+    try:
+        p = subprocess.run(
+            ["curl", "-fsS", "--max-time", "3", "-o", "/dev/null",
+             "https://connectivitycheck.gstatic.com/generate_204"],
+            capture_output=True,
+            timeout=6,
+            check=False,
+        )
+        online = p.returncode == 0
+    except Exception:
+        online = False
+    r["online"] = online
+    r["ssid"] = ssid
+    wifi_doc = read_json(RUN / "wifi.json") if (RUN / "wifi.json").is_file() else {"ssid": ssid}
+    # wifi.json is key=value; also expose simple fields
+    r["wifi"] = {"ssid": ssid, "online": online}
+    if not r.get("ok"):
+        r["ok"] = r.get("code", 1) == 0
     return r
 
 
 def handle(action: str, params: dict) -> dict:
     if action == "status":
         vram = detect_vram_gb()
+        ram = detect_ram_gb()
         models = enrich_models(vram)
+        watchdog = maybe_resume_stalled_download()
+        loaded = active_model_identity()
+        online = False
+        try:
+            p = subprocess.run(
+                [
+                    "curl",
+                    "-fsS",
+                    "--max-time",
+                    "2",
+                    "-o",
+                    "/dev/null",
+                    "https://connectivitycheck.gstatic.com/generate_204",
+                ],
+                capture_output=True,
+                timeout=4,
+                check=False,
+            )
+            online = p.returncode == 0
+        except Exception:
+            online = False
+        wifi_ssid = ""
+        try:
+            for line in (RUN / "wifi.json").read_text(encoding="utf-8").splitlines():
+                if line.startswith("ssid="):
+                    wifi_ssid = line.split("=", 1)[1].strip()
+        except Exception:
+            pass
         return {
             "ok": True,
             "storage": read_json(RUN / "storage.json"),
@@ -223,8 +598,15 @@ def handle(action: str, params: dict) -> dict:
             if (RUN / "boot-phase.txt").is_file()
             else "",
             "vram_gb": round(vram, 1),
-            "active_model": active_model_path(),
+            "ram_gb": round(ram, 1),
+            "backend": "cuda" if has_nvidia() else "cpu",
+            "active_model": loaded.get("path") or "",
+            "loaded": loaded,
+            "online": online,
+            "wifi": {"ssid": wifi_ssid, "online": online},
             "catalog": models,
+            "download": download_progress(),
+            "watchdog": watchdog,
         }
     if action == "usb_claim":
         r = sh(["/usr/local/bin/stickllm-usb-claim", "--auto", "--yes"], timeout=180)
@@ -237,17 +619,39 @@ def handle(action: str, params: dict) -> dict:
         return r
     if action == "model_download":
         mid = str(params.get("id") or "").strip()
+        if download_running():
+            return {
+                "ok": True,
+                "started": False,
+                "note": "download already running",
+                "download": download_progress(),
+                "catalog": enrich_models(),
+            }
         cmd = ["/usr/local/bin/stickllm-download-model", "--i-understand"]
         if mid:
             cmd += ["--id", mid]
-        r = sh(cmd, timeout=7200)
-        r["catalog"] = enrich_models()
-        return r
+        RUN.mkdir(parents=True, exist_ok=True)
+        logf = open(RUN / "download.log", "a", encoding="utf-8")
+        subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+        time.sleep(0.4)
+        return {
+            "ok": True,
+            "started": True,
+            "download": download_progress(),
+            "catalog": enrich_models(),
+        }
     if action == "model_activate":
         mid = str(params.get("id") or "").strip()
         if not mid:
             return {"ok": False, "error": "id required"}
         return activate_model(mid)
+    if action == "model_delete":
+        mid = str(params.get("id") or "").strip()
+        if not mid:
+            return {"ok": False, "error": "id required"}
+        return delete_model(mid)
+    if action == "wifi_connect":
+        return wifi_connect(str(params.get("ssid") or ""), str(params.get("password") or ""))
     if action == "catalog":
         return {"ok": True, "models": enrich_models()}
     if action == "ssd_status":

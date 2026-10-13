@@ -1,0 +1,75 @@
+#!/bin/bash
+# Apply WiFi credentials from StickLLM UI into NetworkManager (persist on DATA if mounted).
+set -euo pipefail
+
+SSID="${1:-}"
+PASS="${2:-}"
+if [[ -z "$SSID" ]]; then
+  echo "usage: stickllm-wifi-apply <ssid> [password]" >&2
+  exit 2
+fi
+
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+DATA="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+CONN_NAME="stickllm-wifi"
+UUID="b2c3d4e5-f6a7-8901-bcde-f12345678901"
+
+escape_nm() {
+  # NM keyfile: escape backslash and semicolon minimally.
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/;/\\;/g'
+}
+
+SSID_E="$(escape_nm "$SSID")"
+PASS_E="$(escape_nm "$PASS")"
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+umask 077
+{
+  cat <<EOF
+[connection]
+id=${CONN_NAME}
+uuid=${UUID}
+type=wifi
+autoconnect=true
+autoconnect-priority=50
+
+[wifi]
+mode=infrastructure
+ssid=${SSID_E}
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=${PASS_E}
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+may-fail=true
+EOF
+} >"$tmpdir/${CONN_NAME}.nmconnection"
+chmod 600 "$tmpdir/${CONN_NAME}.nmconnection"
+
+install -d -m 755 /etc/NetworkManager/system-connections
+install -m 600 "$tmpdir/${CONN_NAME}.nmconnection" \
+  "/etc/NetworkManager/system-connections/${CONN_NAME}.nmconnection"
+
+# Persist on DATA partition when claimed.
+if [[ -d "$DATA" ]] && mountpoint -q "$DATA" 2>/dev/null; then
+  install -d -m 700 "$DATA/network"
+  install -m 600 "$tmpdir/${CONN_NAME}.nmconnection" \
+    "$DATA/network/${CONN_NAME}.nmconnection"
+fi
+
+mkdir -p "$RUN"
+printf 'ssid=%s\nupdated=%s\n' "$SSID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$RUN/wifi.json"
+chmod 644 "$RUN/wifi.json"
+
+systemctl start --no-block NetworkManager.service 2>/dev/null || true
+nmcli connection reload >/dev/null 2>&1 || true
+nmcli connection up "$CONN_NAME" >/dev/null 2>&1 || \
+  nmcli device wifi connect "$SSID" password "$PASS" >/dev/null 2>&1 || true
+
+echo "OK wifi profile ${CONN_NAME} for ssid=${SSID}"
