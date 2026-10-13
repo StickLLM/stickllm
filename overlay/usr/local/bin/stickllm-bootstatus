@@ -1,7 +1,7 @@
 #!/bin/bash
-# Console status on tty1: Network → Model loading → READY with IP + URL + pair.
+# Console status on tty1: Network -> Model loading -> READY with IP + URL + pair.
 # Owns tty1 (conflicts getty@tty1). Term login: Ctrl+Alt+F2 or SSH.
-# NOTE: avoid set -e — a single failed curl/systemctl must not kill the status UI.
+# NOTE: avoid set -e - a single failed curl/systemctl must not kill the status UI.
 set -uo pipefail
 
 TTY="${STICKLLM_TTY:-/dev/tty1}"
@@ -17,7 +17,7 @@ LOG="$RUN/bootstatus.log"
 mkdir -p "$RUN"
 : >>"$LOG"
 
-# Headless/QEMU: tty1 may be unusable — fall back to serial/console.
+# Headless/QEMU: tty1 may be unusable - fall back to serial/console.
 if [[ ! -c "$TTY" ]] || ! ( : >>"$TTY" ) 2>/dev/null; then
   for cand in /dev/ttyS0 /dev/console; do
     if [[ -c "$cand" ]] && ( : >>"$cand" ) 2>/dev/null; then
@@ -27,7 +27,7 @@ if [[ ! -c "$TTY" ]] || ! ( : >>"$TTY" ) 2>/dev/null; then
   done
 fi
 printf 'STICKLLM_BOOTSTATUS_START tty=%s\n' "$TTY" >>"$LOG"
-# Serial breadcrumb once. Never /dev/console — with console=tty0 it aliases HDMI/tty1.
+# Serial breadcrumb once. Never /dev/console - with console=tty0 it aliases HDMI/tty1.
 serial_only() {
   [[ -w /dev/ttyS0 ]] || return 0
   # Skip if primary paint target is already the serial device.
@@ -69,13 +69,13 @@ refresh_model_label
 mkdir -p "$RUN"
 touch "$LOG"
 # Local: paint loading on tty1 until READY, then yield to stickllm-local-chat
-# (direct AI on this PC — no LAN browser / pair flow).
+# (direct AI on this PC - no LAN browser / pair flow).
 LOCAL_YIELD=0
 if grep -Eqw 'stickllm\.(kiosk|local)' /proc/cmdline 2>/dev/null; then
   LOCAL_YIELD=1
-  echo "bootstatus: local mode — loading then yield to console chat" >>"$LOG"
+  echo "bootstatus: local mode - loading then yield to console chat" >>"$LOG"
 fi
-# Prefer VT1 (product screen). Never paint /dev/tty0 or /dev/console —
+# Prefer VT1 (product screen). Never paint /dev/tty0 or /dev/console -
 # with console=tty0 those alias the same HDMI and double every line.
 chvt 1 2>/dev/null || true
 echo "bootstatus: starting pid=$$" >>"$LOG" 2>/dev/null || true
@@ -139,7 +139,7 @@ lan_ip() {
 }
 
 ensure_network() {
-  # Kick NM/DHCP while stuck on Network Loading — never block the status loop.
+  # Kick NM/DHCP while stuck on Network Loading - never block the status loop.
   systemctl start --no-block NetworkManager.service 2>/dev/null || true
   if command -v nmcli >/dev/null 2>&1; then
     nmcli networking on >/dev/null 2>&1 || true
@@ -186,7 +186,7 @@ emit_net_probe() {
 ensure_pair() {
   PAIR_CODE=""
   PAIR_STATE="none"
-  # Never mint a new code once a browser has paired — that used to wipe the session
+  # Never mint a new code once a browser has paired - that used to wipe the session
   # every READY redraw (pair-code.txt is deleted on successful pair).
   if [[ -f "$RUN/auth.json" ]] && python3 -c 'import json,sys;d=json.load(open("'"$RUN"'/auth.json"));sys.exit(0 if d.get("paired") else 1)' 2>/dev/null; then
     PAIR_STATE="paired"
@@ -205,14 +205,14 @@ say() {
   local line="$*"
   printf '%s\n' "$line" >>"$LOG" 2>/dev/null || true
   # HDMI/product: exactly once on $TTY (normally /dev/tty1).
-  # Never /dev/console or /dev/tty0 — console=tty0 makes them the same screen.
+  # Never /dev/console or /dev/tty0 - console=tty0 makes them the same screen.
   printf '%s\n' "$line" >>"$TTY" 2>/dev/null || true
   # QEMU/headless proof: mirror to serial only when distinct from $TTY.
   serial_only "$line"
 }
 
 refresh_failed() {
-  # Ignore optional/noisy units — do not scare users with nvidia/USB DATA soft-fails.
+  # Ignore optional/noisy units - do not scare users with nvidia/USB DATA soft-fails.
   local u
   u="$(systemctl --failed --no-legend --no-pager --plain 2>/dev/null \
     | awk 'NF && $1 !~ /^UNIT$/ \
@@ -230,7 +230,7 @@ refresh_failed() {
   # Clear sticky optional/noisy failed units so the console stays product-focused.
   systemctl reset-failed nvidia-persistenced.service 2>/dev/null || true
   systemctl reset-failed systemd-modules-load.service 2>/dev/null || true
-  # USB DATA claim is best-effort — never dominate the product loading screen.
+  # USB DATA claim is best-effort - never dominate the product loading screen.
   systemctl reset-failed stickllm-usb.service 2>/dev/null || true
 }
 
@@ -245,10 +245,10 @@ probe_services() {
   [[ "$gw_ok" -eq 0 ]] && curl -fkS --max-time 1 "https://127.0.0.1/api/pair/status" >/dev/null 2>&1 && gw_ok=1
   [[ "$gw_ok" -eq 0 ]] && curl -fsS --max-time 1 "http://127.0.0.1/api/health" >/dev/null 2>&1 && gw_ok=1
   [[ "$ui_ok" -eq 1 || "$gw_ok" -eq 1 ]] && ui_ok=1
-  # Model readiness = llama :8080 /health (not gateway — /api/health is always HTTP 200).
+  # Model readiness = llama :8080 /health (not gateway - /api/health is always HTTP 200).
   curl -fsS --max-time 2 "http://127.0.0.1:8080/health" >/dev/null 2>&1 && api_ok=1
   [[ "$api_ok" -eq 0 ]] && curl -fsS --max-time 2 "$API/health" >/dev/null 2>&1 && api_ok=1
-  # After API-kill, never treat OpenAI /v1 as readiness — only llama_ok on gateway.
+  # After API-kill, never treat OpenAI /v1 as readiness - only llama_ok on gateway.
   if [[ "$api_ok" -eq 0 ]]; then
     local gw_body
     gw_body="$(curl -fsS --max-time 2 "http://127.0.0.1/api/health" 2>/dev/null || true)"
@@ -348,7 +348,7 @@ detect_phase() {
     return
   fi
 
-  # Local: no phone/LAN pair — never block on LAN IP. Show model loading, then hand off.
+  # Local: no phone/LAN pair - never block on LAN IP. Show model loading, then hand off.
   if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     if [[ ! -f "$MODEL_PATH" ]] && \
        [[ ! -f /opt/stickllm/models/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf ]] && \
@@ -367,7 +367,7 @@ detect_phase() {
     return
   fi
 
-  # Term/Server: Network first — never claim READY / useful pair without a LAN path.
+  # Term/Server: Network first - never claim READY / useful pair without a LAN path.
   if [[ -z "${ip:-}" ]]; then
     echo "STICKLLM Network Loading"
     return
@@ -380,7 +380,7 @@ detect_phase() {
     return
   fi
 
-  # READY only when UI/gateway AND model API answer — pair alone is never success.
+  # READY only when UI/gateway AND model API answer - pair alone is never success.
   if [[ "$api_ok" -eq 1 && "$ui_ok" -eq 1 ]]; then
     echo "READY"
     return
@@ -416,7 +416,7 @@ draw_connect_steps() {
   local ip="$1" ui_ok="$2" ready="$3"
   url_scheme
   if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
-    say "  How to use (Local — this PC):"
+    say "  How to use (Local - this PC):"
     say "    Chat:       browser on this screen when READY"
     say "    Pair:       not needed"
     say "    Phone/LAN:  not required for Local mode"
@@ -430,7 +430,7 @@ draw_connect_steps() {
   else
     say "    LAN IP:     (waiting for network…)"
     say "    Browser:    ${SCHEME}://<lan-ip>/"
-    say "    Status:     STICKLLM Network Loading — waiting for IP"
+    say "    Status:     STICKLLM Network Loading - waiting for IP"
   fi
   if [[ "$SCHEME" == "https" ]]; then
     say "    TLS:        accept the browser warning once (self-signed)"
@@ -439,7 +439,7 @@ draw_connect_steps() {
     fi
   fi
   if [[ "$ui_ok" -eq 1 ]]; then
-    say "    Then:       open Pair → enter PAIR CODE below"
+    say "    Then:       open Pair -> enter PAIR CODE below"
   elif [[ "$ready" == "1" ]]; then
     say "    Then:       enter PAIR CODE (UI should be up)"
   else
@@ -447,7 +447,7 @@ draw_connect_steps() {
   fi
   if [[ "$mode" == "ssh" ]]; then
     say "    SSH:        ssh user@${ip:-<lan-ip>}   password: stickllm"
-    say "    Keyboard:   Ctrl+Alt+F2 → user / stickllm"
+    say "    Keyboard:   Ctrl+Alt+F2 -> user / stickllm"
   fi
 }
 
@@ -456,7 +456,7 @@ draw_pair_box() {
   # Local = keyboard chat on this machine; Server/Term use LAN browser + pair.
   if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     say "  ┌─────────────────────────┐"
-    say "  │  LOCAL — no pair needed │"
+    say "  │  LOCAL - no pair needed │"
     say "  └─────────────────────────┘"
     say "  Chat with the AI on this screen when READY"
     return
@@ -474,7 +474,7 @@ draw_pair_box() {
   case "$PAIR_STATE" in
     paired)
       say "  ┌─────────────────────────┐"
-      say "  │  PAIRED — browser OK    │"
+      say "  │  PAIRED - browser OK    │"
       say "  └─────────────────────────┘"
       say "  StickLLM web UI unlocked until reboot"
       ;;
@@ -507,7 +507,7 @@ emit_health_breadcrumb() {
   fi
 }
 
-# Rough cold-load budget (seconds) for TIMER ETA — RTX 3090 class, baked GGUF.
+# Rough cold-load budget (seconds) for TIMER ETA - RTX 3090 class, baked GGUF.
 ETA_PHASE=""
 ETA_PHASE_START=0
 eta_budget_secs() {
@@ -515,14 +515,14 @@ eta_budget_secs() {
   case "$phase" in
     "STICKLLM Network Loading") echo 45 ;;
     Downloading*)
-      # HF model fetch — keep TIMER ticking; ETA is soft.
+      # HF model fetch - keep TIMER ticking; ETA is soft.
       echo 600
       ;;
     *"Model"*"Loading"*)
       if [[ "$MODEL_NAME" == *3B* ]] || [[ "$MODEL_PATH" == *3b* ]]; then
         echo 120
       else
-        # Qwen2.5-7B Q5_K_M cold VRAM load often ~1–3 min on 3090
+        # Qwen2.5-7B Q5_K_M cold VRAM load often ~1-3 min on 3090
         echo 180
       fi
       ;;
@@ -600,7 +600,7 @@ draw() {
   printf '%s\n' "${ip:-}" >"$RUN/lan-ip.txt"
 
   clear_tty
-  draw_header "StickLLM — loading"
+  draw_header "StickLLM - loading"
   say "  Status: $phase"
   eta_bit="$(format_eta_line "$elapsed" "$phase")"
   say "  TIMER: ${elapsed}s${eta_bit}"
@@ -617,10 +617,10 @@ draw() {
   if [[ "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     say "  Loading… console AI chat starts when READY."
   elif [[ "$phase" == "STICKLLM Network Loading" ]]; then
-    say "  Network Loading — waiting for LAN IP (cable / DHCP)."
+    say "  Network Loading - waiting for LAN IP (cable / DHCP)."
     say "  Chat UI will show as http://<lan-ip>/ once network is up."
   else
-    say "  Leave this screen up — TIMER ticks every few seconds."
+    say "  Leave this screen up - TIMER ticks every few seconds."
   fi
   say ""
   emit_health_breadcrumb "$ip" "$ui_ok" "$api_ok" "$phase"
@@ -639,7 +639,7 @@ draw_ready() {
   clear_tty
   # Compact READY: URL + pair near top so they always fit on HDMI (no scroll-off).
   say "========================================"
-  say "  StickLLM — READY"
+  say "  StickLLM - READY"
   say "========================================"
   say "  Mode: $mode_label"
   say "  Model: $MODEL_NAME"
@@ -659,7 +659,7 @@ draw_ready() {
     say "  Browser:  ${SCHEME}://${ip}/"
     say "  URL:      ${SCHEME}://${ip}/"
   else
-    say "  LAN IP:   (waiting — Ethernet DHCP, or WiFi bootstrap below)"
+    say "  LAN IP:   (waiting - Ethernet DHCP, or WiFi bootstrap below)"
     say "  Browser:  ${SCHEME}://<lan-ip>/"
     say "  URL:      ${SCHEME}://<lan-ip>/"
   fi
@@ -669,14 +669,14 @@ draw_ready() {
   say ""
   if [[ -z "${ip:-}" ]]; then
     say "  No network yet (browser Settings cannot reach the stick):"
-    say "    Ctrl+Alt+F2 → login user / stickllm → stickllm-wifi-setup"
+    say "    Ctrl+Alt+F2 -> login user / stickllm -> stickllm-wifi-setup"
     say "    Or: Local once to save WiFi on DATA, then reboot Server"
-    say "    Or: plug Ethernet once, then Settings → Network in the UI"
+    say "    Or: plug Ethernet once, then Settings -> Network in the UI"
   else
     say "  How to connect:"
-    say "    1. Open Browser/URL above on same Wi‑Fi/LAN"
+    say "    1. Open Browser/URL above on same WiFi/LAN"
     say "    2. Enter PAIR CODE (or already paired)"
-    say "    3. Chat · Models · Settings (WiFi) in the StickLLM web UI"
+    say "    3. Chat / Models / Settings (WiFi) in the StickLLM web UI"
   fi
   if [[ "$mode" == "ssh" ]]; then
     SSH_PASS="$(cat "$RUN/ssh-password.txt" 2>/dev/null | tr -d '[:space:]' || true)"
@@ -686,7 +686,7 @@ draw_ready() {
       say "  SSH: stickllm@${ip:-<lan-ip>}  (password on boot /run/stickllm/ssh-password.txt)"
     fi
   fi
-  say "  Idle — reboot clears the pair."
+  say "  Idle - reboot clears the pair."
   emit_health_breadcrumb "$ip" "$ui_ok" "$api_ok" "READY"
 }
 
@@ -742,7 +742,7 @@ dump_svc_diag() {
 }
 while (( SECONDS < deadline )); do
   ip="$(lan_ip)"
-  # Local also needs uplink for Web lookup (ISS-001) — kick ETH/WiFi NM.
+  # Local also needs uplink for Web lookup (ISS-001) - kick ETH/WiFi NM.
   if [[ -z "${ip:-}" ]]; then
     ensure_network
     ip="$(lan_ip)"
@@ -776,7 +776,7 @@ while (( SECONDS < deadline )); do
       handoff_local_chat
       exit 0
     fi
-    # Term/Server: refuse READY without UI — pair-only is not success.
+    # Term/Server: refuse READY without UI - pair-only is not success.
     if [[ "$ui_ok" -ne 1 ]]; then
       phase="STICKLLM Model (${MODEL_NAME}) Loading"
       paint_loading "$SECONDS" "$phase" "${ip:-}" "$ui_ok" "$api_ok"
@@ -793,7 +793,7 @@ while (( SECONDS < deadline )); do
     fi
     draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
     ready_drawn=1
-    # Stay put — repaint if IP, pair, reachability, or an in-flight model download changes.
+    # Stay put - repaint if IP, pair, reachability, or an in-flight model download changes.
     SSH_SIG="$(cat "$RUN/ssh-password.txt" 2>/dev/null | tr -d '[:space:]' || true)"
     ready_sig="${ip:-}|${PAIR_STATE:-none}|${PAIR_CODE:-}|${ui_ok}|${api_ok}|${SCHEME:-http}|${SSH_SIG}"
     while true; do
