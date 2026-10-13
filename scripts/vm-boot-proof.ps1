@@ -14,6 +14,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 . (Join-Path $Root "scripts\lib\Require-ScreenshotProof.ps1")
+. (Join-Path $Root "scripts\lib\qmp-screendump.ps1")
 if (-not [IO.Path]::IsPathRooted($Iso)) { $Iso = Join-Path $Root $Iso }
 if (-not (Test-Path $Iso)) { throw "Missing ISO: $Iso" }
 
