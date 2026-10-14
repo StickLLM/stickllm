@@ -34,14 +34,77 @@ def set_session_mode(mode: str) -> dict:
     mode = str(mode or "").strip().lower()
     if mode not in SESSION_MODES:
         return {"ok": False, "error": "mode must be ephemeral or vault"}
+    prev = session_mode()
     RUN.mkdir(parents=True, exist_ok=True)
     doc = {
         "ok": True,
         "mode": mode,
         "updated": int(time.time()),
     }
+    # Switching to Ephemeral locks the vault (unload model + unmount LUKS).
+    if mode == "ephemeral" and (
+        prev == "vault" or os.path.ismount("/var/lib/stickllm/vault")
+    ):
+        lock_r = vault_action("lock", {})
+        doc["vault_locked"] = bool(lock_r.get("ok"))
+        if not lock_r.get("ok"):
+            doc["vault_lock_error"] = (
+                lock_r.get("error") or lock_r.get("stderr") or "lock failed"
+            )
     SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     return doc
+
+
+def vault_host_root() -> str:
+    """Vault setup folder on the host SSD (may hold stickllm-vault.img)."""
+    st = read_json(RUN / "vault.json")
+    root = str(st.get("root") or "").strip()
+    if root and not root.startswith("/dev/") and Path(root).is_dir():
+        return root
+    for meta in (Path("/var/lib/stickllm/vault-meta"), MNT / "vault-meta"):
+        root_file = meta / "root"
+        if not root_file.is_file():
+            continue
+        try:
+            root = root_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if root and not root.startswith("/dev/") and Path(root).is_dir():
+            return root
+    return ""
+
+
+def vault_clear_models_dirs() -> list[Path]:
+    """Clear-text host model folders to list/load in Vault mode (never chats)."""
+    root = vault_host_root()
+    if not root:
+        return []
+    rp = Path(root)
+    dirs: list[Path] = []
+    # User often chooses …/models as vault root; GGUFs sit beside the blob.
+    if rp.is_dir():
+        dirs.append(rp)
+    nested = rp / "models"
+    if nested.is_dir() and nested not in dirs:
+        dirs.append(nested)
+    # Common host library beside …/home/<user>/models (list/load only).
+    sibling_lm = rp.parent / ".lmstudio" / "models"
+    if sibling_lm.is_dir() and sibling_lm not in dirs:
+        dirs.append(sibling_lm)
+    return dirs
+
+
+def vault_download_models_dir() -> Path | None:
+    """Where Vault-mode catalog downloads land (clear SSD models folder)."""
+    root = vault_host_root()
+    if not root:
+        return None
+    rp = Path(root)
+    # Prefer the folder they chose when it is already a models directory.
+    if rp.is_dir() and rp.name.lower() == "models":
+        return rp
+    nested = rp / "models"
+    return nested
 
 
 def sh(cmd: list[str], timeout: int = 600) -> dict:
@@ -86,35 +149,120 @@ def model_dirs() -> list[Path]:
         vault_models = vault_mnt / "models"
         if vault_models.is_dir() and os.path.ismount(str(vault_mnt)):
             dirs.append(vault_models)
-        for meta in (MNT / "vault-meta", Path("/var/lib/stickllm/vault-meta")):
-            root_file = meta / "root"
-            if not root_file.is_file():
-                continue
-            try:
-                root = root_file.read_text(encoding="utf-8").strip()
-            except Exception:
-                continue
-            if not root or root.startswith("/dev/"):
-                continue
-            host_models = Path(root) / "models"
-            if host_models.is_dir() and host_models not in dirs:
-                dirs.append(host_models)
-            break
-    data = MNT / "models"
-    if data.is_dir() and data not in dirs:
-        dirs.append(data)
+        for d in vault_clear_models_dirs():
+            if d not in dirs:
+                dirs.append(d)
+    # USB DATA models: ephemeral listing/download; also visible as fallback.
+    if session_mode() != "vault":
+        data = MNT / "models"
+        if data.is_dir() and data not in dirs:
+            dirs.append(data)
     baked = Path("/opt/stickllm/models")
     if baked.is_dir() and baked not in dirs:
         dirs.append(baked)
     return dirs
 
 
+def _gguf_search_roots() -> list[Path]:
+    """Dirs to search for GGUF files (shallow recurse under host trees)."""
+    return model_dirs()
+
+
 def find_file(name: str) -> Path | None:
-    for d in model_dirs():
-        p = d / name
+    want = name
+    for d in _gguf_search_roots():
+        p = d / want
         if p.is_file() and p.stat().st_size > 1_000_000:
             return p
+        # Shallow recurse (LM Studio / HF layout: vendor/model/*.gguf)
+        try:
+            for p in d.rglob(want):
+                if p.is_file() and p.stat().st_size > 1_000_000:
+                    # Cap depth under d to 4 path parts
+                    try:
+                        rel = p.relative_to(d)
+                    except ValueError:
+                        continue
+                    if len(rel.parts) <= 4:
+                        return p
+        except OSError:
+            pass
     return None
+
+
+def discover_local_ggufs() -> list[dict]:
+    """Surface on-disk GGUFs not already represented by catalog filenames."""
+    if session_mode() != "vault":
+        return []
+    catalog_files: set[str] = set()
+    for m in parse_catalog():
+        for f in m.get("hf_files") or []:
+            catalog_files.add(os.path.basename(f).lower())
+    # Also treat baked names as catalog-covered
+    catalog_files.add(BAKED_3B.name.lower())
+    catalog_files.add(BAKED_7B.name.lower())
+
+    found: dict[str, Path] = {}
+    for d in _gguf_search_roots():
+        if str(d).startswith("/opt/stickllm/models"):
+            continue
+        try:
+            for p in d.rglob("*.gguf"):
+                if not p.is_file():
+                    continue
+                try:
+                    if p.stat().st_size < 1_000_000:
+                        continue
+                    rel = p.relative_to(d)
+                except (OSError, ValueError):
+                    continue
+                if len(rel.parts) > 4:
+                    continue
+                name = p.name
+                # Skip projector / mmproj helpers as standalone "models"
+                low = name.lower()
+                if low.startswith("mmproj") or "mmproj-" in low:
+                    continue
+                if low in catalog_files:
+                    continue
+                # Multipart: keep shard 00001 (or unsharded)
+                m = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", low)
+                if m and m.group(1) != "00001":
+                    continue
+                key = low
+                prev = found.get(key)
+                if prev is None or p.stat().st_size > prev.stat().st_size:
+                    found[key] = p
+        except OSError:
+            pass
+
+    out: list[dict] = []
+    for low, path in sorted(found.items(), key=lambda kv: kv[0]):
+        stem = path.name
+        if re.search(r"-\d{5}-of-\d{5}\.gguf$", stem, re.I):
+            stem = re.sub(r"-\d{5}-of-\d{5}\.gguf$", "", stem, flags=re.I)
+        else:
+            stem = stem[: -len(".gguf")] if stem.lower().endswith(".gguf") else stem
+        mid = "local-" + re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")[:80]
+        size_gb = round(path.stat().st_size / (1024**3), 2)
+        out.append(
+            {
+                "id": mid,
+                "name": stem.replace("-", " ").replace("_", " "),
+                "tier": "local",
+                "approx_size_gb": size_gb,
+                "min_vram_gb": 0,
+                "quality_rank": 10,
+                "vision": False,
+                "pinned": False,
+                "hf_repo": "",
+                "hf_files": [path.name],
+                "notes": f"On SSD: {path}",
+                "local_path": str(path),
+                "source": "host_ssd",
+            }
+        )
+    return out
 
 
 def detect_vram_gb() -> float:
@@ -447,11 +595,16 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
     gpu = has_nvidia()
     active = active_model_path()
     healthy, _ = llama_health_ok()
-    models = parse_catalog()
+    models = parse_catalog() + discover_local_ggufs()
     for m in models:
         files = m.get("hf_files") or []
-        paths = [find_file(f) for f in files] if files else []
-        installed = bool(files) and all(p is not None for p in paths)
+        local = str(m.get("local_path") or "").strip()
+        if local and Path(local).is_file():
+            paths = [Path(local)]
+            installed = True
+        else:
+            paths = [find_file(f) for f in files] if files else []
+            installed = bool(files) and all(p is not None for p in paths)
         if not installed and m["id"] == "qwen25-7b-q5km" and BAKED_7B.is_file():
             installed = True
             paths = [BAKED_7B]
@@ -462,7 +615,7 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
         need = float(m.get("min_vram_gb") or 0)
         size_gb = float(m.get("approx_size_gb") or need or 0)
         if gpu:
-            fits = vram_gb + 0.01 >= need
+            fits = vram_gb + 0.01 >= need if need > 0 else True
             fit_note = f"VRAM ~{vram_gb:.1f} GB"
         else:
             # CPU path: model weights must fit in available system RAM (ISS-018).
@@ -471,6 +624,10 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
             fit_note = f"RAM ~{ram_gb:.1f} GB available (CPU)"
         if need == 0 and gpu:
             fits = True
+        # Local SSD GGUFs: allow Use when installed; VRAM fit is best-effort.
+        if m.get("source") == "host_ssd" and installed:
+            fits = True
+            fit_note = (fit_note + " · host SSD").strip(" ·")
         runnable = installed and fits
         is_active = False
         if active and first:
@@ -484,7 +641,11 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
             is_active = True
         # "Running" only when this model is active AND llama /health is ok.
         running = bool(is_active and healthy)
-        deletable = installed and not str(first).startswith("/opt/stickllm/models/")
+        deletable = (
+            installed
+            and not str(first).startswith("/opt/stickllm/models/")
+            and m.get("source") != "host_ssd"
+        )
         m.update(
             {
                 "installed": installed,
@@ -511,7 +672,7 @@ def activate_model(model_id: str) -> dict:
         return {"ok": False, "error": f"unknown model: {model_id}"}
     if not m.get("installed"):
         return {"ok": False, "error": "model not downloaded yet"}
-    if not m.get("fits"):
+    if not m.get("fits") and m.get("source") != "host_ssd":
         if m.get("backend") == "cpu":
             return {
                 "ok": False,
@@ -524,7 +685,7 @@ def activate_model(model_id: str) -> dict:
             "ok": False,
             "error": f"needs {m['min_vram_gb']} GB VRAM; this host has ~{m['vram_gb']} GB",
         }
-    path = m.get("path") or ""
+    path = m.get("path") or m.get("local_path") or ""
     if not path or not Path(path).is_file():
         return {"ok": False, "error": "model file missing"}
     RUN.mkdir(parents=True, exist_ok=True)
@@ -671,6 +832,7 @@ def handle(action: str, params: dict) -> dict:
         except Exception:
             pass
         vault = vault_action("status", {})
+        dl_dir = vault_download_models_dir()
         return {
             "ok": True,
             "session_mode": session_mode(),
@@ -690,6 +852,9 @@ def handle(action: str, params: dict) -> dict:
             "catalog": models,
             "download": download_progress(),
             "watchdog": watchdog,
+            "models_dirs": [str(p) for p in model_dirs()],
+            "download_dir": str(dl_dir) if dl_dir else "",
+            "vault_host_root": vault_host_root(),
         }
     if action == "usb_claim":
         r = sh(["/usr/local/bin/stickllm-usb-claim", "--auto", "--yes"], timeout=180)

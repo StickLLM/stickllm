@@ -257,16 +257,41 @@ def set_session_mode(mode: str) -> dict:
     mode = str(mode or "").strip().lower()
     if mode not in SESSION_MODES:
         return {"ok": False, "error": "mode must be ephemeral or vault"}
+    prev = get_session_mode()
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     doc = {
         "mode": mode,
         "updated": int(time.time()),
         "note": (
-            "Vault mode: downloads/chats may use the encrypted SSD blob."
+            "Vault mode: models may use clear SSD folder; chats/settings only in LUKS blob."
             if mode == "vault"
             else "Ephemeral: do not write to SSD/vault; RAM/USB-DATA only as before."
         ),
     }
+    # Ephemeral → unload model then lock/unmount LUKS. Mode write still succeeds;
+    # report lock errors so UI can surface them.
+    if mode == "ephemeral" and (prev == "vault" or vault_unlocked()):
+        try:
+            subprocess.run(
+                ["systemctl", "stop", "stickllm-llama.service"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            p = subprocess.run(
+                ["/usr/local/bin/stickllm-vault", "lock"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            doc["vault_locked"] = p.returncode == 0
+            if p.returncode != 0:
+                doc["vault_lock_error"] = (p.stderr or p.stdout or "lock failed")[-500:]
+        except Exception as e:
+            doc["vault_locked"] = False
+            doc["vault_lock_error"] = str(e)[:300]
     SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     try:
         os.chmod(SESSION_MODE_PATH, 0o644)
@@ -338,9 +363,11 @@ def save_vault_chat(title: str, messages: list, chat_id: str | None = None) -> d
     ok, err = chats_available()
     if not ok:
         return {"ok": False, "error": err}
-    # Never write chats outside the vault mount.
+    # Never write chats outside the vault mount (encrypted blob only).
     if not str(CHATS_DIR).startswith(str(VAULT_MNT)):
         return {"ok": False, "error": "refuse: chats path outside vault"}
+    if not os.path.ismount(str(VAULT_MNT)):
+        return {"ok": False, "error": "vault not mounted — refuse plaintext chat write"}
     CHATS_DIR.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(CHATS_DIR, 0o700)

@@ -62,19 +62,33 @@ if [[ -z "$DATA_MNT_META" ]]; then
 fi
 DEST_DIR=""
 if [[ "$SESSION_MODE" == "vault" ]]; then
-  if findmnt -n "$VAULT_MNT" >/dev/null 2>&1 && [[ -d "$VAULT_MNT/models" ]]; then
-    DEST_DIR="$VAULT_MNT/models"
-    echo "Download target: vault models ($DEST_DIR)"
-  elif [[ -f "$DATA_MNT_META/root" ]]; then
+  # Prefer clear host SSD models folder (vault setup root). Chats stay in LUKS blob only.
+  ROOT_DIR=""
+  if [[ -f /run/stickllm/vault.json ]]; then
+    ROOT_DIR="$(python3 -c 'import json,sys;print(json.load(open("/run/stickllm/vault.json")).get("root") or "")' 2>/dev/null || true)"
+  fi
+  if [[ -z "$ROOT_DIR" && -f "$DATA_MNT_META/root" ]]; then
     ROOT_DIR="$(tr -d '\n' <"$DATA_MNT_META/root")"
-    if [[ -n "$ROOT_DIR" && -d "$ROOT_DIR/models" ]]; then
+  fi
+  if [[ -z "$ROOT_DIR" && -f /var/lib/stickllm/vault-meta/root ]]; then
+    ROOT_DIR="$(tr -d '\n' </var/lib/stickllm/vault-meta/root)"
+  fi
+  if [[ -n "$ROOT_DIR" && -d "$ROOT_DIR" ]]; then
+    base="$(basename -- "$ROOT_DIR")"
+    if [[ "${base,,}" == "models" ]]; then
+      DEST_DIR="$ROOT_DIR"
+    else
       DEST_DIR="$ROOT_DIR/models"
-      echo "Download target: SSD vault models folder ($DEST_DIR)"
     fi
+    echo "Download target: SSD models folder ($DEST_DIR)"
+  elif findmnt -n "$VAULT_MNT" >/dev/null 2>&1 && [[ -d "$VAULT_MNT/models" ]]; then
+    # Fallback only when host root unknown but vault is unlocked.
+    DEST_DIR="$VAULT_MNT/models"
+    echo "Download target: vault-internal models ($DEST_DIR) — host root not configured"
   fi
   if [[ -z "$DEST_DIR" ]]; then
     echo "Vault mode selected but vault is locked/absent — unlock or setup in Settings → Storage."
-    echo "Refusing to write vault paths while locked; falling back is disabled for vault mode."
+    echo "Refusing USB/RAM fallback in vault mode (fail-closed)."
     exit 1
   fi
 else

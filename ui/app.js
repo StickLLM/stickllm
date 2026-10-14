@@ -446,7 +446,14 @@
         ? `Optimum: ${p.recommend_name} (~${p.recommend_size_gb} GB)`
         : "Optimum: unknown",
       loadLine,
-      p.dest ? `Download dest: ${p.dest}` : "",
+      j.download_dir
+        ? `Download dest: ${j.download_dir}`
+        : p.dest
+          ? `Download dest: ${p.dest}`
+          : "",
+      Array.isArray(j.models_dirs) && j.models_dirs.length
+        ? `Scanning: ${j.models_dirs.filter((d) => !String(d).startsWith("/opt/")).slice(0, 3).join(" · ")}`
+        : "",
     ].filter(Boolean);
     modelsBody.textContent = lines.join("\n");
     renderDownload(j.download || {});
@@ -518,8 +525,44 @@
 
   async function setSessionMode(mode) {
     const next = String(mode || "").toLowerCase() === "vault" ? "vault" : "ephemeral";
+    const prev = sessionMode;
     sessionModeBusy = true;
     try {
+      if (next === "vault") {
+        // Unlock (or setup) before committing Vault mode — never silently stay locked.
+        let vault = {};
+        try {
+          vault = await control("vault_status");
+        } catch (_) {}
+        const st = String(vault.status || "").toLowerCase();
+        if (st === "absent" || !st) {
+          applySessionModeUi(prev);
+          if (sessionModeEl) sessionModeEl.value = prev;
+          addBubble(
+            "system",
+            "No vault yet — create a blob on a mounted host SSD folder in Settings (not the StickLLM USB)."
+          );
+          if (settingsDialog && !settingsDialog.open) await openSettings();
+          document.getElementById("vaultSetupPath")?.focus();
+          return;
+        }
+        if (!(st === "unlocked" || vault.mounted)) {
+          const pass = window.prompt("Enter vault passcode to unlock:");
+          if (pass == null || pass === "") {
+            applySessionModeUi(prev);
+            if (sessionModeEl) sessionModeEl.value = prev;
+            addBubble("system", "Vault mode cancelled — passcode required to unlock.");
+            return;
+          }
+          const unlock = await control("vault_unlock", { passcode: pass });
+          if (!unlock.ok) {
+            applySessionModeUi(prev);
+            if (sessionModeEl) sessionModeEl.value = prev;
+            throw new Error(unlock.error || unlock.stderr || "unlock failed");
+          }
+        }
+      }
+
       const r = await fetch("/api/session-mode", {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
@@ -531,38 +574,22 @@
       }
       applySessionModeUi(next);
       if (next === "ephemeral") {
+        const lockNote = j.vault_locked === false
+          ? ` (vault lock: ${j.vault_lock_error || "failed"})`
+          : " — vault locked.";
         addBubble(
           "system",
-          "Ephemeral mode — new downloads/chats will not write to the SSD vault."
+          `Ephemeral mode — no SSD vault writes${lockNote}`
         );
-        return;
-      }
-      // Vault mode: require unlock / setup if needed.
-      let vault = {};
-      try {
-        vault = await control("vault_status");
-      } catch (_) {}
-      const st = String(vault.status || "").toLowerCase();
-      if (st === "unlocked" || vault.mounted) {
-        addBubble("system", "Vault mode — downloads and saved chats use the encrypted SSD vault.");
         return;
       }
       addBubble(
         "system",
-        st === "absent" || !st
-          ? "Vault mode — create a blob on a mounted host SSD folder in Settings (not the StickLLM USB). List storage → Select → Create."
-          : "Vault mode — unlock the vault with your passcode in Settings."
+        "Vault mode — models use your SSD models folder; chats/settings stay in the encrypted vault."
       );
-      if (settingsDialog && !settingsDialog.open) {
-        await openSettings();
-      }
-      if (st === "absent" || !st) {
-        document.getElementById("vaultSetupPath")?.focus();
-      } else {
-        document.getElementById("vaultPass")?.focus();
-      }
     } catch (e) {
-      applySessionModeUi(sessionMode);
+      applySessionModeUi(prev);
+      if (sessionModeEl) sessionModeEl.value = prev;
       addBubble("system", `Could not switch mode: ${e.message}`);
     } finally {
       sessionModeBusy = false;
@@ -596,11 +623,11 @@
       const meta = document.createElement("div");
       const flags = [
         m.running ? "RUNNING" : m.active ? "LOADING" : null,
-        m.installed ? "downloaded" : "not downloaded",
+        m.installed ? (m.source === "host_ssd" ? "on SSD" : "downloaded") : "not downloaded",
         m.fits ? null : m.fit_note || `needs ${m.min_vram_gb}GB`,
         m.backend === "cpu" ? "CPU" : null,
         m.vision ? "vision" : null,
-        m.pinned ? null : "not pinned",
+        m.source === "host_ssd" ? "host SSD" : m.pinned ? null : "not pinned",
       ]
         .filter(Boolean)
         .join(" · ");
@@ -1571,6 +1598,9 @@
       if (res.ok) {
         setVaultSetupFeedback("Vault unlocked.", "ok");
         if (vaultStatus) vaultStatus.textContent = "Vault: unlocked";
+        if (sessionMode !== "vault") {
+          await setSessionMode("vault");
+        }
       } else {
         const msg = res.error || res.stderr || "bad passcode / no vault configured";
         setVaultSetupFeedback(`Unlock failed: ${msg}`, "err");
