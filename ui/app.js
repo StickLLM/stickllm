@@ -452,20 +452,20 @@
         : backend === "vulkan"
           ? `Backend: Vulkan · VRAM ~${j.vram_gb ?? p.vram_gb ?? "?"} GB`
           : `Backend: CPU · RAM ~${j.ram_gb ?? "?"} GB`;
+    const modelsPath =
+      j.download_dir ||
+      p.dest ||
+      (Array.isArray(j.models_dirs)
+        ? j.models_dirs.find((d) => d && !String(d).startsWith("/opt/"))
+        : "") ||
+      "";
     const lines = [
       backendLabel,
       p.recommend_name
         ? `Optimum: ${p.recommend_name} (~${p.recommend_size_gb} GB)`
         : "Optimum: unknown",
       loadLine,
-      j.download_dir
-        ? `Download dest: ${j.download_dir}`
-        : p.dest
-          ? `Download dest: ${p.dest}`
-          : "",
-      Array.isArray(j.models_dirs) && j.models_dirs.length
-        ? `Scanning: ${j.models_dirs.filter((d) => !String(d).startsWith("/opt/")).slice(0, 3).join(" · ")}`
-        : "",
+      modelsPath ? `Models: ${modelsPath}` : "",
     ].filter(Boolean);
     modelsBody.textContent = lines.join("\n");
     renderDownload(j.download || {});
