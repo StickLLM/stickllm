@@ -71,7 +71,7 @@ scp overlay/usr/local/bin/stickllm-vault \
     overlay/usr/local/bin/stickllm-vault-boot \
     overlay/usr/local/bin/stickllm-control \
     stickllm@<ip>:/tmp/
-scp ui/app.js ui/index.html stickllm@<ip>:/tmp/stickllm-ui/
+scp ui/app.js ui/index.html ui/style.css stickllm@<ip>:/tmp/stickllm-ui/
 ssh stickllm@<ip> 'sudo install -m 755 /tmp/stickllm-vault /tmp/stickllm-vault-boot /usr/local/bin/ && sudo install -m 755 /tmp/stickllm-control /usr/local/bin/ && sudo cp /tmp/stickllm-ui/* /opt/stickllm/ui/ && sudo systemctl restart stickllm-control stickllm-ui'
 ssh stickllm@<ip> 'sudo stickllm-vault list-disks | tail -c 2000'
 # Only setup inside a throwaway *mounted* folder — never /dev/sdX:

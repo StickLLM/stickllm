@@ -757,6 +757,10 @@ def handle(action: str, params: dict) -> dict:
         return vault_action("list-devices", params)
     if action == "vault_list_dirs":
         return vault_action("list-dirs", params)
+    if action == "vault_browse_start":
+        return vault_action("browse-start", params)
+    if action == "vault_find_models":
+        return vault_action("find-models", params)
     if action == "vault_mkdir":
         return vault_action("mkdir", params)
     if action == "vault_mount":
@@ -845,6 +849,32 @@ def vault_action(cmd: str, params: dict) -> dict:
             return data
         except Exception:
             return {**r, "ok": False, "error": "list-dirs parse failed"}
+    if cmd == "browse-start":
+        path = str(params.get("path") or "").strip()
+        if not path:
+            return {"ok": False, "error": "path required"}
+        if _looks_like_block_device(path):
+            return {"ok": False, "error": "refusing block device path"}
+        r = sh([script, "browse-start", path], timeout=30)
+        try:
+            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
+            data = json.loads(lines[-1] if lines else "{}")
+            return data
+        except Exception:
+            return {**r, "ok": False, "error": "browse-start parse failed"}
+    if cmd == "find-models":
+        path = str(params.get("path") or "").strip()
+        if not path:
+            return {"ok": False, "error": "path required"}
+        if _looks_like_block_device(path):
+            return {"ok": False, "error": "refusing block device path"}
+        r = sh([script, "find-models", path], timeout=45)
+        try:
+            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
+            data = json.loads(lines[-1] if lines else "{}")
+            return data
+        except Exception:
+            return {**r, "ok": False, "error": "find-models parse failed"}
     if cmd == "mkdir":
         parent = str(params.get("path") or params.get("parent") or "").strip()
         name = str(params.get("name") or "").strip()

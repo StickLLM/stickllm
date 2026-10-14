@@ -385,6 +385,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .vaultKind.usb_stick { border-color: var(--danger); color: var(--danger); }
 .vaultKind.blocked { color: var(--muted); }
 .vaultBrowseBar { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.35rem 0; }
+.vaultModelHits {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 9rem;
+  overflow: auto;
+  margin: 0.35rem 0 0.5rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--line);
+  font-size: 0.82rem;
+}
+.vaultModelHits[hidden] { display: none; }
+.vaultModelHitMeta { color: var(--muted); font-size: 0.75rem; }
 .futurePanel { opacity: 0.85; }
 .futureTag {
   font-size: 0.7rem;

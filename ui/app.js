@@ -855,6 +855,21 @@
     }
   }
 
+  async function resolveVaultStartDir(mountPath, { kind } = {}) {
+    const root = (mountPath || "").trim();
+    if (!root) return root;
+    // Host volumes: land in /home, Users/, Documents — not bare mount root.
+    if (kind === "host_ssd" || kind === "other" || kind === "other_usb") {
+      try {
+        const res = await control("vault_browse_start", { path: root });
+        if (res.ok && res.start_dir) return res.start_dir;
+      } catch (_) {
+        /* fall through to mount root */
+      }
+    }
+    return root;
+  }
+
   async function selectVaultDevice(device) {
     vaultPickerDevice = device;
     setVaultUsbWarn(
@@ -863,7 +878,8 @@
             "USB selected — data on the stick leaves when removed. Prefer host SSD for the vault."
         : ""
     );
-    await browseVaultDir(device.mount_path);
+    const start = await resolveVaultStartDir(device.mount_path, { kind: device.kind });
+    await browseVaultDir(start);
     await refreshVaultPicker({ quiet: true });
   }
 
@@ -902,10 +918,95 @@
           label: vol.label,
         };
         setVaultUsbWarn("");
-        await browseVaultDir(mp);
+        const start = await resolveVaultStartDir(mp, { kind: vol.kind || "host_ssd" });
+        await browseVaultDir(start);
       }
     } catch (e) {
       setVaultSetupFeedback(`Mount failed: ${e.message}`, "err");
+    }
+  }
+
+  function clearVaultModelHits() {
+    const hitsEl = document.getElementById("vaultModelHits");
+    if (hitsEl) {
+      hitsEl.hidden = true;
+      hitsEl.innerHTML = "";
+    }
+  }
+
+  function renderVaultModelHits(res) {
+    const hitsEl = document.getElementById("vaultModelHits");
+    if (!hitsEl) return;
+    const hits = Array.isArray(res.hits) ? res.hits : [];
+    hitsEl.innerHTML = "";
+    if (!hits.length) {
+      hitsEl.hidden = false;
+      hitsEl.textContent =
+        "No model folders found under common locations (GGUF dirs, models/, Ollama, LM Studio, HuggingFace). Browse manually from the start folder.";
+      return;
+    }
+    hitsEl.hidden = false;
+    const head = document.createElement("div");
+    head.className = "vaultModelHitMeta";
+    head.textContent = `Found ${hits.length} location(s) — open one or Use this folder after jumping.`;
+    hitsEl.appendChild(head);
+    for (const hit of hits.slice(0, 24)) {
+      const row = document.createElement("div");
+      row.className = "vaultPickRow";
+      const label = document.createElement("span");
+      const gguf = hit.gguf_count ? ` · ${hit.gguf_count} GGUF` : "";
+      label.textContent = `${hit.relative || hit.path}${gguf} — ${hit.reason || hit.kind || ""}`;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "actionBtn";
+      btn.textContent = "Open";
+      btn.addEventListener("click", async () => {
+        await browseVaultDir(hit.path);
+        useVaultBrowseFolder();
+      });
+      row.appendChild(label);
+      row.appendChild(btn);
+      hitsEl.appendChild(row);
+    }
+  }
+
+  async function findVaultModels() {
+    const base =
+      (vaultPickerDevice?.mount_path || "").trim() || (vaultBrowsePath || "").trim();
+    if (!base) {
+      setVaultSetupFeedback("Open a mounted device first, then Find existing models.", "err");
+      return;
+    }
+    const findBtn = document.getElementById("actVaultFindModels");
+    if (findBtn) findBtn.disabled = true;
+    setVaultSetupFeedback("Searching for existing model folders…", "info");
+    try {
+      const res = await control("vault_find_models", { path: base });
+      if (!res.ok) throw new Error(res.error || "find models failed");
+      renderVaultModelHits(res);
+      const jump = res.best?.path || res.jump_dir || res.start_dir;
+      if (jump) {
+        await browseVaultDir(jump);
+        if (res.best) {
+          useVaultBrowseFolder();
+          setVaultSetupFeedback(
+            `Best match: ${res.best.relative || res.best.path} (${res.best.reason || "models"}).`,
+            "ok"
+          );
+        } else {
+          setVaultSetupFeedback(
+            `No strong model hits — started at ${res.start_dir || jump} (${res.start_reason || "default"}).`,
+            "info"
+          );
+        }
+      } else {
+        setVaultSetupFeedback("Search finished — no browsable start folder.", "err");
+      }
+    } catch (e) {
+      clearVaultModelHits();
+      setVaultSetupFeedback(`Find models failed: ${e.message}`, "err");
+    } finally {
+      if (findBtn) findBtn.disabled = !vaultPickerDevice;
     }
   }
 
@@ -915,6 +1016,7 @@
     const upBtn = document.getElementById("actVaultBrowseUp");
     const useBtn = document.getElementById("actVaultBrowseUse");
     const newBtn = document.getElementById("actVaultBrowseNew");
+    const findBtn = document.getElementById("actVaultFindModels");
     if (folderList) folderList.textContent = "Loading folders…";
     try {
       const res = await control("vault_list_dirs", { path });
@@ -924,6 +1026,7 @@
       if (upBtn) upBtn.disabled = !res.parent;
       if (useBtn) useBtn.disabled = false;
       if (newBtn) newBtn.disabled = !res.can_mkdir;
+      if (findBtn) findBtn.disabled = !(vaultPickerDevice?.mount_path || vaultBrowsePath);
       if (res.is_stick_usb || res.warn) {
         setVaultUsbWarn(
           res.warn ||
@@ -1447,6 +1550,7 @@
   });
   document.getElementById("actVaultBrowseUse")?.addEventListener("click", () => useVaultBrowseFolder());
   document.getElementById("actVaultBrowseNew")?.addEventListener("click", () => createVaultBrowseFolder());
+  document.getElementById("actVaultFindModels")?.addEventListener("click", () => findVaultModels());
   // Up is rebound per browseVaultDir response (once). Keep a stable handler too.
   document.getElementById("actVaultBrowseUp")?.addEventListener("click", async () => {
     if (!vaultBrowsePath || !vaultPickerDevice) return;

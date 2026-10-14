@@ -887,6 +887,439 @@ print(json.dumps({
 PY
 }
 
+# Suggest a user-writable start folder under a mount (not the mount root when
+# /home, Users/, Documents, etc. exist). Also used by find-models.
+browse_start() {
+  local raw="${1:-}"
+  [[ -n "$raw" ]] || die "usage: browse-start <mount-or-dir>"
+  STICKLLM_BROWSE_START_PATH="$raw" python3 <<'PY'
+import json, os, stat
+from pathlib import Path
+import subprocess
+
+raw = os.environ.get("STICKLLM_BROWSE_START_PATH", "")
+ORDINARY = {
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs",
+    "ntfs", "ntfs3", "exfat", "vfat", "fuseblk",
+}
+
+def fail(msg):
+    print(json.dumps({"ok": False, "error": msg}))
+    raise SystemExit(0)
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+if not raw or raw.startswith("/dev/"):
+    fail("directory path required (not a block device)")
+
+try:
+    root = Path(raw).resolve(strict=False)
+except Exception as e:
+    fail(str(e))
+if not root.is_dir():
+    fail(f"not a directory: {root}")
+
+mount_tgt = sh("findmnt", "-n", "-o", "TARGET", "--target", str(root))
+if not mount_tgt:
+    fail("path is not on a mounted filesystem")
+fst = sh("findmnt", "-n", "-o", "FSTYPE", "--target", str(root))
+opts = sh("findmnt", "-n", "-o", "OPTIONS", "--target", str(root))
+if fst not in ORDINARY:
+    fail(f"filesystem '{fst}' not browsable (encrypted/unknown — unlock in host OS)")
+if "ro" in opts.split(","):
+    fail("read-only mount")
+try:
+    root.relative_to(Path(mount_tgt))
+except ValueError:
+    fail("path escapes its mount root")
+
+mount = Path(mount_tgt)
+
+def is_dir(p: Path) -> bool:
+    try:
+        st = p.lstat()
+        return stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode)
+    except Exception:
+        return False
+
+# Prefer standard user areas over bare mount root (Linux / Windows layouts).
+candidates = [
+    mount / "home",
+    mount / "Users",
+    mount / "users",
+    mount / "Documents",
+    mount / "documents",
+]
+start = mount
+reason = "mount root (no standard user area found)"
+for c in candidates:
+    if is_dir(c):
+        start = c
+        reason = f"standard user area: {c.name}"
+        break
+
+# If under /home or /Users with exactly one non-hidden entry, land there.
+if start.name.lower() in ("home", "users"):
+    kids = []
+    try:
+        for ent in sorted(start.iterdir(), key=lambda p: p.name.lower()):
+            if ent.name.startswith(".") or ent.name.lower() in ("default", "public", "all users", "default user"):
+                continue
+            if is_dir(ent):
+                kids.append(ent)
+    except Exception:
+        kids = []
+    if len(kids) == 1:
+        # Prefer Documents under the single user when present
+        docs = kids[0] / "Documents"
+        if is_dir(docs):
+            start = docs
+            reason = f"single-user Documents under {kids[0].name}"
+        else:
+            start = kids[0]
+            reason = f"single user home: {kids[0].name}"
+
+print(json.dumps({
+    "ok": True,
+    "path": str(root),
+    "mount_path": mount_tgt,
+    "start_dir": str(start),
+    "reason": reason,
+    "fstype": fst,
+}))
+PY
+}
+
+# Search common model locations under a mount (GGUF dirs, Ollama, LM Studio, HF…).
+find_models() {
+  local raw="${1:-}"
+  [[ -n "$raw" ]] || die "usage: find-models <mount-or-dir>"
+  STICKLLM_FIND_MODELS_PATH="$raw" python3 <<'PY'
+import json, os, stat, time
+from pathlib import Path
+from collections import deque
+import subprocess
+
+raw = os.environ.get("STICKLLM_FIND_MODELS_PATH", "")
+ORDINARY = {
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs",
+    "ntfs", "ntfs3", "exfat", "vfat", "fuseblk",
+}
+SKIP_NAMES = {
+    "proc", "sys", "dev", "run", "boot", "efi", "lost+found",
+    "$recycle.bin", "system volume information", "windows",
+    "program files", "program files (x86)", "programdata",
+    "recovery", "perflogs", "node_modules", ".git", "snap",
+    "var", "usr", "lib", "lib64", "bin", "sbin", "opt", "tmp",
+    "etc", "media", "mnt", "srv", "root",
+}
+# Allow scanning these even if under skip-ish paths when explicitly named later
+MAX_DIRS = 2500
+MAX_DEPTH = 7
+MAX_SECONDS = 8.0
+MAX_HITS = 40
+
+def fail(msg):
+    print(json.dumps({"ok": False, "error": msg}))
+    raise SystemExit(0)
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+if not raw or raw.startswith("/dev/"):
+    fail("directory path required (not a block device)")
+
+try:
+    root = Path(raw).resolve(strict=False)
+except Exception as e:
+    fail(str(e))
+if not root.is_dir():
+    fail(f"not a directory: {root}")
+
+mount_tgt = sh("findmnt", "-n", "-o", "TARGET", "--target", str(root))
+if not mount_tgt:
+    fail("path is not on a mounted filesystem")
+fst = sh("findmnt", "-n", "-o", "FSTYPE", "--target", str(root))
+opts = sh("findmnt", "-n", "-o", "OPTIONS", "--target", str(root))
+if fst not in ORDINARY:
+    fail(f"filesystem '{fst}' not browsable (encrypted/unknown — unlock in host OS)")
+if "ro" in opts.split(","):
+    fail("read-only mount")
+mount = Path(mount_tgt)
+try:
+    root.relative_to(mount)
+except ValueError:
+    fail("path escapes its mount root")
+
+def is_real_dir(p: Path) -> bool:
+    try:
+        st = p.lstat()
+        return stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode)
+    except Exception:
+        return False
+
+# --- start_dir (same heuristics as browse-start) ---
+start = mount
+start_reason = "mount root (no standard user area found)"
+for c in (mount / "home", mount / "Users", mount / "users", mount / "Documents", mount / "documents"):
+    if is_real_dir(c):
+        start = c
+        start_reason = f"standard user area: {c.name}"
+        break
+if start.name.lower() in ("home", "users"):
+    kids = []
+    try:
+        for ent in sorted(start.iterdir(), key=lambda p: p.name.lower()):
+            if ent.name.startswith(".") or ent.name.lower() in ("default", "public", "all users", "default user"):
+                continue
+            if is_real_dir(ent):
+                kids.append(ent)
+    except Exception:
+        kids = []
+    if len(kids) == 1:
+        docs = kids[0] / "Documents"
+        if is_real_dir(docs):
+            start = docs
+            start_reason = f"single-user Documents under {kids[0].name}"
+        else:
+            start = kids[0]
+            start_reason = f"single user home: {kids[0].name}"
+
+# Priority seed paths (relative to mount) — checked first even if deep.
+SEED_REL = [
+    "home",
+    "Users",
+    "users",
+    "Documents",
+    "documents",
+    "models",
+    "Models",
+    "home/*/models",
+    "home/*/Documents/models",
+    "home/*/.ollama/models",
+    "home/*/.cache/huggingface",
+    "home/*/.cache/lm-studio",
+    "home/*/.lmstudio",
+    "Users/*/Documents",
+    "Users/*/Documents/models",
+    "Users/*/Documents/Models",
+    "Users/*/.ollama/models",
+    "Users/*/AppData/Local/ollama",
+    "Users/*/AppData/Local/nomic.ai/GPT4All",
+    "Users/*/.cache/huggingface",
+    "Users/*/AppData/Local/lm-studio",
+    "Users/*/AppData/Local/LM-Studio",
+    "Users/*/AppData/Roaming/LM Studio",
+]
+
+def expand_globs(rel_pat: str):
+    parts = rel_pat.split("/")
+    cur = [mount]
+    for part in parts:
+        nxt = []
+        for base in cur:
+            if part == "*":
+                try:
+                    for ent in base.iterdir():
+                        if ent.name.startswith("."):
+                            continue
+                        if is_real_dir(ent):
+                            nxt.append(ent)
+                except Exception:
+                    pass
+            else:
+                cand = base / part
+                if is_real_dir(cand):
+                    nxt.append(cand)
+        cur = nxt
+        if not cur:
+            break
+    return cur
+
+hits = {}  # path -> dict
+t0 = time.monotonic()
+
+def score_dir(p: Path, gguf_count: int, hint: str = "") -> tuple:
+    """Return (score, kind, reason)."""
+    name = p.name.lower()
+    parts = [x.lower() for x in p.parts]
+    rel = str(p.relative_to(mount)).replace("\\", "/")
+    score = 0
+    kind = "folder"
+    reason = ""
+    if gguf_count > 0:
+        score += 80 + min(gguf_count, 20)
+        kind = "gguf_dir"
+        reason = f"{gguf_count} GGUF file(s)"
+    if name == "models" or rel.endswith("/models") or "/models/" in (rel + "/"):
+        score += 40
+        kind = "models_dir" if kind == "folder" else kind
+        reason = (reason + "; " if reason else "") + "named models/"
+    if ".ollama" in parts or rel.endswith("ollama/models") or "/.ollama/models" in rel:
+        score += 55
+        kind = "ollama"
+        reason = (reason + "; " if reason else "") + "Ollama models cache"
+    if "huggingface" in parts or "hub" in parts and "huggingface" in rel.lower():
+        score += 50
+        kind = "huggingface"
+        reason = (reason + "; " if reason else "") + "HuggingFace cache"
+    if "lm-studio" in "".join(parts) or "lmstudio" in "".join(parts) or "lm studio" in rel.lower():
+        score += 50
+        kind = "lm_studio"
+        reason = (reason + "; " if reason else "") + "LM Studio"
+    if "gpt4all" in "".join(parts):
+        score += 35
+        kind = "gpt4all"
+        reason = (reason + "; " if reason else "") + "GPT4All"
+    if "documents" in parts and name == "models":
+        score += 15
+    if hint:
+        reason = (reason + "; " if reason else "") + hint
+    return score, kind, reason or "possible model location"
+
+def count_gguf(p: Path) -> int:
+    n = 0
+    try:
+        for ent in p.iterdir():
+            try:
+                st = ent.lstat()
+                if stat.S_ISLNK(st.st_mode):
+                    continue
+                if stat.S_ISREG(st.st_mode) and ent.name.lower().endswith(".gguf"):
+                    n += 1
+                    if n >= 50:
+                        break
+            except Exception:
+                continue
+    except Exception:
+        return 0
+    return n
+
+def add_hit(p: Path, hint: str = ""):
+    try:
+        p = p.resolve(strict=False)
+        p.relative_to(mount)
+    except Exception:
+        return
+    key = str(p)
+    if key in hits:
+        return
+    gguf = count_gguf(p)
+    # Prefer parent if this is a lone file-ish; we only add dirs
+    score, kind, reason = score_dir(p, gguf, hint)
+    # Require some signal — don't spam every Documents folder
+    if score < 40 and gguf == 0:
+        return
+    hits[key] = {
+        "path": key,
+        "name": p.name,
+        "kind": kind,
+        "score": score,
+        "gguf_count": gguf,
+        "reason": reason,
+        "relative": str(p.relative_to(mount)).replace("\\", "/"),
+    }
+
+# Seed pass
+for pat in SEED_REL:
+    for p in expand_globs(pat):
+        add_hit(p, hint="common location")
+        # If seed is home/Users, also check */models shallowly
+        if p.name.lower() in ("home", "users"):
+            try:
+                for u in p.iterdir():
+                    if not is_real_dir(u) or u.name.startswith("."):
+                        continue
+                    for sub in ("models", "Models", "Documents/models", "Documents/Models",
+                                ".ollama/models", ".cache/huggingface", ".cache/lm-studio",
+                                ".lmstudio/models", "AppData/Local/ollama"):
+                        cand = u.joinpath(*sub.split("/"))
+                        if is_real_dir(cand):
+                            add_hit(cand, hint="user home pattern")
+            except Exception:
+                pass
+
+# Bounded BFS from start (and mount/home|Users) for dirs named models or with GGUF
+bfs_roots = [start]
+for extra in (mount / "home", mount / "Users", mount / "models", mount / "Documents"):
+    if is_real_dir(extra) and extra not in bfs_roots:
+        bfs_roots.append(extra)
+
+visited = 0
+q = deque()
+for br in bfs_roots:
+    q.append((br, 0))
+seen_dirs = set()
+
+while q and visited < MAX_DIRS and (time.monotonic() - t0) < MAX_SECONDS and len(hits) < MAX_HITS:
+    cur, depth = q.popleft()
+    key = str(cur)
+    if key in seen_dirs:
+        continue
+    seen_dirs.add(key)
+    visited += 1
+    if depth > MAX_DEPTH:
+        continue
+    try:
+        entries = list(cur.iterdir())
+    except Exception:
+        continue
+    gguf_here = 0
+    for ent in entries:
+        try:
+            st = ent.lstat()
+        except Exception:
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            continue
+        if stat.S_ISREG(st.st_mode) and ent.name.lower().endswith(".gguf"):
+            gguf_here += 1
+    if gguf_here or cur.name.lower() == "models":
+        add_hit(cur)
+    if depth >= MAX_DEPTH:
+        continue
+    for ent in entries:
+        try:
+            st = ent.lstat()
+            if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+                continue
+        except Exception:
+            continue
+        nlow = ent.name.lower()
+        if nlow in SKIP_NAMES:
+            continue
+        # Skip deep hidden except known AI caches
+        if ent.name.startswith(".") and nlow not in {
+            ".ollama", ".cache", ".lmstudio", ".local", ".config"
+        }:
+            continue
+        q.append((ent, depth + 1))
+
+ranked = sorted(hits.values(), key=lambda h: (-h["score"], -h["gguf_count"], h["path"]))
+best = ranked[0] if ranked else None
+# If we found models, prefer jumping start to best's parent-friendly path
+jump = best["path"] if best else str(start)
+
+print(json.dumps({
+    "ok": True,
+    "mount_path": mount_tgt,
+    "path": str(root),
+    "start_dir": str(start),
+    "start_reason": start_reason,
+    "best": best,
+    "jump_dir": jump,
+    "hits": ranked[:MAX_HITS],
+    "scanned_dirs": visited,
+    "elapsed_ms": int((time.monotonic() - t0) * 1000),
+    "fstype": fst,
+    "note": "Read-only search under this mount only. Encrypted/unknown FS refused.",
+}))
+PY
+}
+
 list_dirs() {
   local raw="${1:-}"
   [[ -n "$raw" ]] || die "usage: list-dirs <directory>"
@@ -1496,6 +1929,8 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault list-disks          # read-only probe (not write targets)
   stickllm-vault list-devices        # USB vs host SSD mounts for picker
   stickllm-vault list-dirs <dir>     # browse folders under a mount
+  stickllm-vault browse-start <dir>  # default start folder (/home, Users, …)
+  stickllm-vault find-models <dir>   # search GGUF/Ollama/LM Studio/HF under mount
   stickllm-vault mkdir <parent> <name>  # create subfolder (no format)
   stickllm-vault mount-host <part>   # Mount clear unencrypted FS (MOUNT-HOST)
   stickllm-vault setup <dir> [gb]    # create dir if needed + NEW sparse blob
@@ -1520,6 +1955,8 @@ main() {
     list-disks|disks) list_disks ;;
     list-devices|devices) list_devices ;;
     list-dirs|ls-dirs) list_dirs "$@" ;;
+    browse-start) browse_start "$@" ;;
+    find-models) find_models "$@" ;;
     mkdir) mkdir_vault_dir "$@" ;;
     mount-host) mount_host "$@" ;;
     setup) cmd_setup "$@" ;;
