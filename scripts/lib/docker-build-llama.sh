@@ -56,11 +56,23 @@ cp -aL /usr/local/cuda/lib64/libnccl.so* "$OUT_LIB/" 2>/dev/null || true
 # Drop broken absolute symlinks that point outside the stick
 find "$OUT_LIB" -type l ! -exec test -e {} \; -delete 2>/dev/null || true
 
+# Preload shim: register ggml_backend_cuda_reg when libggml does not NEEDED cuda
+# (shared-backend builds export ggml_backend_cuda_reg, not ggml_backend_init).
+REGISTER_SRC="/work/overlay/opt/stickllm/lib/stickllm-cuda-register.c"
+if [[ -f "$REGISTER_SRC" ]]; then
+  gcc -shared -fPIC -o "$OUT_LIB/stickllm-cuda-register.so" "$REGISTER_SRC" -ldl
+  chmod 755 "$OUT_LIB/stickllm-cuda-register.so"
+fi
+
 LD_LIBRARY_PATH="$OUT_LIB" "$OUT_BIN" --version
 ls -lh "$OUT_BIN" "$OUT_LIB" | head -n 50
 
-# CPU-only binary for no-NVIDIA hosts (ISS-018). Separate build tree, no CUDA.
+# CPU-only binary for no-NVIDIA hosts (ISS-018). Separate tree + lib-cpu/ —
+# never overwrite CUDA libggml*.so (that dropped libggml-cuda NEEDED and left
+# --list-devices with CPU only while STICKLLM_BACKEND=cuda).
 echo "[stickllm] building CPU llama-server…"
+OUT_LIB_CPU="/work/overlay/opt/stickllm/lib-cpu"
+mkdir -p "$OUT_LIB_CPU"
 rm -rf /tmp/llama.cpp-cpu
 if [[ -n "$TAG" ]]; then
   git clone --depth 1 --branch "$TAG" https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp-cpu
@@ -78,10 +90,17 @@ done
 test -n "$CPU_BIN"
 OUT_CPU="/work/overlay/opt/stickllm/bin/llama-server-cpu"
 install -m 755 "$CPU_BIN" "$OUT_CPU"
-# CPU build may add/overwrite CPU libs already present — keep them under OUT_LIB.
 find /tmp/llama.cpp-cpu/build -type f \( -name 'libggml*.so*' -o -name 'libllama*.so*' \) \
-  -exec cp -a {} "$OUT_LIB/" \; 2>/dev/null || true
-cp -a /tmp/llama.cpp-cpu/build/bin/*.so* "$OUT_LIB/" 2>/dev/null || true
-"$OUT_CPU" --version || true
-ls -lh "$OUT_CPU"
-echo "docker-build-llama: OK (cuda + cpu)"
+  -exec cp -a {} "$OUT_LIB_CPU/" \; 2>/dev/null || true
+cp -a /tmp/llama.cpp-cpu/build/bin/*.so* "$OUT_LIB_CPU/" 2>/dev/null || true
+find "$OUT_LIB_CPU" -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+# CPU binary must use lib-cpu at runtime (stickllm-llama-start sets this on CPU path
+# only when needed; default rpath/LD path still OK if libs are self-contained).
+LD_LIBRARY_PATH="$OUT_LIB_CPU" "$OUT_CPU" --version || true
+ls -lh "$OUT_CPU" "$OUT_LIB_CPU" | head -n 30
+# Sanity: CUDA libggml must still be present and must not have been replaced by CPU.
+test -f "$OUT_LIB/libggml-cuda.so" || test -f "$OUT_LIB/libggml-cuda.so.0" || {
+  echo "docker-build-llama: missing libggml-cuda after CPU build" >&2
+  exit 1
+}
+echo "docker-build-llama: OK (cuda lib/ + cpu lib-cpu/ + register shim)"
