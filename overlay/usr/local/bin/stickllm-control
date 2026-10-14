@@ -43,6 +43,9 @@ def read_json(path: Path) -> dict:
 
 def model_dirs() -> list[Path]:
     dirs: list[Path] = []
+    vault_models = Path("/var/lib/stickllm/vault/models")
+    if vault_models.is_dir() and os.path.ismount("/var/lib/stickllm/vault"):
+        dirs.append(vault_models)
     data = MNT / "models"
     if data.is_dir():
         dirs.append(data)
@@ -613,9 +616,11 @@ def handle(action: str, params: dict) -> dict:
                     wifi_ssid = line.split("=", 1)[1].strip()
         except Exception:
             pass
+        vault = vault_action("status", {})
         return {
             "ok": True,
             "storage": read_json(RUN / "storage.json"),
+            "vault": vault,
             "probe": read_json(RUN / "model-probe.json"),
             "boot_phase": (RUN / "boot-phase.txt").read_text(encoding="utf-8").strip()
             if (RUN / "boot-phase.txt").is_file()
@@ -678,12 +683,103 @@ def handle(action: str, params: dict) -> dict:
     if action == "catalog":
         return {"ok": True, "models": enrich_models()}
     if action == "ssd_status":
-        return {
-            "ok": True,
-            "enabled": False,
-            "note": "Opt-in SSD cache not implemented yet — USB DATA only for now.",
-        }
+        return vault_action("status", params)
+    if action == "vault_status":
+        return vault_action("status", params)
+    if action == "vault_disks":
+        return vault_action("list-disks", params)
+    if action == "vault_create_file":
+        return vault_action("create-file", params)
+    if action == "vault_create_partition":
+        return vault_action("create-partition", params)
+    if action == "vault_unlock":
+        return vault_action("unlock", params)
+    if action == "vault_lock":
+        return vault_action("lock", params)
+    if action == "vault_move_model":
+        return vault_action("move-model", params)
     return {"ok": False, "error": f"unknown action: {action}"}
+
+
+def vault_action(cmd: str, params: dict) -> dict:
+    """Drive stickllm-vault; never invent destructive defaults."""
+    script = "/usr/local/bin/stickllm-vault"
+    if cmd == "status":
+        r = sh([script, "status"], timeout=30)
+        st = read_json(RUN / "vault.json")
+        r.update(st)
+        r["ok"] = True
+        return r
+    if cmd == "list-disks":
+        r = sh([script, "list-disks"], timeout=30)
+        try:
+            data = json.loads((r.get("stdout") or "").strip().splitlines()[-1])
+            data["ok"] = True
+            return data
+        except Exception:
+            return {"ok": False, "error": "list-disks parse failed", **r}
+    if cmd == "lock":
+        # Unload model then lock vault.
+        sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
+        r = sh([script, "lock"], timeout=120)
+        st = read_json(RUN / "vault.json")
+        r.update(st)
+        return r
+    if cmd == "unlock":
+        passcode = str(params.get("passcode") or "")
+        env = os.environ.copy()
+        if passcode:
+            env["STICKLLM_VAULT_PASS"] = passcode
+        try:
+            p = subprocess.run(
+                [script, "unlock"],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+                env=env,
+            )
+            r = {
+                "ok": p.returncode == 0,
+                "code": p.returncode,
+                "stdout": (p.stdout or "")[-4000:],
+                "stderr": (p.stderr or "")[-2000:],
+            }
+        except Exception as e:
+            r = {"ok": False, "error": str(e)}
+        r.update(read_json(RUN / "vault.json"))
+        return r
+    if cmd == "create-file":
+        path = str(params.get("path") or "").strip()
+        size_gb = str(params.get("size_gb") or "").strip()
+        confirm = str(params.get("confirm") or "")
+        if confirm != "CREATE-FILE":
+            return {"ok": False, "error": "typed confirm must be CREATE-FILE"}
+        if not path or not size_gb:
+            return {"ok": False, "error": "path and size_gb required"}
+        # Non-interactive create is refused — use SSH for typed confirms.
+        return {
+            "ok": False,
+            "error": (
+                "create-file requires interactive typed confirms on the stick: "
+                f"sudo stickllm-vault create-file {path} {size_gb}"
+            ),
+        }
+    if cmd == "create-partition":
+        return {
+            "ok": False,
+            "error": (
+                "create-partition is destructive and requires interactive typed "
+                "confirms: sudo stickllm-vault create-partition /dev/sdXN"
+            ),
+        }
+    if cmd == "move-model":
+        src = str(params.get("path") or "").strip()
+        if not src:
+            return {"ok": False, "error": "path required"}
+        r = sh([script, "move-model", src], timeout=7200)
+        return r
+    return {"ok": False, "error": f"unknown vault cmd: {cmd}"}
 
 
 class Handler(BaseHTTPRequestHandler):

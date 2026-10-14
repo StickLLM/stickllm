@@ -12,6 +12,7 @@
     <div class="meta">
       <button type="button" id="modelsBtn" class="linkBtn" title="Models">Models</button>
       <button type="button" id="settingsBtn" class="linkBtn" title="Settings">Settings</button>
+      <button type="button" id="lockVaultBtn" class="linkBtn" title="Lock vault (Ctrl+Shift+L)">Lock</button>
       <button type="button" id="pairBtn" class="linkBtn" title="Mint a new pair code (shown on stick chat)">Pair</button>
       <label class="webToggle" title="Look up live web results when needed (needs internet)">
         <input type="checkbox" id="webToggle" checked />
@@ -111,11 +112,25 @@
 
       <div class="apiPanel">
         <h3>Storage</h3>
-        <p class="modelsHint">Claim free space on the StickLLM USB for model downloads.</p>
+        <p class="modelsHint">Claim USB free space, or create an encrypted LUKS2 vault (never auto-format).</p>
+        <p id="vaultStatus" class="modelsHint">Vault: …</p>
+        <pre id="diskList" class="modelsBody" style="max-height:10rem;overflow:auto">Disks: …</pre>
         <div class="modelsActions">
           <button type="button" id="actClaim" class="actionBtn">Claim USB free space</button>
+          <button type="button" id="actVaultDisks" class="actionBtn">List disks</button>
+          <button type="button" id="actVaultLock" class="actionBtn">Lock vault</button>
           <button type="button" id="actSettingsRefresh" class="actionBtn">Refresh</button>
         </div>
+        <p class="modelsHint">
+          Create vault over SSH (typed confirms required):
+          <code>sudo stickllm-vault create-file /path/vault.img 64</code>
+          or destructive
+          <code>sudo stickllm-vault create-partition /dev/sdXN</code>
+        </p>
+        <label class="fieldLabel">Unlock passcode
+          <input id="vaultPass" type="password" autocomplete="off" placeholder="Vault passcode" />
+        </label>
+        <button type="button" id="actVaultUnlock" class="actionBtn">Unlock vault</button>
       </div>
 
       <div class="apiPanel">
@@ -132,7 +147,6 @@
         <h3>Coming later</h3>
         <p class="modelsHint">
           Context size / inference defaults — future Settings.<br/>
-          SSD encrypted vault — feature branch after HW confirm.<br/>
           Setup WiFi access point — future bootstrap if no Ethernet (not built yet).
         </p>
       </div>
@@ -154,6 +168,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=16"></script>
+  <script src="app.js?v=17"></script>
 </body>
 </html>

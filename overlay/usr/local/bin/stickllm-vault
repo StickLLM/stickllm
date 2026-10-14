@@ -1,85 +1,423 @@
 #!/bin/bash
-# Optional encrypted context vault on STICKLLM-DATA (or SSD file). Default: disabled.
-# wipe-after-N failed unlocks is OFF unless explicitly configured — increases risk.
+# StickLLM encrypted SSD vault — LUKS2 + Argon2id + ext4.
+# Never formats or opens disks without explicit typed confirmation.
+# wipe-after-N failed unlocks is OFF unless configured (destroys LUKS header).
 set -euo pipefail
 
-MNT="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
-VAULT_DIR="${MNT}/vault"
-CONF="${VAULT_DIR}/vault.conf"
-FAIL_FILE="${VAULT_DIR}/.unlock_fails"
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+MNT_POINT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
+MAPPER_NAME="${STICKLLM_VAULT_MAPPER:-stickllm-vault}"
+MAPPER="/dev/mapper/${MAPPER_NAME}"
+META_DIR="${STICKLLM_VAULT_META:-/var/lib/stickllm/vault-meta}"
+STATE_JSON="$RUN/vault.json"
+STICK_KEY_DIR="/etc/stickllm"
+STICK_KEYFILE="${STICK_KEY_DIR}/vault.key"
+DEFAULT_WIPE_AFTER=0
 
-echo "StickLLM vault (v0.2) — optional encrypted context"
-echo
-echo "Default is OFF (ephemeral chats). Enabling writes durable secrets to USB/SSD"
-echo "and increases seizure/coercion risk. Wipe-after-N can destroy your own data."
-echo
+mkdir -p "$RUN" "$META_DIR" 2>/dev/null || true
 
-if [[ "${1:-}" == "status" ]]; then
-  if [[ -f "$CONF" ]]; then
-    echo "Vault config present: $CONF"
-    grep -v password "$CONF" || true
-    if [[ -f "$FAIL_FILE" ]]; then
-      echo "Failed unlocks: $(cat "$FAIL_FILE")"
-    fi
+json_state() {
+  local status="${1:-locked}" note="${2:-}"
+  local wipe=0 fails=0
+  [[ -f "$META_DIR/wipe_after" ]] && wipe="$(tr -cd '0-9' <"$META_DIR/wipe_after" || echo 0)"
+  [[ -f "$META_DIR/unlock_fails" ]] && fails="$(tr -cd '0-9' <"$META_DIR/unlock_fails" || echo 0)"
+  python3 - "$STATE_JSON" "$status" "$note" "$wipe" "$fails" "$MNT_POINT" <<'PY'
+import json, sys, os
+path, status, note, wipe, fails, mnt = sys.argv[1:7]
+doc = {
+  "ok": True,
+  "status": status,
+  "mounted": os.path.ismount(mnt),
+  "mount": mnt,
+  "note": note,
+  "wipe_after_failed_unlocks": int(wipe or 0),
+  "failed_unlocks": int(fails or 0),
+  "backend": "luks2-argon2id",
+}
+open(path, "w", encoding="utf-8").write(json.dumps(doc, indent=2) + "\n")
+print(json.dumps(doc))
+PY
+}
+
+die() { echo "stickllm-vault: $*" >&2; exit 1; }
+
+need_root() {
+  [[ "$(id -u)" -eq 0 ]] || die "run as root (sudo)"
+}
+
+is_mounted() {
+  findmnt -n "$MNT_POINT" >/dev/null 2>&1
+}
+
+mapper_open() {
+  [[ -b "$MAPPER" ]] || cryptsetup status "$MAPPER_NAME" >/dev/null 2>&1
+}
+
+list_disks() {
+  python3 <<'PY'
+import json, os, subprocess, shutil
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return p.stdout
+
+disks = []
+# Prefer lsblk JSON
+out = sh("lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,RM,RO,TRAN")
+try:
+    data = json.loads(out or "{}")
+except Exception:
+    data = {}
+for d in data.get("blockdevices") or []:
+    if d.get("type") != "disk":
+        continue
+    path = d.get("path") or ("/dev/" + d.get("name", ""))
+    size = int(d.get("size") or 0)
+    # Skip tiny / obvious live media heuristics later in UI.
+    children = []
+    for c in d.get("children") or []:
+        children.append({
+            "name": c.get("name"),
+            "path": c.get("path") or ("/dev/" + c.get("name", "")),
+            "size": int(c.get("size") or 0),
+            "fstype": c.get("fstype") or "",
+            "mountpoint": c.get("mountpoint") or "",
+            "type": c.get("type") or "",
+        })
+    free_estimate = size
+    for c in children:
+        free_estimate -= int(c.get("size") or 0)
+    if free_estimate < 0:
+        free_estimate = 0
+    disks.append({
+        "name": d.get("name"),
+        "path": path,
+        "size": size,
+        "size_gb": round(size / (1024**3), 2),
+        "model": (d.get("model") or "").strip(),
+        "serial": (d.get("serial") or "").strip(),
+        "rm": bool(d.get("rm")),
+        "ro": bool(d.get("ro")),
+        "tran": d.get("tran") or "",
+        "children": children,
+        "unallocated_bytes": free_estimate,
+        "unallocated_gb": round(free_estimate / (1024**3), 2),
+    })
+print(json.dumps({"ok": True, "disks": disks}))
+PY
+}
+
+cmd_status() {
+  local st="absent"
+  if is_mounted; then
+    st="unlocked"
+  elif mapper_open; then
+    st="mapper-open"
+  elif [[ -f "$META_DIR/device" || -f "$META_DIR/container" ]]; then
+    st="locked"
+  fi
+  json_state "$st" "$(cat "$META_DIR/note" 2>/dev/null || true)"
+}
+
+ensure_dirs_in_vault() {
+  mkdir -p "$MNT_POINT"/{models,chats,settings}
+  chmod 700 "$MNT_POINT" "$MNT_POINT"/chats "$MNT_POINT"/settings 2>/dev/null || true
+}
+
+write_meta() {
+  local kind="$1" target="$2"
+  mkdir -p "$META_DIR"
+  printf '%s\n' "$kind" >"$META_DIR/kind"
+  if [[ "$kind" == "file" ]]; then
+    printf '%s\n' "$target" >"$META_DIR/container"
+    rm -f "$META_DIR/device"
   else
-    echo "Vault not configured."
+    printf '%s\n' "$target" >"$META_DIR/device"
+    rm -f "$META_DIR/container"
   fi
-  exit 0
-fi
+  printf '%s\n' "${WIPE_AFTER:-$DEFAULT_WIPE_AFTER}" >"$META_DIR/wipe_after"
+  printf '0\n' >"$META_DIR/unlock_fails"
+  chmod 600 "$META_DIR"/* 2>/dev/null || true
+}
 
-if [[ "${1:-}" != "--i-understand-risk" ]]; then
-  echo "Refusing. To initialize (interactive):"
-  echo "  sudo stickllm-vault --i-understand-risk init"
-  echo "Status:"
-  echo "  stickllm-vault status"
-  exit 1
-fi
-
-shift
-cmd="${1:-}"
-if [[ "$cmd" != "init" ]]; then
-  echo "Only 'init' is implemented in v0.2 (unlock/wipe land next)."
-  exit 2
-fi
-
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Run as root (sudo)."
-  exit 1
-fi
-
-if ! findmnt -n "$MNT" >/dev/null 2>&1; then
-  echo "Mount DATA first: sudo stickllm-usb-claim --auto --yes"
-  exit 1
-fi
-
-mkdir -p "$VAULT_DIR"
-if [[ -f "$CONF" ]]; then
-  echo "Already initialized: $CONF"
-  exit 0
-fi
-
-read -r -p "Wipe vault after how many failed unlocks? [0=never]: " N
-N="${N:-0}"
-if ! [[ "$N" =~ ^[0-9]+$ ]] || (( N > 10 )); then
-  echo "Invalid N (0–10)."
-  exit 1
-fi
-if (( N > 0 )); then
-  read -r -p "Type WIPE-OK to enable destructive unlock limit: " W
-  if [[ "$W" != "WIPE-OK" ]]; then
-    echo "Aborted wipe-after-N."
-    exit 1
+gen_recovery() {
+  # 12 words from /usr/share/dict if present, else hex entropy.
+  if [[ -f /usr/share/dict/words ]]; then
+    python3 <<'PY'
+import random, pathlib
+words = [w.strip().lower() for w in pathlib.Path("/usr/share/dict/words").read_text(encoding="utf-8", errors="ignore").splitlines() if w.isalpha() and 4 <= len(w) <= 10]
+rng = random.SystemRandom()
+print(" ".join(rng.choice(words) for _ in range(12)))
+PY
+  else
+    openssl rand -hex 24 | fold -w 4 | paste -sd' ' -
   fi
-fi
+}
 
-# Placeholder: real LUKS/age wiring in a follow-up; record intent now.
-cat >"$CONF" <<EOF
-version=1
-cipher=pending
-wipe_after_failed_unlocks=$N
-created=$(date -Iseconds)
+confirm_phrase() {
+  local expect="$1" prompt="$2"
+  local got
+  read -r -p "$prompt" got
+  [[ "$got" == "$expect" ]] || die "confirmation mismatch — aborted (no disk changes)"
+}
+
+cmd_create_file() {
+  need_root
+  local container="${1:-}"
+  local size_gb="${2:-}"
+  [[ -n "$container" && -n "$size_gb" ]] || die "usage: create-file <path.img> <size_gb>"
+  [[ "$size_gb" =~ ^[0-9]+$ ]] && (( size_gb >= 1 && size_gb <= 2000 )) || die "size_gb must be 1–2000"
+  [[ -e "$container" ]] && die "refusing: $container already exists"
+  local parent
+  parent="$(dirname "$container")"
+  [[ -d "$parent" ]] || die "parent dir missing: $parent"
+  echo "About to create NON-DESTRUCTIVE LUKS2 file container:"
+  echo "  path: $container"
+  echo "  size: ${size_gb} GiB"
+  echo "  fs:   ext4 inside LUKS2 Argon2id"
+  confirm_phrase "CREATE-FILE" "Type CREATE-FILE to continue: "
+  read -r -s -p "Vault passcode: " PASS; echo
+  read -r -s -p "Confirm passcode: " PASS2; echo
+  [[ "$PASS" == "$PASS2" ]] || die "passcodes do not match"
+  [[ ${#PASS} -ge 8 ]] || die "passcode must be at least 8 characters"
+  local wipe_after="${STICKLLM_VAULT_WIPE_AFTER:-$DEFAULT_WIPE_AFTER}"
+  if [[ "$wipe_after" =~ ^[0-9]+$ ]] && (( wipe_after > 0 )); then
+    confirm_phrase "WIPE-OK" "Type WIPE-OK to enable wipe-after-$wipe_after failed unlocks: "
+  else
+    wipe_after=0
+  fi
+  WIPE_AFTER="$wipe_after"
+  local recovery
+  recovery="$(gen_recovery)"
+  echo
+  echo "=== RECOVERY PHRASE (shown once — write it down) ==="
+  echo "$recovery"
+  echo "===================================================="
+  confirm_phrase "SAVED" "Type SAVED after writing the recovery phrase: "
+
+  mkdir -p "$parent"
+  # Sparse file — does not wipe the host disk.
+  truncate -s "${size_gb}G" "$container"
+  # Optional stick keyfile (second factor).
+  mkdir -p "$STICK_KEY_DIR"
+  if [[ ! -f "$STICK_KEYFILE" ]]; then
+    openssl rand -out "$STICK_KEYFILE" 64
+    chmod 600 "$STICK_KEYFILE"
+  fi
+  printf '%s\n' "$PASS" | cryptsetup luksFormat \
+    --type luks2 \
+    --pbkdf argon2id \
+    --batch-mode \
+    "$container" -
+  printf '%s\n' "$PASS" | cryptsetup luksAddKey --batch-mode "$container" "$STICK_KEYFILE" -
+  # Recovery key slot from phrase (hashed).
+  local rec_key
+  rec_key="$(printf '%s' "$recovery" | sha256sum | awk '{print $1}')"
+  printf '%s\n%s\n' "$PASS" "$rec_key" | cryptsetup luksAddKey --batch-mode "$container" -
+  printf '%s\n' "$PASS" | cryptsetup open --type luks2 "$container" "$MAPPER_NAME" -
+  mkfs.ext4 -F -L STICKVAULT "$MAPPER"
+  mkdir -p "$MNT_POINT"
+  mount "$MAPPER" "$MNT_POINT"
+  ensure_dirs_in_vault
+  printf '%s\n' "$recovery" | sha256sum | awk '{print $1}' >"$META_DIR/recovery.sha256"
+  chmod 600 "$META_DIR/recovery.sha256"
+  write_meta file "$container"
+  unset PASS PASS2 rec_key
+  json_state unlocked "created file container $container"
+  echo "Vault unlocked at $MNT_POINT"
+}
+
+cmd_create_partition() {
+  need_root
+  local part="${1:-}"
+  [[ -n "$part" && -b "$part" ]] || die "usage: create-partition /dev/sdXN"
+  echo "DESTRUCTIVE: this will ERASE all data on $part and create LUKS2+ext4."
+  echo "Device: $part"
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL "$part" || true
+  confirm_phrase "ERASE-PARTITION" "Type ERASE-PARTITION to continue: "
+  confirm_phrase "$part" "Type the full device path again to confirm: "
+  read -r -s -p "Vault passcode: " PASS; echo
+  read -r -s -p "Confirm passcode: " PASS2; echo
+  [[ "$PASS" == "$PASS2" ]] || die "passcodes do not match"
+  [[ ${#PASS} -ge 8 ]] || die "passcode must be at least 8 characters"
+  local wipe_after="${STICKLLM_VAULT_WIPE_AFTER:-$DEFAULT_WIPE_AFTER}"
+  if [[ "$wipe_after" =~ ^[0-9]+$ ]] && (( wipe_after > 0 )); then
+    confirm_phrase "WIPE-OK" "Type WIPE-OK to enable wipe-after-$wipe_after: "
+  else
+    wipe_after=0
+  fi
+  WIPE_AFTER="$wipe_after"
+  local recovery
+  recovery="$(gen_recovery)"
+  echo
+  echo "=== RECOVERY PHRASE (shown once — write it down) ==="
+  echo "$recovery"
+  echo "===================================================="
+  confirm_phrase "SAVED" "Type SAVED after writing the recovery phrase: "
+
+  wipefs -a "$part" || true
+  mkdir -p "$STICK_KEY_DIR"
+  if [[ ! -f "$STICK_KEYFILE" ]]; then
+    openssl rand -out "$STICK_KEYFILE" 64
+    chmod 600 "$STICK_KEYFILE"
+  fi
+  printf '%s\n' "$PASS" | cryptsetup luksFormat --type luks2 --pbkdf argon2id --batch-mode "$part" -
+  printf '%s\n' "$PASS" | cryptsetup luksAddKey --batch-mode "$part" "$STICK_KEYFILE" -
+  local rec_key
+  rec_key="$(printf '%s' "$recovery" | sha256sum | awk '{print $1}')"
+  printf '%s\n%s\n' "$PASS" "$rec_key" | cryptsetup luksAddKey --batch-mode "$part" -
+  printf '%s\n' "$PASS" | cryptsetup open --type luks2 "$part" "$MAPPER_NAME" -
+  mkfs.ext4 -F -L STICKVAULT "$MAPPER"
+  mkdir -p "$MNT_POINT"
+  mount "$MAPPER" "$MNT_POINT"
+  ensure_dirs_in_vault
+  printf '%s\n' "$recovery" | sha256sum | awk '{print $1}' >"$META_DIR/recovery.sha256"
+  chmod 600 "$META_DIR/recovery.sha256"
+  write_meta partition "$part"
+  unset PASS PASS2 rec_key
+  json_state unlocked "created partition vault on $part"
+  echo "Vault unlocked at $MNT_POINT"
+}
+
+vault_target() {
+  if [[ -f "$META_DIR/container" ]]; then
+    cat "$META_DIR/container"
+  elif [[ -f "$META_DIR/device" ]]; then
+    cat "$META_DIR/device"
+  else
+    return 1
+  fi
+}
+
+bump_fail() {
+  local fails=0 wipe=0
+  [[ -f "$META_DIR/unlock_fails" ]] && fails="$(tr -cd '0-9' <"$META_DIR/unlock_fails" || echo 0)"
+  [[ -f "$META_DIR/wipe_after" ]] && wipe="$(tr -cd '0-9' <"$META_DIR/wipe_after" || echo 0)"
+  fails=$((fails + 1))
+  printf '%s\n' "$fails" >"$META_DIR/unlock_fails"
+  if (( wipe > 0 && fails >= wipe )); then
+    local tgt
+    tgt="$(vault_target || true)"
+    echo "stickllm-vault: wipe-after-$wipe triggered — destroying LUKS header on $tgt" >&2
+    if [[ -n "$tgt" && -e "$tgt" ]]; then
+      cryptsetup luksErase "$tgt" 2>/dev/null || dd if=/dev/zero of="$tgt" bs=1M count=16 conv=notrunc status=none || true
+    fi
+    rm -f "$META_DIR/container" "$META_DIR/device" "$META_DIR/kind"
+    json_state wiped "LUKS header destroyed after $fails failed unlocks" >/dev/null
+    die "vault wiped after $fails failed unlocks"
+  fi
+}
+
+cmd_unlock() {
+  need_root
+  is_mounted && { json_state unlocked "already mounted"; return 0; }
+  local tgt
+  tgt="$(vault_target)" || die "no vault configured (create-file or create-partition first)"
+  local pass="${STICKLLM_VAULT_PASS:-}"
+  if [[ -z "$pass" ]]; then
+    read -r -s -p "Vault passcode: " pass; echo
+  fi
+  # Prefer passcode; stick keyfile is optional second factor via cryptsetup keyslot.
+  local opened=0
+  if printf '%s\n' "$pass" | cryptsetup open --type luks2 "$tgt" "$MAPPER_NAME" - 2>/dev/null; then
+    opened=1
+  elif [[ -f "$STICK_KEYFILE" ]] && printf '%s\n' "$pass" | cryptsetup open --type luks2 --key-file "$STICK_KEYFILE" "$tgt" "$MAPPER_NAME" 2>/dev/null; then
+    # Some setups use keyfile-only slot; passcode may still be required by policy.
+    opened=1
+  fi
+  if [[ "$opened" -ne 1 ]]; then
+    # Try passcode + keyfile via key-file after unlock with pass (already failed).
+    bump_fail
+    die "unlock failed"
+  fi
+  mkdir -p "$MNT_POINT"
+  mount "$MAPPER" "$MNT_POINT"
+  ensure_dirs_in_vault
+  printf '0\n' >"$META_DIR/unlock_fails"
+  unset pass
+  json_state unlocked "unlocked $tgt"
+  echo "Vault unlocked at $MNT_POINT"
+}
+
+cmd_lock() {
+  need_root
+  # Unload model first (caller / control may restart llama after).
+  if is_mounted; then
+    # Best-effort sync
+    sync || true
+    umount "$MNT_POINT" || die "umount failed — is a process using the vault?"
+  fi
+  if mapper_open; then
+    cryptsetup close "$MAPPER_NAME" || die "cryptsetup close failed"
+  fi
+  json_state locked "locked"
+  echo "Vault locked."
+}
+
+cmd_move_model() {
+  need_root
+  is_mounted || die "vault locked — unlock first"
+  local src="${1:-}"
+  [[ -f "$src" ]] || die "usage: move-model /path/to/model.gguf"
+  local base dest tmp sum1 sum2
+  base="$(basename "$src")"
+  dest="$MNT_POINT/models/$base"
+  tmp="$dest.partial"
+  echo "Computing SHA256 of source…"
+  sum1="$(sha256sum "$src" | awk '{print $1}')"
+  echo "$sum1  $base" 
+  cp -f "$src" "$tmp"
+  sum2="$(sha256sum "$tmp" | awk '{print $1}')"
+  [[ "$sum1" == "$sum2" ]] || { rm -f "$tmp"; die "SHA256 mismatch after copy"; }
+  mv -f "$tmp" "$dest"
+  printf '%s  %s\n' "$sum1" "$base" >"$MNT_POINT/models/${base}.sha256"
+  echo "Moved to $dest (sha256 verified)"
+  # Remove source only after verify
+  rm -f "$src"
+  echo "Removed source $src"
+}
+
+cmd_verify_model() {
+  local path="${1:-}"
+  [[ -f "$path" ]] || die "usage: verify-model /path/to/model.gguf"
+  local sumfile="${path}.sha256"
+  [[ -f "$sumfile" ]] || die "missing $sumfile"
+  sha256sum -c "$sumfile"
+}
+
+usage() {
+  cat <<EOF
+StickLLM encrypted vault (LUKS2 Argon2id + ext4)
+
+  stickllm-vault status
+  stickllm-vault list-disks
+  stickllm-vault create-file <path.img> <size_gb>   # non-destructive; typed CREATE-FILE
+  stickllm-vault create-partition <device>          # DESTRUCTIVE; typed ERASE-PARTITION
+  stickllm-vault unlock
+  stickllm-vault lock
+  stickllm-vault move-model <gguf>
+  stickllm-vault verify-model <gguf>
+
+Mount: $MNT_POINT  (models/ chats/ settings/)
+Never auto-formats. Wipe-after-N defaults OFF (STICKLLM_VAULT_WIPE_AFTER).
 EOF
-echo 0 >"$FAIL_FILE"
-chmod 600 "$CONF" "$FAIL_FILE"
-echo "Vault stub created at $VAULT_DIR (encryption backend next)."
-echo "wipe_after_failed_unlocks=$N"
+}
+
+main() {
+  local cmd="${1:-status}"
+  shift || true
+  case "$cmd" in
+    status) cmd_status ;;
+    list-disks|disks) list_disks ;;
+    create-file) cmd_create_file "$@" ;;
+    create-partition) cmd_create_partition "$@" ;;
+    unlock) cmd_unlock "$@" ;;
+    lock) cmd_lock "$@" ;;
+    move-model) cmd_move_model "$@" ;;
+    verify-model) cmd_verify_model "$@" ;;
+    -h|--help|help) usage ;;
+    *) usage; exit 2 ;;
+  esac
+}
+
+main "$@"

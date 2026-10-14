@@ -50,7 +50,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 
 ## Vault and security
 - [x] Ephemeral sessions (reboot clears pair + session)
-- [ ] P1 Encrypted vault on host SSD (LUKS2, Argon2id), only carved from free space, never auto-format
+- [x] P1 Encrypted vault on host SSD (LUKS2 Argon2id) — `feature/encrypted-ssd-vault` (SSH/QEMU first; no flash ask until v0.3.1 HW confirm)
 - [ ] P1 Unlock = key file on stick + short PIN
 - [ ] P1 One-time 12-word recovery phrase for a lost stick
 - [ ] P1 Failed-attempt counter that survives reboot; wipe destroys LUKS header/key file

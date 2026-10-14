@@ -411,6 +411,7 @@
 
   function renderSettingsStatus(j) {
     const s = j.storage || {};
+    const v = j.vault || {};
     const backend = String(j.backend || "cpu").toUpperCase();
     const lines = [
       `Backend: ${backend}`,
@@ -420,6 +421,12 @@
       j.online ? "Uplink: online" : "Uplink: none (Ethernet or console WiFi first)",
     ];
     if (settingsBody) settingsBody.textContent = lines.join("\n");
+    const vaultStatus = document.getElementById("vaultStatus");
+    if (vaultStatus) {
+      vaultStatus.textContent = `Vault: ${v.status || "absent"}${
+        v.mounted ? " · mounted at /var/lib/stickllm/vault" : ""
+      }${v.wipe_after_failed_unlocks ? ` · wipe-after-${v.wipe_after_failed_unlocks}` : ""}`;
+    }
     if (netStatus) {
       const ssid = j.wifi?.ssid || "";
       netStatus.textContent = j.online
@@ -433,6 +440,17 @@
         "http://<stick-lan-ip>/";
       how.textContent =
         `Open ${url} on the same LAN and enter the PAIR CODE from the stick screen (or Pair | URL | Model above). Loopback on the stick needs no pair. No LAN? Term console: stickllm-wifi-setup.`;
+    }
+  }
+
+  async function lockVault() {
+    try {
+      const res = await control("vault_lock");
+      addBubble("system", res.ok !== false ? "Vault locked — model unloaded." : `Lock failed: ${res.error || res.stderr || "unknown"}`);
+      messages.length = 0;
+      if (settingsDialog?.open) await openSettings();
+    } catch (e) {
+      addBubble("system", `Lock failed: ${e.message}`);
     }
   }
 
@@ -689,6 +707,51 @@
 
   modelsBtn?.addEventListener("click", () => openModels());
   settingsBtn?.addEventListener("click", () => openSettings());
+  document.getElementById("lockVaultBtn")?.addEventListener("click", () => lockVault());
+  document.getElementById("actVaultDisks")?.addEventListener("click", async () => {
+    const el = document.getElementById("diskList");
+    if (el) el.textContent = "Listing disks…";
+    try {
+      const res = await control("vault_disks");
+      const disks = res.disks || [];
+      if (el) {
+        el.textContent = disks.length
+          ? disks
+              .map(
+                (d) =>
+                  `${d.path}  ${d.size_gb} GiB  ${d.model || ""}  free~${d.unallocated_gb} GiB  ${d.tran || ""}`
+              )
+              .join("\n")
+          : "No disks listed.";
+      }
+    } catch (e) {
+      if (el) el.textContent = `Error: ${e.message}`;
+    }
+  });
+  document.getElementById("actVaultUnlock")?.addEventListener("click", async () => {
+    const pass = document.getElementById("vaultPass")?.value || "";
+    const vaultStatus = document.getElementById("vaultStatus");
+    if (vaultStatus) vaultStatus.textContent = "Unlocking…";
+    try {
+      const res = await control("vault_unlock", { passcode: pass });
+      if (document.getElementById("vaultPass")) document.getElementById("vaultPass").value = "";
+      if (vaultStatus) {
+        vaultStatus.textContent = res.ok
+          ? "Vault: unlocked"
+          : `Unlock failed: ${res.error || res.stderr || "bad passcode"}`;
+      }
+      await openSettings();
+    } catch (e) {
+      if (vaultStatus) vaultStatus.textContent = `Error: ${e.message}`;
+    }
+  });
+  document.getElementById("actVaultLock")?.addEventListener("click", () => lockVault());
+  window.addEventListener("keydown", (ev) => {
+    if (ev.ctrlKey && ev.shiftKey && (ev.key === "L" || ev.key === "l")) {
+      ev.preventDefault();
+      lockVault();
+    }
+  });
   pairBtn?.addEventListener("click", async () => {
     try {
       if (isLocalMode) {

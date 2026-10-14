@@ -1,0 +1,51 @@
+#!/bin/bash
+# Optional boot-time vault unlock on the kiosk/console path.
+# Skip = leave locked (no-model / CPU-demo only until unlock).
+# Never auto-formats. Never prompts if no vault is configured.
+set -uo pipefail
+
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+META="${STICKLLM_VAULT_META:-/var/lib/stickllm/vault-meta}"
+TTY="${STICKLLM_TTY:-/dev/tty1}"
+MNT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
+
+mkdir -p "$RUN"
+if [[ ! -f "$META/container" && ! -f "$META/device" ]]; then
+  echo "absent" >"$RUN/vault-boot.txt"
+  exit 0
+fi
+if findmnt -n "$MNT" >/dev/null 2>&1; then
+  echo "unlocked" >"$RUN/vault-boot.txt"
+  exit 0
+fi
+
+paint() { printf '%s\n' "$*" >>"$TTY" 2>/dev/null || printf '%s\n' "$*"; }
+
+paint ""
+paint "=== StickLLM encrypted vault ==="
+paint "Vault is locked. Unlock for models/chats/settings on $MNT."
+paint "Press Enter then type passcode, or type skip to continue locked."
+paint ""
+
+# Non-interactive environments (SSH scripts / QEMU serial): skip unless STICKLLM_VAULT_PASS set.
+if [[ ! -t 0 && -z "${STICKLLM_VAULT_PASS:-}" ]]; then
+  echo "skipped-noninteractive" >"$RUN/vault-boot.txt"
+  exit 0
+fi
+
+read -r -p "unlock/skip: " ans <"$TTY" 2>/dev/null || read -r -p "unlock/skip: " ans || ans=skip
+ans="$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+if [[ "$ans" == "skip" || "$ans" == "s" || -z "$ans" ]]; then
+  echo "skipped" >"$RUN/vault-boot.txt"
+  paint "Vault left locked."
+  exit 0
+fi
+
+if [[ -n "${STICKLLM_VAULT_PASS:-}" ]]; then
+  /usr/local/bin/stickllm-vault unlock && echo "unlocked" >"$RUN/vault-boot.txt" && exit 0
+else
+  /usr/local/bin/stickllm-vault unlock && echo "unlocked" >"$RUN/vault-boot.txt" && exit 0
+fi
+echo "failed" >"$RUN/vault-boot.txt"
+paint "Unlock failed — continuing locked."
+exit 0
