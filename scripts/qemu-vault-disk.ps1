@@ -33,12 +33,12 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq e2fsprogs util-linux >/dev/null
 # Build on container local disk first (OneDrive/Windows bind mounts often reject sparse truncate).
+# mkfs.ext4 -F works on a regular file — avoids flaky losetup on Docker Desktop.
 IMG=/tmp/vault-testdisk.img
 rm -f "$IMG"
 truncate -s __SIZE__G "$IMG"
-LOOP=$(losetup -f --show "$IMG")
-mkfs.ext4 -F -L STICKVAULTTEST "$LOOP"
-losetup -d "$LOOP"
+test -f "$IMG"
+mkfs.ext4 -F -L STICKVAULTTEST "$IMG"
 ls -lh "$IMG"
 rm -f /out/vault-testdisk.img /out/vault-testdisk.img.tmp
 cp "$IMG" /out/vault-testdisk.img.tmp

@@ -565,6 +565,10 @@ cmd_setup() {
   luks_pass "$PASS" luksAddKey --batch-mode "$blob" "$META_DIR/.rec.key.$$" || true
   rm -f "$META_DIR/.rec.key.$$"
 
+  # Drop stale mapper name from a prior crashed run (same name, wrong backing).
+  if cryptsetup status "$MAPPER_NAME" >/dev/null 2>&1; then
+    cryptsetup close "$MAPPER_NAME" 2>/dev/null || true
+  fi
   luks_pass "$PASS" open --type luks2 "$blob" "$MAPPER_NAME" \
     || { rm -f "$blob"; die "cryptsetup open failed"; }
   mkfs.ext4 -F -L STICKVAULT "$MAPPER" || die "mkfs.ext4 failed on mapper (blob file only)"
@@ -611,7 +615,23 @@ cmd_grow() {
   cur="$(stat -c%s "$blob")"
   local new=$((cur + need))
   truncate -s "$new" "$blob"
-  cryptsetup resize "$MAPPER_NAME"
+  # LUKS2 resize may re-ask for passphrase even when mapper is open.
+  local pass="${STICKLLM_VAULT_PASS:-}"
+  if [[ -z "$pass" && -t 0 ]]; then
+    read -r -s -p "Vault passcode (for resize): " pass; echo
+  fi
+  if [[ -n "$pass" ]]; then
+    luks_pass "$pass" resize "$MAPPER_NAME" || die "cryptsetup resize failed"
+  else
+    local keyfile
+    keyfile="$(stick_keyfile_path)"
+    if [[ -f "$keyfile" ]]; then
+      cryptsetup resize --key-file "$keyfile" "$MAPPER_NAME" || die "cryptsetup resize failed"
+    else
+      die "resize needs STICKLLM_VAULT_PASS or stick keyfile (non-interactive)"
+    fi
+  fi
+  unset pass
   resize2fs "$MAPPER"
   json_state unlocked "grew blob by ${add_gb} GiB"
   echo "Grew to $new bytes"
@@ -655,6 +675,21 @@ cmd_unlock() {
   local pass="${STICKLLM_VAULT_PASS:-}"
   if [[ -z "$pass" ]]; then
     read -r -s -p "Vault passcode: " pass; echo
+  fi
+  if cryptsetup status "$MAPPER_NAME" >/dev/null 2>&1; then
+    # Already open — ensure mounted or remount.
+    if ! is_mounted; then
+      mkdir -p "$MNT_POINT"
+      mount "$MAPPER" "$MNT_POINT" || { cryptsetup close "$MAPPER_NAME" 2>/dev/null || true; }
+    fi
+    if is_mounted; then
+      printf '0\n' >"$META_DIR/unlock_fails"
+      unset pass
+      json_state unlocked "already open"
+      echo "Vault unlocked at $MNT_POINT"
+      return 0
+    fi
+    cryptsetup close "$MAPPER_NAME" 2>/dev/null || true
   fi
   local opened=0
   if luks_pass "$pass" open --type luks2 "$tgt" "$MAPPER_NAME" 2>/dev/null; then

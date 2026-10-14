@@ -39,8 +39,17 @@ chmod 755 /usr/local/bin/stickllm-vault
 sed -i 's/\r$//' /usr/local/bin/stickllm-vault
 
 mkdir -p /mnt/vault-test /run/stickllm /var/lib/stickllm
-LOOP=$(losetup -f --show "$IMG")
-mount -t ext4 "$LOOP" /mnt/vault-test
+# Clear leftover mapper/mount from a prior privileged Docker run on this VM.
+umount /var/lib/stickllm/vault 2>/dev/null || true
+cryptsetup close stickllm-vault 2>/dev/null || true
+# Prefer direct mount of the image file; fall back to losetup.
+if ! mount -t ext4 -o loop "$IMG" /mnt/vault-test 2>/tmp/mnt.err; then
+  LOOP=$(losetup -f --show "$IMG")
+  mount -t ext4 "$LOOP" /mnt/vault-test
+  echo "$LOOP" >/tmp/vault-proof.loop
+fi
+# Fresh folder each proof (avoid leftover blob from partial prior run on same image).
+rm -rf /mnt/vault-test/StickLLM
 mkdir -p /mnt/vault-test/StickLLM
 
 export STICKLLM_RUN=/run/stickllm
@@ -82,6 +91,7 @@ echo "OK unlock"
 
 echo "=== grow ==="
 export STICKLLM_VAULT_CONFIRM=GROW-VAULT
+export STICKLLM_VAULT_PASS='testpass-qemu-proof'
 stickllm-vault grow 1
 echo "OK grow"
 
@@ -92,8 +102,10 @@ echo "OK list-disks"
 stickllm-vault lock || true
 umount /var/lib/stickllm/vault 2>/dev/null || true
 cryptsetup close stickllm-vault 2>/dev/null || true
-umount /mnt/vault-test
-losetup -d "$LOOP"
+umount /mnt/vault-test || true
+if [[ -f /tmp/vault-proof.loop ]]; then
+  losetup -d "$(cat /tmp/vault-proof.loop)" 2>/dev/null || true
+fi
 
 echo "VAULT_PROOF=PASS"
 '@
