@@ -39,6 +39,7 @@ rsync -a \
   "$STICKLLM/overlay/usr/local/bin/stickllm-model-probe" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-download-model" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-vault" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-vault-boot" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-persist" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-status" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-pair" \

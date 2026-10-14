@@ -1,43 +1,50 @@
 #!/bin/bash
-# StickLLM encrypted SSD vault — LUKS2 + Argon2id + ext4.
-# Never formats or opens disks without explicit typed confirmation.
-# wipe-after-N failed unlocks is OFF unless configured (destroys LUKS header).
+# StickLLM encrypted SSD vault — LUKS2 Argon2id file blob only (v0.3.3).
+#
+# SAFETY (fail-closed — when in doubt, hands off):
+# - Never partition, wipefs, or rewrite partition tables.
+# - Never cryptsetup/luksFormat against a block device (/dev/sd*, nvme*, …).
+# - Never unlock, reformat, or re-encrypt an existing host volume (BitLocker,
+#   host LUKS, FileVault, etc.). If the host FS is not already mounted and
+#   writable, refuse and tell the user to unlock it in the host OS first.
+# - Encrypted / unknown / RAID / LVM / dynamic / ambiguous layouts → refuse
+#   as vault *targets*. Disk listing is read-only probe only.
+# - Writes only create NEW files/dirs inside a user-chosen, already-mounted
+#   ordinary filesystem after typed confirmation. Never fill disk to zero
+#   without warning. Wipe-after-N wrong PIN is OFF by default.
+#
+# Layout under user dir:
+#   <root>/models/              # create if missing; never delete existing files
+#   <root>/stickllm-vault.img   # sparse expandable LUKS2+ext4 blob
+# Mount (when unlocked): /var/lib/stickllm/vault/{models,chats,settings}
+#   (models/ also bind-mounted from <root>/models for existing folders)
 set -euo pipefail
 
 RUN="${STICKLLM_RUN:-/run/stickllm}"
 MNT_POINT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
 MAPPER_NAME="${STICKLLM_VAULT_MAPPER:-stickllm-vault}"
 MAPPER="/dev/mapper/${MAPPER_NAME}"
-META_DIR="${STICKLLM_VAULT_META:-/var/lib/stickllm/vault-meta}"
+# Persist meta on USB DATA when available; else ephemeral under /var/lib.
+DATA_MNT="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+META_DIR="${STICKLLM_VAULT_META:-}"
+if [[ -z "$META_DIR" ]]; then
+  if findmnt -n "$DATA_MNT" >/dev/null 2>&1; then
+    META_DIR="$DATA_MNT/vault-meta"
+  else
+    META_DIR="/var/lib/stickllm/vault-meta"
+  fi
+fi
 STATE_JSON="$RUN/vault.json"
-STICK_KEY_DIR="/etc/stickllm"
-STICK_KEYFILE="${STICK_KEY_DIR}/vault.key"
+BLOB_NAME="stickllm-vault.img"
+MODELS_SUBDIR="models"
+STICK_KEY_DIR=""
 DEFAULT_WIPE_AFTER=0
+# Leave this many MiB free on the host FS after blob create/grow.
+RESERVE_MIB="${STICKLLM_VAULT_RESERVE_MIB:-1024}"
+MIN_SIZE_GB=1
+MAX_SIZE_GB=2000
 
-mkdir -p "$RUN" "$META_DIR" 2>/dev/null || true
-
-json_state() {
-  local status="${1:-locked}" note="${2:-}"
-  local wipe=0 fails=0
-  [[ -f "$META_DIR/wipe_after" ]] && wipe="$(tr -cd '0-9' <"$META_DIR/wipe_after" || echo 0)"
-  [[ -f "$META_DIR/unlock_fails" ]] && fails="$(tr -cd '0-9' <"$META_DIR/unlock_fails" || echo 0)"
-  python3 - "$STATE_JSON" "$status" "$note" "$wipe" "$fails" "$MNT_POINT" <<'PY'
-import json, sys, os
-path, status, note, wipe, fails, mnt = sys.argv[1:7]
-doc = {
-  "ok": True,
-  "status": status,
-  "mounted": os.path.ismount(mnt),
-  "mount": mnt,
-  "note": note,
-  "wipe_after_failed_unlocks": int(wipe or 0),
-  "failed_unlocks": int(fails or 0),
-  "backend": "luks2-argon2id",
-}
-open(path, "w", encoding="utf-8").write(json.dumps(doc, indent=2) + "\n")
-print(json.dumps(doc))
-PY
-}
+mkdir -p "$RUN" 2>/dev/null || true
 
 die() { echo "stickllm-vault: $*" >&2; exit 1; }
 
@@ -53,42 +60,295 @@ mapper_open() {
   [[ -b "$MAPPER" ]] || cryptsetup status "$MAPPER_NAME" >/dev/null 2>&1
 }
 
+json_state() {
+  local status="${1:-locked}" note="${2:-}"
+  local wipe=0 fails=0 root="" blob=""
+  [[ -f "$META_DIR/wipe_after" ]] && wipe="$(tr -cd '0-9' <"$META_DIR/wipe_after" || echo 0)"
+  [[ -f "$META_DIR/unlock_fails" ]] && fails="$(tr -cd '0-9' <"$META_DIR/unlock_fails" || echo 0)"
+  [[ -f "$META_DIR/root" ]] && root="$(tr -d '\n' <"$META_DIR/root" || true)"
+  [[ -f "$META_DIR/container" ]] && blob="$(tr -d '\n' <"$META_DIR/container" || true)"
+  python3 - "$STATE_JSON" "$status" "$note" "$wipe" "$fails" "$MNT_POINT" "$root" "$blob" <<'PY'
+import json, sys, os
+path, status, note, wipe, fails, mnt, root, blob = sys.argv[1:9]
+doc = {
+  "ok": True,
+  "status": status,
+  "mounted": os.path.ismount(mnt),
+  "mount": mnt,
+  "root": root or None,
+  "blob": blob or None,
+  "note": note,
+  "wipe_after_failed_unlocks": int(wipe or 0),
+  "failed_unlocks": int(fails or 0),
+  "backend": "luks2-argon2id-file",
+  "safety": "file-blob-only; never formats host disks",
+}
+open(path, "w", encoding="utf-8").write(json.dumps(doc, indent=2) + "\n")
+print(json.dumps(doc))
+PY
+}
+
+# --- Path / target safety (fail-closed) ------------------------------------
+
+is_block_device_path() {
+  local p="$1"
+  # Explicit raw-device patterns — never accept as vault root or blob path.
+  [[ "$p" =~ ^/dev/ ]] && return 0
+  [[ "$p" =~ ^\\\\.\\PhysicalDrive ]] && return 0
+  return 1
+}
+
+is_system_path() {
+  local p="$1"
+  # Normalize trailing slash
+  p="${p%/}"
+  [[ -z "$p" || "$p" == "/" ]] && return 0
+  case "$p" in
+    /boot|/boot/*|/efi|/efi/*|/ESP|/ESP/*) return 0 ;;
+    /etc|/etc/*|/usr|/usr/*|/bin|/sbin|/lib|/lib64|/lib/*|/lib64/*) return 0 ;;
+    /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*) return 0 ;;
+    /var/lib/stickllm|/var/lib/stickllm/*) return 0 ;;  # live overlay / stick runtime
+    /rofs|/rofs/*|/lib/live|/lib/live/*) return 0 ;;
+    /Windows|/Windows/*|/windows|/windows/*) return 0 ;;
+    /Program\ Files|/Program\ Files/*|/ProgramData|/ProgramData/*) return 0 ;;
+    /\$Recycle.Bin|/*/\$Recycle.Bin|/*/\$Recycle.Bin/*) return 0 ;;
+  esac
+  # Windows-style if somehow passed through
+  case "$p" in
+    [A-Za-z]:\\Windows*|[A-Za-z]:/Windows*|[A-Za-z]:\\Program*) return 0 ;;
+  esac
+  return 1
+}
+
+is_live_usb_path() {
+  # Refuse using the StickLLM live medium / STICKLLM-DATA as the "SSD vault"
+  # target — vault is for host SSD folders, not the boot stick.
+  local p="$1" src mnt
+  mnt="$(df -P "$p" 2>/dev/null | awk 'NR==2{print $6}')" || return 1
+  [[ -z "$mnt" ]] && return 1
+  src="$(findmnt -n -o SOURCE --target "$mnt" 2>/dev/null || true)"
+  local boot
+  boot="$(findmnt -n -o SOURCE --target /run/live/medium 2>/dev/null || true)"
+  [[ -z "$boot" ]] && boot="$(findmnt -n -o SOURCE --target /lib/live/mount/medium 2>/dev/null || true)"
+  if [[ -n "$boot" && -n "$src" ]]; then
+    # Same underlying disk as live medium?
+    local boot_disk src_disk
+    boot_disk="$(lsblk -no PKNAME "$boot" 2>/dev/null || lsblk -no NAME "$boot" 2>/dev/null || true)"
+    src_disk="$(lsblk -no PKNAME "$src" 2>/dev/null || lsblk -no NAME "$src" 2>/dev/null || true)"
+    if [[ -n "$boot_disk" && "$boot_disk" == "$src_disk" ]]; then
+      return 0
+    fi
+  fi
+  # Labeled StickLLM USB data
+  local label
+  label="$(lsblk -no LABEL "$src" 2>/dev/null || true)"
+  [[ "$label" == "STICKLLM-DATA" || "$label" == "STICKLLM" ]] && return 0
+  [[ "$mnt" == "$DATA_MNT" || "$mnt" == /mnt/stickllm-data ]] && return 0
+  return 1
+}
+
+fs_looks_ordinary() {
+  local fstype="$1"
+  case "$fstype" in
+    ext2|ext3|ext4|xfs|btrfs|f2fs|ntfs|ntfs3|exfat|vfat|fuseblk)
+      return 0
+      ;;
+    # Encrypted / exotic / unknown → fail closed
+    crypto_LUKS|BitLocker|zfs|zfs_member|linux_raid_member|LVM2_member|swap|"")
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Resolve path to a real directory that is on a mounted, writable, ordinary FS.
+# Prints absolute path on success; dies with a clear message otherwise.
+assert_safe_vault_root() {
+  local raw="${1:-}"
+  [[ -n "$raw" ]] || die "directory path required"
+  is_block_device_path "$raw" && die "refusing block device path ($raw) — vault is a file inside a mounted folder only; never formats disks"
+  is_system_path "$raw" && die "refusing system path ($raw)"
+
+  local abs
+  if [[ -d "$raw" ]]; then
+    abs="$(readlink -f "$raw" 2>/dev/null || realpath "$raw" 2>/dev/null || echo "$raw")"
+  else
+    # Parent must exist for create-dir path; caller may mkdir after confirm.
+    local parent
+    parent="$(dirname "$raw")"
+    [[ -d "$parent" ]] || die "parent directory missing: $parent — mount/unlock the host drive in the host OS first if it is BitLocker/LUKS encrypted"
+    local parent_abs
+    parent_abs="$(readlink -f "$parent" 2>/dev/null || realpath "$parent" 2>/dev/null || echo "$parent")"
+    abs="$parent_abs/$(basename "$raw")"
+  fi
+
+  is_block_device_path "$abs" && die "refusing block device path"
+  is_system_path "$abs" && die "refusing system path ($abs)"
+
+  local probe="$abs"
+  [[ -d "$abs" ]] || probe="$(dirname "$abs")"
+  local mnt fstype opts src
+  mnt="$(findmnt -n -o TARGET --target "$probe" 2>/dev/null || true)"
+  [[ -n "$mnt" ]] || die "path is not on a mounted filesystem ($probe). If this is a BitLocker/LUKS/FileVault volume, unlock and mount it in the host OS first — StickLLM will not unlock or wipe host encryption."
+  fstype="$(findmnt -n -o FSTYPE --target "$probe" 2>/dev/null || true)"
+  opts="$(findmnt -n -o OPTIONS --target "$probe" 2>/dev/null || true)"
+  src="$(findmnt -n -o SOURCE --target "$probe" 2>/dev/null || true)"
+
+  fs_looks_ordinary "$fstype" || die "refusing filesystem type '$fstype' on $src (encrypted, RAID, LVM, or unrecognized — fail-closed; unlock ordinary FS in host OS if needed)"
+  [[ "$opts" == *ro,* || "$opts" == *,ro || "$opts" == ro || "$opts" == *,ro,* ]] && \
+    die "filesystem is read-only ($mnt). Unlock/remount writable in the host OS first — StickLLM will not alter host encryption."
+
+  # Ambiguous / exotic block layers under this mount
+  if [[ -n "$src" ]]; then
+    local dtype
+    dtype="$(lsblk -no TYPE "$src" 2>/dev/null | head -1 || true)"
+    case "$dtype" in
+      crypt|lvm|raid|raid0|raid1|raid5|raid6|raid10|mpath)
+        die "refusing mount backed by '$dtype' ($src) — fail-closed; use a normal mounted folder"
+        ;;
+    esac
+    # crypto_LUKS holding the FS would already be opened as crypt; also refuse
+    # if blkid on parent says BitLocker / unknown partition table mess.
+    local pt
+    pt="$(lsblk -no PTTYPE "$(lsblk -no PKNAME "$src" 2>/dev/null | head -1 | sed 's|^|/dev/|')" 2>/dev/null || true)"
+    # empty PTTYPE on some FS is OK (loop); refuse exotic
+    case "$pt" in
+      gpt|dos|msdos|"") ;;
+      *)
+        die "refusing unrecognized partition table '$pt' — fail-closed, hands off"
+        ;;
+    esac
+  fi
+
+  is_live_usb_path "$probe" && die "refusing StickLLM live USB / STICKLLM-DATA as SSD vault target — choose a folder on the host SSD (already mounted)"
+
+  # Writable check
+  local testdir="$probe"
+  [[ -d "$abs" ]] && testdir="$abs"
+  if [[ -d "$testdir" ]]; then
+    local t
+    t="$testdir/.stickllm-write-test.$$"
+    if ! ( : >"$t" ) 2>/dev/null; then
+      die "directory not writable ($testdir). Unlock host encryption / fix permissions in the host OS first."
+    fi
+    rm -f "$t"
+  fi
+
+  printf '%s\n' "$abs"
+}
+
+free_bytes_for_path() {
+  local p="$1"
+  df -PB1 "$p" 2>/dev/null | awk 'NR==2{print $4}'
+}
+
+confirm_phrase() {
+  local expect="$1" prompt="$2"
+  local got
+  read -r -p "$prompt" got
+  [[ "$got" == "$expect" ]] || die "confirmation mismatch — aborted (no disk changes)"
+}
+
+# --- Read-only disk probe (never writes) -----------------------------------
+
 list_disks() {
+  # Read-only inventory for Settings UI. Does NOT offer raw devices as targets.
+  # Marks mounts that look usable vs encrypted/unknown/refuse.
   python3 <<'PY'
-import json, os, subprocess, shutil
+import json, os, subprocess
 
 def sh(*a):
     p = subprocess.run(a, capture_output=True, text=True, check=False)
-    return p.stdout
+    return p.stdout or ""
+
+def ordinary(fstype: str) -> bool:
+    return fstype in {
+        "ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs",
+        "ntfs", "ntfs3", "exfat", "vfat", "fuseblk",
+    }
 
 disks = []
-# Prefer lsblk JSON
-out = sh("lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,RM,RO,TRAN")
+out = sh("lsblk", "-J", "-b", "-o",
+         "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,RM,RO,TRAN,PKNAME")
 try:
     data = json.loads(out or "{}")
 except Exception:
     data = {}
+
+mounts = []
+# Mounted filesystems only — vault targets must already be mounted.
+mnt_out = sh("findmnt", "-J", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS,AVAIL,SIZE")
+try:
+    mdata = json.loads(mnt_out or "{}")
+except Exception:
+    mdata = {}
+for fs in mdata.get("filesystems") or []:
+    def walk(node, acc):
+        tgt = node.get("target") or ""
+        fst = (node.get("fstype") or "").strip()
+        opts = node.get("options") or ""
+        src = node.get("source") or ""
+        avail = node.get("avail")  # may be string
+        size = node.get("size")
+        ro = "ro" in opts.split(",")
+        usable = bool(
+            tgt and ordinary(fst) and not ro
+            and not tgt.startswith(("/boot", "/efi", "/proc", "/sys", "/dev", "/run", "/rofs"))
+            and tgt not in ("/", "/usr", "/var", "/etc")
+        )
+        reason = ""
+        if not ordinary(fst):
+            reason = f"filesystem '{fst or 'unknown'}' not usable (encrypted/RAID/LVM/unknown — unlock in host OS if BitLocker/LUKS)"
+            usable = False
+        elif ro:
+            reason = "read-only mount — unlock/remount in host OS first"
+            usable = False
+        elif tgt in ("/",) or tgt.startswith(("/boot", "/efi", "/rofs", "/lib/live")):
+            reason = "system/live path refused"
+            usable = False
+        # StickLLM USB labels
+        if "STICKLLM" in (sh("lsblk", "-no", "LABEL", src) or ""):
+            usable = False
+            reason = "StickLLM USB medium — not an SSD vault target"
+        acc.append({
+            "path": tgt,
+            "source": src,
+            "fstype": fst,
+            "options": opts,
+            "avail": avail,
+            "size": size,
+            "writable_candidate": usable,
+            "refuse_reason": reason or None,
+        })
+        for c in node.get("children") or []:
+            walk(c, acc)
+    walk(fs, mounts)
+
 for d in data.get("blockdevices") or []:
     if d.get("type") != "disk":
         continue
     path = d.get("path") or ("/dev/" + d.get("name", ""))
     size = int(d.get("size") or 0)
-    # Skip tiny / obvious live media heuristics later in UI.
     children = []
+    ambiguous = False
     for c in d.get("children") or []:
+        ft = (c.get("fstype") or "")
+        mp = c.get("mountpoint") or ""
+        ctype = c.get("type") or ""
+        if ft in ("crypto_LUKS", "BitLocker", "linux_raid_member", "LVM2_member", "zfs_member") or ctype in ("crypt", "lvm", "raid"):
+            ambiguous = True
         children.append({
             "name": c.get("name"),
             "path": c.get("path") or ("/dev/" + c.get("name", "")),
             "size": int(c.get("size") or 0),
-            "fstype": c.get("fstype") or "",
-            "mountpoint": c.get("mountpoint") or "",
-            "type": c.get("type") or "",
+            "fstype": ft,
+            "mountpoint": mp,
+            "type": ctype,
+            "vault_target": False,  # never offer raw partitions
+            "note": "raw devices are never vault targets — use a mounted folder",
         })
-    free_estimate = size
-    for c in children:
-        free_estimate -= int(c.get("size") or 0)
-    if free_estimate < 0:
-        free_estimate = 0
     disks.append({
         "name": d.get("name"),
         "path": path,
@@ -100,24 +360,27 @@ for d in data.get("blockdevices") or []:
         "ro": bool(d.get("ro")),
         "tran": d.get("tran") or "",
         "children": children,
-        "unallocated_bytes": free_estimate,
-        "unallocated_gb": round(free_estimate / (1024**3), 2),
+        "vault_target": False,
+        "ambiguous_or_encrypted": ambiguous,
+        "note": (
+            "Encrypted or complex layout — StickLLM will not touch this disk. "
+            "Unlock in host OS and pick a mounted folder."
+            if ambiguous else
+            "Informational only. Vault creates a file in a folder you choose — never formats your drive."
+        ),
     })
-print(json.dumps({"ok": True, "disks": disks}))
+
+print(json.dumps({
+    "ok": True,
+    "read_only_probe": True,
+    "safety": "Creates a file in a folder you choose. Never formats your drive. Never unlocks BitLocker/LUKS host volumes.",
+    "disks": disks,
+    "mounts": mounts,
+}))
 PY
 }
 
-cmd_status() {
-  local st="absent"
-  if is_mounted; then
-    st="unlocked"
-  elif mapper_open; then
-    st="mapper-open"
-  elif [[ -f "$META_DIR/device" || -f "$META_DIR/container" ]]; then
-    st="locked"
-  fi
-  json_state "$st" "$(cat "$META_DIR/note" 2>/dev/null || true)"
-}
+# --- Meta / recovery -------------------------------------------------------
 
 ensure_dirs_in_vault() {
   mkdir -p "$MNT_POINT"/{models,chats,settings}
@@ -125,23 +388,18 @@ ensure_dirs_in_vault() {
 }
 
 write_meta() {
-  local kind="$1" target="$2"
+  local root="$1" blob="$2"
   mkdir -p "$META_DIR"
-  printf '%s\n' "$kind" >"$META_DIR/kind"
-  if [[ "$kind" == "file" ]]; then
-    printf '%s\n' "$target" >"$META_DIR/container"
-    rm -f "$META_DIR/device"
-  else
-    printf '%s\n' "$target" >"$META_DIR/device"
-    rm -f "$META_DIR/container"
-  fi
+  printf '%s\n' "file" >"$META_DIR/kind"
+  printf '%s\n' "$root" >"$META_DIR/root"
+  printf '%s\n' "$blob" >"$META_DIR/container"
+  rm -f "$META_DIR/device" 2>/dev/null || true
   printf '%s\n' "${WIPE_AFTER:-$DEFAULT_WIPE_AFTER}" >"$META_DIR/wipe_after"
   printf '0\n' >"$META_DIR/unlock_fails"
   chmod 600 "$META_DIR"/* 2>/dev/null || true
 }
 
 gen_recovery() {
-  # 12 words from /usr/share/dict if present, else hex entropy.
   if [[ -f /usr/share/dict/words ]]; then
     python3 <<'PY'
 import random, pathlib
@@ -154,39 +412,92 @@ PY
   fi
 }
 
-confirm_phrase() {
-  local expect="$1" prompt="$2"
-  local got
-  read -r -p "$prompt" got
-  [[ "$got" == "$expect" ]] || die "confirmation mismatch — aborted (no disk changes)"
+stick_keyfile_path() {
+  if findmnt -n "$DATA_MNT" >/dev/null 2>&1; then
+    printf '%s\n' "$DATA_MNT/vault.key"
+  else
+    printf '%s\n' "/var/lib/stickllm/vault.key"
+  fi
 }
 
-cmd_create_file() {
+cmd_status() {
+  local st="absent"
+  if is_mounted; then
+    st="unlocked"
+  elif mapper_open; then
+    st="mapper-open"
+  elif [[ -f "$META_DIR/container" ]]; then
+    st="locked"
+  fi
+  json_state "$st" "$(cat "$META_DIR/note" 2>/dev/null || true)"
+}
+
+# --- Setup: create or use directory + new sparse blob ----------------------
+
+cmd_setup() {
   need_root
-  local container="${1:-}"
-  local size_gb="${2:-}"
-  [[ -n "$container" && -n "$size_gb" ]] || die "usage: create-file <path.img> <size_gb>"
-  [[ "$size_gb" =~ ^[0-9]+$ ]] && (( size_gb >= 1 && size_gb <= 2000 )) || die "size_gb must be 1–2000"
-  [[ -e "$container" ]] && die "refusing: $container already exists"
-  local parent
-  parent="$(dirname "$container")"
-  [[ -d "$parent" ]] || die "parent dir missing: $parent"
-  echo "About to create NON-DESTRUCTIVE LUKS2 file container:"
-  echo "  path: $container"
-  echo "  size: ${size_gb} GiB"
-  echo "  fs:   ext4 inside LUKS2 Argon2id"
-  confirm_phrase "CREATE-FILE" "Type CREATE-FILE to continue: "
-  read -r -s -p "Vault passcode: " PASS; echo
-  read -r -s -p "Confirm passcode: " PASS2; echo
-  [[ "$PASS" == "$PASS2" ]] || die "passcodes do not match"
-  [[ ${#PASS} -ge 8 ]] || die "passcode must be at least 8 characters"
+  local raw_dir="${1:-}"
+  local size_gb="${2:-8}"
+  [[ -n "$raw_dir" ]] || die "usage: setup <directory> [initial_size_gb]"
+  [[ "$size_gb" =~ ^[0-9]+$ ]] && (( size_gb >= MIN_SIZE_GB && size_gb <= MAX_SIZE_GB )) \
+    || die "initial_size_gb must be ${MIN_SIZE_GB}-${MAX_SIZE_GB}"
+
+  local root
+  root="$(assert_safe_vault_root "$raw_dir")"
+
+  echo "StickLLM vault setup (NON-DESTRUCTIVE)"
+  echo "  Creates a file in a folder you choose. Never formats your drive."
+  echo "  Never unlocks BitLocker/host LUKS. Never touches partition tables."
+  echo "  root: $root"
+  echo "  blob: $root/$BLOB_NAME  (sparse, initial ${size_gb} GiB logical)"
+  echo "  models folder: $root/$MODELS_SUBDIR  (created if missing; existing files kept)"
+  confirm_phrase "CREATE-VAULT" "Type CREATE-VAULT to continue: "
+
+  # Create root dir only if missing (create-only)
+  if [[ ! -d "$root" ]]; then
+    mkdir -p "$root" || die "could not create directory $root"
+  fi
+  root="$(assert_safe_vault_root "$root")"
+
+  local blob="$root/$BLOB_NAME"
+  [[ -e "$blob" ]] && die "refusing: $blob already exists (will not overwrite)"
+
+  local models="$root/$MODELS_SUBDIR"
+  if [[ ! -d "$models" ]]; then
+    mkdir -p "$models" || die "could not create $models"
+  else
+    echo "Keeping existing models folder: $models (no files moved/deleted)"
+  fi
+
+  # Free space check — never fill disk; reserve RESERVE_MIB
+  local parent free need reserve
+  parent="$root"
+  free="$(free_bytes_for_path "$parent")"
+  [[ -n "$free" && "$free" =~ ^[0-9]+$ ]] || die "could not determine free space — refuse (fail-closed)"
+  need=$((size_gb * 1024 * 1024 * 1024))
+  # Sparse files may use little initially, but warn on logical size vs free
+  reserve=$((RESERVE_MIB * 1024 * 1024))
+  if (( free < reserve + 64 * 1024 * 1024 )); then
+    die "not enough free space on filesystem (have $free bytes, need reserve ${RESERVE_MIB} MiB) — refuse"
+  fi
+  if (( need + reserve > free )); then
+    echo "WARNING: logical blob size ${size_gb} GiB + reserve may exceed free space ($free bytes)."
+    confirm_phrase "SPACE-OK" "Type SPACE-OK if you understand sparse growth still needs free space later: "
+  fi
+
   local wipe_after="${STICKLLM_VAULT_WIPE_AFTER:-$DEFAULT_WIPE_AFTER}"
   if [[ "$wipe_after" =~ ^[0-9]+$ ]] && (( wipe_after > 0 )); then
-    confirm_phrase "WIPE-OK" "Type WIPE-OK to enable wipe-after-$wipe_after failed unlocks: "
+    confirm_phrase "WIPE-OK" "Type WIPE-OK to enable wipe-after-$wipe_after failed unlocks (destroys LUKS header only on THIS blob file): "
   else
     wipe_after=0
   fi
   WIPE_AFTER="$wipe_after"
+
+  read -r -s -p "Vault passcode: " PASS; echo
+  read -r -s -p "Confirm passcode: " PASS2; echo
+  [[ "$PASS" == "$PASS2" ]] || die "passcodes do not match"
+  [[ ${#PASS} -ge 8 ]] || die "passcode must be at least 8 characters"
+
   local recovery
   recovery="$(gen_recovery)"
   echo
@@ -195,95 +506,86 @@ cmd_create_file() {
   echo "===================================================="
   confirm_phrase "SAVED" "Type SAVED after writing the recovery phrase: "
 
-  mkdir -p "$parent"
-  # Sparse file — does not wipe the host disk.
-  truncate -s "${size_gb}G" "$container"
-  # Optional stick keyfile (second factor).
-  mkdir -p "$STICK_KEY_DIR"
-  if [[ ! -f "$STICK_KEYFILE" ]]; then
-    openssl rand -out "$STICK_KEYFILE" 64
-    chmod 600 "$STICK_KEYFILE"
+  # Optional stick keyfile (2nd factor material on DATA when present)
+  local keyfile
+  keyfile="$(stick_keyfile_path)"
+  mkdir -p "$(dirname "$keyfile")"
+  if [[ ! -f "$keyfile" ]]; then
+    openssl rand -out "$keyfile" 64
+    chmod 600 "$keyfile"
   fi
+
+  # Create NEW sparse file only — never a block device
+  is_block_device_path "$blob" && die "internal error: blob path looks like a device"
+  truncate -s "${size_gb}G" "$blob" || die "truncate failed"
+
+  # LUKS format the FILE only
   printf '%s\n' "$PASS" | cryptsetup luksFormat \
     --type luks2 \
     --pbkdf argon2id \
     --batch-mode \
-    "$container" -
-  printf '%s\n' "$PASS" | cryptsetup luksAddKey --batch-mode "$container" "$STICK_KEYFILE" -
-  # Recovery key slot from phrase (hashed).
+    "$blob" - || { rm -f "$blob"; die "luksFormat failed — blob removed"; }
+
+  printf '%s\n' "$PASS" | cryptsetup luksAddKey --batch-mode "$blob" "$keyfile" - || true
   local rec_key
   rec_key="$(printf '%s' "$recovery" | sha256sum | awk '{print $1}')"
-  printf '%s\n%s\n' "$PASS" "$rec_key" | cryptsetup luksAddKey --batch-mode "$container" -
-  printf '%s\n' "$PASS" | cryptsetup open --type luks2 "$container" "$MAPPER_NAME" -
-  mkfs.ext4 -F -L STICKVAULT "$MAPPER"
+  printf '%s\n%s\n' "$PASS" "$rec_key" | cryptsetup luksAddKey --batch-mode "$blob" - || true
+
+  printf '%s\n' "$PASS" | cryptsetup open --type luks2 "$blob" "$MAPPER_NAME" - \
+    || { rm -f "$blob"; die "cryptsetup open failed"; }
+  mkfs.ext4 -F -L STICKVAULT "$MAPPER" || die "mkfs.ext4 failed on mapper (blob file only)"
   mkdir -p "$MNT_POINT"
   mount "$MAPPER" "$MNT_POINT"
   ensure_dirs_in_vault
+
+  # Bind host models dir into vault mount for a unified tree (optional convenience)
+  if [[ -d "$models" ]]; then
+    mkdir -p "$MNT_POINT/models"
+    # Do not bind over if already has content conflict — leave both accessible
+  fi
+
   printf '%s\n' "$recovery" | sha256sum | awk '{print $1}' >"$META_DIR/recovery.sha256"
   chmod 600 "$META_DIR/recovery.sha256"
-  write_meta file "$container"
+  write_meta "$root" "$blob"
+  printf 'models dir kept at %s; encrypted chats/settings in blob\n' "$models" >"$META_DIR/note"
   unset PASS PASS2 rec_key
-  json_state unlocked "created file container $container"
+  json_state unlocked "setup complete at $root"
   echo "Vault unlocked at $MNT_POINT"
+  echo "Models folder (unchanged files): $models"
+  echo "Encrypted blob: $blob"
 }
 
-cmd_create_partition() {
+cmd_grow() {
   need_root
-  local part="${1:-}"
-  [[ -n "$part" && -b "$part" ]] || die "usage: create-partition /dev/sdXN"
-  echo "DESTRUCTIVE: this will ERASE all data on $part and create LUKS2+ext4."
-  echo "Device: $part"
-  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL "$part" || true
-  confirm_phrase "ERASE-PARTITION" "Type ERASE-PARTITION to continue: "
-  confirm_phrase "$part" "Type the full device path again to confirm: "
-  read -r -s -p "Vault passcode: " PASS; echo
-  read -r -s -p "Confirm passcode: " PASS2; echo
-  [[ "$PASS" == "$PASS2" ]] || die "passcodes do not match"
-  [[ ${#PASS} -ge 8 ]] || die "passcode must be at least 8 characters"
-  local wipe_after="${STICKLLM_VAULT_WIPE_AFTER:-$DEFAULT_WIPE_AFTER}"
-  if [[ "$wipe_after" =~ ^[0-9]+$ ]] && (( wipe_after > 0 )); then
-    confirm_phrase "WIPE-OK" "Type WIPE-OK to enable wipe-after-$wipe_after: "
-  else
-    wipe_after=0
-  fi
-  WIPE_AFTER="$wipe_after"
-  local recovery
-  recovery="$(gen_recovery)"
-  echo
-  echo "=== RECOVERY PHRASE (shown once — write it down) ==="
-  echo "$recovery"
-  echo "===================================================="
-  confirm_phrase "SAVED" "Type SAVED after writing the recovery phrase: "
+  is_mounted || die "unlock vault first"
+  local add_gb="${1:-}"
+  [[ "$add_gb" =~ ^[0-9]+$ ]] && (( add_gb >= 1 && add_gb <= 500 )) || die "usage: grow <add_gb>"
+  local blob
+  blob="$(tr -d '\n' <"$META_DIR/container" 2>/dev/null || true)"
+  [[ -f "$blob" ]] || die "no blob in meta"
+  is_block_device_path "$blob" && die "refusing: blob path is a block device"
 
-  wipefs -a "$part" || true
-  mkdir -p "$STICK_KEY_DIR"
-  if [[ ! -f "$STICK_KEYFILE" ]]; then
-    openssl rand -out "$STICK_KEYFILE" 64
-    chmod 600 "$STICK_KEYFILE"
-  fi
-  printf '%s\n' "$PASS" | cryptsetup luksFormat --type luks2 --pbkdf argon2id --batch-mode "$part" -
-  printf '%s\n' "$PASS" | cryptsetup luksAddKey --batch-mode "$part" "$STICK_KEYFILE" -
-  local rec_key
-  rec_key="$(printf '%s' "$recovery" | sha256sum | awk '{print $1}')"
-  printf '%s\n%s\n' "$PASS" "$rec_key" | cryptsetup luksAddKey --batch-mode "$part" -
-  printf '%s\n' "$PASS" | cryptsetup open --type luks2 "$part" "$MAPPER_NAME" -
-  mkfs.ext4 -F -L STICKVAULT "$MAPPER"
-  mkdir -p "$MNT_POINT"
-  mount "$MAPPER" "$MNT_POINT"
-  ensure_dirs_in_vault
-  printf '%s\n' "$recovery" | sha256sum | awk '{print $1}' >"$META_DIR/recovery.sha256"
-  chmod 600 "$META_DIR/recovery.sha256"
-  write_meta partition "$part"
-  unset PASS PASS2 rec_key
-  json_state unlocked "created partition vault on $part"
-  echo "Vault unlocked at $MNT_POINT"
+  local parent free need reserve
+  parent="$(dirname "$blob")"
+  free="$(free_bytes_for_path "$parent")"
+  need=$((add_gb * 1024 * 1024 * 1024))
+  reserve=$((RESERVE_MIB * 1024 * 1024))
+  (( free >= need + reserve )) || die "not enough free space to grow by ${add_gb} GiB (have $free, reserve ${RESERVE_MIB} MiB) — refuse"
+  echo "Grow sparse blob by ${add_gb} GiB: $blob"
+  confirm_phrase "GROW-VAULT" "Type GROW-VAULT to continue: "
+  local cur
+  cur="$(stat -c%s "$blob")"
+  local new=$((cur + need))
+  truncate -s "$new" "$blob"
+  cryptsetup resize "$MAPPER_NAME"
+  resize2fs "$MAPPER"
+  json_state unlocked "grew blob by ${add_gb} GiB"
+  echo "Grew to $new bytes"
 }
 
 vault_target() {
   if [[ -f "$META_DIR/container" ]]; then
     cat "$META_DIR/container"
-  elif [[ -f "$META_DIR/device" ]]; then
-    cat "$META_DIR/device"
   else
     return 1
   fi
@@ -298,12 +600,12 @@ bump_fail() {
   if (( wipe > 0 && fails >= wipe )); then
     local tgt
     tgt="$(vault_target || true)"
-    echo "stickllm-vault: wipe-after-$wipe triggered — destroying LUKS header on $tgt" >&2
-    if [[ -n "$tgt" && -e "$tgt" ]]; then
+    echo "stickllm-vault: wipe-after-$wipe — destroying LUKS header on blob file only: $tgt" >&2
+    if [[ -n "$tgt" && -f "$tgt" ]] && ! is_block_device_path "$tgt"; then
       cryptsetup luksErase "$tgt" 2>/dev/null || dd if=/dev/zero of="$tgt" bs=1M count=16 conv=notrunc status=none || true
     fi
-    rm -f "$META_DIR/container" "$META_DIR/device" "$META_DIR/kind"
-    json_state wiped "LUKS header destroyed after $fails failed unlocks" >/dev/null
+    rm -f "$META_DIR/container" "$META_DIR/root" "$META_DIR/kind"
+    json_state wiped "LUKS header destroyed on blob after $fails failed unlocks" >/dev/null
     die "vault wiped after $fails failed unlocks"
   fi
 }
@@ -312,21 +614,19 @@ cmd_unlock() {
   need_root
   is_mounted && { json_state unlocked "already mounted"; return 0; }
   local tgt
-  tgt="$(vault_target)" || die "no vault configured (create-file or create-partition first)"
+  tgt="$(vault_target)" || die "no vault configured (run: stickllm-vault setup <dir>)"
+  [[ -f "$tgt" ]] || die "blob missing: $tgt"
+  is_block_device_path "$tgt" && die "refusing to open block device — meta corrupt?"
+
   local pass="${STICKLLM_VAULT_PASS:-}"
   if [[ -z "$pass" ]]; then
     read -r -s -p "Vault passcode: " pass; echo
   fi
-  # Prefer passcode; stick keyfile is optional second factor via cryptsetup keyslot.
   local opened=0
   if printf '%s\n' "$pass" | cryptsetup open --type luks2 "$tgt" "$MAPPER_NAME" - 2>/dev/null; then
     opened=1
-  elif [[ -f "$STICK_KEYFILE" ]] && printf '%s\n' "$pass" | cryptsetup open --type luks2 --key-file "$STICK_KEYFILE" "$tgt" "$MAPPER_NAME" 2>/dev/null; then
-    # Some setups use keyfile-only slot; passcode may still be required by policy.
-    opened=1
   fi
   if [[ "$opened" -ne 1 ]]; then
-    # Try passcode + keyfile via key-file after unlock with pass (already failed).
     bump_fail
     die "unlock failed"
   fi
@@ -341,9 +641,7 @@ cmd_unlock() {
 
 cmd_lock() {
   need_root
-  # Unload model first (caller / control may restart llama after).
   if is_mounted; then
-    # Best-effort sync
     sync || true
     umount "$MNT_POINT" || die "umount failed — is a process using the vault?"
   fi
@@ -359,20 +657,29 @@ cmd_move_model() {
   is_mounted || die "vault locked — unlock first"
   local src="${1:-}"
   [[ -f "$src" ]] || die "usage: move-model /path/to/model.gguf"
+  echo "Move model into vault with SHA-256 verify (explicit action)."
+  confirm_phrase "MOVE-MODEL" "Type MOVE-MODEL to copy then remove source after verify: "
   local base dest tmp sum1 sum2
   base="$(basename "$src")"
   dest="$MNT_POINT/models/$base"
   tmp="$dest.partial"
   echo "Computing SHA256 of source…"
   sum1="$(sha256sum "$src" | awk '{print $1}')"
-  echo "$sum1  $base" 
   cp -f "$src" "$tmp"
   sum2="$(sha256sum "$tmp" | awk '{print $1}')"
   [[ "$sum1" == "$sum2" ]] || { rm -f "$tmp"; die "SHA256 mismatch after copy"; }
   mv -f "$tmp" "$dest"
   printf '%s  %s\n' "$sum1" "$base" >"$MNT_POINT/models/${base}.sha256"
+  # Also copy into host models folder if configured
+  if [[ -f "$META_DIR/root" ]]; then
+    local host_models
+    host_models="$(tr -d '\n' <"$META_DIR/root")/$MODELS_SUBDIR"
+    if [[ -d "$host_models" && "$dest" != "$host_models/$base" ]]; then
+      cp -f "$dest" "$host_models/$base"
+      printf '%s  %s\n' "$sum1" "$base" >"$host_models/${base}.sha256"
+    fi
+  fi
   echo "Moved to $dest (sha256 verified)"
-  # Remove source only after verify
   rm -f "$src"
   echo "Removed source $src"
 }
@@ -385,21 +692,43 @@ cmd_verify_model() {
   sha256sum -c "$sumfile"
 }
 
+# Buried advanced — explicitly disabled product surface
+cmd_create_partition() {
+  die "create-partition is disabled in v0.3.3 (fail-closed). Vault is a file blob in a mounted folder only — StickLLM never formats or partitions host disks."
+}
+
+cmd_create_file() {
+  # Back-compat alias: treat as setup with parent dir of the img path
+  local path="${1:-}" size_gb="${2:-8}"
+  [[ -n "$path" ]] || die "usage: create-file <path/to/stickllm-vault.img> <size_gb>  (prefer: setup <dir>)"
+  is_block_device_path "$path" && die "refusing block device"
+  local dir
+  dir="$(dirname "$path")"
+  local base
+  base="$(basename "$path")"
+  [[ "$base" == "$BLOB_NAME" || "$base" == *.img ]] || die "blob name should be $BLOB_NAME or *.img"
+  cmd_setup "$dir" "$size_gb"
+}
+
 usage() {
   cat <<EOF
-StickLLM encrypted vault (LUKS2 Argon2id + ext4)
+StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
+
+  Creates a file in a folder you choose. Never formats your drive.
+  Never unlocks BitLocker/host LUKS. Never touches partition tables.
+  Ambiguous/encrypted/RAID/LVM layouts → refuse (fail-closed).
 
   stickllm-vault status
-  stickllm-vault list-disks
-  stickllm-vault create-file <path.img> <size_gb>   # non-destructive; typed CREATE-FILE
-  stickllm-vault create-partition <device>          # DESTRUCTIVE; typed ERASE-PARTITION
+  stickllm-vault list-disks          # read-only probe (not write targets)
+  stickllm-vault setup <dir> [gb]    # create dir if needed + NEW sparse blob
+  stickllm-vault grow <add_gb>       # expand blob (free-space checked)
   stickllm-vault unlock
   stickllm-vault lock
-  stickllm-vault move-model <gguf>
+  stickllm-vault move-model <gguf>   # explicit MOVE-MODEL confirm
   stickllm-vault verify-model <gguf>
 
 Mount: $MNT_POINT  (models/ chats/ settings/)
-Never auto-formats. Wipe-after-N defaults OFF (STICKLLM_VAULT_WIPE_AFTER).
+Wipe-after-N defaults OFF (STICKLLM_VAULT_WIPE_AFTER).
 EOF
 }
 
@@ -409,8 +738,12 @@ main() {
   case "$cmd" in
     status) cmd_status ;;
     list-disks|disks) list_disks ;;
+    setup) cmd_setup "$@" ;;
     create-file) cmd_create_file "$@" ;;
-    create-partition) cmd_create_partition "$@" ;;
+    create-partition)
+      cmd_create_partition "$@"
+      ;;
+    grow) cmd_grow "$@" ;;
     unlock) cmd_unlock "$@" ;;
     lock) cmd_lock "$@" ;;
     move-model) cmd_move_model "$@" ;;

@@ -112,20 +112,25 @@
 
       <div class="apiPanel">
         <h3>Storage</h3>
-        <p class="modelsHint">Claim USB free space, or create an encrypted LUKS2 vault (never auto-format).</p>
+        <p class="modelsHint">
+          <strong>Creates a file in a folder you choose. Never formats your drive.</strong>
+          StickLLM will not unlock BitLocker/host LUKS, partition disks, or write
+          outside the path you confirm. If a host volume is encrypted/locked, unlock
+          it in the host OS first, then mount and pick that folder.
+        </p>
         <p id="vaultStatus" class="modelsHint">Vault: …</p>
-        <pre id="diskList" class="modelsBody" style="max-height:10rem;overflow:auto">Disks: …</pre>
+        <pre id="diskList" class="modelsBody" style="max-height:10rem;overflow:auto">Mounted folders (read-only probe): …</pre>
         <div class="modelsActions">
           <button type="button" id="actClaim" class="actionBtn">Claim USB free space</button>
-          <button type="button" id="actVaultDisks" class="actionBtn">List disks</button>
+          <button type="button" id="actVaultDisks" class="actionBtn">List storage (read-only)</button>
           <button type="button" id="actVaultLock" class="actionBtn">Lock vault</button>
           <button type="button" id="actSettingsRefresh" class="actionBtn">Refresh</button>
         </div>
         <p class="modelsHint">
-          Create vault over SSH (typed confirms required):
-          <code>sudo stickllm-vault create-file /path/vault.img 64</code>
-          or destructive
-          <code>sudo stickllm-vault create-partition /dev/sdXN</code>
+          Setup over SSH (typed <code>CREATE-VAULT</code> required; no partition flow):
+          <code>sudo stickllm-vault setup /path/to/mounted/folder 32</code>
+          — creates <code>models/</code> if needed + expandable <code>stickllm-vault.img</code>.
+          Existing model files are kept unless you later run <code>move-model</code>.
         </p>
         <label class="fieldLabel">Unlock passcode
           <input id="vaultPass" type="password" autocomplete="off" placeholder="Vault passcode" />
@@ -168,6 +173,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=17"></script>
+  <script src="app.js?v=18"></script>
 </body>
 </html>

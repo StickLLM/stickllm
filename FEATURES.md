@@ -50,10 +50,10 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 
 ## Vault and security
 - [x] Ephemeral sessions (reboot clears pair + session)
-- [x] P1 Encrypted vault on host SSD (LUKS2 Argon2id) — `feature/encrypted-ssd-vault` (SSH/QEMU first; no flash ask until v0.3.1 HW confirm)
-- [ ] P1 Unlock = key file on stick + short PIN
-- [ ] P1 One-time 12-word recovery phrase for a lost stick
-- [ ] P1 Failed-attempt counter that survives reboot; wipe destroys LUKS header/key file
+- [x] P1 Encrypted vault on host SSD — **file blob only** in a user-chosen mounted folder (`feature/encrypted-ssd-vault` / v0.3.3); never partition/format; fail-closed on BitLocker/unknown/RAID; SSH-test first
+- [x] P1 Unlock = passcode (+ optional key file on stick DATA)
+- [x] P1 One-time 12-word recovery phrase shown once at setup
+- [x] P1 Failed-attempt counter; wipe-after-N destroys **blob** LUKS header only (default **off**)
 - [ ] P1 Panic / duress PIN: opens decoy empty vault, silently destroys real key (server-side)
 - [ ] P2 Kiosk/client-stick hold-combo (e.g. hold Ctrl+Alt+W 2s) = quick lock, no wipe
 - [ ] P1 Browser clients: lock button + Ctrl+Shift+L; auto-lock on disconnect/timeout

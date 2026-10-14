@@ -1,37 +1,51 @@
-# Encrypted SSD vault (feature branch)
+# Encrypted SSD vault (v0.3.3 / `feature/encrypted-ssd-vault`)
 
-**Branch:** `feature/encrypted-ssd-vault`  
-**Workflow:** SSH-test on a running stick first → one clean ISO + QEMU `-cpu host`
-with a second virt disk → **do not tag/push/ask to flash** until v0.3.1 HW confirm.
+**Creates a file in a folder you choose. Never formats your drive.**
 
-## Behavior
+## Safety (fail-closed)
 
-- Settings → Storage lists disks / free space (`stickllm-vault list-disks`).
-- Create vault:
-  - **File container** (non-destructive): `sudo stickllm-vault create-file /path/vault.img 64`
-    — typed `CREATE-FILE`.
-  - **Whole partition** (destructive): `sudo stickllm-vault create-partition /dev/sdXN`
-    — typed `ERASE-PARTITION` + device path again.
-- LUKS2 + Argon2id + ext4. Unlock = passcode (+ optional stick keyfile at
-  `/etc/stickllm/vault.key`). Recovery phrase shown **once** at creation.
-- Mount: `/var/lib/stickllm/vault` with `models/`, `chats/`, `settings/`.
-- Boot helper `stickllm-vault-boot`: unlock or **skip** (locked / no vault models).
-- Downloads prefer vault when unlocked; `move-model` copies stick→vault with SHA-256
-  verify. Verify again at load via `*.sha256`.
-- Multi-chat JSON only under vault `chats/` (no plaintext elsewhere).
-- UI **Lock** + **Ctrl+Shift+L**: unload model, umount, `cryptsetup close`.
-- Wrong-PIN wipe after N: default **off**; when on, destroys LUKS header.
-- Never touches a disk without typed confirm; never auto-formats.
+Encoded from product docs and shipping rules:
 
-## SSH test sketch
+| Rule | Source |
+|---|---|
+| Never auto-touch internal disks; USB claim = boot stick only | [MODELS.md](MODELS.md), [THREAT-MODEL.md](THREAT-MODEL.md) |
+| Host internal disks must not be written by default | [THREAT-MODEL.md](THREAT-MODEL.md), [HARDWARE.md](HARDWARE.md) |
+| SSD path = user-chosen **file** only; refuse EFI/system/BitLocker | [MODELS.md](MODELS.md) |
+| Wipe-after-N **default off**; typed confirm if enabled | [MODELS.md](MODELS.md), `catalog.toml` `[vault]` |
+| Never auto-format; never partition for vault | FEATURES + this branch |
 
-```bash
-scp overlay/usr/local/bin/stickllm-vault* stickllm@<ip>:/tmp/
-ssh stickllm@<ip> 'sudo install -m 755 /tmp/stickllm-vault /usr/local/bin/ && sudo stickllm-vault list-disks'
-# QEMU: second virt disk, then create-file on that disk's filesystem or partition.
+**v0.3.3 posture:**
+
+1. **Encrypted host volume** (BitLocker, host LUKS, etc.) → do not unlock, reformat, or re-encrypt. User unlocks/mounts in the **host OS** first.
+2. **Unknown / RAID / LVM / exotic / ambiguous** partition layout → refuse; do not offer as a write target.
+3. **Only** act on a clearly **mounted, writable, ordinary** filesystem: create a directory (if needed) + a **new sparse LUKS2 file blob** after typed `CREATE-VAULT`.
+4. **Never** `cryptsetup luksFormat` / wipefs / partition against a block device (`/dev/sd*`, `nvme*`, …).
+5. **Never** rewrite partition tables for any reason in v0.3.3.
+6. Disk listing is a **read-only** probe. Raw devices are never vault targets.
+7. Existing files in a selected `models/` folder are **kept**; move into vault only via explicit `MOVE-MODEL`.
+8. Blob growth checks free space and keeps a reserve; wipe-after-N destroys **only** the blob’s LUKS header when user enabled it (default off).
+
+## Layout
+
+```text
+<user-chosen-dir>/
+  models/                 # create if missing; existing files untouched
+  stickllm-vault.img      # sparse expandable LUKS2 + ext4 (chats/settings/…)
 ```
 
-## QEMU proof (after clean bake)
+When unlocked, blob mounts at `/var/lib/stickllm/vault` (`models/`, `chats/`, `settings/`).
 
-Use `-cpu host` and a second disk image. Do not request HW flash for this branch
-until the user confirms v0.3.1 on 3090 + ASUS.
+## Commands (SSH)
+
+```bash
+sudo stickllm-vault list-disks          # read-only
+sudo stickllm-vault setup /mnt/host/StickLLM 32
+sudo stickllm-vault unlock
+sudo stickllm-vault lock
+sudo stickllm-vault grow 16
+sudo stickllm-vault move-model /path/model.gguf
+```
+
+## Workflow
+
+SSH-test on a running stick first. **Do not build ISO / tag / push** until the user confirms. Do not touch `out/v0.3.2/` or shipping tags.

@@ -688,21 +688,43 @@ def handle(action: str, params: dict) -> dict:
         return vault_action("status", params)
     if action == "vault_disks":
         return vault_action("list-disks", params)
+    if action == "vault_setup":
+        return vault_action("setup", params)
     if action == "vault_create_file":
-        return vault_action("create-file", params)
+        return vault_action("setup", params)
     if action == "vault_create_partition":
-        return vault_action("create-partition", params)
+        # Hard refuse — never partition/format host disks (v0.3.3).
+        return {
+            "ok": False,
+            "error": (
+                "Partition/format flows are disabled. Vault creates a file in a "
+                "folder you choose — never formats your drive. Unlock BitLocker/"
+                "host LUKS in the host OS first if needed, then: "
+                "sudo stickllm-vault setup /path/to/dir"
+            ),
+        }
     if action == "vault_unlock":
         return vault_action("unlock", params)
     if action == "vault_lock":
         return vault_action("lock", params)
     if action == "vault_move_model":
         return vault_action("move-model", params)
+    if action == "vault_grow":
+        return vault_action("grow", params)
     return {"ok": False, "error": f"unknown action: {action}"}
 
 
+def _looks_like_block_device(path: str) -> bool:
+    p = (path or "").strip()
+    if p.startswith("/dev/"):
+        return True
+    if p.startswith("\\\\.\\PhysicalDrive") or p.startswith("//./PhysicalDrive"):
+        return True
+    return False
+
+
 def vault_action(cmd: str, params: dict) -> dict:
-    """Drive stickllm-vault; never invent destructive defaults."""
+    """Drive stickllm-vault; fail-closed — never invent destructive defaults."""
     script = "/usr/local/bin/stickllm-vault"
     if cmd == "status":
         r = sh([script, "status"], timeout=30)
@@ -711,15 +733,20 @@ def vault_action(cmd: str, params: dict) -> dict:
         r["ok"] = True
         return r
     if cmd == "list-disks":
+        # Read-only probe only (mounted folders + informational disk list).
         r = sh([script, "list-disks"], timeout=30)
         try:
-            data = json.loads((r.get("stdout") or "").strip().splitlines()[-1])
+            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
+            data = json.loads(lines[-1] if lines else "{}")
             data["ok"] = True
+            data.setdefault(
+                "safety",
+                "Creates a file in a folder you choose. Never formats your drive.",
+            )
             return data
         except Exception:
             return {"ok": False, "error": "list-disks parse failed", **r}
     if cmd == "lock":
-        # Unload model then lock vault.
         sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
         r = sh([script, "lock"], timeout=120)
         st = read_json(RUN / "vault.json")
@@ -749,36 +776,59 @@ def vault_action(cmd: str, params: dict) -> dict:
             r = {"ok": False, "error": str(e)}
         r.update(read_json(RUN / "vault.json"))
         return r
-    if cmd == "create-file":
-        path = str(params.get("path") or "").strip()
-        size_gb = str(params.get("size_gb") or "").strip()
+    if cmd == "setup":
+        path = str(params.get("path") or params.get("dir") or "").strip()
+        size_gb = str(params.get("size_gb") or "8").strip()
         confirm = str(params.get("confirm") or "")
-        if confirm != "CREATE-FILE":
-            return {"ok": False, "error": "typed confirm must be CREATE-FILE"}
-        if not path or not size_gb:
-            return {"ok": False, "error": "path and size_gb required"}
-        # Non-interactive create is refused — use SSH for typed confirms.
+        if _looks_like_block_device(path):
+            return {
+                "ok": False,
+                "error": (
+                    "Refusing block device path. Pick a mounted folder on the host "
+                    "SSD. If BitLocker/LUKS is locked, unlock it in the host OS first "
+                    "— StickLLM will not unlock or wipe host encryption."
+                ),
+            }
+        if confirm not in ("CREATE-VAULT", "CREATE-FILE"):
+            return {
+                "ok": False,
+                "error": "typed confirm must be CREATE-VAULT (setup is interactive on stick)",
+            }
+        if not path:
+            return {"ok": False, "error": "path (directory) required"}
+        # Setup needs interactive passcode + typed confirms — refuse silent API create.
         return {
             "ok": False,
             "error": (
-                "create-file requires interactive typed confirms on the stick: "
-                f"sudo stickllm-vault create-file {path} {size_gb}"
+                "setup requires interactive typed confirms on the stick (fail-closed): "
+                f"sudo stickllm-vault setup {path} {size_gb}"
             ),
         }
-    if cmd == "create-partition":
+    if cmd == "grow":
+        add_gb = str(params.get("add_gb") or "").strip()
+        if not add_gb:
+            return {"ok": False, "error": "add_gb required"}
         return {
             "ok": False,
             "error": (
-                "create-partition is destructive and requires interactive typed "
-                "confirms: sudo stickllm-vault create-partition /dev/sdXN"
+                "grow requires interactive confirm on the stick: "
+                f"sudo stickllm-vault grow {add_gb}"
             ),
         }
     if cmd == "move-model":
         src = str(params.get("path") or "").strip()
         if not src:
             return {"ok": False, "error": "path required"}
-        r = sh([script, "move-model", src], timeout=7200)
-        return r
+        if _looks_like_block_device(src):
+            return {"ok": False, "error": "refusing block device path"}
+        # move-model itself requires MOVE-MODEL typed confirm on TTY
+        return {
+            "ok": False,
+            "error": (
+                "move-model requires interactive MOVE-MODEL confirm: "
+                f"sudo stickllm-vault move-model {src}"
+            ),
+        }
     return {"ok": False, "error": f"unknown vault cmd: {cmd}"}
 
 

@@ -2,15 +2,24 @@
 # Optional boot-time vault unlock on the kiosk/console path.
 # Skip = leave locked (no-model / CPU-demo only until unlock).
 # Never auto-formats. Never prompts if no vault is configured.
+# Never touches host partition tables or BitLocker/host LUKS volumes.
 set -uo pipefail
 
 RUN="${STICKLLM_RUN:-/run/stickllm}"
-META="${STICKLLM_VAULT_META:-/var/lib/stickllm/vault-meta}"
+DATA_MNT="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+META="${STICKLLM_VAULT_META:-}"
+if [[ -z "$META" ]]; then
+  if findmnt -n "$DATA_MNT" >/dev/null 2>&1; then
+    META="$DATA_MNT/vault-meta"
+  else
+    META="/var/lib/stickllm/vault-meta"
+  fi
+fi
 TTY="${STICKLLM_TTY:-/dev/tty1}"
 MNT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
 
 mkdir -p "$RUN"
-if [[ ! -f "$META/container" && ! -f "$META/device" ]]; then
+if [[ ! -f "$META/container" ]]; then
   echo "absent" >"$RUN/vault-boot.txt"
   exit 0
 fi
@@ -23,7 +32,8 @@ paint() { printf '%s\n' "$*" >>"$TTY" 2>/dev/null || printf '%s\n' "$*"; }
 
 paint ""
 paint "=== StickLLM encrypted vault ==="
-paint "Vault is locked. Unlock for models/chats/settings on $MNT."
+paint "Creates a file in a folder you choose. Never formats your drive."
+paint "Vault is locked. Unlock for chats/settings on $MNT."
 paint "Press Enter then type passcode, or type skip to continue locked."
 paint ""
 
@@ -41,10 +51,9 @@ if [[ "$ans" == "skip" || "$ans" == "s" || -z "$ans" ]]; then
   exit 0
 fi
 
-if [[ -n "${STICKLLM_VAULT_PASS:-}" ]]; then
-  /usr/local/bin/stickllm-vault unlock && echo "unlocked" >"$RUN/vault-boot.txt" && exit 0
-else
-  /usr/local/bin/stickllm-vault unlock && echo "unlocked" >"$RUN/vault-boot.txt" && exit 0
+if /usr/local/bin/stickllm-vault unlock; then
+  echo "unlocked" >"$RUN/vault-boot.txt"
+  exit 0
 fi
 echo "failed" >"$RUN/vault-boot.txt"
 paint "Unlock failed — continuing locked."

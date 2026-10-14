@@ -710,20 +710,30 @@
   document.getElementById("lockVaultBtn")?.addEventListener("click", () => lockVault());
   document.getElementById("actVaultDisks")?.addEventListener("click", async () => {
     const el = document.getElementById("diskList");
-    if (el) el.textContent = "Listing disks…";
+    if (el) el.textContent = "Read-only probe…";
     try {
       const res = await control("vault_disks");
-      const disks = res.disks || [];
-      if (el) {
-        el.textContent = disks.length
-          ? disks
-              .map(
-                (d) =>
-                  `${d.path}  ${d.size_gb} GiB  ${d.model || ""}  free~${d.unallocated_gb} GiB  ${d.tran || ""}`
-              )
-              .join("\n")
-          : "No disks listed.";
+      const lines = [];
+      lines.push(res.safety || "Creates a file in a folder you choose. Never formats your drive.");
+      lines.push("");
+      const mounts = res.mounts || [];
+      if (mounts.length) {
+        lines.push("Mounted folders:");
+        for (const m of mounts) {
+          const flag = m.writable_candidate ? "OK" : "REFUSE";
+          const why = m.refuse_reason ? ` — ${m.refuse_reason}` : "";
+          lines.push(`  [${flag}] ${m.path}  ${m.fstype || "?"}  ${m.source || ""}${why}`);
+        }
+      } else {
+        lines.push("No candidate mounts (unlock host BitLocker/LUKS in the host OS first).");
       }
+      lines.push("");
+      lines.push("Disks (informational only — never write targets):");
+      for (const d of res.disks || []) {
+        const warn = d.ambiguous_or_encrypted ? " [encrypted/complex — hands off]" : "";
+        lines.push(`  ${d.path}  ${d.size_gb} GiB  ${d.model || ""}${warn}`);
+      }
+      if (el) el.textContent = lines.join("\n");
     } catch (e) {
       if (el) el.textContent = `Error: ${e.message}`;
     }
