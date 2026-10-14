@@ -112,30 +112,14 @@ if ($BootMode -eq "chat" -or $BootMode -eq "local") {
 $append = ($append -replace '\s+', ' ').Trim()
 
 function Start-Qemu([string]$accel, [string]$cpu) {
-  # Single hostfwd only. Pass ArgumentList as an array so commas inside -qmp/-netdev
-  # stay inside one argv (string ArgumentList has historically broken QMP on Windows).
+  # Single hostfwd only — dual hostfwd breaks under Windows Start-Process.
+  # Use one ArgumentList string (not a PS array): array form splits -append on spaces
+  # ("components: Could not open"), while a single string preserves commas for -qmp.
   $netdev = "user,id=n0,hostfwd=tcp:127.0.0.1:${HostFwdPort}-:80"
   # Chat/Local need headroom for CPU llama (3B Q4 + 4k ctx); Term can stay leaner.
   $mem = if ($isLocal) { 6144 } else { 4096 }
-  $argList = @(
-    '-m', "$mem",
-    '-smp', '2',
-    '-machine', 'q35',
-    '-accel', $accel,
-    '-cpu', $cpu,
-    '-device', 'virtio-vga',
-    '-display', 'none',
-    '-serial', "file:$Serial",
-    '-qmp', "tcp:127.0.0.1:${QmpPort},server,nowait",
-    '-netdev', $netdev,
-    '-device', 'virtio-net-pci,netdev=n0',
-    '-cdrom', $Iso,
-    '-boot', 'd',
-    '-kernel', $Vmlinuz,
-    '-initrd', $Initrd,
-    '-append', $append
-  )
-  return Start-Process -FilePath $Qemu -ArgumentList $argList -PassThru -WindowStyle Hidden -RedirectStandardError $Stderr
+  $argLine = "-m $mem -smp 2 -machine q35 -accel $accel -cpu $cpu -device virtio-vga -display none -serial `"file:$Serial`" -qmp tcp:127.0.0.1:${QmpPort},server,nowait -netdev $netdev -device virtio-net-pci,netdev=n0 -cdrom `"$Iso`" -boot d -kernel `"$Vmlinuz`" -initrd `"$Initrd`" -append `"$append`""
+  return Start-Process -FilePath $Qemu -ArgumentList $argLine -PassThru -WindowStyle Hidden -RedirectStandardError $Stderr
 }
 
 Write-Host "ISO=$Iso"
