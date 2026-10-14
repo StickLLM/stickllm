@@ -29,6 +29,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P1 VRAM-based model suggestions
 - [ ] P1 Vision models (restore image input; mmproj hash-pinned)
 - [ ] P1 Download unsupported models with explicit warning
+  - TODO: decide where the approved/pinned list lives (`catalog.toml` today), how it updates, and how non-list downloads warn + verify (see MODELS.md)
 - [ ] P2 Optional large MoE recipe (Strata-style) for high-RAM machines
 
 ## Settings (persist on writable partition)

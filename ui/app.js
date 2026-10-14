@@ -806,7 +806,6 @@
       const bits = [
         size,
         modelLocationLabel(m),
-        m.hf_repo ? "HuggingFace" : null,
         modelStatusLabel(m),
       ].filter(Boolean);
       detail.textContent = bits.join(" · ");

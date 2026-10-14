@@ -46,6 +46,11 @@ In the chat menu, download stays **explicit** (no surprise mid-session pulls).
 
 ## Trust: hashes on the USB
 
+**TODO (design later):** downloads for models *not* on the approved/pinned list —
+where the list lives (today: `config/models/catalog.toml` on the USB), how it
+updates (shipped ISO vs signed OTA catalog), and UI warning + hash policy for
+ad-hoc / host-found GGUFs. No full approved-list system yet.
+
 Model weights are executable behavior. StickLLM never treats “a GGUF from the
 internet” as trusted just because Hugging Face hosted it.
 
