@@ -163,6 +163,56 @@ fs_looks_ordinary() {
   esac
 }
 
+# Normalize lsblk PTTYPE output: disk trees often print one line per node
+# ("gpt\ngpt\ngpt"), which must not be treated as an unknown table type.
+# Prints a single lowercased token, or space-joined distinct values if mixed.
+normalize_pttype() {
+  local raw="${1:-}" uniq n
+  uniq="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' '\n' | sed '/^$/d' | awk '!a[$0]++')"
+  [[ -z "$uniq" ]] && { printf ''; return 0; }
+  n="$(printf '%s\n' "$uniq" | wc -l)"
+  n="${n//[[:space:]]/}"
+  if [[ "$n" -gt 1 ]]; then
+    # Mixed tables on one probe → ambiguous; surface joined form to caller.
+    printf '%s' "$(printf '%s\n' "$uniq" | paste -sd' ' -)"
+    return 0
+  fi
+  printf '%s' "$uniq"
+}
+
+# Known-safe partition tables for an already-mounted ordinary FS (file blob only).
+# Empty is OK (loop/bind/some virtual mounts). Never accepts crypto/unknown.
+pttype_is_safe() {
+  local pt
+  pt="$(normalize_pttype "${1:-}")"
+  case "$pt" in
+    gpt|dos|msdos|"") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# PTTYPE of the disk that backs a block SOURCE (partition/disk/loop).
+# Uses lsblk -d so children are not concatenated into "gpt gpt gpt".
+disk_pttype_for_source() {
+  local src="$1"
+  local pk disk pt
+  pk="$(lsblk -no PKNAME "$src" 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+  if [[ -n "$pk" ]]; then
+    disk="/dev/$pk"
+  else
+    # Already a whole disk, or loop/nbd with no parent.
+    disk="$src"
+  fi
+  [[ -b "$disk" ]] || { printf ''; return 0; }
+  # -d: this node only (avoid partition-tree echo of the same PTTYPE).
+  pt="$(lsblk -ndo PTTYPE "$disk" 2>/dev/null | head -1 || true)"
+  # Fallback: some util-linux builds still walk; normalize handles dupes.
+  if [[ -z "$pt" ]]; then
+    pt="$(lsblk -no PTTYPE "$disk" 2>/dev/null || true)"
+  fi
+  normalize_pttype "$pt"
+}
+
 # Resolve path to a real directory that is on a mounted, writable, ordinary FS.
 # Prints absolute path on success; dies with a clear message otherwise.
 assert_safe_vault_root() {
@@ -209,17 +259,16 @@ assert_safe_vault_root() {
         die "refusing mount backed by '$dtype' ($src) — fail-closed; use a normal mounted folder"
         ;;
     esac
-    # crypto_LUKS holding the FS would already be opened as crypt; also refuse
-    # if blkid on parent says BitLocker / unknown partition table mess.
+    # Partition table on the underlying disk of an ALREADY-MOUNTED path.
+    # Standard GPT / DOS(MBR) is fine for creating a file blob — we never
+    # format or rewrite tables. lsblk without -d echoes PTTYPE per child
+    # ("gpt gpt gpt"); normalize + recognize known-safe types.
+    # Paths under /mnt/stickllm-host/... that we already mounted as clear
+    # ext4 (etc.) must not be refused solely for a normal GPT disk.
     local pt
-    pt="$(lsblk -no PTTYPE "$(lsblk -no PKNAME "$src" 2>/dev/null | head -1 | sed 's|^|/dev/|')" 2>/dev/null || true)"
-    # empty PTTYPE on some FS is OK (loop); refuse exotic
-    case "$pt" in
-      gpt|dos|msdos|"") ;;
-      *)
-        die "refusing unrecognized partition table '$pt' — fail-closed, hands off"
-        ;;
-    esac
+    pt="$(disk_pttype_for_source "$src")"
+    pttype_is_safe "$pt" || \
+      die "refusing unrecognized partition table '$pt' — fail-closed, hands off"
   fi
 
   is_live_usb_path "$probe" && die "refusing StickLLM live USB / STICKLLM-DATA as SSD vault target — choose a folder on the host SSD (already mounted)"

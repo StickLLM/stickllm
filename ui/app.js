@@ -1567,7 +1567,7 @@
 
   addBubble(
     "system",
-    "StickLLM v0.3.2 — Pair | URL | Model above. Pair mints a new LAN code (unpairs old browsers); the stick chat shows the code. Settings → System has How to connect. No LAN? Term: stickllm-wifi-setup."
+    "StickLLM v0.3.3 — Pair | URL | Model above. Pair mints a new LAN code (unpairs old browsers); the stick chat shows the code. Settings → System has How to connect. No LAN? Term: stickllm-wifi-setup."
   );
   refreshStatus();
   // Stick kiosk polls faster so LAN Pair remints show in chat promptly.
