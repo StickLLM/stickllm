@@ -759,6 +759,8 @@ def handle(action: str, params: dict) -> dict:
         return vault_action("list-dirs", params)
     if action == "vault_mkdir":
         return vault_action("mkdir", params)
+    if action == "vault_mount":
+        return vault_action("mount-host", params)
     if action == "vault_setup":
         return vault_action("setup", params)
     if action == "vault_create_file":
@@ -858,6 +860,42 @@ def vault_action(cmd: str, params: dict) -> dict:
         except Exception:
             err = (r.get("stderr") or r.get("error") or "mkdir failed").strip()
             return {**r, "ok": False, "error": err}
+    if cmd == "mount-host":
+        device = str(params.get("device") or params.get("path") or "").strip()
+        confirm = str(params.get("confirm") or "")
+        if not device:
+            return {"ok": False, "error": "device required (e.g. /dev/nvme0n1p2)"}
+        if not _looks_like_block_device(device):
+            return {"ok": False, "error": "device must be a /dev/… partition"}
+        if confirm != "MOUNT-HOST":
+            return {"ok": False, "error": "confirm must be MOUNT-HOST"}
+        env = os.environ.copy()
+        env["STICKLLM_VAULT_CONFIRM"] = "MOUNT-HOST"
+        try:
+            p = subprocess.run(
+                [script, "mount-host", device],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+                env=env,
+            )
+            lines = [ln for ln in (p.stdout or "").strip().splitlines() if ln.strip()]
+            try:
+                data = json.loads(lines[-1] if lines else "{}")
+            except Exception:
+                data = {
+                    "ok": p.returncode == 0,
+                    "stdout": (p.stdout or "")[-2000:],
+                    "stderr": (p.stderr or "")[-2000:],
+                }
+            if p.returncode != 0:
+                data["ok"] = False
+                if not data.get("error"):
+                    data["error"] = (p.stderr or data.get("stderr") or "mount failed").strip()[:500]
+            return data
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
     if cmd == "lock":
         sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
         r = sh([script, "lock"], timeout=120)

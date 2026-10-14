@@ -761,15 +761,16 @@
       if (!res.ok) throw new Error(res.error || "device list failed");
       if (list) list.innerHTML = "";
       const devices = Array.isArray(res.devices) ? res.devices : [];
+      const mountable = Array.isArray(res.mountable) ? res.mountable : [];
       const selectable = devices.filter((d) => d.selectable);
-      if (!selectable.length) {
+      if (!selectable.length && !mountable.length) {
         if (list) {
           list.textContent =
-            "No browsable mounts. Mount a host SSD folder in the host OS first (encrypted volumes stay locked).";
+            "No browsable mounts. If a host SSD has a clear ext4/ntfs volume it should offer Mount; encrypted volumes stay locked.";
         }
         if (!quiet) {
           setVaultSetupFeedback(
-            "No device available — mount host SSD in the host OS, then Refresh devices.",
+            "No device available — Mount a clear host volume below, or unlock encrypted disks in the host OS.",
             "err"
           );
         }
@@ -804,23 +805,47 @@
         }
         list.appendChild(row);
       }
+      for (const m of mountable) {
+        if (!list) break;
+        const row = document.createElement("div");
+        row.className = "vaultPickRow";
+        const tag = document.createElement("span");
+        tag.className = `vaultKind ${m.kind || "host_ssd"}`;
+        tag.textContent = kindLabel(m.kind) + " · unmounted";
+        const text = document.createElement("span");
+        text.textContent = `${m.label || m.device} · ${m.size_gb ?? "?"} GiB`;
+        row.appendChild(tag);
+        row.appendChild(text);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "actionBtn";
+        btn.textContent = "Mount";
+        btn.title = m.warn || "Mount read-write under /mnt/stickllm-host/";
+        btn.addEventListener("click", () => mountHostVolume(m));
+        row.appendChild(btn);
+        list.appendChild(row);
+      }
       if (diskList) {
         diskList.textContent = "";
         const blocked = Array.isArray(res.blocked_disks) ? res.blocked_disks : [];
-        if (blocked.length) {
-          diskList.textContent =
-            "Not offered (encrypted / unmounted internal):\n" +
-            blocked
-              .map(
-                (b) =>
-                  `${b.path}  ${b.size_gb ?? "?"} GiB  ${b.model || ""} — ${b.reason || ""}`
-              )
-              .join("\n");
-        } else {
-          diskList.textContent =
-            res.safety ||
-            "Pick Device → Folder above. Encrypted disks are never offered.";
+        const lines = [];
+        if (mountable.length) {
+          lines.push(
+            `Clear unencrypted volumes ready to Mount (${mountable.length}) — never formats.`
+          );
         }
+        if (blocked.length) {
+          lines.push("Not offered (encrypted / unclear):");
+          for (const b of blocked) {
+            lines.push(
+              `${b.path}  ${b.size_gb ?? "?"} GiB  ${b.model || ""} — ${b.reason || ""}`
+            );
+          }
+        }
+        diskList.textContent =
+          lines.join("\n") ||
+          res.safety ||
+          "Pick Device → Folder above. Encrypted disks are never offered.";
       }
       return res;
     } catch (e) {
@@ -840,6 +865,48 @@
     );
     await browseVaultDir(device.mount_path);
     await refreshVaultPicker({ quiet: true });
+  }
+
+  async function mountHostVolume(vol) {
+    const device = vol?.device || vol?.id || "";
+    if (!device) {
+      setVaultSetupFeedback("No device to mount.", "err");
+      return;
+    }
+    const ok = window.confirm(
+      `Mount ${device} (${vol.fstype || "fs"}, ${vol.size_gb ?? "?"} GiB) read-write under ${vol.suggested_mount || "/mnt/stickllm-host/…"}?\n\nNever formats. Encrypted volumes are refused.`
+    );
+    if (!ok) {
+      setVaultSetupFeedback("Mount cancelled.", "info");
+      return;
+    }
+    setVaultSetupFeedback(`Mounting ${device}…`, "info");
+    try {
+      const res = await control("vault_mount", {
+        device,
+        confirm: "MOUNT-HOST",
+      });
+      if (!res.ok) throw new Error(res.error || res.stderr || "mount failed");
+      const mp = res.mount_path || vol.suggested_mount || "";
+      setVaultSetupFeedback(
+        res.already_mounted
+          ? `Already mounted at ${mp} — opening folder browser.`
+          : `Mounted ${device} at ${mp}. Pick a folder, then CREATE-VAULT.`,
+        "ok"
+      );
+      await refreshVaultPicker({ quiet: true });
+      if (mp) {
+        vaultPickerDevice = {
+          kind: vol.kind || "host_ssd",
+          mount_path: mp,
+          label: vol.label,
+        };
+        setVaultUsbWarn("");
+        await browseVaultDir(mp);
+      }
+    } catch (e) {
+      setVaultSetupFeedback(`Mount failed: ${e.message}`, "err");
+    }
   }
 
   async function browseVaultDir(path) {

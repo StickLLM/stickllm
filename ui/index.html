@@ -134,10 +134,11 @@
           <button type="button" id="actSettingsRefresh" class="actionBtn">Refresh</button>
         </div>
         <p class="modelsHint">
-          Pick a <strong>device</strong>, then a <strong>folder</strong>. Intended target is a
-          mounted <strong>host SSD</strong>. StickLLM USB works only with a warning (data leaves
-          when the stick is removed). Encrypted/unknown disks are not offered. Creates
-          <code>stickllm-vault.img</code> in the folder — never formats your drive.
+          Pick a <strong>device</strong>, then a <strong>folder</strong>. Unmounted clear host
+          volumes (ext4/ntfs/exfat, no BitLocker/LUKS) show <strong>Mount</strong> — attaches
+          under <code>/mnt/stickllm-host/…</code> only after you click. Encrypted/unknown disks
+          stay blocked. StickLLM USB warns that data leaves with the stick. Creates
+          <code>stickllm-vault.img</code> — never formats your drive.
         </p>
         <div class="vaultPicker" id="vaultPicker">
           <div class="vaultPickerHead">
@@ -246,6 +247,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=24"></script>
+  <script src="app.js?v=25"></script>
 </body>
 </html>

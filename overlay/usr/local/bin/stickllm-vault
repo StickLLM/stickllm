@@ -533,51 +533,307 @@ def walk(node):
 for fs in mdata.get("filesystems") or []:
     walk(fs)
 
-# Informational blocked disks (encrypted / unmounted internal)
+# Unmounted clear FS volumes (Mount action) + blocked encrypted/unknown disks.
 blocked_disks = []
+mountable = []
+HOST_MNT_ROOT = "/mnt/stickllm-host"
+BAD_FS = {
+    "crypto_LUKS", "BitLocker", "linux_raid_member", "LVM2_member", "zfs_member",
+    "swap", "iso9660", "squashfs",
+}
 try:
     blk = json.loads(sh("lsblk", "-J", "-b", "-o",
-        "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,RM,RO,TRAN") or "{}")
+        "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,RM,RO,TRAN,LABEL,PARTLABEL") or "{}")
 except Exception:
     blk = {}
+
+def safe_mnt_name(model: str, part_name: str, label: str) -> str:
+    base = (label or model or part_name or "host").strip()
+    out = []
+    for ch in base:
+        if ch.isalnum() or ch in ("-", "_"):
+            out.append(ch)
+        elif ch in (" ", ".", "/"):
+            out.append("-")
+    name = "".join(out).strip("-_")[:48] or part_name
+    return f"{name}-{part_name}"[:64]
+
+boot_disk = ""
+boot_src = sh("findmnt", "-n", "-o", "SOURCE", "--target", "/run/live/medium") or \
+           sh("findmnt", "-n", "-o", "SOURCE", "--target", "/lib/live/mount/medium")
+if boot_src:
+    boot_disk = (sh("lsblk", "-no", "PKNAME", boot_src) or sh("lsblk", "-no", "NAME", boot_src) or "").split()[0]
+
 for d in blk.get("blockdevices") or []:
     if d.get("type") != "disk":
         continue
-    ambiguous = False
-    mounted_any = False
-    for c in d.get("children") or []:
-        ft = c.get("fstype") or ""
-        if c.get("mountpoint"):
-            mounted_any = True
-        if ft in ("crypto_LUKS", "BitLocker", "linux_raid_member", "LVM2_member", "zfs_member") or (
-            c.get("type") in ("crypt", "lvm", "raid")
-        ):
-            ambiguous = True
-    if ambiguous or (not mounted_any and not d.get("rm")):
+    dpath = d.get("path") or ("/dev/" + d.get("name", ""))
+    dname = d.get("name") or ""
+    model = (d.get("model") or "").strip()
+    tran = (d.get("tran") or "").strip().lower()
+    rm = bool(d.get("rm"))
+    is_stick_disk = bool(boot_disk and dname == boot_disk)
+    children = list(d.get("children") or [])
+    disk_crypto = False
+    for c in children:
+        ft = (c.get("fstype") or "").strip()
+        ctype = c.get("type") or ""
+        if ft in BAD_FS or ctype in ("crypt", "lvm", "raid", "raid0", "raid1", "raid5", "raid10"):
+            if ft in ("crypto_LUKS", "BitLocker") or ctype in ("crypt", "lvm", "raid", "raid0", "raid1", "raid5", "raid10") or ft in (
+                "linux_raid_member", "LVM2_member", "zfs_member"
+            ):
+                disk_crypto = True
+    if disk_crypto:
         blocked_disks.append({
-            "path": d.get("path") or ("/dev/" + d.get("name", "")),
-            "model": (d.get("model") or "").strip(),
+            "path": dpath,
+            "model": model,
             "size_gb": round(int(d.get("size") or 0) / (1024**3), 2),
-            "tran": d.get("tran") or "",
-            "rm": bool(d.get("rm")),
-            "reason": (
-                "Encrypted/complex layout — unlock in host OS first (StickLLM will not touch)."
-                if ambiguous else
-                "Internal disk has no mounted folder yet — mount in host OS first."
-            ),
+            "tran": tran,
+            "rm": rm,
+            "reason": "Encrypted/complex layout — unlock in host OS first (StickLLM will not touch).",
             "selectable": False,
+            "mountable": False,
+        })
+        continue
+    if is_stick_disk:
+        # Stick disk partitions are not host Mount targets.
+        continue
+    offered_any = False
+    for c in children:
+        if (c.get("type") or "") != "part":
+            continue
+        ft = (c.get("fstype") or "").strip()
+        mp = (c.get("mountpoint") or "").strip()
+        cpath = c.get("path") or ("/dev/" + c.get("name", ""))
+        cname = c.get("name") or ""
+        label = (c.get("label") or c.get("partlabel") or "").strip()
+        size_b = int(c.get("size") or 0)
+        # Empty / unknown FS — don't touch (may be BIOS boot, MSR, etc.)
+        if not ft:
+            continue
+        if ft in BAD_FS or not ordinary(ft):
+            blocked_disks.append({
+                "path": cpath,
+                "model": model,
+                "size_gb": round(size_b / (1024**3), 2),
+                "tran": tran,
+                "rm": rm,
+                "reason": f"Filesystem '{ft}' not safely mountable — don't touch.",
+                "selectable": False,
+                "mountable": False,
+            })
+            continue
+        # Refuse tiny EFI-style vfat
+        plab = (c.get("partlabel") or "").upper()
+        if ft in ("vfat",) and (size_b < 2 * 1024**3 or "EFI" in plab or "ESP" in plab):
+            blocked_disks.append({
+                "path": cpath,
+                "model": model,
+                "size_gb": round(size_b / (1024**3), 2),
+                "tran": tran,
+                "rm": rm,
+                "reason": "EFI/system partition — don't touch.",
+                "selectable": False,
+                "mountable": False,
+            })
+            continue
+        if mp:
+            offered_any = True
+            continue  # already in devices via findmnt
+        # Unmounted clear ordinary FS on host/internal (or non-stick) disk → Mount action
+        hostish = (not rm) or tran in ("nvme", "sata", "ata", "scsi")
+        if not hostish and tran == "usb":
+            # other USB unmounted — allow Mount with other_usb kind
+            kind = "other_usb"
+        else:
+            kind = "host_ssd"
+        mname = safe_mnt_name(model, cname, label)
+        mountable.append({
+            "id": cpath,
+            "kind": kind,
+            "label": f"{'Host SSD/internal' if kind == 'host_ssd' else 'USB'} — {model or dname} ({ft}"
+                     + (f", {label}" if label else "")
+                     + f", unmounted)",
+            "device": cpath,
+            "fstype": ft,
+            "size": str(size_b),
+            "size_gb": round(size_b / (1024**3), 2),
+            "model": model,
+            "part_label": label,
+            "selectable": False,
+            "mountable": True,
+            "recommended": kind == "host_ssd",
+            "suggested_mount": f"{HOST_MNT_ROOT}/{mname}",
+            "warn": "Click Mount to attach read-write under /mnt/stickllm-host/ (never formats).",
+            "disk": {"name": dname, "path": dpath, "model": model, "tran": tran, "rm": rm},
+        })
+        offered_any = True
+    if not offered_any and not rm and not children:
+        blocked_disks.append({
+            "path": dpath,
+            "model": model,
+            "size_gb": round(int(d.get("size") or 0) / (1024**3), 2),
+            "tran": tran,
+            "rm": rm,
+            "reason": "No clear partitions — StickLLM will not touch unknown layouts.",
+            "selectable": False,
+            "mountable": False,
         })
 
 # Sort: recommended host SSD first, then other, USB stick last among selectable
 order = {"host_ssd": 0, "other": 1, "other_usb": 2, "usb_stick": 3, "blocked": 9}
 devices.sort(key=lambda x: (order.get(x["kind"], 5), x["mount_path"]))
+mountable.sort(key=lambda x: (0 if x.get("recommended") else 1, x.get("device") or ""))
 
 print(json.dumps({
     "ok": True,
     "read_only_probe": True,
-    "safety": "Pick a device, then a folder. Never formats disks. Encrypted layouts are not offered.",
+    "safety": (
+        "Pick a mounted device or Mount a clear unencrypted host volume, then a folder. "
+        "Never formats disks. Encrypted layouts are not offered."
+    ),
     "devices": devices,
+    "mountable": mountable,
     "blocked_disks": blocked_disks,
+}))
+PY
+}
+
+# Explicit user Mount of a clear ordinary FS partition → /mnt/stickllm-host/<name>
+mount_host() {
+  local dev="${1:-}"
+  [[ -n "$dev" ]] || die "usage: mount-host </dev/partition>"
+  [[ "${STICKLLM_VAULT_CONFIRM:-}" == "MOUNT-HOST" ]] || die "refusing mount without confirm=MOUNT-HOST"
+  STICKLLM_MOUNT_DEV="$dev" python3 <<'PY'
+import json, os, re, subprocess
+from pathlib import Path
+
+dev = os.environ.get("STICKLLM_MOUNT_DEV", "").strip()
+HOST_ROOT = Path("/mnt/stickllm-host")
+ORDINARY = {
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs",
+    "ntfs", "ntfs3", "exfat", "vfat", "fuseblk",
+}
+BAD = {
+    "crypto_LUKS", "BitLocker", "linux_raid_member", "LVM2_member", "zfs_member",
+    "swap", "iso9660", "squashfs", "",
+}
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip(), p.returncode, (p.stderr or "").strip()
+
+def fail(msg):
+    print(json.dumps({"ok": False, "error": msg}))
+    raise SystemExit(1)
+
+if not re.fullmatch(r"/dev/[A-Za-z0-9]+(?:p?[0-9]+)?", dev):
+    # allow nvme0n1p2, sda3, etc.
+    if not (dev.startswith("/dev/") and re.fullmatch(r"/dev/[A-Za-z0-9/_.+-]+", dev)):
+        fail("invalid device path")
+if not Path(dev).exists():
+    fail(f"device not found: {dev}")
+
+# Must be a partition, never whole disk
+typ, rc, _ = sh("lsblk", "-no", "TYPE", dev)
+typ = (typ.splitlines()[0] if typ else "").strip()
+if typ != "part":
+    fail(f"refusing to mount type '{typ or 'unknown'}' — partitions only, never whole disks")
+
+fst, _, _ = sh("lsblk", "-no", "FSTYPE", dev)
+fst = (fst.splitlines()[0] if fst else "").strip()
+if fst in BAD or fst not in ORDINARY:
+    fail(f"refusing filesystem '{fst or 'unknown'}' — only clear unencrypted mounts (ext4/ntfs/exfat/…)")
+
+# Sibling crypto on same disk → fail closed
+pk, _, _ = sh("lsblk", "-no", "PKNAME", dev)
+pk = (pk.splitlines()[0] if pk else "").strip()
+if pk:
+    out, _, _ = sh("lsblk", "-J", "-o", "NAME,TYPE,FSTYPE", f"/dev/{pk}")
+    try:
+        data = json.loads(out or "{}")
+    except Exception:
+        data = {}
+    for d in data.get("blockdevices") or []:
+        for c in d.get("children") or []:
+            ft = (c.get("fstype") or "").strip()
+            ct = c.get("type") or ""
+            if ft in ("crypto_LUKS", "BitLocker", "linux_raid_member", "LVM2_member", "zfs_member") or ct in (
+                "crypt", "lvm", "raid", "raid0", "raid1", "raid5", "raid10"
+            ):
+                fail("disk has encrypted/RAID/LVM siblings — refuse (unlock in host OS first)")
+
+# Never mount StickLLM boot stick partitions
+boot = sh("findmnt", "-n", "-o", "SOURCE", "--target", "/run/live/medium")[0] or \
+       sh("findmnt", "-n", "-o", "SOURCE", "--target", "/lib/live/mount/medium")[0]
+if boot:
+    bdisk = (sh("lsblk", "-no", "PKNAME", boot)[0] or sh("lsblk", "-no", "NAME", boot)[0] or "").split()[0]
+    if pk and bdisk and pk == bdisk:
+        fail("refusing StickLLM USB/boot stick — not a host Mount target")
+
+mp_now, _, _ = sh("lsblk", "-no", "MOUNTPOINT", dev)
+mp_now = (mp_now.splitlines()[0] if mp_now else "").strip()
+if mp_now:
+    print(json.dumps({"ok": True, "already_mounted": True, "device": dev, "mount_path": mp_now, "fstype": fst}))
+    raise SystemExit(0)
+
+# EFI-ish vfat refuse
+size_s, _, _ = sh("lsblk", "-nb", "-o", "SIZE", dev)
+try:
+    size_b = int((size_s.splitlines()[0] if size_s else "0").strip() or "0")
+except Exception:
+    size_b = 0
+plab = (sh("lsblk", "-no", "PARTLABEL", dev)[0] or "").upper()
+if fst == "vfat" and (size_b < 2 * 1024**3 or "EFI" in plab or "ESP" in plab):
+    fail("refusing EFI/system vfat partition")
+
+label = (sh("lsblk", "-no", "LABEL", dev)[0] or "").strip()
+model = ""
+if pk:
+    model = (sh("lsblk", "-no", "MODEL", f"/dev/{pk}")[0] or "").strip()
+part = Path(dev).name
+base = label or model or part
+safe = re.sub(r"[^A-Za-z0-9_-]+", "-", base).strip("-_")[:48] or part
+mname = f"{safe}-{part}"[:64]
+target = HOST_ROOT / mname
+
+# Mount options: rw for vault blob; nosuid/nodev; allow exec not required
+opts = "rw,nosuid,nodev,relatime"
+# NTFS/exfat helpers if present
+if fst in ("ntfs", "ntfs3"):
+    # prefer ntfs3 kernel driver via mount -t ntfs3 when available
+    pass
+
+HOST_ROOT.mkdir(parents=True, exist_ok=True)
+if os.path.ismount(str(target)):
+    # occupied by something else?
+    src, _, _ = sh("findmnt", "-n", "-o", "SOURCE", str(target))
+    if src and os.path.realpath(src) != os.path.realpath(dev):
+        fail(f"mountpoint busy with different device: {target}")
+    print(json.dumps({"ok": True, "already_mounted": True, "device": dev, "mount_path": str(target), "fstype": fst}))
+    raise SystemExit(0)
+
+target.mkdir(parents=True, exist_ok=True)
+mnt_type = "ntfs3" if fst == "ntfs" else fst
+cmd = ["mount", "-t", mnt_type, "-o", opts, dev, str(target)]
+p = subprocess.run(cmd, capture_output=True, text=True, check=False)
+if p.returncode != 0 and fst == "ntfs":
+    # fallback
+    p = subprocess.run(["mount", "-t", "ntfs", "-o", opts, dev, str(target)], capture_output=True, text=True, check=False)
+if p.returncode != 0:
+    fail((p.stderr or p.stdout or "mount failed").strip()[:500])
+
+# Verify
+src, _, _ = sh("findmnt", "-n", "-o", "SOURCE", str(target))
+if not src:
+    fail("mount reported ok but findmnt failed")
+print(json.dumps({
+    "ok": True,
+    "device": dev,
+    "mount_path": str(target),
+    "fstype": fst,
+    "already_mounted": False,
+    "note": "Mounted read-write for vault folder pick. Never formatted.",
 }))
 PY
 }
@@ -1192,6 +1448,7 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault list-devices        # USB vs host SSD mounts for picker
   stickllm-vault list-dirs <dir>     # browse folders under a mount
   stickllm-vault mkdir <parent> <name>  # create subfolder (no format)
+  stickllm-vault mount-host <part>   # Mount clear unencrypted FS (MOUNT-HOST)
   stickllm-vault setup <dir> [gb]    # create dir if needed + NEW sparse blob
   stickllm-vault grow <add_gb>       # expand blob (free-space checked)
   stickllm-vault unlock
@@ -1215,6 +1472,7 @@ main() {
     list-devices|devices) list_devices ;;
     list-dirs|ls-dirs) list_dirs "$@" ;;
     mkdir) mkdir_vault_dir "$@" ;;
+    mount-host) mount_host "$@" ;;
     setup) cmd_setup "$@" ;;
     create-file) cmd_create_file "$@" ;;
     create-partition)
