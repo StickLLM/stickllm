@@ -11,6 +11,16 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   git cmake build-essential curl ca-certificates
 
+# Skip CUDA rebuild when binaries already present (Vulkan-only iteration).
+SKIP_CUDA=0
+if [[ -s "$OUT_BIN" && -f "$OUT_LIB/stickllm-cuda-register.so" \
+  && ( -f "$OUT_LIB/libggml-cuda.so" || -f "$OUT_LIB/libggml-cuda.so.0" ) \
+  && "${STICKLLM_FORCE_LLAMA_BUILD:-}" != "1" ]]; then
+  SKIP_CUDA=1
+  echo "[stickllm] skipping CUDA rebuild (existing $OUT_BIN + libggml-cuda)"
+fi
+
+if [[ "$SKIP_CUDA" -eq 0 ]]; then
 rm -rf /tmp/llama.cpp
 if [[ -n "$TAG" ]]; then
   git clone --depth 1 --branch "$TAG" https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp
@@ -66,6 +76,7 @@ fi
 
 LD_LIBRARY_PATH="$OUT_LIB" "$OUT_BIN" --version
 ls -lh "$OUT_BIN" "$OUT_LIB" | head -n 50
+fi
 
 # Vulkan binary for AMD/Intel (and NVIDIA fallback). Separate tree + lib-vulkan/
 # so CUDA libggml* is never overwritten. CUDA remains default on NVIDIA hosts.
