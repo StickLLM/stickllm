@@ -147,15 +147,27 @@ url_scheme() {
 }
 
 lan_ip() {
-  # Prefer a global IPv4 on a real NIC (works for QEMU 10.0.2.x and LAN DHCP).
+  # Prefer shared helper (skips link-local; refreshes /run/stickllm/lan-ip.txt).
   local ip=""
+  if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+    ip="$(/usr/local/bin/stickllm-lan-ip 2>/dev/null | tr -d '[:space:]' || true)"
+    printf '%s' "${ip:-}"
+    return 0
+  fi
+  # Prefer a global IPv4 on a real NIC (works for QEMU 10.0.2.x and LAN DHCP).
   ip="$(ip -4 -o addr show scope global 2>/dev/null \
-    | awk '!/ lo / {print $4; exit}' | cut -d/ -f1)"
+    | awk '!/[[:space:]]lo[[:space:]]/ && $4 !~ /^169\.254\./ {print $4; exit}' | cut -d/ -f1)"
   if [[ -z "$ip" ]]; then
-    ip="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i !~ /^127\./){print $i; exit}}')"
+    ip="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./ && $i !~ /^169\.254\./){print $i; exit}}')"
   fi
   if [[ -z "$ip" ]]; then
     ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+    case "${ip:-}" in
+      127.*|169.254.*) ip="" ;;
+    esac
+  fi
+  if [[ -n "$ip" ]]; then
+    printf '%s\n' "$ip" >"$RUN/lan-ip.txt" 2>/dev/null || true
   fi
   printf '%s' "${ip:-}"
 }
@@ -482,15 +494,15 @@ draw_connect_steps() {
     say "  How to connect (Chat = this screen + LAN):"
     say "    This screen: http://127.0.0.1/  (no pair)"
     if [[ -n "${ip:-}" ]]; then
-      say "    LAN IP:     ${ip}"
+      say "    >>> LAN IP:  ${ip}"
       if [[ "$ready" == "1" ]]; then
-        say "    Phone/LAN:  ${SCHEME}://${ip}/  (enter PAIR CODE below)"
+        say "    Phone/LAN:   ${SCHEME}://${ip}/  (enter PAIR CODE below)"
       else
-        say "    Phone/LAN:  ${SCHEME}://${ip}/  (PAIR CODE on READY screen)"
+        say "    Phone/LAN:   ${SCHEME}://${ip}/  (PAIR CODE on READY screen)"
       fi
     else
-      say "    LAN IP:     (waiting - Ethernet or stickllm-wifi-setup)"
-      say "    Phone/LAN:  ${SCHEME}://<lan-ip>/  (PAIR CODE on READY)"
+      say "    >>> LAN IP:  (waiting - Ethernet or stickllm-wifi-setup)"
+      say "    Phone/LAN:   ${SCHEME}://<lan-ip>/  (PAIR CODE on READY)"
     fi
     say "    Models / Settings in the StickLLM web UI"
     if [[ "$SSH_ON" -eq 1 ]]; then
@@ -501,13 +513,13 @@ draw_connect_steps() {
   fi
   say "  How to connect (same LAN; WiFi: Settings or stickllm-wifi-setup):"
   if [[ -n "${ip:-}" ]]; then
-    say "    LAN IP:     ${ip}"
-    say "    Browser:    ${SCHEME}://${ip}/"
-    say "    URL:        ${SCHEME}://${ip}/"
+    say "    >>> LAN IP:  ${ip}"
+    say "    Browser:     ${SCHEME}://${ip}/"
+    say "    URL:         ${SCHEME}://${ip}/"
   else
-    say "    LAN IP:     (waiting for network…)"
-    say "    Browser:    ${SCHEME}://<lan-ip>/"
-    say "    Status:     STICKLLM Network Loading - waiting for IP"
+    say "    >>> LAN IP:  (waiting for network…)"
+    say "    Browser:     ${SCHEME}://<lan-ip>/"
+    say "    Status:      STICKLLM Network Loading - waiting for IP"
   fi
   if [[ "$SCHEME" == "https" ]]; then
     say "    TLS:        accept the browser warning once (self-signed)"
@@ -726,13 +738,13 @@ draw_ready() {
     refresh_model_label
     say "  Model: $MODEL_NAME"
     if [[ -n "${ip:-}" ]]; then
-      say "  LAN IP:   ${ip}"
-      say "  Browser:  ${SCHEME}://${ip}/  (phone/LAN - pair required)"
-      say "  URL:      ${SCHEME}://${ip}/"
+      say "  >>> LAN IP:  ${ip}"
+      say "  Browser:    ${SCHEME}://${ip}/  (phone/LAN - pair required)"
+      say "  URL:        ${SCHEME}://${ip}/"
     else
-      say "  LAN IP:   (waiting - Ethernet, or Term: stickllm-wifi-setup)"
-      say "  Browser:  ${SCHEME}://<lan-ip>/"
-      say "  URL:      ${SCHEME}://<lan-ip>/"
+      say "  >>> LAN IP:  (waiting - Ethernet, or Term: stickllm-wifi-setup)"
+      say "  Browser:    ${SCHEME}://<lan-ip>/"
+      say "  URL:        ${SCHEME}://<lan-ip>/"
     fi
     say "  Local UI: http://127.0.0.1/  (this screen - no pair)"
     say ""
@@ -751,13 +763,13 @@ draw_ready() {
 
   # Always show IP + URL + pair on READY (required connect path).
   if [[ -n "${ip:-}" ]]; then
-    say "  LAN IP:   ${ip}"
-    say "  Browser:  ${SCHEME}://${ip}/"
-    say "  URL:      ${SCHEME}://${ip}/"
+    say "  >>> LAN IP:  ${ip}"
+    say "  Browser:    ${SCHEME}://${ip}/"
+    say "  URL:        ${SCHEME}://${ip}/"
   else
-    say "  LAN IP:   (waiting - Ethernet DHCP, or WiFi bootstrap below)"
-    say "  Browser:  ${SCHEME}://<lan-ip>/"
-    say "  URL:      ${SCHEME}://<lan-ip>/"
+    say "  >>> LAN IP:  (waiting - Ethernet DHCP, or WiFi bootstrap below)"
+    say "  Browser:    ${SCHEME}://<lan-ip>/"
+    say "  URL:        ${SCHEME}://<lan-ip>/"
   fi
   [[ "$SCHEME" == "https" ]] && say "  TLS:      accept browser warning once"
   say ""
@@ -900,7 +912,8 @@ while (( SECONDS < deadline )); do
       ensure_network
       phase="STICKLLM Network Loading"
       paint_loading "$SECONDS" "$phase" "" "$ui_ok" "$api_ok"
-      sleep 10
+      # Poll faster while waiting on DHCP after WiFi bootstrap.
+      sleep 3
       continue
     fi
     draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
@@ -909,7 +922,7 @@ while (( SECONDS < deadline )); do
     SSH_SIG="$(cat "$RUN/ssh-password.txt" 2>/dev/null | tr -d '[:space:]' || true)"
     ready_sig="${ip:-}|${PAIR_STATE:-none}|${PAIR_CODE:-}|${ui_ok}|${api_ok}|${SCHEME:-http}|${SSH_SIG}"
     while true; do
-      sleep 10
+      sleep 5
       ip="$(lan_ip)"
       [[ -z "${ip:-}" ]] && ensure_network
       probe_services
@@ -928,6 +941,11 @@ while (( SECONDS < deadline )); do
         ready_drawn=0
         break
       fi
+      # Dropped off WiFi / DHCP — leave READY and show Network Loading.
+      if [[ -z "${ip:-}" ]]; then
+        ready_drawn=0
+        break
+      fi
       SSH_SIG="$(cat "$RUN/ssh-password.txt" 2>/dev/null | tr -d '[:space:]' || true)"
       sig="${ip:-}|${PAIR_STATE:-none}|${PAIR_CODE:-}|${ui_ok}|${api_ok}|${SCHEME:-http}|${SSH_SIG}"
       if [[ "$sig" != "$ready_sig" ]]; then
@@ -940,7 +958,11 @@ while (( SECONDS < deadline )); do
     continue
   fi
   paint_loading "$SECONDS" "$phase" "${ip:-}" "$ui_ok" "$api_ok"
-  sleep 10
+  if [[ "$phase" == "STICKLLM Network Loading" ]]; then
+    sleep 3
+  else
+    sleep 10
+  fi
 done
 
 clear_tty

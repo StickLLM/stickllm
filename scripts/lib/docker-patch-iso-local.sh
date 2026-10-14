@@ -44,6 +44,7 @@ rsync -a \
   "$STICKLLM/overlay/usr/local/bin/stickllm-status" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-pair" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-control" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-lan-ip" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-wifi-apply" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-wifi-setup" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-kiosk" \

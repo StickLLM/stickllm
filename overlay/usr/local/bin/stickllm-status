@@ -42,13 +42,19 @@ fi
 echo "backend:  ${BACKEND}"
 echo
 
-IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+  IP="$(/usr/local/bin/stickllm-lan-ip 2>/dev/null | tr -d '[:space:]' || true)"
+else
+  IP="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./){print $i; exit}}')"
+fi
 if [[ -n "${IP:-}" ]]; then
+  echo "LAN IP:   ${IP}"
   echo "Chat UI:  http://${IP}/"
   echo "API:      http://${IP}/v1/chat/completions"
   echo "Auth:     Authorization: Bearer <pair token from Chat UI → Models>"
   echo "Raw LLM:  http://${IP}:8080/v1/chat/completions  (no pair auth)"
 else
+  echo "LAN IP:   (none yet — Ethernet or stickllm-wifi-setup)"
   echo "Chat UI:  http://127.0.0.1/"
   echo "API:      http://127.0.0.1/v1/chat/completions"
   echo "Auth:     Authorization: Bearer <pair token from Chat UI → Models>"

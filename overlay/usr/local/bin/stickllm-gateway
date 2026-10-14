@@ -158,9 +158,36 @@ def detect_backend() -> str:
     return "cpu"
 
 
+def discover_lan_ip() -> str:
+    """Fresh LAN IPv4 for connect banner; refresh lan-ip.txt after late WiFi DHCP."""
+    probed = ""
+    helper = Path("/usr/local/bin/stickllm-lan-ip")
+    if helper.is_file():
+        try:
+            r = subprocess.run(
+                [str(helper)],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            probed = (r.stdout or "").strip().splitlines()[0].strip() if r.stdout else ""
+        except (OSError, subprocess.SubprocessError, IndexError):
+            probed = ""
+    cached = read_text_safe(RUN_DIR / "lan-ip.txt")
+    ip = probed or cached
+    if probed and probed != cached:
+        try:
+            RUN_DIR.mkdir(parents=True, exist_ok=True)
+            (RUN_DIR / "lan-ip.txt").write_text(probed + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    return ip
+
+
 def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
     """IP / model / URL (+ pair code on loopback only) for the on-stick status banner."""
-    ip = read_text_safe(RUN_DIR / "lan-ip.txt")
+    ip = discover_lan_ip()
     model_name, model_path = resolve_model()
     if not model_name:
         # llama ready but env missing → still show a real label, not a stuck "loading…"

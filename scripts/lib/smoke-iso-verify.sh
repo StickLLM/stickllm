@@ -139,6 +139,18 @@ else
   pass "bootstatus no console printf paint"
 fi
 grep -q 'URL:' "$BS" && pass "READY shows URL label" || bad "READY missing URL label"
+grep -q '>>> LAN IP' "$BS" && pass "READY shows LAN IP banner" || bad "READY missing LAN IP banner"
+if [[ -f "$work/sq/usr/local/bin/stickllm-lan-ip" ]]; then
+  pass "stickllm-lan-ip helper present"
+else
+  bad "stickllm-lan-ip helper missing"
+fi
+if [[ -f "$work/sq/usr/local/bin/stickllm-wifi-setup" ]]; then
+  grep -q 'Waiting for LAN IP\|resolve_lan_ip\|stickllm-lan-ip' \
+    "$work/sq/usr/local/bin/stickllm-wifi-setup" \
+    && pass "wifi-setup waits/publishes LAN IP" \
+    || bad "wifi-setup missing LAN IP wait"
+fi
 grep -q 'serial_only' "$BS" && pass "bootstatus serial_only helper" || bad "serial_only missing"
 grep -q 'allow-local-chat\|handoff_local_chat' "$BS" && pass "local handoff in bootstatus" || bad "local handoff missing"
 grep -q 'stickllm-kiosk\|STICKLLM_LOCAL_KIOSK' "$BS" && pass "local handoff queues kiosk" || bad "local handoff missing kiosk"

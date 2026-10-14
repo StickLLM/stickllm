@@ -767,16 +767,20 @@ hold_error() {
   paint ""
   paint "  $reason"
   paint "  Target: $URL"
-  _ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+    _ip="$(/usr/local/bin/stickllm-lan-ip 2>/dev/null | tr -d '[:space:]' || true)"
+  else
+    _ip="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./){print $i; exit}}')"
+  fi
   _pair="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
   _model="$(tr -d '\r\n' <"$RUN/model-label.txt" 2>/dev/null || true)"
   [[ -n "$_model" ]] || _model="(loading / see Models)"
   paint "  Model:     $_model"
   if [[ -n "$_ip" ]]; then
-    paint "  LAN IP:    $_ip"
-    paint "  How to:    http://${_ip}/  (phone/LAN - enter PAIR CODE)"
+    paint "  >>> LAN IP:  $_ip"
+    paint "  How to:      http://${_ip}/  (phone/LAN - enter PAIR CODE)"
   else
-    paint "  LAN IP:    (waiting - Ethernet or stickllm-wifi-setup)"
+    paint "  >>> LAN IP:  (waiting - Ethernet or stickllm-wifi-setup)"
   fi
   paint "  Local UI:  $URL  (this screen - no pair)"
   if [[ -n "$_pair" && "$_pair" =~ ^[0-9]{4,8}$ ]]; then
@@ -829,13 +833,23 @@ paint ""
 paint "  On-stick browser → $URL"
 if [[ "$CHAT_MODE" -eq 1 ]]; then
   # Keep LAN join info visible while the compositor comes up.
-  _ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  # Brief wait: WiFi DHCP may land just after READY handoff.
+  if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+    _ip="$(/usr/local/bin/stickllm-lan-ip --wait 8 2>/dev/null | tr -d '[:space:]' || true)"
+  else
+    _ip="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./){print $i; exit}}')"
+  fi
   _pair="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
   _model="$(tr -d '\r\n' <"$RUN/model-label.txt" 2>/dev/null || true)"
   [[ -n "$_model" ]] || _model="(see Models in UI)"
   paint "  Mode:     Chat (this screen + LAN)"
   paint "  Model:    $_model"
-  [[ -n "$_ip" ]] && paint "  LAN IP:   $_ip" && paint "  Browser:  http://${_ip}/  (LAN needs PAIR CODE)"
+  if [[ -n "$_ip" ]]; then
+    paint "  >>> LAN IP:  $_ip"
+    paint "  Browser:     http://${_ip}/  (LAN needs PAIR CODE)"
+  else
+    paint "  >>> LAN IP:  (waiting - Ethernet or stickllm-wifi-setup)"
+  fi
   [[ -n "$_pair" ]] && paint "  PAIR CODE: $_pair"
   paint "  Local:    $URL  (this screen — no pair)"
 else

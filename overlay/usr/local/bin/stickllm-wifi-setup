@@ -4,6 +4,7 @@
 set -euo pipefail
 
 APPLY="${STICKLLM_WIFI_APPLY:-/usr/local/bin/stickllm-wifi-apply}"
+LAN_IP_BIN="${STICKLLM_LAN_IP:-/usr/local/bin/stickllm-lan-ip}"
 RUN="${STICKLLM_RUN:-/run/stickllm}"
 
 say() { printf '%s\n' "$*"; }
@@ -80,20 +81,56 @@ print_list() {
   done
 }
 
+resolve_lan_ip() {
+  local wait_secs="${1:-0}" ip=""
+  if [[ -x "$LAN_IP_BIN" ]]; then
+    if [[ "$wait_secs" -gt 0 ]]; then
+      ip="$("$LAN_IP_BIN" --wait "$wait_secs" 2>/dev/null || true)"
+    else
+      ip="$("$LAN_IP_BIN" 2>/dev/null || true)"
+    fi
+    ip="$(printf '%s' "$ip" | tr -d '[:space:]')"
+    printf '%s' "$ip"
+    return 0
+  fi
+  # Fallback if helper missing from an older hot-deploy.
+  ip="$(ip -4 -o addr show scope global 2>/dev/null \
+    | awk '!/[[:space:]]lo[[:space:]]/ && $4 !~ /^169\.254\./ {print $4; exit}' \
+    | cut -d/ -f1)"
+  if [[ -z "$ip" ]]; then
+    ip="$(hostname -I 2>/dev/null \
+      | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./ && $i !~ /^169\.254\./){print $i; exit}}')"
+  fi
+  printf '%s' "${ip:-}"
+}
+
 show_status() {
-  local ip ssid
-  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  local ip ssid wait_secs="${1:-45}"
   ssid=""
   if [[ -f "$RUN/wifi.json" ]]; then
     ssid="$(awk -F= '/^ssid=/{print substr($0,6); exit}' "$RUN/wifi.json" 2>/dev/null || true)"
   fi
   say ""
+  say "Waiting for LAN IP (DHCP)…"
+  ip="$(resolve_lan_ip "$wait_secs")"
+  say ""
+  say "========================================"
   if [[ -n "${ip:-}" ]]; then
-    say "LAN IP: $ip${ssid:+  (WiFi $ssid)}"
-    say "Open http://${ip}/ on another device, then Pair (Server/Term)."
+    say "  WiFi connected${ssid:+  ($ssid)}"
+    say "  LAN IP:   ${ip}"
+    say "  Browser:  http://${ip}/"
+    say "  URL:      http://${ip}/"
+    say "========================================"
+    say "Open that URL on another device, then Pair (Server/Term)."
+    say "Ctrl+Alt+F1 → READY / Chat screen (LAN IP refreshes there too)."
   else
-    say "No LAN IP yet — wait a few seconds, or check SSID/password."
-    say "Saved profiles persist on STICKLLM-DATA when USB is claimed."
+    say "  WiFi profile saved${ssid:+  ($ssid)}"
+    say "  LAN IP:   (not yet — wait a few seconds)"
+    say "  Browser:  http://<lan-ip>/"
+    say "========================================"
+    say "Check SSID/password, then re-run stickllm-wifi-setup."
+    say "Or: stickllm-lan-ip --wait 30   /   stickllm-status"
+    say "Ctrl+Alt+F1 → READY screen once DHCP assigns an address."
   fi
 }
 
@@ -140,7 +177,7 @@ if [[ -n "$DIRECT_SSID" ]]; then
   stty echo 2>/dev/null || true
   say ""
   run_apply "$SSID" "${PASS:-}"
-  show_status
+  show_status 45
   exit 0
 fi
 
@@ -196,8 +233,7 @@ while true; do
 
   say "Connecting to $SSID…"
   if run_apply "$SSID" "${PASS:-}"; then
-    sleep 2
-    show_status
+    show_status 45
     exit 0
   else
     err "Connect failed — check password or pick another network."

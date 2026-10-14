@@ -83,4 +83,9 @@ if ! nmcli connection up "$CONN_NAME" >/dev/null 2>&1; then
   fi
 fi
 
+# DHCP often lags association; publish LAN IP for READY / kiosk / /api/health.
+if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+  /usr/local/bin/stickllm-lan-ip --wait 25 >/dev/null 2>&1 || true
+fi
+
 echo "OK wifi profile ${CONN_NAME} for ssid=${SSID}"

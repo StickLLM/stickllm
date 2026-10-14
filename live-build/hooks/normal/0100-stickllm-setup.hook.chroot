@@ -15,6 +15,7 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-pair \
           /usr/local/bin/stickllm-llama-start \
           /usr/local/bin/stickllm-ssh-bootstrap \
+          /usr/local/bin/stickllm-lan-ip \
           /usr/local/bin/stickllm-wifi-apply \
           /usr/local/bin/stickllm-wifi-setup \
           /usr/local/bin/stickllm-nvidia-prep \
