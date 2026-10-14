@@ -21,6 +21,23 @@ if [[ -f "$OUT_BIN" && -s "$OUT_BIN" && -f "$OUT_CPU" && -s "$OUT_CPU" \
   exit 0
 fi
 
+# Resume after Vulkan-only failure: keep intact CUDA, rebuild Vulkan+CPU.
+SKIP_CUDA="${STICKLLM_SKIP_CUDA_BUILD:-0}"
+vk_missing=0
+if [[ ! -s "$OUT_VK" ]] \
+  || { [[ ! -e "$OUT_LIB_VK/libggml-vulkan.so" ]] && [[ ! -e "$OUT_LIB_VK/libggml-vulkan.so.0" ]]; }; then
+  vk_missing=1
+fi
+if [[ "$SKIP_CUDA" != "1" ]] \
+  && [[ -s "$OUT_BIN" ]] \
+  && [[ -f "$OUT_LIB/stickllm-cuda-register.so" ]] \
+  && { [[ -e "$OUT_LIB/libggml-cuda.so" ]] || [[ -e "$OUT_LIB/libggml-cuda.so.0" ]] || [[ -e "$OUT_LIB/libggml-cuda.so.0.26.0" ]]; } \
+  && { [[ -e "$OUT_LIB/libllama-server-impl.so" ]] || [[ -e "$OUT_LIB/libllama.so.0" ]]; } \
+  && [[ "$vk_missing" -eq 1 ]]; then
+  SKIP_CUDA=1
+  echo "Resuming llama build: CUDA intact → Vulkan+CPU only"
+fi
+
 echo "Building llama.cpp ${STICKLLM_LLAMA_TAG:-master} with CUDA arch 86 + Vulkan + CPU…"
 
 # Git Bash on Windows rewrites Unix Docker paths; disable conversion.
@@ -29,6 +46,7 @@ export MSYS2_ARG_CONV_EXCL='*'
 
 docker run --rm \
   -e "STICKLLM_LLAMA_TAG=${STICKLLM_LLAMA_TAG:-}" \
+  -e "STICKLLM_SKIP_CUDA_BUILD=${SKIP_CUDA}" \
   -v "${ROOT}:/work" \
   -w //work \
   nvidia/cuda:12.4.1-devel-ubuntu22.04 \

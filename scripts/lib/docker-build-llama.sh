@@ -11,9 +11,16 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   git cmake build-essential curl ca-certificates
 
-# Skip CUDA rebuild when binaries already present (Vulkan-only iteration).
+# Skip CUDA rebuild when binaries already present (Vulkan-only resume).
+# STICKLLM_SKIP_CUDA_BUILD=1 wins even with FORCE (resume after Vulkan fail).
 SKIP_CUDA=0
-if [[ -s "$OUT_BIN" && -f "$OUT_LIB/stickllm-cuda-register.so" \
+if [[ "${STICKLLM_SKIP_CUDA_BUILD:-}" == "1" ]] \
+  && [[ -s "$OUT_BIN" ]] \
+  && [[ -f "$OUT_LIB/stickllm-cuda-register.so" ]] \
+  && { [[ -f "$OUT_LIB/libggml-cuda.so" ]] || [[ -f "$OUT_LIB/libggml-cuda.so.0" ]] || [[ -f "$OUT_LIB/libggml-cuda.so.0.26.0" ]]; }; then
+  SKIP_CUDA=1
+  echo "[stickllm] skipping CUDA rebuild (STICKLLM_SKIP_CUDA_BUILD=1; artifacts present)"
+elif [[ -s "$OUT_BIN" && -f "$OUT_LIB/stickllm-cuda-register.so" \
   && ( -f "$OUT_LIB/libggml-cuda.so" || -f "$OUT_LIB/libggml-cuda.so.0" ) \
   && "${STICKLLM_FORCE_LLAMA_BUILD:-}" != "1" ]]; then
   SKIP_CUDA=1
@@ -92,11 +99,20 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   vulkan-tools pkg-config
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libshaderc-dev >/dev/null 2>&1 || true
-# Jammy apt spirv-headers lacks SPIRV-HeadersConfig.cmake; install from Khronos.
-rm -rf /tmp/SPIRV-Headers
-git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git /tmp/SPIRV-Headers
-cmake -S /tmp/SPIRV-Headers -B /tmp/SPIRV-Headers/build -DCMAKE_INSTALL_PREFIX=/usr/local
-cmake --build /tmp/SPIRV-Headers/build --target install -j"$(nproc)"
+# Prefer apt SPIRV-HeadersConfig.cmake; else install Khronos headers to /usr/local.
+SPIRV_HEADERS_DIR=""
+if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends spirv-headers \
+  && [[ -f /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake ]]; then
+  SPIRV_HEADERS_DIR=/usr/share/cmake/SPIRV-Headers
+else
+  echo "[stickllm] installing Khronos SPIRV-Headers (CMake config)"
+  rm -rf /tmp/SPIRV-Headers
+  git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git /tmp/SPIRV-Headers
+  cmake -S /tmp/SPIRV-Headers -B /tmp/SPIRV-Headers/build -DCMAKE_INSTALL_PREFIX=/usr/local
+  cmake --install /tmp/SPIRV-Headers/build
+  SPIRV_HEADERS_DIR=/usr/local/share/cmake/SPIRV-Headers
+fi
+test -f "$SPIRV_HEADERS_DIR/SPIRV-HeadersConfig.cmake"
 OUT_LIB_VK="/work/overlay/opt/stickllm/lib-vulkan"
 mkdir -p "$OUT_LIB_VK"
 rm -rf /tmp/llama.cpp-vulkan
@@ -109,7 +125,8 @@ cmake -S /tmp/llama.cpp-vulkan -B /tmp/llama.cpp-vulkan/build \
   -DGGML_VULKAN=ON \
   -DGGML_CUDA=OFF \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=/usr/local
+  -DCMAKE_PREFIX_PATH=/usr/local \
+  -DSPIRV-Headers_DIR="$SPIRV_HEADERS_DIR"
 cmake --build /tmp/llama.cpp-vulkan/build --target llama-server -j"$(nproc)"
 VK_BIN=""
 for c in /tmp/llama.cpp-vulkan/build/bin/llama-server /tmp/llama.cpp-vulkan/build/llama-server; do
