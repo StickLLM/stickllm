@@ -100,14 +100,19 @@ curl -fsSL https://packages.lunarg.com/lunarg-signing-key-pub.asc \
 echo "deb [signed-by=/usr/share/keyrings/lunarg.gpg] https://packages.lunarg.com/vulkan jammy main" \
   >/etc/apt/sources.list.d/lunarg-vulkan.list
 apt-get update
+# vulkan-headers is required: LunarG libvulkan-dev is loader-only (no vulkan.h).
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  libvulkan-dev glslang-tools glslang-dev spirv-tools spirv-headers \
+  libvulkan-dev vulkan-headers glslang-tools glslang-dev spirv-tools spirv-headers \
   vulkan-tools pkg-config shaderc
 command -v glslc >/dev/null || {
   echo "docker-build-llama: glslc missing after LunarG shaderc install" >&2
   exit 1
 }
 glslc --version | head -1
+test -f /usr/include/vulkan/vulkan.h || {
+  echo "docker-build-llama: missing /usr/include/vulkan/vulkan.h (install vulkan-headers)" >&2
+  exit 1
+}
 # Prefer apt SPIRV-HeadersConfig.cmake; else install Khronos headers to /usr/local.
 SPIRV_HEADERS_DIR=""
 if [[ -f /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake ]]; then
@@ -122,6 +127,8 @@ else
 fi
 test -f "$SPIRV_HEADERS_DIR/SPIRV-HeadersConfig.cmake"
 GLSLC_BIN="$(command -v glslc)"
+VULKAN_LIB="$(readlink -f /usr/lib/x86_64-linux-gnu/libvulkan.so 2>/dev/null || true)"
+[[ -n "$VULKAN_LIB" && -f "$VULKAN_LIB" ]] || VULKAN_LIB=/usr/lib/x86_64-linux-gnu/libvulkan.so
 OUT_LIB_VK="/work/overlay/opt/stickllm/lib-vulkan"
 mkdir -p "$OUT_LIB_VK"
 rm -rf /tmp/llama.cpp-vulkan
@@ -136,6 +143,8 @@ cmake -S /tmp/llama.cpp-vulkan -B /tmp/llama.cpp-vulkan/build \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH=/usr/local \
   -DSPIRV-Headers_DIR="$SPIRV_HEADERS_DIR" \
+  -DVulkan_INCLUDE_DIR=/usr/include \
+  -DVulkan_LIBRARY="$VULKAN_LIB" \
   -DVulkan_GLSLC_EXECUTABLE="$GLSLC_BIN"
 cmake --build /tmp/llama.cpp-vulkan/build --target llama-server -j"$(nproc)"
 VK_BIN=""
