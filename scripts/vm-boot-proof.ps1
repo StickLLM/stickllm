@@ -112,15 +112,30 @@ if ($BootMode -eq "chat" -or $BootMode -eq "local") {
 $append = ($append -replace '\s+', ' ').Trim()
 
 function Start-Qemu([string]$accel, [string]$cpu) {
-  # Single hostfwd only — Windows Start-Process ArgumentList string splits on commas
-  # and dual hostfwd silently breaks port forward (curl never connects).
+  # Single hostfwd only. Pass ArgumentList as an array so commas inside -qmp/-netdev
+  # stay inside one argv (string ArgumentList has historically broken QMP on Windows).
   $netdev = "user,id=n0,hostfwd=tcp:127.0.0.1:${HostFwdPort}-:80"
-  # Always virtio-vga + QMP for screendump (Local needs DRM; Term/Server need on-screen READY).
-  $gpu = if ($isLocal) { "-device virtio-vga -display none" } else { "-device virtio-vga -display none" }
   # Chat/Local need headroom for CPU llama (3B Q4 + 4k ctx); Term can stay leaner.
   $mem = if ($isLocal) { 6144 } else { 4096 }
-  $argLine = "-m $mem -smp 2 -machine q35 -accel $accel -cpu $cpu $gpu -serial `"file:$Serial`" -qmp tcp:127.0.0.1:${QmpPort},server,nowait -netdev $netdev -device virtio-net-pci,netdev=n0 -cdrom `"$Iso`" -boot d -kernel `"$Vmlinuz`" -initrd `"$Initrd`" -append `"$append`""
-  return Start-Process -FilePath $Qemu -ArgumentList $argLine -PassThru -WindowStyle Hidden -RedirectStandardError $Stderr
+  $argList = @(
+    '-m', "$mem",
+    '-smp', '2',
+    '-machine', 'q35',
+    '-accel', $accel,
+    '-cpu', $cpu,
+    '-device', 'virtio-vga',
+    '-display', 'none',
+    '-serial', "file:$Serial",
+    '-qmp', "tcp:127.0.0.1:${QmpPort},server,nowait",
+    '-netdev', $netdev,
+    '-device', 'virtio-net-pci,netdev=n0',
+    '-cdrom', $Iso,
+    '-boot', 'd',
+    '-kernel', $Vmlinuz,
+    '-initrd', $Initrd,
+    '-append', $append
+  )
+  return Start-Process -FilePath $Qemu -ArgumentList $argList -PassThru -WindowStyle Hidden -RedirectStandardError $Stderr
 }
 
 Write-Host "ISO=$Iso"
@@ -275,7 +290,8 @@ if ($text -match "signal=ILL|status=4/ILL|Illegal instruction") {
 }
 if ($sawNoDri) { $failReasons += "VM_SPECIFIC_no_dev_dri" }
 if ($BootMode -eq "chat") {
-  if (-not $sawModel) { $failReasons += "no_model_loading_phase" }
+  # v0.3.4+: no boot autoload — Activate from Models on demand.
+  # Chat proof gates on UI/gateway + LAN + pair + screendump, not Model Loading.
   if (-not $sawLanUrl) { $failReasons += "no_lan_ip_or_url" }
   if (-not $sawPairUsable) { $failReasons += "no_usable_pair_code" }
   if (-not $sawHealthUi) { $failReasons += "no_ui1_health" }
@@ -338,7 +354,7 @@ $readyLines = @(
   "BOOT_PROOF=$how"
   "SCREENSHOT_PROOF=$shotProof"
   "SCREENSHOT_PATH=$shotPath"
-  "MODEL_LOADING=PASS"
+  "MODEL_LOADING=$(if ($BootMode -eq 'chat') { 'ON_DEMAND' } else { 'PASS' })"
   "UI_REACHABLE=PASS"
   "HOST_CURL_PROOF=PASS"
   "UI_HOST_CURL=PASS"
@@ -353,7 +369,7 @@ $readyLines = @(
   "WHEN=$when"
 )
 if ($BootMode -eq "chat") {
-  $readyLines += @("CHAT_STATUS=PASS", "LAN_URL=PASS", "PAIR_PRESENT=PASS", "NOTE_CHAT=QEMU_console_status;_HW_kiosk_shows_web_banner")
+  $readyLines += @("CHAT_STATUS=PASS", "LAN_URL=PASS", "PAIR_PRESENT=PASS", "NOTE_CHAT=QEMU_console_status;_HW_kiosk_shows_web_banner", "NOTE_MODEL=no_boot_autoload_activate_in_ui")
 } elseif ($isLocal) {
   $readyLines += @("LOCAL_HANDOFF=PASS", "NETWORK_LOADING=N/A_LOCAL", "LAN_URL=N/A_LOCAL", "PAIR_PRESENT=N/A_LOCAL")
 } else {

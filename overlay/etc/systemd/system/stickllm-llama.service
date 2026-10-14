@@ -4,6 +4,9 @@ Description=StickLLM llama.cpp server (loopback only)
 After=network.target
 Wants=network.target
 ConditionPathExists=/opt/stickllm/bin/llama-server
+# No default model at boot — unit stays enabled but skips until Activate writes model.env.
+# (Must be under [Unit]; systemd ignores ConditionPathExists in [Service].)
+ConditionPathExists=/run/stickllm/model.env
 
 [Service]
 Type=simple
@@ -17,8 +20,6 @@ EnvironmentFile=-/run/stickllm/model.env
 Environment=LD_LIBRARY_PATH=/opt/stickllm/lib
 Environment=STICKLLM_LLAMA_HOST=127.0.0.1
 Environment=STICKLLM_LLAMA_PORT=8080
-# No default model at boot — unit stays enabled but skips until Activate writes model.env.
-ConditionPathExists=/run/stickllm/model.env
 # Ensure run dir writable before pick-gpus (runs as User=stickllm-llama).
 ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true'
 # Prep needs root (modprobe); + ignores User=. Soft-fail — never block CPU.
