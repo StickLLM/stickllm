@@ -282,14 +282,44 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .catalogList { display: flex; flex-direction: column; gap: 0.65rem; max-height: 14rem; overflow: auto; margin: 0.5rem 0; }
 .catalogRow {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.5rem;
-  align-items: center;
+  grid-template-columns: auto 1fr;
+  gap: 0.55rem;
+  align-items: start;
   border-top: 1px solid var(--line);
   padding-top: 0.55rem;
 }
+.catalogRow.is-selected { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .catalogRow .muted { color: var(--muted); font-size: 0.8rem; }
 .catalogActions { display: flex; flex-direction: column; gap: 0.35rem; }
+.catalogRadio {
+  margin-top: 0.35rem;
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.catalogSelect {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.55rem;
+  align-items: start;
+  cursor: pointer;
+}
+.catalogSelect strong { display: block; }
+.ctxPanel {
+  border-top: 1px solid var(--line);
+  padding-top: 0.65rem;
+  margin-top: 0.35rem;
+}
+.ctxLabel { margin-top: 0.25rem; }
+.ctxSliderRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.75rem;
+  align-items: center;
+}
+.ctxSliderRow input[type="range"] { width: 100%; accent-color: var(--accent); }
+.modelManage { margin-top: 0.35rem; }
 .pairLabel { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9rem; margin: 0.75rem 0; }
 .pairLabel input {
   font: inherit;

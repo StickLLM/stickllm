@@ -48,6 +48,8 @@
   let activeChatId = null;
   let vaultPickerDevice = null;
   let vaultBrowsePath = "";
+  let selectedModelId = null;
+  let lastCatalog = [];
 
   function authHeaders(extra = {}) {
     const h = {
@@ -611,19 +613,157 @@
     }
   }
 
-  function renderCatalog(models) {
-    catalogList.innerHTML = "";
-    if (!models?.length) {
-      catalogList.textContent = "No catalog entries.";
+  function selectedCatalogModel() {
+    if (!selectedModelId) return null;
+    return lastCatalog.find((m) => m.id === selectedModelId) || null;
+  }
+
+  function formatCtx(n) {
+    const v = Number(n) || 0;
+    return v >= 1024 ? `${Math.round(v / 1024)}k` : String(v);
+  }
+
+  function updateSelectionPanel() {
+    const ctxPanel = document.getElementById("ctxPanel");
+    const ctxSlider = document.getElementById("ctxSlider");
+    const ctxValue = document.getElementById("ctxValue");
+    const ctxMeta = document.getElementById("ctxMeta");
+    const actActivate = document.getElementById("actActivate");
+    const manage = document.getElementById("modelManage");
+    const manageHint = document.getElementById("modelManageHint");
+    const dlBtn = document.getElementById("actModelDownload");
+    const delBtn = document.getElementById("actModelDelete");
+    const m = selectedCatalogModel();
+
+    if (!m) {
+      if (ctxPanel) ctxPanel.hidden = true;
+      if (manage) manage.hidden = true;
       return;
     }
-    for (const m of models) {
+
+    const canRun = !!m.runnable;
+    const canDl = !!(m.pinned && !m.installed);
+    const canDel = !!m.deletable;
+
+    if (manage) manage.hidden = false;
+    if (manageHint) {
+      const bits = [
+        m.installed ? "Installed" : "Not downloaded",
+        m.running ? "currently running" : m.active ? "loading" : null,
+        !m.fits && m.installed
+          ? m.backend === "cpu"
+            ? "won't fit RAM"
+            : "won't fit VRAM"
+          : null,
+        m.source === "host_ssd" ? "host SSD (delete in host OS)" : null,
+      ].filter(Boolean);
+      manageHint.textContent = `${m.name || m.id}: ${bits.join(" · ")}`;
+    }
+    if (dlBtn) {
+      dlBtn.hidden = !canDl;
+      dlBtn.disabled = false;
+      dlBtn.textContent = "Download this model";
+    }
+    if (delBtn) {
+      delBtn.hidden = !canDel;
+      delBtn.disabled = false;
+    }
+
+    if (canRun && ctxPanel && ctxSlider && ctxValue && ctxMeta && actActivate) {
+      ctxPanel.hidden = false;
+      const lo = Math.max(2048, Number(m.ctx_min) || 2048);
+      let hi = Math.max(lo, Number(m.ctx_max) || 8192);
+      const step = hi <= 8192 ? 1024 : 2048;
+      hi = Math.max(lo, Math.floor(hi / step) * step);
+      let suggested = Number(m.ctx_suggested) || Math.min(8192, hi);
+      suggested = Math.max(lo, Math.min(hi, suggested));
+      suggested = Math.round(suggested / step) * step;
+      ctxSlider.min = String(lo);
+      ctxSlider.max = String(hi);
+      ctxSlider.step = String(step);
+      // Keep prior slider value if still in range for same model; else suggest.
+      let cur = Number(ctxSlider.value) || suggested;
+      if (cur < lo || cur > hi || ctxSlider.dataset.modelId !== m.id) {
+        cur = suggested;
+      }
+      ctxSlider.value = String(cur);
+      ctxSlider.dataset.modelId = m.id;
+      ctxValue.textContent = String(cur);
+      const free = m.free_mem_after_gb != null ? `~${m.free_mem_after_gb} GB free after load` : "";
+      const modelMax = m.max_context ? `model max ${formatCtx(m.max_context)}` : "";
+      ctxMeta.textContent = [
+        `Slider range ${formatCtx(lo)}–${formatCtx(hi)} tokens`,
+        free,
+        modelMax,
+        m.architecture ? m.architecture : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      actActivate.disabled = !!m.running;
+      actActivate.textContent = m.running
+        ? "Running"
+        : m.active
+          ? "Reload with context"
+          : "Activate selected";
+    } else if (ctxPanel) {
+      ctxPanel.hidden = true;
+    }
+  }
+
+  function renderCatalog(models) {
+    lastCatalog = Array.isArray(models) ? models : [];
+    catalogList.innerHTML = "";
+    if (!lastCatalog.length) {
+      catalogList.textContent = "No catalog entries.";
+      selectedModelId = null;
+      updateSelectionPanel();
+      return;
+    }
+
+    if (
+      selectedModelId &&
+      !lastCatalog.some((m) => m.id === selectedModelId)
+    ) {
+      selectedModelId = null;
+    }
+    if (!selectedModelId) {
+      const prefer =
+        lastCatalog.find((m) => m.running) ||
+        lastCatalog.find((m) => m.active) ||
+        lastCatalog.find((m) => m.runnable) ||
+        lastCatalog.find((m) => m.installed) ||
+        lastCatalog[0];
+      selectedModelId = prefer?.id || null;
+    }
+
+    for (const m of lastCatalog) {
       const row = document.createElement("div");
       row.className = "catalogRow";
+      if (m.id === selectedModelId) row.classList.add("is-selected");
+
+      const label = document.createElement("label");
+      label.className = "catalogSelect";
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "catalogModel";
+      radio.className = "catalogRadio";
+      radio.value = m.id;
+      radio.checked = m.id === selectedModelId;
+      radio.addEventListener("change", () => {
+        if (!radio.checked) return;
+        selectedModelId = m.id;
+        renderCatalog(lastCatalog);
+      });
+
       const meta = document.createElement("div");
       const flags = [
         m.running ? "RUNNING" : m.active ? "LOADING" : null,
-        m.installed ? (m.source === "host_ssd" ? "on SSD" : "downloaded") : "not downloaded",
+        m.installed
+          ? m.source === "host_ssd"
+            ? "on SSD"
+            : "downloaded"
+          : "not downloaded",
         m.fits ? null : m.fit_note || `needs ${m.min_vram_gb}GB`,
         m.backend === "cpu" ? "CPU" : null,
         m.vision ? "vision" : null,
@@ -633,96 +773,129 @@
         .join(" · ");
       meta.innerHTML = `<strong>${m.name}</strong><br/><span class="muted">${m.id} · ~${m.approx_size_gb} GB · ${flags}</span>`;
 
-      const actions = document.createElement("div");
-      actions.className = "catalogActions";
-
-      if (m.runnable) {
-        const runBtn = document.createElement("button");
-        runBtn.type = "button";
-        runBtn.className = "actionBtn";
-        runBtn.textContent = m.running ? "Running" : m.active ? "Loading…" : "Use this";
-        runBtn.disabled = !!m.running;
-        runBtn.addEventListener("click", async () => {
-          runBtn.disabled = true;
-          runBtn.textContent = "Loading…";
-          try {
-            modelsBody.textContent = `Loading model ${m.name || m.id}…`;
-            const res = await control("model_activate", { id: m.id });
-            if (!res.ok && res.error) throw new Error(res.error);
-            modelsBody.textContent = res.running
-              ? `Now running: ${res.name || res.active_model || m.id}`
-              : `Loading: ${res.name || m.id} — waiting for /health`;
-            await openModels();
-          } catch (e) {
-            modelsBody.textContent = `Error: ${e.message}`;
-            runBtn.disabled = false;
-            runBtn.textContent = "Use this";
-          }
-        });
-        actions.appendChild(runBtn);
-      }
-
-      if (m.pinned && !m.installed) {
-        const dlBtn = document.createElement("button");
-        dlBtn.type = "button";
-        dlBtn.className = "actionBtn";
-        dlBtn.textContent = "Download";
-        dlBtn.addEventListener("click", async () => {
-          dlBtn.disabled = true;
-          dlBtn.textContent = "Downloading…";
-          try {
-            modelsBody.textContent = `Starting download: ${m.id}…`;
-            const res = await control("model_download", { id: m.id });
-            renderDownload(res.download || { state: "starting", id: m.id, name: m.name });
-            startDlPoll();
-            await openModels();
-          } catch (e) {
-            modelsBody.textContent = `Error: ${e.message}`;
-            dlBtn.disabled = false;
-            dlBtn.textContent = "Download";
-          }
-        });
-        actions.appendChild(dlBtn);
-      } else if (!m.pinned && !m.installed) {
-        const na = document.createElement("button");
-        na.type = "button";
-        na.className = "actionBtn";
-        na.textContent = "Unavailable";
-        na.disabled = true;
-        actions.appendChild(na);
-      } else if (m.installed && !m.fits) {
-        const na = document.createElement("button");
-        na.type = "button";
-        na.className = "actionBtn";
-        na.textContent = m.backend === "cpu" ? "Won't fit RAM" : "Won't fit VRAM";
-        na.disabled = true;
-        actions.appendChild(na);
-      }
-
-      if (m.deletable) {
-        const delBtn = document.createElement("button");
-        delBtn.type = "button";
-        delBtn.className = "actionBtn";
-        delBtn.textContent = "Delete";
-        delBtn.addEventListener("click", async () => {
-          if (!confirm(`Delete downloaded files for ${m.name || m.id}?`)) return;
-          delBtn.disabled = true;
-          try {
-            const res = await control("model_delete", { id: m.id });
-            if (!res.ok && res.error) throw new Error(res.error);
-            modelsBody.textContent = `Deleted ${m.id}`;
-            await openModels();
-          } catch (e) {
-            modelsBody.textContent = `Error: ${e.message}`;
-            delBtn.disabled = false;
-          }
-        });
-        actions.appendChild(delBtn);
-      }
-
-      row.appendChild(meta);
-      row.appendChild(actions);
+      label.appendChild(radio);
+      label.appendChild(meta);
+      row.appendChild(label);
       catalogList.appendChild(row);
+    }
+    updateSelectionPanel();
+  }
+
+  async function activateSelectedModel() {
+    const m = selectedCatalogModel();
+    const actActivate = document.getElementById("actActivate");
+    const ctxSlider = document.getElementById("ctxSlider");
+    if (!m) {
+      modelsBody.textContent = "Select a model first.";
+      return;
+    }
+    if (!m.runnable) {
+      modelsBody.textContent = m.installed
+        ? "Selected model does not fit this host."
+        : "Selected model is not downloaded yet.";
+      return;
+    }
+    const ctx = Number(ctxSlider?.value) || Number(m.ctx_suggested) || 8192;
+    if (actActivate) {
+      actActivate.disabled = true;
+      actActivate.textContent = "Loading…";
+    }
+    try {
+      modelsBody.textContent = `Loading ${m.name || m.id} (ctx ${ctx})…`;
+      const res = await control("model_activate", { id: m.id, ctx_size: ctx });
+      if (!res.ok && res.error) throw new Error(res.error);
+      modelsBody.textContent = res.running
+        ? `Now running: ${res.name || m.id} · ctx ${res.ctx_size || ctx}`
+        : `Loading: ${res.name || m.id} · ctx ${res.ctx_size || ctx} — waiting for /health`;
+      await openModels();
+    } catch (e) {
+      modelsBody.textContent = `Error: ${e.message}`;
+      updateSelectionPanel();
+    }
+  }
+
+  async function downloadSelectedModel() {
+    const m = selectedCatalogModel();
+    const dlBtn = document.getElementById("actModelDownload");
+    if (!m) return;
+    if (dlBtn) {
+      dlBtn.disabled = true;
+      dlBtn.textContent = "Downloading…";
+    }
+    try {
+      modelsBody.textContent = `Starting download: ${m.id}…`;
+      const res = await control("model_download", { id: m.id });
+      renderDownload(res.download || { state: "starting", id: m.id, name: m.name });
+      startDlPoll();
+      await openModels();
+    } catch (e) {
+      modelsBody.textContent = `Error: ${e.message}`;
+      if (dlBtn) {
+        dlBtn.disabled = false;
+        dlBtn.textContent = "Download this model";
+      }
+    }
+  }
+
+  function openDeleteConfirm() {
+    const m = selectedCatalogModel();
+    const dlg = document.getElementById("deleteConfirmDialog");
+    const body = document.getElementById("deleteConfirmBody");
+    const input = document.getElementById("deleteConfirmInput");
+    const err = document.getElementById("deleteConfirmErr");
+    if (!m?.deletable) {
+      modelsBody.textContent = m
+        ? "This model cannot be deleted from StickLLM (baked-in or host SSD)."
+        : "Select a deletable model first.";
+      return;
+    }
+    if (!dlg) return;
+    if (body) {
+      body.innerHTML =
+        `Permanently delete downloaded files for <strong>${m.name || m.id}</strong>? ` +
+        `Type <strong>ARE YOU SURE</strong> to confirm.`;
+    }
+    if (input) input.value = "";
+    if (err) {
+      err.hidden = true;
+      err.textContent = "";
+    }
+    dlg.showModal();
+    input?.focus();
+  }
+
+  async function confirmDeleteSelected() {
+    const m = selectedCatalogModel();
+    const dlg = document.getElementById("deleteConfirmDialog");
+    const input = document.getElementById("deleteConfirmInput");
+    const err = document.getElementById("deleteConfirmErr");
+    const typed = String(input?.value || "").trim();
+    if (typed !== "ARE YOU SURE") {
+      if (err) {
+        err.hidden = false;
+        err.textContent = 'Type ARE YOU SURE exactly (all caps) to delete.';
+      }
+      return;
+    }
+    if (!m?.deletable) {
+      dlg?.close();
+      return;
+    }
+    try {
+      modelsBody.textContent = `Deleting ${m.id}…`;
+      const res = await control("model_delete", { id: m.id });
+      if (!res.ok && res.error) throw new Error(res.error);
+      modelsBody.textContent = `Deleted ${m.id}`;
+      selectedModelId = null;
+      dlg?.close();
+      await openModels();
+    } catch (e) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = e.message;
+      } else {
+        modelsBody.textContent = `Error: ${e.message}`;
+      }
     }
   }
 
@@ -1698,6 +1871,23 @@
     }
   });
   document.getElementById("actRefresh")?.addEventListener("click", () => openModels());
+  document.getElementById("actActivate")?.addEventListener("click", () => activateSelectedModel());
+  document.getElementById("actModelDownload")?.addEventListener("click", () => downloadSelectedModel());
+  document.getElementById("actModelDelete")?.addEventListener("click", () => openDeleteConfirm());
+  document.getElementById("ctxSlider")?.addEventListener("input", (ev) => {
+    const ctxValue = document.getElementById("ctxValue");
+    if (ctxValue) ctxValue.textContent = String(ev.target.value);
+  });
+  document.getElementById("deleteConfirmCancel")?.addEventListener("click", () => {
+    document.getElementById("deleteConfirmDialog")?.close();
+  });
+  document.getElementById("deleteConfirmOk")?.addEventListener("click", () => confirmDeleteSelected());
+  document.getElementById("deleteConfirmInput")?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      confirmDeleteSelected();
+    }
+  });
 
   addBubble(
     "system",

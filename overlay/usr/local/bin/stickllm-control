@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -306,6 +307,169 @@ def has_nvidia() -> bool:
     if detect_vram_gb() > 0.5:
         return True
     return Path("/dev/nvidia0").exists() or Path("/dev/nvidiactl").exists()
+
+
+def _gguf_read_string(f) -> str:
+    (n,) = struct.unpack("<Q", f.read(8))
+    if n > 1_000_000:
+        raise ValueError("gguf string too large")
+    return f.read(n).decode("utf-8", errors="replace")
+
+
+def read_gguf_meta(path: str | Path, max_keys: int = 256) -> dict:
+    """Read scalar/string KV metadata from a GGUF header (skips tensors/arrays)."""
+    p = Path(path)
+    if not p.is_file():
+        return {}
+    out: dict = {}
+    try:
+        with p.open("rb") as f:
+            magic = f.read(4)
+            if magic != b"GGUF":
+                return {}
+            (version,) = struct.unpack("<I", f.read(4))
+            if version not in (2, 3):
+                return {}
+            _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
+            kv_count = min(int(kv_count), max_keys)
+            for _ in range(kv_count):
+                key = _gguf_read_string(f)
+                (vtype,) = struct.unpack("<I", f.read(4))
+                if vtype == 0:  # UINT8
+                    (val,) = struct.unpack("<B", f.read(1))
+                elif vtype == 1:  # INT8
+                    (val,) = struct.unpack("<b", f.read(1))
+                elif vtype == 2:  # UINT16
+                    (val,) = struct.unpack("<H", f.read(2))
+                elif vtype == 3:  # INT16
+                    (val,) = struct.unpack("<h", f.read(2))
+                elif vtype == 4:  # UINT32
+                    (val,) = struct.unpack("<I", f.read(4))
+                elif vtype == 5:  # INT32
+                    (val,) = struct.unpack("<i", f.read(4))
+                elif vtype == 6:  # FLOAT32
+                    (val,) = struct.unpack("<f", f.read(4))
+                elif vtype == 7:  # BOOL
+                    (val,) = struct.unpack("<?", f.read(1))
+                elif vtype == 8:  # STRING
+                    val = _gguf_read_string(f)
+                elif vtype == 9:  # ARRAY — skip
+                    (atype,) = struct.unpack("<I", f.read(4))
+                    (alen,) = struct.unpack("<Q", f.read(8))
+                    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+                    if atype == 8:
+                        for _a in range(int(alen)):
+                            _gguf_read_string(f)
+                    else:
+                        esz = sizes.get(atype)
+                        if esz is None:
+                            return out
+                        f.seek(int(alen) * esz, os.SEEK_CUR)
+                    continue
+                elif vtype == 10:  # UINT64
+                    (val,) = struct.unpack("<Q", f.read(8))
+                elif vtype == 11:  # INT64
+                    (val,) = struct.unpack("<q", f.read(8))
+                elif vtype == 12:  # FLOAT64
+                    (val,) = struct.unpack("<d", f.read(8))
+                else:
+                    return out
+                out[key] = val
+    except Exception:
+        return out
+    return out
+
+
+def gguf_arch_dims(meta: dict) -> dict:
+    """Pull architecture dims used for KV-cache sizing from GGUF metadata."""
+    arch = str(meta.get("general.architecture") or "").strip()
+    if not arch:
+        return {}
+    def num(*keys: str) -> int:
+        for k in keys:
+            v = meta.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+        return 0
+
+    n_layer = num(f"{arch}.block_count")
+    n_ctx = num(f"{arch}.context_length")
+    n_embd = num(f"{arch}.embedding_length")
+    n_head = num(f"{arch}.attention.head_count")
+    n_kv = num(f"{arch}.attention.head_count_kv", f"{arch}.attention.head_count")
+    head_dim = num(f"{arch}.attention.key_length")
+    if not head_dim and n_embd and n_head:
+        head_dim = max(1, n_embd // n_head)
+    return {
+        "architecture": arch,
+        "n_layer": n_layer,
+        "n_ctx_train": n_ctx,
+        "n_embd": n_embd,
+        "n_head": n_head,
+        "n_kv_head": n_kv,
+        "head_dim": head_dim,
+    }
+
+
+def estimate_context_budget(
+    *,
+    vram_gb: float,
+    ram_gb: float,
+    approx_size_gb: float,
+    backend: str,
+    model_max_ctx: int = 0,
+    dims: dict | None = None,
+) -> dict:
+    """Suggest a max context size from free memory after loading weights.
+
+    Formula (documented for UI/ops):
+      free_mem_after ≈ mem_gb - approx_size_gb * 1.05   # weights + small overhead
+      If GGUF dims known (n_layer, n_kv_head, head_dim):
+        kv_bytes/token ≈ 2 * n_layer * n_kv_head * head_dim * 2  # K+V, f16
+      Else ballpark from weight size (calibrated ~7B @ ~56 KiB/token):
+        kv_bytes/token ≈ 56000 * (approx_size_gb / 5.1)
+      max_ctx_mem = floor(free_mem_after_bytes / kv_bytes_per_token)
+      Clamp to [2048, model_max_ctx] (GGUF context_length when available).
+    """
+    dims = dims or {}
+    size = max(0.1, float(approx_size_gb or 0) or 2.0)
+    gpu = backend in ("cuda", "vulkan") and vram_gb > 0.5
+    mem_gb = float(vram_gb if gpu else ram_gb) or 0.0
+    free_after = max(0.0, mem_gb - size * 1.05)
+    # Leave a little headroom for runtime / fragmentation.
+    free_after *= 0.85
+
+    n_layer = int(dims.get("n_layer") or 0)
+    n_kv = int(dims.get("n_kv_head") or 0)
+    head_dim = int(dims.get("head_dim") or 0)
+    if n_layer > 0 and n_kv > 0 and head_dim > 0:
+        kv_bpt = 2 * n_layer * n_kv * head_dim * 2  # K+V f16
+    else:
+        kv_bpt = int(56000 * (size / 5.1))
+    kv_bpt = max(8192, kv_bpt)
+
+    max_from_mem = int((free_after * (1024**3)) // kv_bpt) if free_after > 0 else 2048
+    train_ctx = int(model_max_ctx or dims.get("n_ctx_train") or 0)
+    if train_ctx <= 0:
+        train_ctx = 32768 if size >= 4 else 32768
+    # Hard ceiling for live stick UX (llama-server comfort).
+    hard_cap = 32768 if gpu else 8192
+    hi = max(2048, min(train_ctx, hard_cap, max(2048, max_from_mem)))
+    # Snap down to a friendly step.
+    step = 1024 if hi <= 8192 else 2048
+    hi = max(2048, (hi // step) * step)
+    # Default suggestion: prefer 8k when it fits, else half of hi, else hi.
+    suggested = 8192 if hi >= 8192 else (4096 if hi >= 4096 else hi)
+    if suggested > hi:
+        suggested = hi
+    return {
+        "ctx_min": 2048,
+        "ctx_max": hi,
+        "ctx_suggested": suggested,
+        "ctx_model_max": train_ctx,
+        "free_mem_after_gb": round(free_after, 2),
+        "kv_bytes_per_token": kv_bpt,
+    }
 
 
 def detect_backend() -> str:
@@ -646,6 +810,21 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
             and not str(first).startswith("/opt/stickllm/models/")
             and m.get("source") != "host_ssd"
         )
+        backend = "cuda" if gpu else "cpu"
+        dims: dict = {}
+        model_max_ctx = 0
+        if first and Path(first).is_file():
+            meta = read_gguf_meta(first)
+            dims = gguf_arch_dims(meta)
+            model_max_ctx = int(dims.get("n_ctx_train") or 0)
+        budget = estimate_context_budget(
+            vram_gb=vram_gb,
+            ram_gb=ram_gb,
+            approx_size_gb=size_gb,
+            backend=backend,
+            model_max_ctx=model_max_ctx,
+            dims=dims,
+        )
         m.update(
             {
                 "installed": installed,
@@ -658,14 +837,20 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
                 "path": first,
                 "vram_gb": round(vram_gb, 1),
                 "ram_gb": round(ram_gb, 1),
-                "backend": "cuda" if gpu else "cpu",
+                "backend": backend,
                 "deletable": deletable,
+                "max_context": budget["ctx_model_max"],
+                "ctx_min": budget["ctx_min"],
+                "ctx_max": budget["ctx_max"],
+                "ctx_suggested": budget["ctx_suggested"],
+                "free_mem_after_gb": budget["free_mem_after_gb"],
+                "architecture": dims.get("architecture") or "",
             }
         )
     return models
 
 
-def activate_model(model_id: str) -> dict:
+def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
     models = enrich_models()
     m = next((x for x in models if x["id"] == model_id), None)
     if not m:
@@ -688,11 +873,22 @@ def activate_model(model_id: str) -> dict:
     path = m.get("path") or m.get("local_path") or ""
     if not path or not Path(path).is_file():
         return {"ok": False, "error": "model file missing"}
+    ctx_lo = int(m.get("ctx_min") or 2048)
+    ctx_hi = int(m.get("ctx_max") or 8192)
+    if ctx_size is None:
+        ctx = int(m.get("ctx_suggested") or min(8192, ctx_hi))
+    else:
+        try:
+            ctx = int(ctx_size)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "ctx_size must be an integer"}
+    ctx = max(ctx_lo, min(ctx_hi, ctx))
     RUN.mkdir(parents=True, exist_ok=True)
     (RUN / "model.env").write_text(
         f"STICKLLM_MODEL={path}\n"
         f"STICKLLM_MODEL_ID={model_id}\n"
-        f"STICKLLM_MODEL_NAME={m.get('name') or model_id}\n",
+        f"STICKLLM_MODEL_NAME={m.get('name') or model_id}\n"
+        f"STICKLLM_CTX_SIZE={ctx}\n",
         encoding="utf-8",
     )
     try:
@@ -719,6 +915,7 @@ def activate_model(model_id: str) -> dict:
     r["active_model"] = path
     r["id"] = model_id
     r["name"] = m.get("name") or model_id
+    r["ctx_size"] = ctx
     r["running"] = healthy
     r["health"] = health_msg
     r["load_state"] = "running" if healthy else "loading"
@@ -902,7 +1099,14 @@ def handle(action: str, params: dict) -> dict:
         mid = str(params.get("id") or "").strip()
         if not mid:
             return {"ok": False, "error": "id required"}
-        return activate_model(mid)
+        raw_ctx = params.get("ctx_size", params.get("ctx", params.get("n_ctx")))
+        ctx_arg = None
+        if raw_ctx is not None and str(raw_ctx).strip() != "":
+            try:
+                ctx_arg = int(raw_ctx)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "ctx_size must be an integer"}
+        return activate_model(mid, ctx_arg)
     if action == "model_delete":
         mid = str(params.get("id") or "").strip()
         if not mid:
