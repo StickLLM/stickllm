@@ -89,20 +89,28 @@ fi
 # so CUDA libggml* is never overwritten. CUDA remains default on NVIDIA hosts.
 echo "[stickllm] building Vulkan llama-server…"
 # CUDA devel image is Ubuntu jammy (main only by default). Enable universe for
-# glslang/vulkan packages; shaderc is optional (glslang-tools is enough).
+# glslang/vulkan/SPIRV. ggml-vulkan needs glslc at build time — jammy has no
+# glslc package; pull LunarG shaderc (~6MB) for /usr/bin/glslc.
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  software-properties-common >/dev/null
+  software-properties-common curl gnupg ca-certificates >/dev/null
 add-apt-repository -y universe >/dev/null 2>&1 || true
+install -d -m 0755 /usr/share/keyrings
+curl -fsSL https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+  | gpg --dearmor -o /usr/share/keyrings/lunarg.gpg
+echo "deb [signed-by=/usr/share/keyrings/lunarg.gpg] https://packages.lunarg.com/vulkan jammy main" \
+  >/etc/apt/sources.list.d/lunarg-vulkan.list
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  libvulkan-dev glslang-tools glslang-dev spirv-tools \
-  vulkan-tools pkg-config
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  libshaderc-dev >/dev/null 2>&1 || true
+  libvulkan-dev glslang-tools glslang-dev spirv-tools spirv-headers \
+  vulkan-tools pkg-config shaderc
+command -v glslc >/dev/null || {
+  echo "docker-build-llama: glslc missing after LunarG shaderc install" >&2
+  exit 1
+}
+glslc --version | head -1
 # Prefer apt SPIRV-HeadersConfig.cmake; else install Khronos headers to /usr/local.
 SPIRV_HEADERS_DIR=""
-if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends spirv-headers \
-  && [[ -f /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake ]]; then
+if [[ -f /usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake ]]; then
   SPIRV_HEADERS_DIR=/usr/share/cmake/SPIRV-Headers
 else
   echo "[stickllm] installing Khronos SPIRV-Headers (CMake config)"
@@ -113,6 +121,7 @@ else
   SPIRV_HEADERS_DIR=/usr/local/share/cmake/SPIRV-Headers
 fi
 test -f "$SPIRV_HEADERS_DIR/SPIRV-HeadersConfig.cmake"
+GLSLC_BIN="$(command -v glslc)"
 OUT_LIB_VK="/work/overlay/opt/stickllm/lib-vulkan"
 mkdir -p "$OUT_LIB_VK"
 rm -rf /tmp/llama.cpp-vulkan
@@ -126,7 +135,8 @@ cmake -S /tmp/llama.cpp-vulkan -B /tmp/llama.cpp-vulkan/build \
   -DGGML_CUDA=OFF \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH=/usr/local \
-  -DSPIRV-Headers_DIR="$SPIRV_HEADERS_DIR"
+  -DSPIRV-Headers_DIR="$SPIRV_HEADERS_DIR" \
+  -DVulkan_GLSLC_EXECUTABLE="$GLSLC_BIN"
 cmake --build /tmp/llama.cpp-vulkan/build --target llama-server -j"$(nproc)"
 VK_BIN=""
 for c in /tmp/llama.cpp-vulkan/build/bin/llama-server /tmp/llama.cpp-vulkan/build/llama-server; do
