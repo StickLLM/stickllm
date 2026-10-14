@@ -77,9 +77,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 add-apt-repository -y universe >/dev/null 2>&1 || true
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  libvulkan-dev glslang-tools vulkan-tools pkg-config \
-  || DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    libvulkan-dev glslang-dev glslang-tools pkg-config
+  libvulkan-dev glslang-tools glslang-dev spirv-headers spirv-tools \
+  vulkan-tools pkg-config
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libshaderc-dev >/dev/null 2>&1 || true
 OUT_LIB_VK="/work/overlay/opt/stickllm/lib-vulkan"
