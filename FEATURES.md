@@ -3,7 +3,7 @@
 Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = later.
 
 ## Boot and hardware
-- [x] Boot menu: Server / Local, Secure Client, Terminal
+- [x] Boot menu: Server / Local, Secure Client, Terminal, Test (chat UI + SSH)
 - [x] NVIDIA GPU support (CUDA)
 - [x] Keyboard input in kiosk (cage + Chromium)
 - [x] Boot vs Local KMS split: boot nvidia-drm modeset=0 (HDMI/console survives); runtime NVIDIA KMS for Local cage/browser

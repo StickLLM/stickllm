@@ -1,5 +1,5 @@
 #!/bin/bash
-# Random per-boot SSH password for user stickllm (shown on Term console).
+# Random per-boot SSH password for user stickllm (shown on Terminal / Test console).
 set -euo pipefail
 RUN="${STICKLLM_RUN:-/run/stickllm}"
 mkdir -p "$RUN"

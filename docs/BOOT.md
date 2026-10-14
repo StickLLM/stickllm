@@ -20,19 +20,20 @@ still chainload StickLLM from Ubuntu GRUB, but USB-first is the reliable default
 |---|---|---|
 | **1** | **Server / Local** | On-stick browser when a display is present + LAN UI (`stickllm.chat`). Loopback needs no pair; phone/LAN uses pair code. |
 | **2** | **Secure Client** | Menu stub for now (`stickllm.client`) — dedicated client stick in a later release. |
-| **3** | **Terminal** | Console login or `ssh user@<ip>` — `nvidia-smi`, `stickllm-status` (`stickllm.ssh`). |
+| **3** | **Terminal** | Console login or `ssh stickllm@<ip>` — `nvidia-smi`, `stickllm-status` (`stickllm.ssh`). |
+| **4** | **Test** | Same as Server / Local plus SSH (`stickllm.chat stickllm.ssh`). Random SSH password on READY before the browser takes the screen. |
 
 Menu timeout ~**20s**; default is **1 Server / Local**.
 
-### Terminal / SSH credentials (menu 3)
+### Terminal / Test SSH credentials (menu 3 / 4)
 
 | | |
 |---|---|
-| User | `user` |
-| Password | Random per boot (shown on console) |
+| User | `stickllm` |
+| Password | Random per boot (shown on console READY; Test also prints before kiosk handoff) |
 | Useful | `stickllm-status` · `nvidia-smi` · `curl -s localhost:8080/health` |
 
-SSH is **off** unless you pick menu **3**.
+SSH is **off** unless you pick menu **3** or **4**.
 
 ## NVIDIA / display (do / don’t)
 
@@ -45,9 +46,9 @@ SSH is **off** unless you pick menu **3**.
 ## Boot sequence (expected)
 
 1. Firmware boots the USB (or Ubuntu GRUB → StickLLM entry).
-2. StickLLM menu → pick **1** (Server / Local), **2** (Secure Client stub), or **3** (Terminal).
+2. StickLLM menu → pick **1** (Server / Local), **2** (Secure Client stub), **3** (Terminal), or **4** (Test).
 3. Console: loading (cold boot on a 3090 can take several minutes).
-4. **Server / Local / Terminal:** READY with `http://<lan-ip>/` and pair code when the UI path is up.
+4. **Server / Local / Terminal / Test:** READY with `http://<lan-ip>/` and pair code when the UI path is up. Test also shows the SSH password.
 5. **Local path (checkpoint):** cage + Chromium on the NVIDIA HDMI output; keyboard works.
 
 ## First checks

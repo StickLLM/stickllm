@@ -1,6 +1,7 @@
 [Unit]
-Description=StickLLM OpenSSH (terminal + SSH boot menu)
+Description=StickLLM OpenSSH (Terminal menu 3, or Test menu 4 with chat)
 Documentation=file:///etc/motd
+# Terminal: stickllm.ssh alone. Test: stickllm.chat stickllm.ssh (same flag).
 ConditionKernelCommandLine=stickllm.ssh
 After=network.target stickllm-console-setup.service
 Wants=network.target stickllm-console-setup.service
