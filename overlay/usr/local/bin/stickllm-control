@@ -760,6 +760,10 @@ def handle(action: str, params: dict) -> dict:
         return vault_action("lock", params)
     if action == "vault_move_model":
         return vault_action("move-model", params)
+    if action == "vault_list_movable":
+        return vault_action("list-movable", params)
+    if action == "vault_set_wipe":
+        return vault_action("set-wipe-after", params)
     if action == "vault_grow":
         return vault_action("grow", params)
     return {"ok": False, "error": f"unknown action: {action}"}
@@ -866,20 +870,75 @@ def vault_action(cmd: str, params: dict) -> dict:
                 f"sudo stickllm-vault grow {add_gb}"
             ),
         }
+    if cmd == "list-movable":
+        r = sh([script, "list-movable"], timeout=30)
+        try:
+            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
+            data = json.loads(lines[-1] if lines else "{}")
+            data["ok"] = True
+            return data
+        except Exception:
+            return {"ok": False, "error": "list-movable parse failed", **r}
+    if cmd == "set-wipe-after":
+        n = str(params.get("n") or params.get("wipe_after") or "0").strip()
+        confirm = str(params.get("confirm") or "")
+        if n not in ("0",) and confirm != "WIPE-OK":
+            return {
+                "ok": False,
+                "error": "enabling wipe-after-N requires confirm=WIPE-OK (destroys blob LUKS header after N fails; default is off)",
+            }
+        env = os.environ.copy()
+        if confirm == "WIPE-OK":
+            env["STICKLLM_VAULT_CONFIRM"] = "WIPE-OK"
+        try:
+            p = subprocess.run(
+                [script, "set-wipe-after", n],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                env=env,
+            )
+            r = {
+                "ok": p.returncode == 0,
+                "code": p.returncode,
+                "stdout": (p.stdout or "")[-2000:],
+                "stderr": (p.stderr or "")[-2000:],
+            }
+        except Exception as e:
+            r = {"ok": False, "error": str(e)}
+        r.update(read_json(RUN / "vault.json"))
+        return r
     if cmd == "move-model":
         src = str(params.get("path") or "").strip()
+        confirm = str(params.get("confirm") or "")
         if not src:
             return {"ok": False, "error": "path required"}
         if _looks_like_block_device(src):
             return {"ok": False, "error": "refusing block device path"}
-        # move-model itself requires MOVE-MODEL typed confirm on TTY
-        return {
-            "ok": False,
-            "error": (
-                "move-model requires interactive MOVE-MODEL confirm: "
-                f"sudo stickllm-vault move-model {src}"
-            ),
-        }
+        if confirm != "MOVE-MODEL":
+            return {"ok": False, "error": "confirm must be MOVE-MODEL"}
+        if session_mode() != "vault":
+            return {"ok": False, "error": "switch Mode to Vault before moving models"}
+        env = os.environ.copy()
+        env["STICKLLM_VAULT_CONFIRM"] = "MOVE-MODEL"
+        try:
+            p = subprocess.run(
+                [script, "move-model", src],
+                capture_output=True,
+                text=True,
+                timeout=7200,
+                check=False,
+                env=env,
+            )
+            return {
+                "ok": p.returncode == 0,
+                "code": p.returncode,
+                "stdout": (p.stdout or "")[-4000:],
+                "stderr": (p.stderr or "")[-2000:],
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
     return {"ok": False, "error": f"unknown vault cmd: {cmd}"}
 
 

@@ -11,6 +11,7 @@
     <div class="brand">StickLLM</div>
     <div class="meta">
       <button type="button" id="modelsBtn" class="linkBtn" title="Models">Models</button>
+      <button type="button" id="chatsBtn" class="linkBtn" title="Saved chats (Vault mode)" hidden>Chats</button>
       <button type="button" id="settingsBtn" class="linkBtn" title="Settings">Settings</button>
       <button type="button" id="lockVaultBtn" class="linkBtn" title="Lock vault (Ctrl+Shift+L)">Lock</button>
       <button type="button" id="pairBtn" class="linkBtn" title="Mint a new pair code (shown on stick chat)">Pair</button>
@@ -150,6 +151,18 @@
           <input id="vaultPass" type="password" autocomplete="off" placeholder="Vault passcode" />
         </label>
         <button type="button" id="actVaultUnlock" class="actionBtn">Unlock vault</button>
+        <label class="fieldLabel">Grow blob by (GiB)
+          <input id="vaultGrowGb" type="number" min="1" max="500" value="8" />
+        </label>
+        <button type="button" id="actVaultGrowHint" class="actionBtn">Show grow command</button>
+        <label class="fieldLabel">Wrong-PIN wipe after N tries (0 = off, default)
+          <input id="vaultWipeN" type="number" min="0" max="10" value="0" />
+        </label>
+        <button type="button" id="actVaultWipe" class="actionBtn">Apply wipe setting</button>
+        <p class="modelsHint">Wipe destroys only this vault blob’s LUKS header — never host partitions. Off unless you confirm WIPE-OK.</p>
+        <h4 class="modelsHint" style="margin-top:0.75rem">Move USB models → vault</h4>
+        <pre id="movableList" class="modelsBody" style="max-height:8rem;overflow:auto">Unlock vault + Vault mode, then Refresh movable.</pre>
+        <button type="button" id="actVaultMovable" class="actionBtn">Refresh movable</button>
       </div>
 
       <div class="apiPanel">
@@ -176,6 +189,19 @@
     </div>
   </dialog>
 
+  <dialog id="chatsDialog" class="modelsDialog modelsWide">
+    <div class="modelsPanel">
+      <h2>Saved chats</h2>
+      <p class="modelsHint">Stored only inside the unlocked vault when Mode is Vault. Ephemeral never writes chats to disk.</p>
+      <div id="chatsList" class="catalogList"></div>
+      <div class="modelsActions">
+        <button type="button" id="actChatNew" class="actionBtn">New chat</button>
+        <button type="button" id="actChatSave" class="actionBtn">Save current</button>
+        <button type="button" id="chatsClose" class="actionBtn">Close</button>
+      </div>
+    </div>
+  </dialog>
+
   <main id="log" class="log" aria-live="polite"></main>
 
   <form id="composer" class="composer">
@@ -187,6 +213,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=20"></script>
+  <script src="app.js?v=21"></script>
 </body>
 </html>

@@ -57,7 +57,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [x] P1 Failed-attempt counter; wipe-after-N destroys **blob** LUKS header only (default **off**)
 - [ ] P1 Panic / duress PIN: opens decoy empty vault, silently destroys real key (server-side)
 - [ ] P2 Kiosk/client-stick hold-combo (e.g. hold Ctrl+Alt+W 2s) = quick lock, no wipe
-- [ ] P1 Browser clients: lock button + Ctrl+Shift+L; auto-lock on disconnect/timeout
+- [x] P1 Browser clients: lock button + Ctrl+Shift+L (auto-lock on disconnect later)
 - [ ] P1 Lock vault on stick removal / shutdown
 - [ ] P1 Locked-down kiosk browser (RAM profile, strict CSP, localhost only)
 - [ ] P2 Secure Boot with own signing key; kernel verifies squashfs hash
@@ -67,7 +67,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 
 ## Chats and documents
 - [x] Chat UI
-- [ ] P1 Multiple saved chats (titles, search, delete) inside vault
+- [x] P1 Multiple saved chats (titles, search, delete) inside vault — Vault mode only
 - [ ] P2 Documents chat / RAG (files + index in vault)
 - [ ] P2 Image input (upload, paste, phone camera)
 

@@ -652,13 +652,70 @@ cmd_lock() {
   echo "Vault locked."
 }
 
+cmd_set_wipe_after() {
+  need_root
+  local n="${1:-0}"
+  [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 0 && n <= 10 )) || die "usage: set-wipe-after <0-10>  (0=off)"
+  [[ -f "$META_DIR/container" || -f "$META_DIR/root" ]] || die "no vault configured"
+  if (( n > 0 )); then
+    echo "WARNING: after $n failed unlocks, StickLLM will destroy the LUKS header on THE BLOB FILE only."
+    echo "Default is OFF. This can destroy your own encrypted data."
+    if [[ "${STICKLLM_VAULT_CONFIRM:-}" == "WIPE-OK" ]]; then
+      :
+    else
+      confirm_phrase "WIPE-OK" "Type WIPE-OK to enable wipe-after-$n: "
+    fi
+  fi
+  mkdir -p "$META_DIR"
+  printf '%s\n' "$n" >"$META_DIR/wipe_after"
+  chmod 600 "$META_DIR/wipe_after"
+  local st="locked"
+  is_mounted && st="unlocked"
+  json_state "$st" "wipe_after_failed_unlocks=$n"
+  echo "wipe_after_failed_unlocks=$n"
+}
+
+cmd_list_movable() {
+  # USB DATA / baked copies that can be moved into an unlocked vault (JSON).
+  python3 - "$MNT_POINT" "${STICKLLM_DATA_MNT:-/mnt/stickllm-data}" <<'PY'
+import json, os, sys
+from pathlib import Path
+vault_models = Path(sys.argv[1]) / "models"
+data = Path(sys.argv[2]) / "models"
+items = []
+seen = set()
+for root in (data,):
+    if not root.is_dir():
+        continue
+    for p in sorted(root.glob("*.gguf")):
+        if not p.is_file() or p.stat().st_size < 1_000_000:
+            continue
+        key = p.name
+        if key in seen:
+            continue
+        seen.add(key)
+        dest = vault_models / key
+        items.append({
+            "name": key,
+            "path": str(p),
+            "size": p.stat().st_size,
+            "in_vault": dest.is_file(),
+        })
+print(json.dumps({"ok": True, "models": items}))
+PY
+}
+
 cmd_move_model() {
   need_root
   is_mounted || die "vault locked — unlock first"
   local src="${1:-}"
   [[ -f "$src" ]] || die "usage: move-model /path/to/model.gguf"
   echo "Move model into vault with SHA-256 verify (explicit action)."
-  confirm_phrase "MOVE-MODEL" "Type MOVE-MODEL to copy then remove source after verify: "
+  if [[ "${STICKLLM_VAULT_CONFIRM:-}" == "MOVE-MODEL" ]]; then
+    echo "(confirm via STICKLLM_VAULT_CONFIRM=MOVE-MODEL)"
+  else
+    confirm_phrase "MOVE-MODEL" "Type MOVE-MODEL to copy then remove source after verify: "
+  fi
   local base dest tmp sum1 sum2
   base="$(basename "$src")"
   dest="$MNT_POINT/models/$base"
@@ -725,6 +782,8 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault unlock
   stickllm-vault lock
   stickllm-vault move-model <gguf>   # explicit MOVE-MODEL confirm
+  stickllm-vault list-movable        # USB models eligible to move
+  stickllm-vault set-wipe-after <N>  # 0=off (default); WIPE-OK if N>0
   stickllm-vault verify-model <gguf>
 
 Mount: $MNT_POINT  (models/ chats/ settings/)
@@ -747,6 +806,8 @@ main() {
     unlock) cmd_unlock "$@" ;;
     lock) cmd_lock "$@" ;;
     move-model) cmd_move_model "$@" ;;
+    list-movable) cmd_list_movable "$@" ;;
+    set-wipe-after) cmd_set_wipe_after "$@" ;;
     verify-model) cmd_verify_model "$@" ;;
     -h|--help|help) usage ;;
     *) usage; exit 2 ;;

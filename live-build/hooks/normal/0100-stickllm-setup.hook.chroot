@@ -18,7 +18,9 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-wifi-apply \
           /usr/local/bin/stickllm-wifi-setup \
           /usr/local/bin/stickllm-nvidia-prep \
-          /usr/local/bin/stickllm-pick-gpus || true
+          /usr/local/bin/stickllm-pick-gpus \
+          /usr/local/bin/stickllm-vault \
+          /usr/local/bin/stickllm-vault-boot || true
 
 # Force LF — CRLF in sudoers breaks ALL rules on the stick
 if [[ -f /etc/sudoers.d/stickllm ]]; then

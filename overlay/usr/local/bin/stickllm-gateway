@@ -248,6 +248,118 @@ def set_session_mode(mode: str) -> dict:
     return {"ok": True, **doc}
 
 
+VAULT_MNT = Path(os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault"))
+CHATS_DIR = VAULT_MNT / "chats"
+
+
+def vault_unlocked() -> bool:
+    try:
+        return os.path.ismount(str(VAULT_MNT))
+    except Exception:
+        return False
+
+
+def chats_available() -> tuple[bool, str]:
+    if get_session_mode() != "vault":
+        return False, "switch Mode to Vault to save chats (ephemeral never writes chats to disk)"
+    if not vault_unlocked():
+        return False, "vault locked — unlock in Settings → Storage first"
+    return True, ""
+
+
+def list_vault_chats() -> dict:
+    ok, err = chats_available()
+    if not ok:
+        return {"ok": False, "error": err, "chats": []}
+    out = []
+    for p in sorted(CHATS_DIR.glob("*.json")):
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        out.append(
+            {
+                "id": doc.get("id") or p.stem,
+                "title": doc.get("title") or p.stem,
+                "updated": doc.get("updated") or int(p.stat().st_mtime),
+                "messages": len(doc.get("messages") or []),
+            }
+        )
+    out.sort(key=lambda x: int(x.get("updated") or 0), reverse=True)
+    return {"ok": True, "chats": out}
+
+
+def load_vault_chat(chat_id: str) -> dict:
+    ok, err = chats_available()
+    if not ok:
+        return {"ok": False, "error": err}
+    cid = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
+    if not cid:
+        return {"ok": False, "error": "id required"}
+    path = CHATS_DIR / f"{cid}.json"
+    if not path.is_file():
+        return {"ok": False, "error": "not found"}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["ok"] = True
+        return doc
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def save_vault_chat(title: str, messages: list, chat_id: str | None = None) -> dict:
+    ok, err = chats_available()
+    if not ok:
+        return {"ok": False, "error": err}
+    # Never write chats outside the vault mount.
+    if not str(CHATS_DIR).startswith(str(VAULT_MNT)):
+        return {"ok": False, "error": "refuse: chats path outside vault"}
+    CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(CHATS_DIR, 0o700)
+    except Exception:
+        pass
+    cid = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
+    if not cid:
+        cid = secrets.token_hex(8)
+    # Strip system prompt noise optional — store user/assistant only + keep system if present
+    clean = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "")
+        content = str(m.get("content") or "")
+        if role in ("user", "assistant", "system") and content:
+            clean.append({"role": role, "content": content[:100_000]})
+    title = (title or "Chat").strip()[:120] or "Chat"
+    doc = {
+        "id": cid,
+        "title": title,
+        "updated": int(time.time()),
+        "messages": clean,
+    }
+    path = CHATS_DIR / f"{cid}.json"
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+    return {"ok": True, "id": cid, "title": title, "updated": doc["updated"]}
+
+
+def delete_vault_chat(chat_id: str) -> dict:
+    ok, err = chats_available()
+    if not ok:
+        return {"ok": False, "error": err}
+    cid = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
+    if not cid:
+        return {"ok": False, "error": "id required"}
+    path = CHATS_DIR / f"{cid}.json"
+    if path.is_file():
+        path.unlink()
+    return {"ok": True, "deleted": cid}
+
+
 def pair_rate_load() -> dict:
     try:
         return json.loads(PAIR_RATE_PATH.read_text(encoding="utf-8"))
@@ -661,8 +773,24 @@ class Handler(SimpleHTTPRequestHandler):
                     "mode": get_session_mode(),
                     "modes": sorted(SESSION_MODES),
                     "default": "ephemeral",
+                    "vault_unlocked": vault_unlocked(),
                 },
             )
+            return
+        if path == "/api/chats":
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required"})
+                return
+            self._json(200, list_vault_chats())
+            return
+        if path.startswith("/api/chats/"):
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required"})
+                return
+            cid = path.rsplit("/", 1)[-1]
+            self._json(200, load_vault_chat(cid))
             return
         if path in ("/api/storage", "/api/models/status"):
             doc, ok = self._auth()
@@ -708,6 +836,26 @@ class Handler(SimpleHTTPRequestHandler):
             result = set_session_mode(str(req.get("mode") or ""))
             code = 200 if result.get("ok") else 400
             self._json(code, result)
+            return
+
+        if path == "/api/chats":
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"error": "ui_only"})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required"})
+                return
+            if req.get("delete"):
+                result = delete_vault_chat(str(req.get("id") or ""))
+                self._json(200 if result.get("ok") else 400, result)
+                return
+            result = save_vault_chat(
+                str(req.get("title") or ""),
+                list(req.get("messages") or []),
+                str(req.get("id") or "") or None,
+            )
+            self._json(200 if result.get("ok") else 400, result)
             return
 
         if path == "/api/pair/remint":

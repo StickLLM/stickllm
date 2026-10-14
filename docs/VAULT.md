@@ -11,6 +11,8 @@
 
 Switching to Vault opens Settings unlock/setup if the vault is locked or absent. Switching back to Ephemeral stops new vault writes (does not auto-lock; use **Lock** / Ctrl+Shift+L to close LUKS).
 
+**Boot:** if a vault blob is already configured, Local/Chat kiosk runs `stickllm-vault-boot` (unlock or skip). Unlock → session Mode becomes Vault; skip → Ephemeral. Chats APIs refuse to write unless Mode is Vault **and** the vault is mounted.
+
 ## Safety (fail-closed)
 
 Encoded from product docs and shipping rules:

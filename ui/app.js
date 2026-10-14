@@ -8,10 +8,13 @@
   const apiHint = document.getElementById("apiHint");
   const webToggle = document.getElementById("webToggle");
   const modelsBtn = document.getElementById("modelsBtn");
+  const chatsBtn = document.getElementById("chatsBtn");
   const settingsBtn = document.getElementById("settingsBtn");
   const pairBtn = document.getElementById("pairBtn");
   const modelsDialog = document.getElementById("modelsDialog");
+  const chatsDialog = document.getElementById("chatsDialog");
   const settingsDialog = document.getElementById("settingsDialog");
+  const chatsList = document.getElementById("chatsList");
   const modelsBody = document.getElementById("modelsBody");
   const settingsBody = document.getElementById("settingsBody");
   const catalogList = document.getElementById("catalogList");
@@ -42,6 +45,7 @@
   let lastRemintId = null;
   let sessionMode = "ephemeral";
   let sessionModeBusy = false;
+  let activeChatId = null;
 
   function authHeaders(extra = {}) {
     const h = {
@@ -431,9 +435,14 @@
       const bits = [`Vault: ${v.status || "absent"}`];
       if (v.root) bits.push(`root ${v.root}`);
       if (v.mounted) bits.push("mounted at /var/lib/stickllm/vault");
-      if (v.wipe_after_failed_unlocks) bits.push(`wipe-after-${v.wipe_after_failed_unlocks}`);
+      const wipe = Number(v.wipe_after_failed_unlocks || 0);
+      bits.push(wipe > 0 ? `wipe-after-${wipe}` : "wipe-after-N off");
       bits.push("file-blob only — never formats your drive");
       vaultStatus.textContent = bits.join(" · ");
+      const wipeInput = document.getElementById("vaultWipeN");
+      if (wipeInput && document.activeElement !== wipeInput) {
+        wipeInput.value = String(wipe);
+      }
     }
     if (netStatus) {
       const ssid = j.wifi?.ssid || "";
@@ -457,6 +466,20 @@
     if (sessionModeEl && sessionModeEl.value !== m && !sessionModeBusy) {
       sessionModeEl.value = m;
     }
+    if (chatsBtn) chatsBtn.hidden = m !== "vault";
+  }
+
+  function resetChatMessages(keepSystem = true) {
+    const sys = keepSystem
+      ? messages.find((x) => x.role === "system") || {
+          role: "system",
+          content:
+            "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
+        }
+      : null;
+    messages.length = 0;
+    if (sys) messages.push(sys);
+    if (log) log.innerHTML = "";
   }
 
   async function setSessionMode(mode) {
@@ -723,6 +746,10 @@
       }
       messages.push({ role: "assistant", content: reply });
       assistantEl.lastChild.textContent = reply;
+      if (sessionMode === "vault") {
+        // Persist only in Vault mode; never write chats in Ephemeral.
+        saveCurrentChat({ quiet: true }).catch(() => {});
+      }
     } catch (err) {
       assistantEl.classList.add("system");
       assistantEl.lastChild.textContent = `Error: ${err.message}`;
@@ -774,12 +801,221 @@
     }
   });
 
+  async function openChats() {
+    if (!(await ensurePaired())) return;
+    if (sessionMode !== "vault") {
+      addBubble("system", "Switch Mode to Vault to use saved chats.");
+      return;
+    }
+    chatsDialog?.showModal();
+    if (chatsList) chatsList.textContent = "Loading…";
+    try {
+      const r = await fetch("/api/chats", { headers: authHeaders() });
+      const j = await r.json();
+      if (!r.ok || j.ok === false) {
+        if (chatsList) chatsList.textContent = j.error || "Could not list chats";
+        return;
+      }
+      renderChatsList(j.chats || []);
+    } catch (e) {
+      if (chatsList) chatsList.textContent = e.message;
+    }
+  }
+
+  function renderChatsList(chats) {
+    if (!chatsList) return;
+    chatsList.innerHTML = "";
+    if (!chats.length) {
+      chatsList.textContent = "No saved chats yet.";
+      return;
+    }
+    for (const c of chats) {
+      const row = document.createElement("div");
+      row.className = "catalogRow";
+      const meta = document.createElement("div");
+      meta.textContent = `${c.title || c.id} · ${c.messages || 0} msgs`;
+      const actions = document.createElement("div");
+      actions.className = "catalogActions";
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "actionBtn";
+      openBtn.textContent = "Open";
+      openBtn.addEventListener("click", async () => {
+        try {
+          const r = await fetch(`/api/chats/${encodeURIComponent(c.id)}`, {
+            headers: authHeaders(),
+          });
+          const j = await r.json();
+          if (!r.ok || j.ok === false) throw new Error(j.error || "load failed");
+          resetChatMessages(false);
+          activeChatId = j.id || c.id;
+          for (const m of j.messages || []) {
+            if (m.role === "system") {
+              messages.push(m);
+              continue;
+            }
+            messages.push(m);
+            addBubble(m.role, m.content);
+          }
+          if (!messages.some((x) => x.role === "system")) {
+            messages.unshift({
+              role: "system",
+              content:
+                "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
+            });
+          }
+          chatsDialog?.close();
+        } catch (e) {
+          addBubble("system", `Open chat failed: ${e.message}`);
+        }
+      });
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "actionBtn";
+      delBtn.textContent = "Delete";
+      delBtn.addEventListener("click", async () => {
+        if (!confirm(`Delete chat “${c.title || c.id}”?`)) return;
+        try {
+          const r = await fetch("/api/chats", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ delete: true, id: c.id }),
+          });
+          const j = await r.json();
+          if (!r.ok || j.ok === false) throw new Error(j.error || "delete failed");
+          if (activeChatId === c.id) activeChatId = null;
+          await openChats();
+        } catch (e) {
+          addBubble("system", `Delete failed: ${e.message}`);
+        }
+      });
+      actions.appendChild(openBtn);
+      actions.appendChild(delBtn);
+      row.appendChild(meta);
+      row.appendChild(actions);
+      chatsList.appendChild(row);
+    }
+  }
+
+  async function saveCurrentChat(opts = {}) {
+    const quiet = !!opts.quiet;
+    if (sessionMode !== "vault") {
+      if (!quiet) addBubble("system", "Switch Mode to Vault to save chats.");
+      return;
+    }
+    const title =
+      (messages.find((m) => m.role === "user")?.content || "Chat").slice(0, 60) || "Chat";
+    try {
+      const r = await fetch("/api/chats", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          id: activeChatId || undefined,
+          title,
+          messages,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.ok === false) throw new Error(j.error || "save failed");
+      activeChatId = j.id;
+      if (!quiet) addBubble("system", `Saved chat “${j.title || title}” in vault.`);
+    } catch (e) {
+      if (!quiet) addBubble("system", `Save failed: ${e.message}`);
+      throw e;
+    }
+  }
+
   modelsBtn?.addEventListener("click", () => openModels());
+  chatsBtn?.addEventListener("click", () => openChats());
   settingsBtn?.addEventListener("click", () => openSettings());
   sessionModeEl?.addEventListener("change", () => {
     setSessionMode(sessionModeEl.value);
   });
   document.getElementById("lockVaultBtn")?.addEventListener("click", () => lockVault());
+  document.getElementById("actChatNew")?.addEventListener("click", () => {
+    activeChatId = null;
+    resetChatMessages(true);
+    addBubble("system", "New chat (not saved until you Save).");
+    chatsDialog?.close();
+  });
+  document.getElementById("actChatSave")?.addEventListener("click", () => saveCurrentChat());
+  document.getElementById("chatsClose")?.addEventListener("click", () => chatsDialog?.close());
+  document.getElementById("actVaultGrowHint")?.addEventListener("click", () => {
+    const gb = document.getElementById("vaultGrowGb")?.value || "8";
+    const hint = document.getElementById("vaultSetupHint");
+    if (hint) {
+      hint.textContent = `SSH: sudo stickllm-vault grow ${gb}  (typed GROW-VAULT; free-space checked)`;
+    }
+  });
+  document.getElementById("actVaultWipe")?.addEventListener("click", async () => {
+    const n = String(document.getElementById("vaultWipeN")?.value || "0");
+    let confirm = "";
+    if (n !== "0") {
+      confirm = window.prompt(
+        `Type WIPE-OK to enable wipe after ${n} failed unlocks (destroys blob LUKS header only):`,
+        ""
+      );
+      if (confirm !== "WIPE-OK") {
+        addBubble("system", "Wipe setting aborted.");
+        return;
+      }
+    }
+    try {
+      const res = await control("vault_set_wipe", { n, confirm: confirm || "OFF" });
+      if (!res.ok) throw new Error(res.error || res.stderr || "failed");
+      addBubble("system", `Wipe-after-N set to ${n} (0 = off).`);
+      if (settingsDialog?.open) await openSettings();
+    } catch (e) {
+      addBubble("system", `Wipe setting failed: ${e.message}`);
+    }
+  });
+  document.getElementById("actVaultMovable")?.addEventListener("click", async () => {
+    const el = document.getElementById("movableList");
+    if (el) el.textContent = "Listing…";
+    try {
+      const res = await control("vault_list_movable");
+      const models = res.models || [];
+      if (!el) return;
+      el.innerHTML = "";
+      if (!models.length) {
+        el.textContent = "No USB models to move (or DATA not mounted).";
+        return;
+      }
+      for (const m of models) {
+        const line = document.createElement("div");
+        line.textContent = `${m.name}  ${Math.round((m.size || 0) / 1e9 * 10) / 10} GB${
+          m.in_vault ? " (already in vault)" : ""
+        }`;
+        if (!m.in_vault) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "actionBtn";
+          btn.textContent = "Move → vault";
+          btn.addEventListener("click", async () => {
+            if (!confirm(`Move ${m.name} into vault? Source removed after SHA-256 verify.`)) return;
+            btn.disabled = true;
+            try {
+              const r = await control("vault_move_model", {
+                path: m.path,
+                confirm: "MOVE-MODEL",
+              });
+              if (!r.ok) throw new Error(r.error || r.stderr || "move failed");
+              addBubble("system", `Moved ${m.name} into vault (SHA-256 OK).`);
+              document.getElementById("actVaultMovable")?.click();
+            } catch (e) {
+              addBubble("system", `Move failed: ${e.message}`);
+              btn.disabled = false;
+            }
+          });
+          line.appendChild(document.createTextNode(" "));
+          line.appendChild(btn);
+        }
+        el.appendChild(line);
+      }
+    } catch (e) {
+      if (el) el.textContent = e.message;
+    }
+  });
   document.getElementById("actVaultDisks")?.addEventListener("click", async () => {
     const el = document.getElementById("diskList");
     if (el) el.textContent = "Read-only probe…";
