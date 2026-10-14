@@ -70,8 +70,18 @@ ls -lh "$OUT_BIN" "$OUT_LIB" | head -n 50
 # Vulkan binary for AMD/Intel (and NVIDIA fallback). Separate tree + lib-vulkan/
 # so CUDA libggml* is never overwritten. CUDA remains default on NVIDIA hosts.
 echo "[stickllm] building Vulkan llama-server…"
+# CUDA devel image is Ubuntu jammy (main only by default). Enable universe for
+# glslang/vulkan packages; shaderc is optional (glslang-tools is enough).
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  libvulkan-dev glslang-tools libshaderc-dev vulkan-tools pkg-config
+  software-properties-common >/dev/null
+add-apt-repository -y universe >/dev/null 2>&1 || true
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  libvulkan-dev glslang-tools vulkan-tools pkg-config \
+  || DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libvulkan-dev glslang-dev glslang-tools pkg-config
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  libshaderc-dev >/dev/null 2>&1 || true
 OUT_LIB_VK="/work/overlay/opt/stickllm/lib-vulkan"
 mkdir -p "$OUT_LIB_VK"
 rm -rf /tmp/llama.cpp-vulkan
