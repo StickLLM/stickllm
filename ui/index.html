@@ -18,7 +18,13 @@
         <input type="checkbox" id="webToggle" checked />
         Web
       </label>
-      <span id="modeBadge" class="badge">ephemeral</span>
+      <label class="modeSelectWrap" title="Storage mode — Ephemeral never writes to the SSD vault">
+        <span class="modeSelectLabel">Mode</span>
+        <select id="sessionMode" class="modeSelect" aria-label="Storage mode">
+          <option value="ephemeral" selected>Ephemeral</option>
+          <option value="vault">Vault</option>
+        </select>
+      </label>
       <span id="statusLine" class="status">connecting…</span>
     </div>
   </header>
@@ -132,6 +138,14 @@
           — creates <code>models/</code> if needed + expandable <code>stickllm-vault.img</code>.
           Existing model files are kept unless you later run <code>move-model</code>.
         </p>
+        <label class="fieldLabel">Vault folder path (must already be mounted &amp; writable)
+          <input id="vaultSetupPath" type="text" autocomplete="off" placeholder="/mnt/host/StickLLM" />
+        </label>
+        <label class="fieldLabel">Initial blob size (GiB)
+          <input id="vaultSetupSize" type="number" min="1" max="2000" value="8" />
+        </label>
+        <button type="button" id="actVaultSetupHint" class="actionBtn">Show setup command</button>
+        <p id="vaultSetupHint" class="modelsHint"></p>
         <label class="fieldLabel">Unlock passcode
           <input id="vaultPass" type="password" autocomplete="off" placeholder="Vault passcode" />
         </label>
@@ -173,6 +187,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=20"></script>
 </body>
 </html>

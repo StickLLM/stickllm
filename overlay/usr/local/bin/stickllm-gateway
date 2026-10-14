@@ -27,11 +27,14 @@ AUTH_PATH = RUN_DIR / "auth.json"
 PAIR_RATE_PATH = RUN_DIR / "pair-rate.json"
 REMINT_RATE_PATH = RUN_DIR / "remint-rate.json"
 PAIR_REMINT_PATH = RUN_DIR / "pair-remint.json"
+SESSION_MODE_PATH = RUN_DIR / "session-mode.json"
 PAIR_MAX_ATTEMPTS = 8
 PAIR_WINDOW_SECS = 300
 PAIR_CODE_TTL_SECS = 900
 REMINT_MAX = 10
 REMINT_WINDOW_SECS = 300
+# Storage session mode (header dropdown) — not boot/kiosk profile in stickllm.json.
+SESSION_MODES = frozenset({"ephemeral", "vault"})
 CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
@@ -207,6 +210,42 @@ def stickllm_ui_client(headers) -> bool:
         return True
     # Loopback Local chat may omit the header; still StickLLM-controlled.
     return False
+
+
+def read_json_safe(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def get_session_mode() -> str:
+    """Default boot: ephemeral — no SSD/vault writes until user selects Vault."""
+    doc = read_json_safe(SESSION_MODE_PATH) or {}
+    mode = str(doc.get("mode") or "ephemeral").strip().lower()
+    return mode if mode in SESSION_MODES else "ephemeral"
+
+
+def set_session_mode(mode: str) -> dict:
+    mode = str(mode or "").strip().lower()
+    if mode not in SESSION_MODES:
+        return {"ok": False, "error": "mode must be ephemeral or vault"}
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "mode": mode,
+        "updated": int(time.time()),
+        "note": (
+            "Vault mode: downloads/chats may use the encrypted SSD blob."
+            if mode == "vault"
+            else "Ephemeral: do not write to SSD/vault; RAM/USB-DATA only as before."
+        ),
+    }
+    SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(SESSION_MODE_PATH, 0o644)
+    except Exception:
+        pass
+    return {"ok": True, **doc}
 
 
 def pair_rate_load() -> dict:
@@ -564,6 +603,7 @@ class Handler(SimpleHTTPRequestHandler):
                 llama = {"status": "down", "error": friendly_llama_error(e)}
             online = uplink_ok()
             backend = detect_backend()
+            session_mode = get_session_mode()
             data = {
                 "gateway": "ok",
                 "web": online,
@@ -575,6 +615,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "backend": backend,
                 "pair": pair,
                 "external_api": False,
+                "session_mode": session_mode,
                 "connect": connect_info(self._is_loopback(), llama_ok=llama_ok),
             }
             if path == "/api/health":
@@ -599,6 +640,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "paired": True,
                         "local": True,
                         "hint": "On-stick browser — no pair for this screen. LAN clients still pair.",
+                        "session_mode": get_session_mode(),
                     },
                 )
                 return
@@ -607,6 +649,18 @@ class Handler(SimpleHTTPRequestHandler):
                 {
                     "require_pair": bool(auth.get("require_pair", True)),
                     "paired": bool(auth.get("paired")),
+                    "session_mode": get_session_mode(),
+                },
+            )
+            return
+        if path == "/api/session-mode":
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "mode": get_session_mode(),
+                    "modes": sorted(SESSION_MODES),
+                    "default": "ephemeral",
                 },
             )
             return
@@ -641,6 +695,19 @@ class Handler(SimpleHTTPRequestHandler):
             req = json.loads(raw.decode() or "{}")
         except Exception:
             self._json(400, {"error": "bad json"})
+            return
+
+        if path == "/api/session-mode":
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"error": "ui_only", "message": "Session mode is StickLLM UI only."})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok and not self._is_loopback():
+                self._json(401, {"error": "pair_required"})
+                return
+            result = set_session_mode(str(req.get("mode") or ""))
+            code = 200 if result.get("ok") else 400
+            self._json(code, result)
             return
 
         if path == "/api/pair/remint":
@@ -843,13 +910,6 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(e.code, {"error": friendly_llama_error(e)})
         except Exception as e:
             self._json(502, {"error": friendly_llama_error(e)})
-
-
-def read_json_safe(path: Path) -> dict | None:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
 
 
 def main() -> int:

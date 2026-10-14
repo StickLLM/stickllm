@@ -120,6 +120,39 @@ body {
   padding: 0.15rem 0.5rem;
 }
 
+.modeSelectWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.modeSelectLabel {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.modeSelect {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+.modeSelect:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.modeSelect option {
+  color: #111;
+  background: #fff;
+  text-transform: none;
+}
+
 .status { color: var(--muted); font-size: 0.9rem; }
 
 .log {

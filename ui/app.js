@@ -4,7 +4,7 @@
   const input = document.getElementById("input");
   const send = document.getElementById("send");
   const statusLine = document.getElementById("statusLine");
-  const modeBadge = document.getElementById("modeBadge");
+  const sessionModeEl = document.getElementById("sessionMode");
   const apiHint = document.getElementById("apiHint");
   const webToggle = document.getElementById("webToggle");
   const modelsBtn = document.getElementById("modelsBtn");
@@ -40,6 +40,8 @@
   let dlPollTimer = null;
   // null = not seeded yet (avoid re-announcing an old remint on kiosk refresh)
   let lastRemintId = null;
+  let sessionMode = "ephemeral";
+  let sessionModeBusy = false;
 
   function authHeaders(extra = {}) {
     const h = {
@@ -270,14 +272,17 @@
       }
       if (j.pair?.local) applyLocalChrome(true);
       renderConnect(j);
+      if (j.session_mode) applySessionModeUi(j.session_mode);
       try {
         const m = await fetch("/stickllm.json", { cache: "no-store" });
         if (m.ok) {
           const meta = await m.json();
-          if (meta.mode) modeBadge.textContent = meta.mode;
-          if (meta.version) modeBadge.title = `v${meta.version}`;
-          const mode = String(meta.mode || "").toLowerCase();
-          if (mode === "local" || mode === "chat") {
+          // stickllm.json "mode" is boot/kiosk profile (local/chat), not storage mode.
+          if (meta.version && sessionModeEl) {
+            sessionModeEl.title = `v${meta.version} · storage mode (Ephemeral = no SSD vault writes)`;
+          }
+          const bootMode = String(meta.mode || "").toLowerCase();
+          if (bootMode === "local" || bootMode === "chat") {
             applyLocalChrome(true);
           }
         }
@@ -423,9 +428,12 @@
     if (settingsBody) settingsBody.textContent = lines.join("\n");
     const vaultStatus = document.getElementById("vaultStatus");
     if (vaultStatus) {
-      vaultStatus.textContent = `Vault: ${v.status || "absent"}${
-        v.mounted ? " · mounted at /var/lib/stickllm/vault" : ""
-      }${v.wipe_after_failed_unlocks ? ` · wipe-after-${v.wipe_after_failed_unlocks}` : ""}`;
+      const bits = [`Vault: ${v.status || "absent"}`];
+      if (v.root) bits.push(`root ${v.root}`);
+      if (v.mounted) bits.push("mounted at /var/lib/stickllm/vault");
+      if (v.wipe_after_failed_unlocks) bits.push(`wipe-after-${v.wipe_after_failed_unlocks}`);
+      bits.push("file-blob only — never formats your drive");
+      vaultStatus.textContent = bits.join(" · ");
     }
     if (netStatus) {
       const ssid = j.wifi?.ssid || "";
@@ -443,11 +451,72 @@
     }
   }
 
+  function applySessionModeUi(mode) {
+    const m = String(mode || "ephemeral").toLowerCase() === "vault" ? "vault" : "ephemeral";
+    sessionMode = m;
+    if (sessionModeEl && sessionModeEl.value !== m && !sessionModeBusy) {
+      sessionModeEl.value = m;
+    }
+  }
+
+  async function setSessionMode(mode) {
+    const next = String(mode || "").toLowerCase() === "vault" ? "vault" : "ephemeral";
+    sessionModeBusy = true;
+    try {
+      const r = await fetch("/api/session-mode", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ mode: next }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) {
+        throw new Error(j.error || j.message || `HTTP ${r.status}`);
+      }
+      applySessionModeUi(next);
+      if (next === "ephemeral") {
+        addBubble(
+          "system",
+          "Ephemeral mode — new downloads/chats will not write to the SSD vault."
+        );
+        return;
+      }
+      // Vault mode: require unlock / setup if needed.
+      let vault = {};
+      try {
+        vault = await control("vault_status");
+      } catch (_) {}
+      const st = String(vault.status || "").toLowerCase();
+      if (st === "unlocked" || vault.mounted) {
+        addBubble("system", "Vault mode — downloads and saved chats use the encrypted SSD vault.");
+        return;
+      }
+      addBubble(
+        "system",
+        st === "absent" || !st
+          ? "Vault mode — set up storage in Settings (folder + blob), then unlock."
+          : "Vault mode — unlock the vault with your passcode in Settings."
+      );
+      if (settingsDialog && !settingsDialog.open) {
+        await openSettings();
+      }
+      document.getElementById("vaultPass")?.focus();
+    } catch (e) {
+      applySessionModeUi(sessionMode);
+      addBubble("system", `Could not switch mode: ${e.message}`);
+    } finally {
+      sessionModeBusy = false;
+      applySessionModeUi(sessionMode);
+    }
+  }
+
   async function lockVault() {
     try {
       const res = await control("vault_lock");
       addBubble("system", res.ok !== false ? "Vault locked — model unloaded." : `Lock failed: ${res.error || res.stderr || "unknown"}`);
       messages.length = 0;
+      if (sessionMode === "vault") {
+        await setSessionMode("ephemeral");
+      }
       if (settingsDialog?.open) await openSettings();
     } catch (e) {
       addBubble("system", `Lock failed: ${e.message}`);
@@ -707,6 +776,9 @@
 
   modelsBtn?.addEventListener("click", () => openModels());
   settingsBtn?.addEventListener("click", () => openSettings());
+  sessionModeEl?.addEventListener("change", () => {
+    setSessionMode(sessionModeEl.value);
+  });
   document.getElementById("lockVaultBtn")?.addEventListener("click", () => lockVault());
   document.getElementById("actVaultDisks")?.addEventListener("click", async () => {
     const el = document.getElementById("diskList");
@@ -737,6 +809,24 @@
     } catch (e) {
       if (el) el.textContent = `Error: ${e.message}`;
     }
+  });
+  document.getElementById("actVaultSetupHint")?.addEventListener("click", () => {
+    const path = (document.getElementById("vaultSetupPath")?.value || "").trim();
+    const size = (document.getElementById("vaultSetupSize")?.value || "8").trim();
+    const hint = document.getElementById("vaultSetupHint");
+    if (!hint) return;
+    if (!path) {
+      hint.textContent = "Enter a mounted folder path first (not /dev/sdX).";
+      return;
+    }
+    if (path.startsWith("/dev/") || path.startsWith("\\\\.\\")) {
+      hint.textContent =
+        "Refusing block device path. Unlock BitLocker/host LUKS in the host OS, mount a normal folder, then use that path.";
+      return;
+    }
+    hint.textContent =
+      `SSH (interactive confirms): sudo stickllm-vault setup ${path} ${size}` +
+      `  — Creates a file in a folder you choose. Never formats your drive.`;
   });
   document.getElementById("actVaultUnlock")?.addEventListener("click", async () => {
     const pass = document.getElementById("vaultPass")?.value || "";

@@ -15,10 +15,33 @@ from socketserver import ThreadingMixIn
 RUN = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 CATALOG = Path(os.environ.get("STICKLLM_CATALOG", "/etc/stickllm/models/catalog.toml"))
 MNT = Path(os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data"))
+SESSION_MODE_PATH = RUN / "session-mode.json"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("STICKLLM_CONTROL_PORT", "8091"))
 BAKED_3B = Path("/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf")
 BAKED_7B = Path("/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf")
+SESSION_MODES = frozenset({"ephemeral", "vault"})
+
+
+def session_mode() -> str:
+    """UI header mode: ephemeral (default) or vault. Gates SSD/vault writes."""
+    doc = read_json(SESSION_MODE_PATH)
+    mode = str(doc.get("mode") or "ephemeral").strip().lower()
+    return mode if mode in SESSION_MODES else "ephemeral"
+
+
+def set_session_mode(mode: str) -> dict:
+    mode = str(mode or "").strip().lower()
+    if mode not in SESSION_MODES:
+        return {"ok": False, "error": "mode must be ephemeral or vault"}
+    RUN.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "ok": True,
+        "mode": mode,
+        "updated": int(time.time()),
+    }
+    SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    return doc
 
 
 def sh(cmd: list[str], timeout: int = 600) -> dict:
@@ -43,14 +66,31 @@ def read_json(path: Path) -> dict:
 
 def model_dirs() -> list[Path]:
     dirs: list[Path] = []
-    vault_models = Path("/var/lib/stickllm/vault/models")
-    if vault_models.is_dir() and os.path.ismount("/var/lib/stickllm/vault"):
-        dirs.append(vault_models)
+    # Vault / SSD models only when user consciously selected Vault mode.
+    if session_mode() == "vault":
+        vault_mnt = Path("/var/lib/stickllm/vault")
+        vault_models = vault_mnt / "models"
+        if vault_models.is_dir() and os.path.ismount(str(vault_mnt)):
+            dirs.append(vault_models)
+        for meta in (MNT / "vault-meta", Path("/var/lib/stickllm/vault-meta")):
+            root_file = meta / "root"
+            if not root_file.is_file():
+                continue
+            try:
+                root = root_file.read_text(encoding="utf-8").strip()
+            except Exception:
+                continue
+            if not root or root.startswith("/dev/"):
+                continue
+            host_models = Path(root) / "models"
+            if host_models.is_dir() and host_models not in dirs:
+                dirs.append(host_models)
+            break
     data = MNT / "models"
-    if data.is_dir():
+    if data.is_dir() and data not in dirs:
         dirs.append(data)
     baked = Path("/opt/stickllm/models")
-    if baked.is_dir():
+    if baked.is_dir() and baked not in dirs:
         dirs.append(baked)
     return dirs
 
@@ -619,6 +659,7 @@ def handle(action: str, params: dict) -> dict:
         vault = vault_action("status", {})
         return {
             "ok": True,
+            "session_mode": session_mode(),
             "storage": read_json(RUN / "storage.json"),
             "vault": vault,
             "probe": read_json(RUN / "model-probe.json"),
@@ -645,6 +686,10 @@ def handle(action: str, params: dict) -> dict:
         r["probe"] = read_json(RUN / "model-probe.json")
         r["catalog"] = enrich_models()
         return r
+    if action == "session_mode":
+        return {"ok": True, "mode": session_mode(), "modes": sorted(SESSION_MODES)}
+    if action == "set_session_mode":
+        return set_session_mode(str(params.get("mode") or ""))
     if action == "model_download":
         mid = str(params.get("id") or "").strip()
         if download_running():
@@ -658,13 +703,19 @@ def handle(action: str, params: dict) -> dict:
         cmd = ["/usr/local/bin/stickllm-download-model", "--i-understand"]
         if mid:
             cmd += ["--id", mid]
+        # Pass session mode so downloader never writes vault paths in ephemeral.
+        env = os.environ.copy()
+        env["STICKLLM_SESSION_MODE"] = session_mode()
         RUN.mkdir(parents=True, exist_ok=True)
         logf = open(RUN / "download.log", "a", encoding="utf-8")
-        subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+        subprocess.Popen(
+            cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True, env=env
+        )
         time.sleep(0.4)
         return {
             "ok": True,
             "started": True,
+            "session_mode": session_mode(),
             "download": download_progress(),
             "catalog": enrich_models(),
         }
