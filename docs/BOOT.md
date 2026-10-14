@@ -47,9 +47,9 @@ SSH is **off** unless you pick menu **3** or **4**.
 
 1. Firmware boots the USB (or Ubuntu GRUB → StickLLM entry).
 2. StickLLM menu → pick **1** (Server / Local), **2** (Secure Client stub), **3** (Terminal), or **4** (Test).
-3. Console: loading (cold boot on a 3090 can take several minutes).
+3. Console: UI loading (no model auto-load — Activate from Models when ready).
 4. **Server / Local / Terminal / Test:** READY with `http://<lan-ip>/` and pair code when the UI path is up. Test also shows the SSH password.
-5. **Local path (checkpoint):** cage + Chromium on the NVIDIA HDMI output; keyboard works.
+5. **Local path (checkpoint):** cage + Chromium on the NVIDIA HDMI output; keyboard works. Load a model: Models → radio select → context slider → Activate.
 
 ## First checks
 

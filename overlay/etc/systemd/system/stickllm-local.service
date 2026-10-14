@@ -5,7 +5,7 @@ ConditionKernelCommandLine=|stickllm.chat
 # Only when kiosk unit cannot start — primary Local UI is stickllm-kiosk.
 ConditionPathExists=/run/stickllm/allow-local-chat-fallback
 After=stickllm-bootstatus.service stickllm-console-setup.service stickllm-ui.service
-Wants=stickllm-ui.service stickllm-llama.service
+Wants=stickllm-ui.service
 Conflicts=getty@tty1.service stickllm-kiosk.service
 
 [Service]

@@ -100,7 +100,7 @@ grep -Eq "refresh_failed|FAILED:" "$BS" && pass "bootstatus surfaces FAILED unit
 grep -q "PAIR CODE" "$BS" && pass "pair code UX" || bad "pair code UX"
 grep -q "TIMER:" "$BS" && pass "loading timer UX" || bad "loading timer UX"
 grep -q "STICKLLM Network Loading" "$BS" && pass "Network Loading phase" || bad "Network Loading phase"
-grep -q "STICKLLM Model" "$BS" && pass "Model Loading phase" || bad "Model Loading phase"
+grep -qE "STICKLLM Model|STICKLLM UI Loading" "$BS" && pass "UI/Model Loading phase" || bad "UI/Model Loading phase"
 grep -q "How to connect" "$BS" && pass "connect steps UX" || bad "connect steps UX"
 grep -q "STICKLLM_LAN_URL\|Chat UI:" "$BS" && pass "LAN URL on screen" || bad "LAN URL on screen"
 grep -q "STICKLLM_HEALTH" "$BS" && pass "health breadcrumb" || bad "health breadcrumb"

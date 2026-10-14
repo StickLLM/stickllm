@@ -106,15 +106,21 @@
     }
     if (connectModel) {
       let name = (c.model || "").trim();
-      const placeholder = !name || /^loading/i.test(name) || name === "…";
+      const none =
+        !name ||
+        name === "…" ||
+        /^none\b/i.test(name) ||
+        /^loading/i.test(name);
       if (j.llama_ok) {
-        if (placeholder) {
+        if (none) {
           const path = (c.model_path || "").trim();
           name = path ? path.split(/[/\\]/).pop() : "ready";
         }
         connectModel.textContent = name;
+      } else if (none) {
+        connectModel.textContent = "none — Activate in Models";
       } else {
-        connectModel.textContent = placeholder ? "loading…" : `${name} (loading)`;
+        connectModel.textContent = `${name} (loading)`;
       }
     }
   }
@@ -262,13 +268,17 @@
       const modelName = j.connect?.model;
       const backend = String(j.backend || j.connect?.backend || "").toUpperCase();
       const backendBit = backend ? ` · ${backend}` : "";
+      const noModel =
+        !modelName ||
+        /^none\b/i.test(String(modelName)) ||
+        /^loading/i.test(String(modelName));
       const modelBit = j.llama_ok
-        ? modelName
+        ? modelName && !noModel
           ? `model ready · ${modelName}${backendBit}`
           : `model ready${backendBit}`
-        : modelName
+        : modelName && !noModel
           ? `model loading · ${modelName}${backendBit}`
-          : `model loading${backendBit}`;
+          : `no model — Activate in Models`;
       if (sessionOk) {
         statusLine.textContent = online
           ? `${modelBit} · online`
@@ -1891,7 +1901,7 @@
 
   addBubble(
     "system",
-    "StickLLM v0.3.3 — Pair | URL | Model above. Pair mints a new LAN code (unpairs old browsers); the stick chat shows the code. Settings → System has How to connect. No LAN? Term: stickllm-wifi-setup."
+    "No model loads at boot. To chat: Models → radio select → context slider → Activate. Pair | URL above for LAN; Settings → System has How to connect. No LAN? Term: stickllm-wifi-setup."
   );
   refreshStatus();
   // Stick kiosk polls faster so LAN Pair remints show in chat promptly.

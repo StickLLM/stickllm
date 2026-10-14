@@ -549,6 +549,7 @@ def active_model_identity() -> dict:
 
 
 def active_model_path() -> str:
+    """Path from explicit Activate only — never invent a baked default at boot."""
     env = RUN / "model.env"
     if env.is_file():
         for line in env.read_text(encoding="utf-8").splitlines():
@@ -560,10 +561,6 @@ def active_model_path() -> str:
             return str(cur.resolve())
         except Exception:
             pass
-    if BAKED_3B.is_file():
-        return str(BAKED_3B)
-    if BAKED_7B.is_file():
-        return str(BAKED_7B)
     return ""
 
 
@@ -902,6 +899,8 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
         cur.symlink_to(path)
     except Exception:
         pass
+    sh(["systemctl", "reset-failed", "stickllm-llama.service"], timeout=30)
+    # model.env now exists → ConditionPathExists passes; start/restart loads on demand.
     r = sh(["systemctl", "restart", "stickllm-llama.service"], timeout=60)
     # Wait briefly for /health so UI can show Loading vs Running.
     healthy = False
@@ -954,11 +953,20 @@ def delete_model(model_id: str) -> dict:
             pass
     if blocked and not removed:
         return {"ok": False, "error": "baked-in models cannot be deleted", "blocked": blocked}
-    # If we deleted the active model, fall back to baked 3B.
+    # If we deleted the active model, unload — do not auto-load another.
     active = active_model_path()
     if active and any(active == r or active.endswith(os.path.basename(r)) for r in removed):
-        if BAKED_3B.is_file():
-            activate_model("qwen25-3b-q4km")
+        sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
+        try:
+            (RUN / "model.env").unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            cur = RUN / "current.gguf"
+            if cur.exists() or cur.is_symlink():
+                cur.unlink()
+        except Exception:
+            pass
     return {
         "ok": True,
         "removed": removed,

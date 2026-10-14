@@ -12,13 +12,15 @@ Group=stickllm-llama
 SupplementaryGroups=video render
 EnvironmentFile=-/etc/stickllm/runtime.env
 EnvironmentFile=-/run/stickllm/cuda.env
-EnvironmentFile=-/etc/stickllm/default-model.env
+# Only written by Models → Activate (or explicit download activate). Never auto-copied at boot.
 EnvironmentFile=-/run/stickllm/model.env
 Environment=LD_LIBRARY_PATH=/opt/stickllm/lib
 Environment=STICKLLM_LLAMA_HOST=127.0.0.1
 Environment=STICKLLM_LLAMA_PORT=8080
+# No default model at boot — unit stays enabled but skips until Activate writes model.env.
+ConditionPathExists=/run/stickllm/model.env
 # Ensure run dir writable before pick-gpus (runs as User=stickllm-llama).
-ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true; if [[ ! -s /run/stickllm/model.env ]]; then cp -a /etc/stickllm/default-model.env /run/stickllm/model.env 2>/dev/null || true; chmod 644 /run/stickllm/model.env 2>/dev/null || true; fi'
+ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true'
 # Prep needs root (modprobe); + ignores User=. Soft-fail — never block CPU.
 ExecStartPre=+/bin/bash -c '/usr/local/bin/stickllm-nvidia-prep || true'
 # Leading - : failure never blocks start (also always exits 0 by contract).
@@ -32,7 +34,7 @@ ReadWritePaths=/tmp /run /var/tmp -/mnt/stickllm-data /opt/stickllm -/var/lib/st
 ProtectSystem=full
 ProtectHome=true
 NoNewPrivileges=true
-# Keep llama on Local handoff: bootstatus exits after ui=1; unit must stay enabled.
+# Started on demand by stickllm-control Activate (model.env in /run is cleared each reboot).
 RemainAfterExit=no
 
 [Install]

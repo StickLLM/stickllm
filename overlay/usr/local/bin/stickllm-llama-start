@@ -3,7 +3,8 @@
 # Backend preference: CUDA (verified) → Vulkan → CPU last resort.
 set -euo pipefail
 
-MODEL="${STICKLLM_MODEL:-/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf}"
+# Require explicit Activate (model.env). No baked default — avoids long wrong-model boots.
+MODEL="${STICKLLM_MODEL:-}"
 HOST="${STICKLLM_LLAMA_HOST:-127.0.0.1}"
 PORT="${STICKLLM_LLAMA_PORT:-8080}"
 CTX="${STICKLLM_CTX_SIZE:-8192}"
@@ -77,6 +78,10 @@ cuda_devices_ok() {
   echo "$out" | grep -qE '^[[:space:]]*CUDA[0-9]'
 }
 
+if [[ -z "$MODEL" ]]; then
+  echo "stickllm-llama-start: STICKLLM_MODEL unset — Activate a model from the UI (Models → Activate)" >&2
+  exit 1
+fi
 if [[ ! -f "$MODEL" ]]; then
   echo "stickllm-llama-start: model missing: $MODEL" >&2
   exit 1

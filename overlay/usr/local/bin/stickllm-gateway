@@ -117,19 +117,14 @@ def _parse_env_kv(text: str) -> dict[str, str]:
 
 
 def resolve_model() -> tuple[str, str]:
-    """Return (display_name, model_path) from runtime env, defaults, or llama breadcrumb."""
+    """Return (display_name, model_path) from Activate model.env or live llama breadcrumb."""
     model_name = ""
     model_path = ""
-    for envf in (RUN_DIR / "model.env", Path("/etc/stickllm/default-model.env")):
-        if not envf.is_file():
-            continue
+    envf = RUN_DIR / "model.env"
+    if envf.is_file():
         kv = _parse_env_kv(read_text_safe(envf))
-        if not model_name:
-            model_name = kv.get("STICKLLM_MODEL_NAME") or ""
-        if not model_path:
-            model_path = kv.get("STICKLLM_MODEL") or ""
-        if model_name and model_path:
-            break
+        model_name = kv.get("STICKLLM_MODEL_NAME") or ""
+        model_path = kv.get("STICKLLM_MODEL") or ""
     if not model_path:
         rt = RUN_DIR / "llama-runtime.env"
         if rt.is_file():
@@ -190,8 +185,8 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
     ip = discover_lan_ip()
     model_name, model_path = resolve_model()
     if not model_name:
-        # llama ready but env missing → still show a real label, not a stuck "loading…"
-        model_name = "ready" if llama_ok else "loading…"
+        # No Activate yet — do not imply a boot-time load is in progress.
+        model_name = "ready" if llama_ok else "none"
     elif model_name.lower().startswith("loading") and llama_ok:
         model_name = Path(model_path).name if model_path else "ready"
     scheme = "https" if (RUN_DIR / "tls.enabled").is_file() else "http"

@@ -334,23 +334,15 @@ while IFS= read -r f; do
   i=$((i+1))
 done <<<"$FILES"
 
-# Point runtime at first file / shard
+# Download only — do not auto-load. User Activates from Models UI when ready.
 FIRST="$(echo "$FILES" | head -1)"
 if [[ -n "$FIRST" ]]; then
-  mkdir -p "$RUN"
-  {
-    printf 'STICKLLM_MODEL=%s\n' "${DEST_DIR}/${FIRST}"
-    printf 'STICKLLM_MODEL_ID=%s\n' "$ID"
-    printf 'STICKLLM_MODEL_NAME=%s\n' "$NAME"
-  } >"$RUN/model.env"
-  ln -sfn "${DEST_DIR}/${FIRST}" "$RUN/current.gguf" 2>/dev/null || true
-  echo "Active model → ${DEST_DIR}/${FIRST}"
+  echo "Downloaded → ${DEST_DIR}/${FIRST}"
+  echo "Load when ready: Models → radio select → context slider → Activate"
 fi
 
-systemctl daemon-reload || true
-systemctl restart stickllm-llama.service || true
 write_progress "done" "" "$TOTAL_BYTES" "$TOTAL_BYTES" "complete"
-echo "Downloaded and verified. llama-server restart requested."
+echo "Downloaded and verified. Activate from the Models page to load."
 stickllm-status || true
 sleep 2
 write_progress "idle" "" 0 0 ""
