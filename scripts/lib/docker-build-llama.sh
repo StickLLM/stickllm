@@ -77,10 +77,15 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 add-apt-repository -y universe >/dev/null 2>&1 || true
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  libvulkan-dev glslang-tools glslang-dev spirv-headers spirv-tools \
+  libvulkan-dev glslang-tools glslang-dev spirv-tools \
   vulkan-tools pkg-config
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libshaderc-dev >/dev/null 2>&1 || true
+# Jammy apt spirv-headers lacks SPIRV-HeadersConfig.cmake; install from Khronos.
+rm -rf /tmp/SPIRV-Headers
+git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git /tmp/SPIRV-Headers
+cmake -S /tmp/SPIRV-Headers -B /tmp/SPIRV-Headers/build -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build /tmp/SPIRV-Headers/build --target install -j"$(nproc)"
 OUT_LIB_VK="/work/overlay/opt/stickllm/lib-vulkan"
 mkdir -p "$OUT_LIB_VK"
 rm -rf /tmp/llama.cpp-vulkan
@@ -92,7 +97,8 @@ fi
 cmake -S /tmp/llama.cpp-vulkan -B /tmp/llama.cpp-vulkan/build \
   -DGGML_VULKAN=ON \
   -DGGML_CUDA=OFF \
-  -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/usr/local
 cmake --build /tmp/llama.cpp-vulkan/build --target llama-server -j"$(nproc)"
 VK_BIN=""
 for c in /tmp/llama.cpp-vulkan/build/bin/llama-server /tmp/llama.cpp-vulkan/build/llama-server; do
