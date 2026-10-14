@@ -658,16 +658,17 @@
     if (manage) manage.hidden = false;
     if (manageHint) {
       const bits = [
-        m.installed ? "Installed" : "Not downloaded",
-        m.running ? "currently running" : m.active ? "loading" : null,
         !m.fits && m.installed
           ? m.backend === "cpu"
             ? "won't fit RAM"
             : "won't fit VRAM"
           : null,
         m.source === "host_ssd" ? "host SSD (delete in host OS)" : null,
+        m.backend === "cpu" && m.installed ? "CPU" : null,
+        m.vision ? "vision" : null,
       ].filter(Boolean);
-      manageHint.textContent = `${m.name || m.id}: ${bits.join(" · ")}`;
+      manageHint.textContent = bits.length ? bits.join(" · ") : "";
+      manageHint.hidden = !bits.length;
     }
     if (dlBtn) {
       dlBtn.hidden = !canDl;
@@ -720,6 +721,29 @@
     }
   }
 
+  function modelLocationLabel(m) {
+    if (m.source === "host_ssd") return "SSD";
+    const p = String(m.path || m.local_path || "").toLowerCase();
+    if (p.includes("stickllm-data") || p.startsWith("/opt/stickllm/models")) {
+      return "USB";
+    }
+    if (p.includes("/var/lib/stickllm/vault")) return "SSD";
+    if (/\bhdd\b|hard.?disk|rotational/.test(p)) return "HDD";
+    if (m.installed && (p.startsWith("/mnt/") || p.startsWith("/media/"))) {
+      return "SSD";
+    }
+    if (!m.installed) {
+      return sessionMode === "vault" ? "SSD" : "USB";
+    }
+    return "USB";
+  }
+
+  function modelStatusLabel(m) {
+    if (m.running) return "Running";
+    if (m.installed) return "Downloaded";
+    return "Not downloaded";
+  }
+
   function renderCatalog(models) {
     lastCatalog = Array.isArray(models) ? models : [];
     catalogList.innerHTML = "";
@@ -767,22 +791,28 @@
       });
 
       const meta = document.createElement("div");
-      const flags = [
-        m.running ? "RUNNING" : m.active ? "LOADING" : null,
-        m.installed
-          ? m.source === "host_ssd"
-            ? "on SSD"
-            : "downloaded"
-          : "not downloaded",
-        m.fits ? null : m.fit_note || `needs ${m.min_vram_gb}GB`,
-        m.backend === "cpu" ? "CPU" : null,
-        m.vision ? "vision" : null,
-        m.source === "host_ssd" ? "host SSD" : m.pinned ? null : "not pinned",
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      meta.innerHTML = `<strong>${m.name}</strong><br/><span class="muted">${m.id} · ~${m.approx_size_gb} GB · ${flags}</span>`;
+      meta.className = "catalogMeta";
 
+      const title = document.createElement("strong");
+      title.className = "catalogTitle";
+      title.textContent = m.name || m.id;
+
+      const detail = document.createElement("span");
+      detail.className = "muted catalogDetail";
+      const size =
+        m.approx_size_gb != null && m.approx_size_gb !== ""
+          ? `${m.approx_size_gb} GB`
+          : null;
+      const bits = [
+        size,
+        modelLocationLabel(m),
+        m.hf_repo ? "HuggingFace" : null,
+        modelStatusLabel(m),
+      ].filter(Boolean);
+      detail.textContent = bits.join(" · ");
+
+      meta.appendChild(title);
+      meta.appendChild(detail);
       label.appendChild(radio);
       label.appendChild(meta);
       row.appendChild(label);

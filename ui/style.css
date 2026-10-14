@@ -279,33 +279,42 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .actionBtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .actionBtn:disabled { opacity: 0.45; }
-.catalogList { display: flex; flex-direction: column; gap: 0.65rem; max-height: 14rem; overflow: auto; margin: 0.5rem 0; }
+.catalogList { display: flex; flex-direction: column; gap: 0.35rem; max-height: 14rem; overflow: auto; margin: 0.5rem 0; }
 .catalogRow {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.55rem;
-  align-items: start;
   border-top: 1px solid var(--line);
-  padding-top: 0.55rem;
+  padding: 0.4rem 0.35rem 0.35rem;
 }
 .catalogRow.is-selected { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .catalogRow .muted { color: var(--muted); font-size: 0.8rem; }
 .catalogActions { display: flex; flex-direction: column; gap: 0.35rem; }
 .catalogRadio {
-  margin-top: 0.35rem;
+  margin: 0.15rem 0 0;
   width: 1.1rem;
   height: 1.1rem;
   accent-color: var(--accent);
   cursor: pointer;
+  flex-shrink: 0;
 }
 .catalogSelect {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.55rem;
-  align-items: start;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
   cursor: pointer;
 }
-.catalogSelect strong { display: block; }
+.catalogMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  line-height: 1.25;
+}
+.catalogTitle {
+  display: block;
+  font-weight: 700;
+}
+.catalogDetail {
+  display: block;
+}
 .ctxPanel {
   border-top: 1px solid var(--line);
   padding-top: 0.65rem;
