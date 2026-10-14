@@ -521,6 +521,44 @@ def llama_health_ok() -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
+def active_ctx_size() -> int | None:
+    """Context size from model.env, else from running llama-server --ctx-size."""
+    env = RUN / "model.env"
+    if env.is_file():
+        try:
+            for line in env.read_text(encoding="utf-8").splitlines():
+                if line.startswith("STICKLLM_CTX_SIZE="):
+                    return int(line.split("=", 1)[1].strip())
+        except (OSError, ValueError, TypeError):
+            pass
+    # Older Activate writes omitted STICKLLM_CTX_SIZE — read live process args.
+    try:
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                raw = (proc / "cmdline").read_bytes()
+            except OSError:
+                continue
+            if b"llama-server" not in raw:
+                continue
+            parts = raw.split(b"\0")
+            for i, p in enumerate(parts):
+                if p in (b"--ctx-size", b"-c") and i + 1 < len(parts):
+                    try:
+                        return int(parts[i + 1].decode("utf-8", "replace"))
+                    except ValueError:
+                        break
+                if p.startswith(b"--ctx-size="):
+                    try:
+                        return int(p.split(b"=", 1)[1].decode("utf-8", "replace"))
+                    except ValueError:
+                        break
+    except OSError:
+        pass
+    return None
+
+
 def active_model_identity() -> dict:
     path = active_model_path()
     mid = ""
@@ -539,13 +577,17 @@ def active_model_identity() -> dict:
         elif "7b" in base:
             mid, name = "qwen25-7b-q5km", "Qwen2.5 7B Instruct"
     healthy, health_msg = llama_health_ok()
-    return {
+    ctx = active_ctx_size()
+    out = {
         "path": path,
         "id": mid,
         "name": name or (os.path.basename(path) if path else ""),
         "running": healthy,
         "health": health_msg,
     }
+    if ctx is not None:
+        out["ctx_size"] = ctx
+    return out
 
 
 def active_model_path() -> str:
@@ -756,6 +798,7 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
     gpu = has_nvidia()
     active = active_model_path()
     healthy, _ = llama_health_ok()
+    loaded_ctx = active_ctx_size()
     models = parse_catalog() + discover_local_ggufs()
     for m in models:
         files = m.get("hf_files") or []
@@ -822,28 +865,29 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
             model_max_ctx=model_max_ctx,
             dims=dims,
         )
-        m.update(
-            {
-                "installed": installed,
-                "runnable": runnable,
-                "active": is_active,
-                "running": running,
-                "fits_vram": fits,
-                "fits": fits,
-                "fit_note": fit_note,
-                "path": first,
-                "vram_gb": round(vram_gb, 1),
-                "ram_gb": round(ram_gb, 1),
-                "backend": backend,
-                "deletable": deletable,
-                "max_context": budget["ctx_model_max"],
-                "ctx_min": budget["ctx_min"],
-                "ctx_max": budget["ctx_max"],
-                "ctx_suggested": budget["ctx_suggested"],
-                "free_mem_after_gb": budget["free_mem_after_gb"],
-                "architecture": dims.get("architecture") or "",
-            }
-        )
+        entry = {
+            "installed": installed,
+            "runnable": runnable,
+            "active": is_active,
+            "running": running,
+            "fits_vram": fits,
+            "fits": fits,
+            "fit_note": fit_note,
+            "path": first,
+            "vram_gb": round(vram_gb, 1),
+            "ram_gb": round(ram_gb, 1),
+            "backend": backend,
+            "deletable": deletable,
+            "max_context": budget["ctx_model_max"],
+            "ctx_min": budget["ctx_min"],
+            "ctx_max": budget["ctx_max"],
+            "ctx_suggested": budget["ctx_suggested"],
+            "free_mem_after_gb": budget["free_mem_after_gb"],
+            "architecture": dims.get("architecture") or "",
+        }
+        if is_active and loaded_ctx is not None:
+            entry["ctx_loaded"] = loaded_ctx
+        m.update(entry)
     return models
 
 

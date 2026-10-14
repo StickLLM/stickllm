@@ -689,12 +689,18 @@
       let suggested = Number(m.ctx_suggested) || Math.min(8192, hi);
       suggested = Math.max(lo, Math.min(hi, suggested));
       suggested = Math.round(suggested / step) * step;
+      const loadedCtx = Number(m.ctx_loaded) || 0;
       ctxSlider.min = String(lo);
       ctxSlider.max = String(hi);
       ctxSlider.step = String(step);
-      // Keep prior slider value if still in range for same model; else suggest.
+      // Keep prior slider for same model; on switch prefer loaded ctx when active.
       let cur = Number(ctxSlider.value) || suggested;
-      if (cur < lo || cur > hi || ctxSlider.dataset.modelId !== m.id) {
+      if (ctxSlider.dataset.modelId !== m.id) {
+        cur =
+          (m.running || m.active) && loadedCtx >= lo && loadedCtx <= hi
+            ? loadedCtx
+            : suggested;
+      } else if (cur < lo || cur > hi) {
         cur = suggested;
       }
       ctxSlider.value = String(cur);
@@ -702,18 +708,26 @@
       ctxValue.textContent = String(cur);
       const free = m.free_mem_after_gb != null ? `~${m.free_mem_after_gb} GB free after load` : "";
       const modelMax = m.max_context ? `model max ${formatCtx(m.max_context)}` : "";
+      const loadedNote =
+        (m.running || m.active) && loadedCtx
+          ? `loaded ${formatCtx(loadedCtx)}`
+          : "";
       ctxMeta.textContent = [
         `Slider range ${formatCtx(lo)}–${formatCtx(hi)} tokens`,
+        loadedNote,
         free,
         modelMax,
         m.architecture ? m.architecture : null,
       ]
         .filter(Boolean)
         .join(" · ");
-      actActivate.disabled = !!m.running;
-      actActivate.textContent = m.running
+      // Disable only when already running at the slider's context; otherwise
+      // Activate reloads with the chosen ctx (same model or a different one).
+      const sameLoadedCtx = m.running && loadedCtx > 0 && Number(cur) === loadedCtx;
+      actActivate.disabled = sameLoadedCtx;
+      actActivate.textContent = sameLoadedCtx
         ? "Running"
-        : m.active
+        : m.running || m.active
           ? "Reload with context"
           : "Activate selected";
     } else if (ctxPanel) {
@@ -1916,6 +1930,8 @@
   document.getElementById("ctxSlider")?.addEventListener("input", (ev) => {
     const ctxValue = document.getElementById("ctxValue");
     if (ctxValue) ctxValue.textContent = String(ev.target.value);
+    // Re-enable Activate when slider leaves the loaded model's ctx.
+    updateSelectionPanel();
   });
   document.getElementById("deleteConfirmCancel")?.addEventListener("click", () => {
     document.getElementById("deleteConfirmDialog")?.close();
