@@ -174,13 +174,15 @@
       }
       const online = j.online || j.web;
       const modelName = j.connect?.model;
+      const backend = String(j.backend || j.connect?.backend || "").toUpperCase();
+      const backendBit = backend ? ` · ${backend}` : "";
       const modelBit = j.llama_ok
         ? modelName
-          ? `model ready · ${modelName}`
-          : "model ready"
+          ? `model ready · ${modelName}${backendBit}`
+          : `model ready${backendBit}`
         : modelName
-          ? `model loading · ${modelName}`
-          : "model loading";
+          ? `model loading · ${modelName}${backendBit}`
+          : `model loading${backendBit}`;
       if (sessionOk) {
         statusLine.textContent = online
           ? `${modelBit} · online`
@@ -311,10 +313,15 @@
       : loaded.path
         ? `Loading: ${loaded.name || loaded.id || loaded.path} — ${loaded.health || "waiting /health"}`
         : "Loaded: (none)";
+    const backend = String(j.backend || "cpu").toLowerCase();
+    const backendLabel =
+      backend === "cuda"
+        ? `Backend: CUDA · VRAM ~${j.vram_gb ?? p.vram_gb ?? "?"} GB`
+        : backend === "vulkan"
+          ? `Backend: Vulkan · VRAM ~${j.vram_gb ?? p.vram_gb ?? "?"} GB`
+          : `Backend: CPU · RAM ~${j.ram_gb ?? "?"} GB`;
     const lines = [
-      j.backend === "cpu"
-        ? `Backend: CPU · RAM ~${j.ram_gb ?? "?"} GB`
-        : `Backend: CUDA · VRAM ~${j.vram_gb ?? p.vram_gb ?? "?"} GB`,
+      backendLabel,
       p.recommend_name
         ? `Optimum: ${p.recommend_name} (~${p.recommend_size_gb} GB)`
         : "Optimum: unknown",
@@ -327,7 +334,9 @@
 
   function renderSettingsStatus(j) {
     const s = j.storage || {};
+    const backend = String(j.backend || "cpu").toUpperCase();
     const lines = [
+      `Backend: ${backend}`,
       s.mounted
         ? `USB DATA: mounted (${s.free_gb ?? "?"} GiB free)`
         : `USB DATA: ${s.note || "not claimed"}`,
@@ -339,6 +348,14 @@
       netStatus.textContent = j.online
         ? `Online: yes${ssid ? ` · WiFi ${ssid}` : ""}`
         : `Online: no uplink${ssid ? ` · WiFi profile ${ssid}` : " · connect Ethernet or console WiFi"}`;
+    }
+    const how = document.getElementById("howToConnect");
+    if (how) {
+      const url =
+        document.getElementById("connectUrl")?.textContent?.trim() ||
+        "http://<stick-lan-ip>/";
+      how.textContent =
+        `Open ${url} on the same LAN and enter the PAIR CODE from the stick screen (or Pair | URL | Model above). Loopback on the stick needs no pair. No LAN? Term console: stickllm-wifi-setup.`;
     }
   }
 
@@ -665,7 +682,7 @@
 
   addBubble(
     "system",
-    "StickLLM v0.3.1 — see Pair / URL / Model above.\n\nHow to connect: open the URL on the same LAN and enter the PAIR CODE from the stick screen.\n\nModels = catalog; Settings = WiFi / USB. No LAN? Term console: stickllm-wifi-setup."
+    "StickLLM v0.3.1 — Pair | URL | Model above. Settings → System has How to connect. Models = catalog; Settings = WiFi / USB / backend. No LAN? Term: stickllm-wifi-setup."
   );
   refreshStatus();
   setInterval(refreshStatus, 8000);

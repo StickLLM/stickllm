@@ -43,3 +43,10 @@ libinput-bin
 libinput10
 xwayland
 fonts-dejavu-core
+# Vulkan (AMD/Intel llama path + Mesa ICD; loader required for llama-server-vulkan)
+mesa-vulkan-drivers
+libvulkan1
+vulkan-tools
+# Encrypted vault (Phase C feature; LUKS2 tools present for SSH-tested vault work)
+cryptsetup
+cryptsetup-bin

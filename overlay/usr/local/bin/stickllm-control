@@ -103,6 +103,29 @@ def has_nvidia() -> bool:
     return Path("/dev/nvidia0").exists() or Path("/dev/nvidiactl").exists()
 
 
+def detect_backend() -> str:
+    """Prefer runtime breadcrumb from pick-gpus / llama-start over nvidia-smi."""
+    for path in (RUN / "llama-runtime.env", RUN / "cuda.env"):
+        try:
+            if not path.is_file():
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("backend="):
+                    b = line.split("=", 1)[1].strip().lower()
+                    if b in ("cuda", "vulkan", "cpu"):
+                        return b
+                if line.startswith("STICKLLM_BACKEND="):
+                    b = line.split("=", 1)[1].strip().lower()
+                    if b in ("cuda", "vulkan", "cpu"):
+                        return b
+        except Exception:
+            pass
+    if has_nvidia():
+        return "cuda"
+    return "cpu"
+
+
 def llama_health_ok() -> tuple[bool, str]:
     try:
         p = subprocess.run(
@@ -599,7 +622,7 @@ def handle(action: str, params: dict) -> dict:
             else "",
             "vram_gb": round(vram, 1),
             "ram_gb": round(ram, 1),
-            "backend": "cuda" if has_nvidia() else "cpu",
+            "backend": detect_backend(),
             "active_model": loaded.get("path") or "",
             "loaded": loaded,
             "online": online,

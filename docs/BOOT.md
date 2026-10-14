@@ -63,9 +63,10 @@ curl -s localhost/api/health
 If chat is slow and `nvidia-smi` shows **0 MiB** used, CUDA never attached.
 Check `nvidia_uvm`, `journalctl -u stickllm-llama -b`, `/run/stickllm/cuda.env`, and
 `llama-server --list-devices` (must show `CUDA0`, not only CPU). Backend order is
-CUDA → Vulkan (TODO if no binary) → CPU; never claim `STICKLLM_BACKEND=cuda` without
-list-devices proof. The `stickllm-cuda-register` preload registers `libggml-cuda`
-when the shared libggml loader did not link it.
+**CUDA → Vulkan → CPU**; never claim `STICKLLM_BACKEND=cuda` without list-devices
+proof. AMD/Intel use `llama-server-vulkan` + Mesa. CPU is last resort only.
+The `stickllm-cuda-register` preload registers `libggml-cuda` when the shared
+libggml loader did not link it. Status UI / `stickllm-status` show the active backend.
 
 Phone on the same LAN: open the Chat UI URL from the READY screen and enter the pair code.
 

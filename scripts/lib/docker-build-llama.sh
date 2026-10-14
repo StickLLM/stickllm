@@ -67,9 +67,45 @@ fi
 LD_LIBRARY_PATH="$OUT_LIB" "$OUT_BIN" --version
 ls -lh "$OUT_BIN" "$OUT_LIB" | head -n 50
 
-# CPU-only binary for no-NVIDIA hosts (ISS-018). Separate tree + lib-cpu/ —
-# never overwrite CUDA libggml*.so (that dropped libggml-cuda NEEDED and left
-# --list-devices with CPU only while STICKLLM_BACKEND=cuda).
+# Vulkan binary for AMD/Intel (and NVIDIA fallback). Separate tree + lib-vulkan/
+# so CUDA libggml* is never overwritten. CUDA remains default on NVIDIA hosts.
+echo "[stickllm] building Vulkan llama-server…"
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  libvulkan-dev glslang-tools libshaderc-dev vulkan-tools pkg-config
+OUT_LIB_VK="/work/overlay/opt/stickllm/lib-vulkan"
+mkdir -p "$OUT_LIB_VK"
+rm -rf /tmp/llama.cpp-vulkan
+if [[ -n "$TAG" ]]; then
+  git clone --depth 1 --branch "$TAG" https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp-vulkan
+else
+  git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp-vulkan
+fi
+cmake -S /tmp/llama.cpp-vulkan -B /tmp/llama.cpp-vulkan/build \
+  -DGGML_VULKAN=ON \
+  -DGGML_CUDA=OFF \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/llama.cpp-vulkan/build --target llama-server -j"$(nproc)"
+VK_BIN=""
+for c in /tmp/llama.cpp-vulkan/build/bin/llama-server /tmp/llama.cpp-vulkan/build/llama-server; do
+  if [[ -x "$c" ]]; then VK_BIN="$c"; break; fi
+done
+test -n "$VK_BIN"
+OUT_VK="/work/overlay/opt/stickllm/bin/llama-server-vulkan"
+install -m 755 "$VK_BIN" "$OUT_VK"
+find /tmp/llama.cpp-vulkan/build -type f \( -name 'libggml*.so*' -o -name 'libllama*.so*' \) \
+  -exec cp -a {} "$OUT_LIB_VK/" \; 2>/dev/null || true
+cp -a /tmp/llama.cpp-vulkan/build/bin/*.so* "$OUT_LIB_VK/" 2>/dev/null || true
+find "$OUT_LIB_VK" -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+LD_LIBRARY_PATH="$OUT_LIB_VK" "$OUT_VK" --version || true
+ls -lh "$OUT_VK" "$OUT_LIB_VK" | head -n 30
+test -f "$OUT_LIB_VK/libggml-vulkan.so" || test -f "$OUT_LIB_VK/libggml-vulkan.so.0" || {
+  echo "docker-build-llama: missing libggml-vulkan after Vulkan build" >&2
+  exit 1
+}
+
+# CPU-only binary for no-GPU hosts (ISS-018). Separate tree + lib-cpu/ —
+# never overwrite CUDA/Vulkan libggml*.so (that dropped backend NEEDED and left
+# --list-devices with CPU only while STICKLLM_BACKEND=cuda/vulkan).
 echo "[stickllm] building CPU llama-server…"
 OUT_LIB_CPU="/work/overlay/opt/stickllm/lib-cpu"
 mkdir -p "$OUT_LIB_CPU"
@@ -81,6 +117,7 @@ else
 fi
 cmake -S /tmp/llama.cpp-cpu -B /tmp/llama.cpp-cpu/build \
   -DGGML_CUDA=OFF \
+  -DGGML_VULKAN=OFF \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build /tmp/llama.cpp-cpu/build --target llama-server -j"$(nproc)"
 CPU_BIN=""
@@ -98,9 +135,13 @@ find "$OUT_LIB_CPU" -type l ! -exec test -e {} \; -delete 2>/dev/null || true
 # only when needed; default rpath/LD path still OK if libs are self-contained).
 LD_LIBRARY_PATH="$OUT_LIB_CPU" "$OUT_CPU" --version || true
 ls -lh "$OUT_CPU" "$OUT_LIB_CPU" | head -n 30
-# Sanity: CUDA libggml must still be present and must not have been replaced by CPU.
+# Sanity: CUDA + Vulkan libs must still be present and not replaced by CPU.
 test -f "$OUT_LIB/libggml-cuda.so" || test -f "$OUT_LIB/libggml-cuda.so.0" || {
   echo "docker-build-llama: missing libggml-cuda after CPU build" >&2
   exit 1
 }
-echo "docker-build-llama: OK (cuda lib/ + cpu lib-cpu/ + register shim)"
+test -f "$OUT_LIB_VK/libggml-vulkan.so" || test -f "$OUT_LIB_VK/libggml-vulkan.so.0" || {
+  echo "docker-build-llama: missing libggml-vulkan after CPU build" >&2
+  exit 1
+}
+echo "docker-build-llama: OK (cuda lib/ + vulkan lib-vulkan/ + cpu lib-cpu/ + register shim)"

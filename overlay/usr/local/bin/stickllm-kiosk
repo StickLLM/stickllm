@@ -164,13 +164,11 @@ pick_console_drm() {
   return 1
 }
 
-# Prefer DRM card with a connected connector.
-# Pragmatic order for now:
+# Prefer DRM card with a connected connector → exported as WLR_DRM_DEVICES.
+# Order:
 #   1) connected AMD/Intel iGPU
 #   2) connected NVIDIA (monitor on dGPU / 3090 HDMI — needs nvidia-drm modeset=1)
 #   3) virtio (QEMU), console DRM, simpledrm fallbacks
-# TODO(future): single helper that returns the card owning the first
-# status=connected connector (any vendor), then preference only as tie-break.
 pick_display_drm() {
   local card driver path conn status
   local connected_igpu="" best_igpu="" connected_virtio="" best_virtio=""

@@ -123,6 +123,10 @@ stickllm/
 ./scripts/build.sh                   # produces a hybrid ISO under out/
 ```
 
+**Dev loop:** feature branch → SSH-test on a running stick → one clean ISO when
+the batch is done (never patch ISO) → user HW confirm before tag/push.
+See [docs/DEV-WORKFLOW.md](docs/DEV-WORKFLOW.md).
+
 Build: [docs/BUILD.md](docs/BUILD.md) · Flash: [docs/FLASH.md](docs/FLASH.md) ·
 Boot: [docs/BOOT.md](docs/BOOT.md) · Hardware: [docs/HARDWARE.md](docs/HARDWARE.md) ·
 Models: [docs/MODELS.md](docs/MODELS.md)

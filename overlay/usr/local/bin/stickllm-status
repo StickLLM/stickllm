@@ -33,6 +33,13 @@ fi
 
 echo "llama:    $(systemctl is-active stickllm-llama.service 2>/dev/null || echo unknown)"
 echo "ui:       $(systemctl is-active stickllm-ui.service 2>/dev/null || echo unknown)"
+BACKEND="cpu"
+if [[ -f /run/stickllm/llama-runtime.env ]]; then
+  BACKEND="$(awk -F= '/^backend=/{print $2; exit}' /run/stickllm/llama-runtime.env 2>/dev/null || echo cpu)"
+elif [[ -f /run/stickllm/cuda.env ]]; then
+  BACKEND="$(awk -F= '/^STICKLLM_BACKEND=/{print $2; exit}' /run/stickllm/cuda.env 2>/dev/null || echo cpu)"
+fi
+echo "backend:  ${BACKEND}"
 echo
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"

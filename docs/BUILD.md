@@ -13,19 +13,20 @@ WSL2 Ubuntu is optional. On this workstation the preferred path is **Git Bash + 
 ```bash
 ./scripts/verify-host.sh
 ./scripts/download-model.sh      # ~5.4 GB Q5_K_M (2 shards)
-./scripts/build-llama-server.sh  # CUDA sm_86 llama-server in nvidia/cuda container
-./scripts/build.sh               # Debian live-build → out/stickllm-amd-rtx3090.hybrid.iso
+./scripts/build-llama-server.sh  # CUDA + Vulkan + CPU llama-server in nvidia/cuda container
+./scripts/build.sh               # Debian live-build → out/v0.3.1/…hybrid.iso
 ```
 
-Or: `./scripts/build.sh` (calls the above as needed).
+Or: `./scripts/build.sh` (calls the above as needed). Dev loop (SSH first, no ISO patch): [DEV-WORKFLOW.md](DEV-WORKFLOW.md).
 
 ## What the ISO contains
 
 - Debian Bookworm live (UEFI hybrid)
 - Proprietary NVIDIA driver stack for RTX 3090
-- `/opt/stickllm/bin/llama-server` + CUDA runtime libs
-- Bundled Qwen2.5-7B-Instruct Q5_K_M GGUF
-- Chat UI on `:80`, API on `:8080`
+- `/opt/stickllm/bin/llama-server` (CUDA) + `llama-server-vulkan` + `llama-server-cpu`
+- Mesa Vulkan drivers / loader for AMD/Intel
+- Bundled Qwen2.5 models (3B + 7B class)
+- Chat UI on `:80`, llama on loopback `:8080`
 - Default boot: **ephemeral** (`nopersistence`)
 
 ## Timing (rough)

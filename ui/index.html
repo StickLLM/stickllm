@@ -118,11 +118,20 @@
         </div>
       </div>
 
+      <div class="apiPanel">
+        <h3>System</h3>
+        <p class="modelsHint"><strong>How to connect</strong></p>
+        <p id="howToConnect" class="modelsHint">
+          Open the URL on the same LAN and enter the PAIR CODE from the stick screen
+          (see Pair | URL | Model above). On-stick loopback needs no pair.
+        </p>
+      </div>
+
       <div class="apiPanel futurePanel">
         <h3>Coming later</h3>
         <p class="modelsHint">
           Context size / inference defaults — future Settings.<br/>
-          SSD encrypted vault partition — future opt-in (faster model load).<br/>
+          SSD encrypted vault — feature branch after HW confirm.<br/>
           Setup WiFi access point — future bootstrap if no Ethernet (not built yet).
         </p>
       </div>
@@ -144,6 +153,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>

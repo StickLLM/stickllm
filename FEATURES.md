@@ -11,8 +11,8 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P0 Keyboard-only navigation across the whole UI
   - Note: chat autofocus + NumLock best-effort
 - [ ] P1 Distinct failsafe/survival Local path vs full Local browser product UI
-- [ ] P1 AMD GPUs (ROCm or Vulkan)
-- [ ] P1 Intel Arc / iGPU (Vulkan or SYCL)
+- [x] P1 AMD/Intel Vulkan path in v0.3.1 ISO (`llama-server-vulkan` + Mesa; HW confirm pending)
+- [ ] P1 Intel Arc polish / SYCL (optional later; Vulkan first)
 - [x] P1 CPU-only fallback (v0.3: CPU llama binary + `-ngl 0`, RAM fits check; HW OK on Asus no-NVIDIA)
 - [ ] P1 Auto-detect which GPU the monitor is on; pick DRM device automatically
 - [ ] P2 Multi-GPU model splitting
