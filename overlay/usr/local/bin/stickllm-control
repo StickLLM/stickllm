@@ -835,6 +835,10 @@ def vault_action(cmd: str, params: dict) -> dict:
         path = str(params.get("path") or params.get("dir") or "").strip()
         size_gb = str(params.get("size_gb") or "8").strip()
         confirm = str(params.get("confirm") or "")
+        saved = str(params.get("saved_confirm") or params.get("recovery_confirm") or "")
+        passcode = str(params.get("passcode") or "")
+        passcode2 = str(params.get("passcode2") or passcode)
+        space_ok = str(params.get("space_confirm") or "")
         if _looks_like_block_device(path):
             return {
                 "ok": False,
@@ -844,32 +848,90 @@ def vault_action(cmd: str, params: dict) -> dict:
                     "— StickLLM will not unlock or wipe host encryption."
                 ),
             }
-        if confirm not in ("CREATE-VAULT", "CREATE-FILE"):
+        if confirm != "CREATE-VAULT":
             return {
                 "ok": False,
-                "error": "typed confirm must be CREATE-VAULT (setup is interactive on stick)",
+                "error": "typed confirm must be CREATE-VAULT",
+            }
+        # UI must show recovery_phrase once and require local SAVED ack after.
+        # Backend accepts SAVED or SHOW-ONCE (API) so create can return the phrase.
+        if saved not in ("SAVED", "SHOW-ONCE"):
+            return {
+                "ok": False,
+                "error": "recovery_confirm must be SAVED or SHOW-ONCE",
             }
         if not path:
             return {"ok": False, "error": "path (directory) required"}
-        # Setup needs interactive passcode + typed confirms — refuse silent API create.
-        return {
-            "ok": False,
-            "error": (
-                "setup requires interactive typed confirms on the stick (fail-closed): "
-                f"sudo stickllm-vault setup {path} {size_gb}"
-            ),
-        }
+        if len(passcode) < 8:
+            return {"ok": False, "error": "passcode must be at least 8 characters"}
+        if passcode != passcode2:
+            return {"ok": False, "error": "passcodes do not match"}
+        env = os.environ.copy()
+        env["STICKLLM_VAULT_CONFIRM"] = "CREATE-VAULT"
+        env["STICKLLM_VAULT_CONFIRM_SAVED"] = "SAVED"
+        env["STICKLLM_VAULT_PASS"] = passcode
+        env["STICKLLM_VAULT_PASS2"] = passcode2
+        # Sparse logical size may exceed free; UI CREATE-VAULT implies SPACE-OK awareness.
+        env["STICKLLM_VAULT_CONFIRM_SPACE"] = (
+            "SPACE-OK" if space_ok in ("", "SPACE-OK") else space_ok
+        )
+        # Wipe stays off unless explicitly requested at setup.
+        env.setdefault("STICKLLM_VAULT_WIPE_AFTER", "0")
+        try:
+            p = subprocess.run(
+                [script, "setup", path, size_gb],
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=False,
+                env=env,
+            )
+            out = (p.stdout or "")
+            recovery = ""
+            for line in out.splitlines():
+                if line.startswith("RECOVERY_PHRASE:"):
+                    recovery = line.split(":", 1)[1].strip()
+            r = {
+                "ok": p.returncode == 0,
+                "code": p.returncode,
+                "stdout": out[-6000:],
+                "stderr": (p.stderr or "")[-3000:],
+                "recovery_phrase": recovery if p.returncode == 0 else "",
+                "path": path,
+                "size_gb": size_gb,
+            }
+        except Exception as e:
+            r = {"ok": False, "error": str(e)}
+        r.update(read_json(RUN / "vault.json"))
+        return r
     if cmd == "grow":
         add_gb = str(params.get("add_gb") or "").strip()
+        confirm = str(params.get("confirm") or "")
         if not add_gb:
             return {"ok": False, "error": "add_gb required"}
-        return {
-            "ok": False,
-            "error": (
-                "grow requires interactive confirm on the stick: "
-                f"sudo stickllm-vault grow {add_gb}"
-            ),
-        }
+        if confirm != "GROW-VAULT":
+            return {"ok": False, "error": "typed confirm must be GROW-VAULT"}
+        env = os.environ.copy()
+        env["STICKLLM_VAULT_CONFIRM"] = "GROW-VAULT"
+        try:
+            p = subprocess.run(
+                [script, "grow", add_gb],
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=False,
+                env=env,
+            )
+            r = {
+                "ok": p.returncode == 0,
+                "code": p.returncode,
+                "stdout": (p.stdout or "")[-4000:],
+                "stderr": (p.stderr or "")[-2000:],
+            }
+        except Exception as e:
+            r = {"ok": False, "error": str(e)}
+        r.update(read_json(RUN / "vault.json"))
+        return r
     if cmd == "list-movable":
         r = sh([script, "list-movable"], timeout=30)
         try:

@@ -134,19 +134,32 @@
           <button type="button" id="actSettingsRefresh" class="actionBtn">Refresh</button>
         </div>
         <p class="modelsHint">
-          Setup over SSH (typed <code>CREATE-VAULT</code> required; no partition flow):
-          <code>sudo stickllm-vault setup /path/to/mounted/folder 32</code>
-          — creates <code>models/</code> if needed + expandable <code>stickllm-vault.img</code>.
-          Existing model files are kept unless you later run <code>move-model</code>.
+          Create a new folder or select an existing mounted folder (e.g. one that already
+          has models). StickLLM only creates <code>models/</code> if missing and a new
+          expandable <code>stickllm-vault.img</code> blob — never formats your drive.
         </p>
-        <label class="fieldLabel">Vault folder path (must already be mounted &amp; writable)
+        <label class="fieldLabel">Vault folder path (mounted &amp; writable; click a mount below to fill)
           <input id="vaultSetupPath" type="text" autocomplete="off" placeholder="/mnt/host/StickLLM" />
         </label>
         <label class="fieldLabel">Initial blob size (GiB)
           <input id="vaultSetupSize" type="number" min="1" max="2000" value="8" />
         </label>
-        <button type="button" id="actVaultSetupHint" class="actionBtn">Show setup command</button>
+        <label class="fieldLabel">New vault passcode (min 8)
+          <input id="vaultSetupPass" type="password" autocomplete="new-password" placeholder="Passcode" />
+        </label>
+        <label class="fieldLabel">Confirm passcode
+          <input id="vaultSetupPass2" type="password" autocomplete="new-password" placeholder="Confirm" />
+        </label>
+        <label class="fieldLabel">Type CREATE-VAULT to confirm
+          <input id="vaultSetupConfirm" type="text" autocomplete="off" placeholder="CREATE-VAULT" />
+        </label>
+        <button type="button" id="actVaultSetup" class="actionBtn">Create vault here</button>
         <p id="vaultSetupHint" class="modelsHint"></p>
+        <pre id="vaultRecovery" class="modelsBody" style="max-height:6rem;overflow:auto;display:none"></pre>
+        <label class="fieldLabel" id="vaultSavedLabel" hidden>Type SAVED after writing the recovery phrase
+          <input id="vaultSetupSaved" type="text" autocomplete="off" placeholder="SAVED" />
+        </label>
+        <button type="button" id="actVaultSetupFinish" class="actionBtn" hidden>Finish setup (SAVED)</button>
         <label class="fieldLabel">Unlock passcode
           <input id="vaultPass" type="password" autocomplete="off" placeholder="Vault passcode" />
         </label>
@@ -154,7 +167,7 @@
         <label class="fieldLabel">Grow blob by (GiB)
           <input id="vaultGrowGb" type="number" min="1" max="500" value="8" />
         </label>
-        <button type="button" id="actVaultGrowHint" class="actionBtn">Show grow command</button>
+        <button type="button" id="actVaultGrow" class="actionBtn">Grow vault</button>
         <label class="fieldLabel">Wrong-PIN wipe after N tries (0 = off, default)
           <input id="vaultWipeN" type="number" min="0" max="10" value="0" />
         </label>
@@ -213,6 +226,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=21"></script>
+  <script src="app.js?v=22"></script>
 </body>
 </html>

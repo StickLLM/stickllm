@@ -1,6 +1,5 @@
-# Create a disposable QEMU virtual disk FILE with one ext4 filesystem for vault SSH tests.
+# Create a disposable QEMU virtual disk FILE with one ext4 filesystem for vault tests.
 # Never touches host partition tables. Never writes under out/v0.3.2/.
-# Output: out/_qemu-vault/vault-testdisk.img (+ README). Attach as second virtio disk later.
 param(
   [int]$SizeGb = 8,
   [string]$OutDir = ""
@@ -10,7 +9,6 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if (-not $OutDir) { $OutDir = Join-Path $Root "out\_qemu-vault" }
 
-# Hard refuse shipping ISO dirs
 $forbidden = @(
   (Join-Path $Root "out\v0.3.2"),
   (Join-Path $Root "out\v0.3.1"),
@@ -28,24 +26,35 @@ $Readme = Join-Path $OutDir "README.txt"
 if ($SizeGb -lt 2 -or $SizeGb -gt 64) { throw "SizeGb must be 2-64 for the disposable test disk" }
 
 Write-Host "Creating sparse test disk (Docker loop+ext4) → $Img"
-# Build image inside Debian container: truncate sparse file, losetup, mkfs.ext4, detach.
-# No partition table rewrite on the Windows host.
-docker run --rm --privileged `
-  -v "${OutDir}:/out" `
-  debian:bookworm `
-  bash -lc @"
+
+$inner = @'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq e2fsprogs util-linux >/dev/null
-IMG=/out/vault-testdisk.img
-rm -f \"\$IMG\"
-truncate -s ${SizeGb}G \"\$IMG\"
-LOOP=\$(losetup -f --show \"\$IMG\")
-mkfs.ext4 -F -L STICKVAULTTEST \"\$LOOP\"
-losetup -d \"\$LOOP\"
-ls -lh \"\$IMG\"
-"@
+# Build on container local disk first (OneDrive/Windows bind mounts often reject sparse truncate).
+IMG=/tmp/vault-testdisk.img
+rm -f "$IMG"
+truncate -s __SIZE__G "$IMG"
+LOOP=$(losetup -f --show "$IMG")
+mkfs.ext4 -F -L STICKVAULTTEST "$LOOP"
+losetup -d "$LOOP"
+ls -lh "$IMG"
+rm -f /out/vault-testdisk.img /out/vault-testdisk.img.tmp
+cp "$IMG" /out/vault-testdisk.img.tmp
+mv -f /out/vault-testdisk.img.tmp /out/vault-testdisk.img
+ls -lh /out/vault-testdisk.img
+'@
+$inner = $inner.Replace('__SIZE__', "$SizeGb")
+$innerPath = Join-Path $OutDir "_mkdisk.sh"
+[System.IO.File]::WriteAllText($innerPath, ($inner -replace "`r`n", "`n"))
+
+docker run --rm --privileged `
+  -v "${OutDir}:/out" `
+  debian:bookworm `
+  bash /out/_mkdisk.sh
+if ($LASTEXITCODE -ne 0) { throw "mkdisk docker failed exit=$LASTEXITCODE" }
+if (-not (Test-Path $Img)) { throw "mkdisk did not produce $Img" }
 
 @"
 StickLLM QEMU vault test disk (disposable FILE)
@@ -57,19 +66,7 @@ Host partitions: NEVER touched.
 QEMU attach example (second disk; -cpu host when available):
   -drive file=$Img,if=virtio,format=raw,cache=writeback
 
-Inside guest (after boot Term/Test):
-  sudo mkdir -p /mnt/vault-test
-  sudo mount -t ext4 /dev/vdb /mnt/vault-test   # or /dev/vda if only this disk
-  # If the whole disk is ext4 with no partition table, mount the disk node directly.
-  sudo stickllm-vault setup /mnt/vault-test/StickLLM 2
-  sudo stickllm-vault status
-  sudo stickllm-vault lock
-  sudo stickllm-vault unlock
-  sudo stickllm-vault grow 1
-
-Safety: setup only creates models/ + stickllm-vault.img under the chosen folder.
-Never formats the host OS drive. Wipe this image anytime: delete $Img
+Proof (no full ISO): scripts/vault-qemu-proof.ps1
 "@ | Set-Content $Readme -Encoding utf8
 
 Write-Host "OK $Img"
-Write-Host "See $Readme"

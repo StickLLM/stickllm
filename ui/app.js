@@ -940,11 +940,101 @@
   });
   document.getElementById("actChatSave")?.addEventListener("click", () => saveCurrentChat());
   document.getElementById("chatsClose")?.addEventListener("click", () => chatsDialog?.close());
-  document.getElementById("actVaultGrowHint")?.addEventListener("click", () => {
-    const gb = document.getElementById("vaultGrowGb")?.value || "8";
+  document.getElementById("actVaultSetup")?.addEventListener("click", async () => {
+    const path = (document.getElementById("vaultSetupPath")?.value || "").trim();
+    const size = String(document.getElementById("vaultSetupSize")?.value || "8");
+    const pass = document.getElementById("vaultSetupPass")?.value || "";
+    const pass2 = document.getElementById("vaultSetupPass2")?.value || "";
+    const confirm = (document.getElementById("vaultSetupConfirm")?.value || "").trim();
     const hint = document.getElementById("vaultSetupHint");
-    if (hint) {
-      hint.textContent = `SSH: sudo stickllm-vault grow ${gb}  (typed GROW-VAULT; free-space checked)`;
+    const recoveryEl = document.getElementById("vaultRecovery");
+    if (!path) {
+      if (hint) hint.textContent = "Enter or select a mounted folder path.";
+      return;
+    }
+    if (path.startsWith("/dev/") || path.startsWith("\\\\.\\")) {
+      if (hint) hint.textContent = "Refusing block device — pick a mounted folder.";
+      return;
+    }
+    if (confirm !== "CREATE-VAULT") {
+      if (hint) hint.textContent = "Type CREATE-VAULT exactly to confirm (never formats your drive).";
+      return;
+    }
+    if (pass.length < 8 || pass !== pass2) {
+      if (hint) hint.textContent = "Passcode must match and be at least 8 characters.";
+      return;
+    }
+    if (hint) hint.textContent = "Creating vault blob (non-destructive)…";
+    try {
+      const res = await control("vault_setup", {
+        path,
+        size_gb: size,
+        confirm: "CREATE-VAULT",
+        recovery_confirm: "SHOW-ONCE",
+        passcode: pass,
+        passcode2: pass2,
+        space_confirm: "SPACE-OK",
+      });
+      if (!res.ok) throw new Error(res.error || res.stderr || "setup failed");
+      if (document.getElementById("vaultSetupPass")) document.getElementById("vaultSetupPass").value = "";
+      if (document.getElementById("vaultSetupPass2")) document.getElementById("vaultSetupPass2").value = "";
+      if (document.getElementById("vaultSetupConfirm")) document.getElementById("vaultSetupConfirm").value = "";
+      const phrase = res.recovery_phrase || "";
+      if (recoveryEl) {
+        recoveryEl.style.display = "block";
+        recoveryEl.textContent = phrase
+          ? `RECOVERY PHRASE (shown once — write it down):\n${phrase}`
+          : "Vault created. (Recovery phrase missing from response — check stick logs.)";
+      }
+      const savedLabel = document.getElementById("vaultSavedLabel");
+      const finishBtn = document.getElementById("actVaultSetupFinish");
+      if (savedLabel) savedLabel.hidden = false;
+      if (finishBtn) finishBtn.hidden = false;
+      if (hint) {
+        hint.textContent =
+          "Vault created and unlocked. Write the recovery phrase, type SAVED, then Finish.";
+      }
+      addBubble("system", "Vault created — write down the recovery phrase in Settings.");
+      await setSessionMode("vault");
+      if (settingsDialog?.open) await openSettings();
+    } catch (e) {
+      if (hint) hint.textContent = `Setup failed: ${e.message}`;
+      addBubble("system", `Vault setup failed: ${e.message}`);
+    }
+  });
+  document.getElementById("actVaultSetupFinish")?.addEventListener("click", () => {
+    const saved = (document.getElementById("vaultSetupSaved")?.value || "").trim();
+    const hint = document.getElementById("vaultSetupHint");
+    const recoveryEl = document.getElementById("vaultRecovery");
+    if (saved !== "SAVED") {
+      if (hint) hint.textContent = "Type SAVED after writing the recovery phrase.";
+      return;
+    }
+    if (recoveryEl) {
+      recoveryEl.textContent = "(recovery phrase cleared from this screen)";
+    }
+    const savedLabel = document.getElementById("vaultSavedLabel");
+    const finishBtn = document.getElementById("actVaultSetupFinish");
+    if (savedLabel) savedLabel.hidden = true;
+    if (finishBtn) finishBtn.hidden = true;
+    if (document.getElementById("vaultSetupSaved")) document.getElementById("vaultSetupSaved").value = "";
+    if (hint) hint.textContent = "Recovery phrase acknowledged. Keep your written copy safe.";
+    addBubble("system", "Recovery phrase acknowledged.");
+  });
+  document.getElementById("actVaultGrow")?.addEventListener("click", async () => {
+    const gb = String(document.getElementById("vaultGrowGb")?.value || "8");
+    const typed = window.prompt(`Type GROW-VAULT to expand the blob by ${gb} GiB (free space checked):`, "");
+    if (typed !== "GROW-VAULT") {
+      addBubble("system", "Grow aborted.");
+      return;
+    }
+    try {
+      const res = await control("vault_grow", { add_gb: gb, confirm: "GROW-VAULT" });
+      if (!res.ok) throw new Error(res.error || res.stderr || "grow failed");
+      addBubble("system", `Vault grew by ${gb} GiB.`);
+      if (settingsDialog?.open) await openSettings();
+    } catch (e) {
+      addBubble("system", `Grow failed: ${e.message}`);
     }
   });
   document.getElementById("actVaultWipe")?.addEventListener("click", async () => {
@@ -1021,48 +1111,57 @@
     if (el) el.textContent = "Read-only probe…";
     try {
       const res = await control("vault_disks");
-      const lines = [];
-      lines.push(res.safety || "Creates a file in a folder you choose. Never formats your drive.");
-      lines.push("");
+      if (!el) return;
+      el.innerHTML = "";
+      const safety = document.createElement("div");
+      safety.textContent =
+        res.safety || "Creates a file in a folder you choose. Never formats your drive.";
+      el.appendChild(safety);
       const mounts = res.mounts || [];
-      if (mounts.length) {
-        lines.push("Mounted folders:");
-        for (const m of mounts) {
-          const flag = m.writable_candidate ? "OK" : "REFUSE";
-          const why = m.refuse_reason ? ` — ${m.refuse_reason}` : "";
-          lines.push(`  [${flag}] ${m.path}  ${m.fstype || "?"}  ${m.source || ""}${why}`);
+      const head = document.createElement("div");
+      head.textContent = mounts.length
+        ? "Mounted folders (click OK to select):"
+        : "No candidate mounts (unlock host BitLocker/LUKS in the host OS first).";
+      el.appendChild(head);
+      for (const m of mounts) {
+        const row = document.createElement("div");
+        const flag = m.writable_candidate ? "OK" : "REFUSE";
+        const why = m.refuse_reason ? ` — ${m.refuse_reason}` : "";
+        row.textContent = `[${flag}] ${m.path}  ${m.fstype || "?"}  ${m.source || ""}${why}`;
+        if (m.writable_candidate) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "actionBtn";
+          btn.textContent = "Select";
+          btn.addEventListener("click", () => {
+            const input = document.getElementById("vaultSetupPath");
+            if (input) {
+              // Prefer a StickLLM subfolder under the mount (create if missing at setup).
+              const base = String(m.path || "").replace(/\/$/, "");
+              input.value = `${base}/StickLLM`;
+            }
+            const hint = document.getElementById("vaultSetupHint");
+            if (hint) {
+              hint.textContent = `Selected ${m.path} — path set to ${m.path}/StickLLM (existing models folder OK if you edit the path).`;
+            }
+          });
+          row.appendChild(document.createTextNode(" "));
+          row.appendChild(btn);
         }
-      } else {
-        lines.push("No candidate mounts (unlock host BitLocker/LUKS in the host OS first).");
+        el.appendChild(row);
       }
-      lines.push("");
-      lines.push("Disks (informational only — never write targets):");
+      const diskHead = document.createElement("div");
+      diskHead.textContent = "Disks (informational only — never write targets):";
+      el.appendChild(diskHead);
       for (const d of res.disks || []) {
+        const row = document.createElement("div");
         const warn = d.ambiguous_or_encrypted ? " [encrypted/complex — hands off]" : "";
-        lines.push(`  ${d.path}  ${d.size_gb} GiB  ${d.model || ""}${warn}`);
+        row.textContent = `${d.path}  ${d.size_gb} GiB  ${d.model || ""}${warn}`;
+        el.appendChild(row);
       }
-      if (el) el.textContent = lines.join("\n");
     } catch (e) {
       if (el) el.textContent = `Error: ${e.message}`;
     }
-  });
-  document.getElementById("actVaultSetupHint")?.addEventListener("click", () => {
-    const path = (document.getElementById("vaultSetupPath")?.value || "").trim();
-    const size = (document.getElementById("vaultSetupSize")?.value || "8").trim();
-    const hint = document.getElementById("vaultSetupHint");
-    if (!hint) return;
-    if (!path) {
-      hint.textContent = "Enter a mounted folder path first (not /dev/sdX).";
-      return;
-    }
-    if (path.startsWith("/dev/") || path.startsWith("\\\\.\\")) {
-      hint.textContent =
-        "Refusing block device path. Unlock BitLocker/host LUKS in the host OS, mount a normal folder, then use that path.";
-      return;
-    }
-    hint.textContent =
-      `SSH (interactive confirms): sudo stickllm-vault setup ${path} ${size}` +
-      `  — Creates a file in a folder you choose. Never formats your drive.`;
   });
   document.getElementById("actVaultUnlock")?.addEventListener("click", async () => {
     const pass = document.getElementById("vaultPass")?.value || "";

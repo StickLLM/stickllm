@@ -246,9 +246,28 @@ free_bytes_for_path() {
 
 confirm_phrase() {
   local expect="$1" prompt="$2"
-  local got
-  read -r -p "$prompt" got
+  local got=""
+  case "$expect" in
+    CREATE-VAULT|GROW-VAULT|MOVE-MODEL) got="${STICKLLM_VAULT_CONFIRM:-}" ;;
+    SPACE-OK) got="${STICKLLM_VAULT_CONFIRM_SPACE:-}" ;;
+    SAVED) got="${STICKLLM_VAULT_CONFIRM_SAVED:-}" ;;
+    WIPE-OK) got="${STICKLLM_VAULT_CONFIRM_WIPE:-${STICKLLM_VAULT_CONFIRM:-}}" ;;
+  esac
+  if [[ "$got" != "$expect" ]]; then
+    if [[ -t 0 ]]; then
+      read -r -p "$prompt" got
+    else
+      die "confirmation mismatch — aborted (no disk changes); expected $expect via env or TTY"
+    fi
+  fi
   [[ "$got" == "$expect" ]] || die "confirmation mismatch — aborted (no disk changes)"
+}
+
+# Passphrase on stdin via --key-file=- (no trailing newline; reliable across cryptsetup).
+luks_pass() {
+  local pass="$1"
+  shift
+  printf '%s' "$pass" | cryptsetup "$@" --key-file=-
 }
 
 # --- Read-only disk probe (never writes) -----------------------------------
@@ -472,6 +491,8 @@ cmd_setup() {
   # Free space check — never fill disk; reserve RESERVE_MIB
   local parent free need reserve
   parent="$root"
+  # If root does not exist yet on parent, measure parent
+  [[ -d "$parent" ]] || parent="$(dirname "$root")"
   free="$(free_bytes_for_path "$parent")"
   [[ -n "$free" && "$free" =~ ^[0-9]+$ ]] || die "could not determine free space — refuse (fail-closed)"
   need=$((size_gb * 1024 * 1024 * 1024))
@@ -493,8 +514,17 @@ cmd_setup() {
   fi
   WIPE_AFTER="$wipe_after"
 
-  read -r -s -p "Vault passcode: " PASS; echo
-  read -r -s -p "Confirm passcode: " PASS2; echo
+  local PASS="${STICKLLM_VAULT_PASS:-}" PASS2="${STICKLLM_VAULT_PASS2:-}"
+  if [[ -z "$PASS" ]]; then
+    read -r -s -p "Vault passcode: " PASS; echo
+  fi
+  if [[ -z "$PASS2" ]]; then
+    if [[ -n "${STICKLLM_VAULT_PASS:-}" ]]; then
+      PASS2="$PASS"
+    else
+      read -r -s -p "Confirm passcode: " PASS2; echo
+    fi
+  fi
   [[ "$PASS" == "$PASS2" ]] || die "passcodes do not match"
   [[ ${#PASS} -ge 8 ]] || die "passcode must be at least 8 characters"
 
@@ -503,6 +533,7 @@ cmd_setup() {
   echo
   echo "=== RECOVERY PHRASE (shown once — write it down) ==="
   echo "$recovery"
+  echo "RECOVERY_PHRASE: $recovery"
   echo "===================================================="
   confirm_phrase "SAVED" "Type SAVED after writing the recovery phrase: "
 
@@ -519,19 +550,22 @@ cmd_setup() {
   is_block_device_path "$blob" && die "internal error: blob path looks like a device"
   truncate -s "${size_gb}G" "$blob" || die "truncate failed"
 
-  # LUKS format the FILE only
-  printf '%s\n' "$PASS" | cryptsetup luksFormat \
-    --type luks2 \
-    --pbkdf argon2id \
-    --batch-mode \
-    "$blob" - || { rm -f "$blob"; die "luksFormat failed — blob removed"; }
+  # LUKS format the FILE only (never a block device)
+  luks_pass "$PASS" luksFormat --type luks2 --pbkdf argon2id --batch-mode "$blob" \
+    || { rm -f "$blob"; die "luksFormat failed — blob removed"; }
 
-  printf '%s\n' "$PASS" | cryptsetup luksAddKey --batch-mode "$blob" "$keyfile" - || true
+  mkdir -p "$META_DIR"
+  # Optional stick keyfile slot (best-effort)
+  luks_pass "$PASS" luksAddKey --batch-mode "$blob" "$keyfile" || true
   local rec_key
   rec_key="$(printf '%s' "$recovery" | sha256sum | awk '{print $1}')"
-  printf '%s\n%s\n' "$PASS" "$rec_key" | cryptsetup luksAddKey --batch-mode "$blob" - || true
+  # Recovery slot: unlock with pass, add hashed phrase as new passphrase file
+  printf '%s' "$rec_key" >"$META_DIR/.rec.key.$$"
+  chmod 600 "$META_DIR/.rec.key.$$"
+  luks_pass "$PASS" luksAddKey --batch-mode "$blob" "$META_DIR/.rec.key.$$" || true
+  rm -f "$META_DIR/.rec.key.$$"
 
-  printf '%s\n' "$PASS" | cryptsetup open --type luks2 "$blob" "$MAPPER_NAME" - \
+  luks_pass "$PASS" open --type luks2 "$blob" "$MAPPER_NAME" \
     || { rm -f "$blob"; die "cryptsetup open failed"; }
   mkfs.ext4 -F -L STICKVAULT "$MAPPER" || die "mkfs.ext4 failed on mapper (blob file only)"
   mkdir -p "$MNT_POINT"
@@ -623,7 +657,7 @@ cmd_unlock() {
     read -r -s -p "Vault passcode: " pass; echo
   fi
   local opened=0
-  if printf '%s\n' "$pass" | cryptsetup open --type luks2 "$tgt" "$MAPPER_NAME" - 2>/dev/null; then
+  if luks_pass "$pass" open --type luks2 "$tgt" "$MAPPER_NAME" 2>/dev/null; then
     opened=1
   fi
   if [[ "$opened" -ne 1 ]]; then
