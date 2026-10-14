@@ -17,9 +17,17 @@ user ALL=(ALL) NOPASSWD:ALL
 EOF
 chmod 440 /etc/sudoers.d/stickllm-user || true
 
+# Strip CRLF from overlay scripts (Windows checkout → exec 127 on Linux).
+# Live root is writable overlay; ignore failures on pure squashfs.
+for _f in /usr/local/bin/stickllm-*; do
+  [[ -f "$_f" ]] || continue
+  sed -i 's/\r$//' "$_f" 2>/dev/null || true
+done
+unset _f
+
 cat >/etc/motd <<'EOF'
 
-  StickLLM v0.3.1
+  StickLLM v0.3.2
   tty1 = loading + LAN URL + PAIR CODE
   tty2 = login (Ctrl+Alt+F2)   SSH = Term menu only
   No LAN?  stickllm-wifi-setup

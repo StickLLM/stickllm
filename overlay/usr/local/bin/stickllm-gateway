@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -24,9 +25,13 @@ UA = "StickLLM/0.3 (+local privacy USB; StickLLM UI only)"
 RUN_DIR = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 AUTH_PATH = RUN_DIR / "auth.json"
 PAIR_RATE_PATH = RUN_DIR / "pair-rate.json"
+REMINT_RATE_PATH = RUN_DIR / "remint-rate.json"
+PAIR_REMINT_PATH = RUN_DIR / "pair-remint.json"
 PAIR_MAX_ATTEMPTS = 8
 PAIR_WINDOW_SECS = 300
 PAIR_CODE_TTL_SECS = 900
+REMINT_MAX = 10
+REMINT_WINDOW_SECS = 300
 CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
@@ -178,7 +183,7 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         code = read_text_safe(RUN_DIR / "pair-code.txt")
         auth = load_auth()
         if auth.get("paired"):
-            out["pair_code"] = "(paired — reboot clears)"
+            out["pair_code"] = "(paired — Pair remints)"
             out["pair_state"] = "paired"
         elif code:
             out["pair_code"] = code
@@ -186,6 +191,10 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         else:
             out["pair_code"] = "(starting…)"
             out["pair_state"] = "waiting"
+        remint = read_json_safe(PAIR_REMINT_PATH) or {}
+        rid = str(remint.get("id") or "").strip()
+        if rid:
+            out["remint_id"] = rid
     else:
         out["how"] = f"Open {url} and enter the PAIR CODE from the stick screen."
     return out
@@ -251,6 +260,96 @@ def code_expired(auth: dict) -> bool:
     if created <= 0:
         return False
     return (time.time() - created) > PAIR_CODE_TTL_SECS
+
+
+def note_pair_remint(code: str) -> str:
+    """Record remint so the on-stick chat UI can announce the new code."""
+    rid = secrets.token_hex(8)
+    doc = {"id": rid, "code": code, "at": int(time.time())}
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        PAIR_REMINT_PATH.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+        os.chmod(PAIR_REMINT_PATH, 0o644)
+    except Exception:
+        pass
+    return rid
+
+
+def remint_rate_blocked() -> tuple[bool, str]:
+    try:
+        doc = json.loads(REMINT_RATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        doc = {"at": []}
+    now = time.time()
+    recent = [t for t in doc.get("at") or [] if now - float(t) < REMINT_WINDOW_SECS]
+    if len(recent) >= REMINT_MAX:
+        oldest = min(recent) if recent else now
+        wait = max(1, int(REMINT_WINDOW_SECS - (now - oldest)))
+        return True, f"Too many pair remints — wait {wait}s"
+    return False, ""
+
+
+def remint_rate_mark() -> None:
+    try:
+        doc = json.loads(REMINT_RATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        doc = {"at": []}
+    now = time.time()
+    recent = [t for t in doc.get("at") or [] if now - float(t) < REMINT_WINDOW_SECS]
+    recent.append(now)
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        REMINT_RATE_PATH.write_text(json.dumps({"at": recent}) + "\n", encoding="utf-8")
+        os.chmod(REMINT_RATE_PATH, 0o600)
+    except Exception:
+        pass
+
+
+def remint_pair_code() -> tuple[str, str]:
+    """Invalidate any paired LAN session and mint a fresh pair code.
+
+    Returns (code, remint_id). remint_id is for the stick chat to announce.
+    """
+    code = ""
+    pair_bin = Path("/usr/local/bin/stickllm-pair")
+    if pair_bin.is_file():
+        try:
+            out = subprocess.check_output(
+                [str(pair_bin), "--force"],
+                text=True,
+                timeout=10,
+                env={**os.environ, "STICKLLM_RUN": str(RUN_DIR)},
+            )
+            code = (out.strip().splitlines() or [""])[-1].strip()
+            if not re.fullmatch(r"[0-9]{4,8}", code):
+                code = ""
+        except Exception:
+            code = ""
+    if not code:
+        # Inline fallback (same shape as stickllm-pair --force).
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        doc = {
+            "version": 2,
+            "created": int(time.time()),
+            "code_hash": hashlib.sha256(code.encode()).hexdigest(),
+            "token_hash": "",
+            "paired": False,
+            "require_pair": True,
+        }
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        save_auth(doc)
+        (RUN_DIR / "pair-code.txt").write_text(code + "\n", encoding="utf-8")
+        try:
+            os.chmod(RUN_DIR / "pair-code.txt", 0o644)
+        except Exception:
+            pass
+        for stale in ("api-key.txt", "pair-rate.json"):
+            try:
+                (RUN_DIR / stale).unlink(missing_ok=True)
+            except Exception:
+                pass
+    rid = note_pair_remint(code)
+    return code, rid
 
 
 def uplink_ok() -> bool:
@@ -469,7 +568,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "gateway": "ok",
                 "web": online,
                 "online": online,
-                "version": "0.3.1",
+                "version": "0.3.2",
                 "bind": f"{HOST}:{PORT}",
                 "llama": llama,
                 "llama_ok": llama_ok,
@@ -542,6 +641,47 @@ class Handler(SimpleHTTPRequestHandler):
             req = json.loads(raw.decode() or "{}")
         except Exception:
             self._json(400, {"error": "bad json"})
+            return
+
+        if path == "/api/pair/remint":
+            # StickLLM UI only (stick or LAN). Code itself is never returned over LAN —
+            # the stick/kiosk chat announces it via remint_id + pair banner.
+            if not stickllm_ui_client(self.headers):
+                self._json(
+                    403,
+                    {
+                        "error": "ui_only",
+                        "message": "Pair remint is only available from the StickLLM UI.",
+                    },
+                )
+                return
+            blocked, reason = remint_rate_blocked()
+            if blocked:
+                self._json(429, {"error": "rate_limited", "message": reason})
+                return
+            try:
+                code, remint_id = remint_pair_code()
+            except Exception as e:
+                self._json(500, {"error": "remint_failed", "message": str(e)})
+                return
+            remint_rate_mark()
+            body: dict = {
+                "ok": True,
+                "remint_id": remint_id,
+                "message": (
+                    "Unpaired LAN browsers and minted a new pair code. "
+                    "Read the code on the stick screen chat, then enter it here."
+                    if not self._is_loopback()
+                    else (
+                        "Unpaired LAN browsers and minted a new pair code. "
+                        "Enter it on phone/desktop at the LAN URL."
+                    )
+                ),
+            }
+            # Plaintext code only on the stick itself (same as banner / chat).
+            if self._is_loopback():
+                body["pair_code"] = code
+            self._json(200, body)
             return
 
         if path == "/api/pair":

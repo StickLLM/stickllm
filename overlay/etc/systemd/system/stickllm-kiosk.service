@@ -15,7 +15,9 @@ Type=simple
 # Breadcrumb even if script fails to parse — proves unit started.
 ExecStartPre=/usr/bin/mkdir -p /run/stickllm/kiosk-profile /run/user/0
 ExecStartPre=/bin/sh -c 'printf "STICKLLM_KIOSK_UNIT_START\n" >/dev/ttyS0 2>/dev/null; printf "STICKLLM_KIOSK_UNIT_START\n" >>/run/stickllm/kiosk.log 2>/dev/null; true'
-ExecStart=/usr/local/bin/stickllm-kiosk
+# Windows checkout can ship CRLF shebangs → execve 127; strip before launch.
+ExecStartPre=/bin/sh -c 'sed -i "s/\\r$//" /usr/local/bin/stickllm-kiosk 2>/dev/null; true'
+ExecStart=/bin/bash /usr/local/bin/stickllm-kiosk
 Restart=on-failure
 RestartSec=20
 StandardInput=tty

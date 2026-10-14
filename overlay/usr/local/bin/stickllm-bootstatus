@@ -162,18 +162,27 @@ lan_ip() {
 
 ensure_network() {
   # Kick NM/DHCP while stuck on Network Loading - never block the status loop.
+  # nmcli device connect / connection up can hang ~90–120s on missing PHY; always timeout.
   systemctl start --no-block NetworkManager.service 2>/dev/null || true
   if command -v nmcli >/dev/null 2>&1; then
-    nmcli networking on >/dev/null 2>&1 || true
-    nmcli device connect "$(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null \
-      | awk -F: '$2=="ethernet" && $3!="connected"{print $1; exit}')" >/dev/null 2>&1 || true
-    # Autoconnect any ethernet that is disconnected/unavailable.
-    while IFS=: read -r dev typ state; do
-      [[ "$typ" == "ethernet" ]] || continue
-      [[ "$state" == "connected" ]] && continue
-      nmcli device set "$dev" managed yes >/dev/null 2>&1 || true
-      nmcli device connect "$dev" >/dev/null 2>&1 || true
-    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    timeout 3 nmcli networking on >/dev/null 2>&1 || true
+    local have_ip=0
+    [[ -n "$(lan_ip)" ]] && have_ip=1
+    # Only attempt blocking connects when we still need an address.
+    if [[ "$have_ip" -eq 0 ]]; then
+      local eth
+      eth="$(timeout 3 nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null \
+        | awk -F: '$2=="ethernet" && $3!="connected"{print $1; exit}' || true)"
+      if [[ -n "${eth:-}" ]]; then
+        timeout 8 nmcli device connect "$eth" >/dev/null 2>&1 || true
+      fi
+      while IFS=: read -r dev typ state; do
+        [[ "$typ" == "ethernet" ]] || continue
+        [[ "$state" == "connected" ]] && continue
+        timeout 3 nmcli device set "$dev" managed yes >/dev/null 2>&1 || true
+        timeout 8 nmcli device connect "$dev" >/dev/null 2>&1 || true
+      done < <(timeout 3 nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+    fi
     # Restore WiFi profile persisted on STICKLLM-DATA (Local Web / WiFi P0).
     if [[ -d /mnt/stickllm-data/network ]]; then
       for f in /mnt/stickllm-data/network/*.nmconnection; do
@@ -182,14 +191,16 @@ ensure_network() {
         install -d -m 755 /etc/NetworkManager/system-connections
         install -m 600 "$f" "/etc/NetworkManager/system-connections/${base}" 2>/dev/null || true
       done
-      nmcli connection reload >/dev/null 2>&1 || true
-      nmcli connection up stickllm-wifi >/dev/null 2>&1 || true
+      timeout 3 nmcli connection reload >/dev/null 2>&1 || true
+      if [[ "$have_ip" -eq 0 ]]; then
+        timeout 8 nmcli connection up stickllm-wifi >/dev/null 2>&1 || true
+      fi
     fi
     while IFS=: read -r dev typ state; do
       [[ "$typ" == "wifi" ]] || continue
       [[ "$state" == "connected" ]] && continue
-      nmcli device set "$dev" managed yes >/dev/null 2>&1 || true
-    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+      timeout 3 nmcli device set "$dev" managed yes >/dev/null 2>&1 || true
+    done < <(timeout 3 nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
   fi
 }
 
@@ -472,10 +483,14 @@ draw_connect_steps() {
     say "    This screen: http://127.0.0.1/  (no pair)"
     if [[ -n "${ip:-}" ]]; then
       say "    LAN IP:     ${ip}"
-      say "    Phone/LAN:  ${SCHEME}://${ip}/  (enter PAIR CODE below)"
+      if [[ "$ready" == "1" ]]; then
+        say "    Phone/LAN:  ${SCHEME}://${ip}/  (enter PAIR CODE below)"
+      else
+        say "    Phone/LAN:  ${SCHEME}://${ip}/  (PAIR CODE on READY screen)"
+      fi
     else
       say "    LAN IP:     (waiting - Ethernet or stickllm-wifi-setup)"
-      say "    Phone/LAN:  ${SCHEME}://<lan-ip>/ + PAIR CODE"
+      say "    Phone/LAN:  ${SCHEME}://<lan-ip>/  (PAIR CODE on READY)"
     fi
     say "    Models / Settings in the StickLLM web UI"
     if [[ "$SSH_ON" -eq 1 ]]; then
@@ -500,12 +515,10 @@ draw_connect_steps() {
       say "               fingerprint ${FP}…"
     fi
   fi
-  if [[ "$ui_ok" -eq 1 ]]; then
-    say "    Then:       open Pair -> enter PAIR CODE below"
-  elif [[ "$ready" == "1" ]]; then
-    say "    Then:       enter PAIR CODE (UI should be up)"
+  if [[ "$ready" == "1" ]]; then
+    say "    Then:       enter PAIR CODE below"
   else
-    say "    Pair code:  shown when chat UI is reachable"
+    say "    Pair code:  shown on the READY screen (not while loading)"
   fi
   if [[ "$mode" == "ssh" || "$SSH_ON" -eq 1 ]]; then
     ssh_password_line "${ip:-}"
@@ -515,18 +528,10 @@ draw_connect_steps() {
 
 draw_pair_box() {
   local ui_ok="${1:-0}"
-  # Local = keyboard chat on this machine; Server/Term use LAN browser + pair.
-  # Chat on-stick UI needs no pair (loopback). Still show code for LAN clients.
-  if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
-    :
-  fi
-  # Do not present a pair code as usable until the gateway/UI answers.
+  # READY-only: never show a placeholder "(UI starting)" box on loading.
+  # Callers must only invoke this from draw_ready (or equivalent READY paint).
   if [[ "$ui_ok" -ne 1 ]]; then
     PAIR_STATE="waiting_ui"
-    say "  ┌─────────────────────────┐"
-    say "  │  PAIR CODE: (UI starting)│"
-    say "  └─────────────────────────┘"
-    say "  Waiting until chat UI answers on this stick…"
     return
   fi
   ensure_pair
@@ -577,6 +582,7 @@ emit_health_breadcrumb() {
 # Rough cold-load budget (seconds) for TIMER ETA - RTX 3090 class, baked GGUF.
 ETA_PHASE=""
 ETA_PHASE_START=0
+ETA_LINE=""
 eta_budget_secs() {
   local phase="$1"
   case "$phase" in
@@ -587,7 +593,8 @@ eta_budget_secs() {
       ;;
     *"Model"*"Loading"*)
       if [[ "$MODEL_NAME" == *3B* ]] || [[ "$MODEL_PATH" == *3b* ]]; then
-        echo 120
+        # Cold CUDA load on 3090 often ~3–5 min (v0.3.1 HW: READY ~307s).
+        echo 240
       else
         # Qwen2.5-7B Q5_K_M cold VRAM load often ~1-3 min on 3090
         echo 180
@@ -597,9 +604,11 @@ eta_budget_secs() {
   esac
 }
 
+# Sets global ETA_LINE (must not run in $(...) — ETA_PHASE state would be lost).
 format_eta_line() {
   local elapsed="$1" phase="$2"
   local budget left mins secs phase_elapsed eta_key
+  ETA_LINE=""
   # Stabilize ETA key so percent ticks don't reset the countdown (ISS-005).
   case "$phase" in
     Downloading*) eta_key="Downloading" ;;
@@ -607,7 +616,6 @@ format_eta_line() {
   esac
   budget="$(eta_budget_secs "$phase")"
   if [[ -z "$budget" || "$budget" -le 0 ]]; then
-    printf ''
     return
   fi
   # Prefer bytes-based ETA from download-progress.json when available.
@@ -630,9 +638,9 @@ PY
       left="$bytes_eta"
       mins=$(( left / 60 ))
       if (( mins >= 1 )); then
-        printf '  |  ETA ~%sm left' "$mins"
+        ETA_LINE="$(printf '  |  ETA ~%sm left' "$mins")"
       else
-        printf '  |  ETA ~%ss left' "$left"
+        ETA_LINE="$(printf '  |  ETA ~%ss left' "$left")"
       fi
       return
     fi
@@ -645,22 +653,21 @@ PY
   (( phase_elapsed < 0 )) && phase_elapsed=0
   left=$(( budget - phase_elapsed ))
   if (( left <= 0 )); then
-    printf '  |  almost ready…'
+    ETA_LINE='  |  almost ready…'
     return
   fi
   if (( left >= 60 )); then
     mins=$(( (left + 30) / 60 ))
-    printf '  |  ETA ~%sm left' "$mins"
+    ETA_LINE="$(printf '  |  ETA ~%sm left' "$mins")"
   else
     secs=$(( (left + 4) / 5 * 5 ))
     (( secs < 5 )) && secs=5
-    printf '  |  ~%ss left' "$secs"
+    ETA_LINE="$(printf '  |  ~%ss left' "$secs")"
   fi
 }
 
 draw() {
   local elapsed="$1" phase="$2" ip="$3" ui_ok="$4" api_ok="$5"
-  local eta_bit=""
 
   printf '%s\n' "$phase" >"$RUN/boot-phase.txt"
   printf '%s\n' "$elapsed" >"$RUN/boot-elapsed.txt"
@@ -669,8 +676,9 @@ draw() {
   clear_tty
   draw_header "StickLLM - loading"
   say "  Status: $phase"
-  eta_bit="$(format_eta_line "$elapsed" "$phase")"
-  say "  TIMER: ${elapsed}s${eta_bit}"
+  ETA_LINE=""
+  format_eta_line "$elapsed" "$phase"
+  say "  TIMER: ${elapsed}s${ETA_LINE}"
   refresh_failed
   if [[ -n "${last_failed:-}" ]]; then say "  FAILED: $last_failed"; fi
   say ""
@@ -679,8 +687,7 @@ draw() {
   say ""
   draw_connect_steps "$ip" "$ui_ok" 0
   say ""
-  draw_pair_box "$ui_ok"
-  say ""
+  # No PAIR CODE box on the first/loading screen — only on READY (draw_ready).
   if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     say "  Loading… console AI chat starts when READY."
   elif [[ "$phase" == "STICKLLM Network Loading" ]]; then
@@ -688,6 +695,7 @@ draw() {
     say "  Chat UI will show as http://<lan-ip>/ once network is up."
   else
     say "  Leave this screen up - TIMER ticks every few seconds."
+    say "  PAIR CODE appears on the READY screen (next)."
   fi
   say ""
   emit_health_breadcrumb "$ip" "$ui_ok" "$api_ok" "$phase"

@@ -12,7 +12,7 @@
     <div class="meta">
       <button type="button" id="modelsBtn" class="linkBtn" title="Models">Models</button>
       <button type="button" id="settingsBtn" class="linkBtn" title="Settings">Settings</button>
-      <button type="button" id="pairBtn" class="linkBtn" title="Pair with stick">Pair</button>
+      <button type="button" id="pairBtn" class="linkBtn" title="Mint a new pair code (shown on stick chat)">Pair</button>
       <label class="webToggle" title="Look up live web results when needed (needs internet)">
         <input type="checkbox" id="webToggle" checked />
         Web
@@ -122,8 +122,9 @@
         <h3>System</h3>
         <p class="modelsHint"><strong>How to connect</strong></p>
         <p id="howToConnect" class="modelsHint">
-          Open the URL on the same LAN and enter the PAIR CODE from the stick screen
-          (see Pair | URL | Model above). On-stick loopback needs no pair.
+          Open the URL on the same LAN and click <strong>Pair</strong> to mint a new code
+          (unpairs old browsers). The stick/kiosk chat shows <strong>New PAIR CODE</strong>;
+          enter it here. Loopback on the stick needs no pair.
         </p>
       </div>
 
@@ -153,6 +154,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=14"></script>
+  <script src="app.js?v=16"></script>
 </body>
 </html>

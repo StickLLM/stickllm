@@ -23,6 +23,7 @@ models/*.sha256
 overlay/opt/stickllm/bin/
 overlay/opt/stickllm/lib/**
 overlay/opt/stickllm/lib-cpu/
+overlay/opt/stickllm/lib-vulkan/
 !overlay/opt/stickllm/lib/
 !overlay/opt/stickllm/lib/.gitkeep
 !overlay/opt/stickllm/lib/stickllm-cuda-register.c

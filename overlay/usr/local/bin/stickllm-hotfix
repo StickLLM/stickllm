@@ -1,0 +1,106 @@
+#!/bin/bash
+# SSH-iterate helper: install overlay scripts/units from /tmp/stickllm-hotfix/, then restart.
+# Intended: scp files into /tmp/stickllm-hotfix/... then: sudo stickllm-hotfix [unit...]
+set -euo pipefail
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root: sudo stickllm-hotfix" >&2
+  exit 1
+fi
+
+SRC="${STICKLLM_HOTFIX_SRC:-/tmp/stickllm-hotfix}"
+if [[ ! -d "$SRC" ]]; then
+  echo "Missing $SRC — copy overlay paths under it first." >&2
+  exit 1
+fi
+
+installed=0
+if [[ -d "$SRC/usr/local/bin" ]]; then
+  shopt -s nullglob
+  for f in "$SRC/usr/local/bin"/stickllm-*; do
+    [[ -f "$f" ]] || continue
+    # Normalize CRLF from Windows scp.
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    install -m 755 "$f" "/usr/local/bin/$(basename "$f")"
+    echo "installed /usr/local/bin/$(basename "$f")"
+    installed=1
+  done
+  shopt -u nullglob
+fi
+
+units_changed=0
+if [[ -d "$SRC/etc/systemd/system" ]]; then
+  shopt -s nullglob
+  for f in "$SRC/etc/systemd/system"/stickllm-*.service; do
+    [[ -f "$f" ]] || continue
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    install -m 644 "$f" "/etc/systemd/system/$(basename "$f")"
+    echo "installed /etc/systemd/system/$(basename "$f")"
+    units_changed=1
+    installed=1
+  done
+  shopt -u nullglob
+fi
+
+if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
+  sed -i 's/\r$//' "$SRC/etc/sudoers.d/stickllm" 2>/dev/null || true
+  install -m 440 "$SRC/etc/sudoers.d/stickllm" /etc/sudoers.d/stickllm
+  if visudo -cf /etc/sudoers.d/stickllm >/dev/null 2>&1; then
+    echo "installed /etc/sudoers.d/stickllm"
+    installed=1
+  else
+    echo "WARNING: sudoers.d/stickllm failed visudo -cf; left previous file" >&2
+  fi
+fi
+
+if [[ -d "$SRC/opt/stickllm/ui" ]]; then
+  mkdir -p /opt/stickllm/ui
+  shopt -s nullglob
+  for f in "$SRC/opt/stickllm/ui"/*; do
+    [[ -f "$f" ]] || continue
+    base="$(basename "$f")"
+    case "$base" in
+      app.js|index.html|style.css|stickllm.json) ;;
+      *) echo "skipping non-UI file: $base" >&2; continue ;;
+    esac
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    install -m 644 "$f" "/opt/stickllm/ui/$base"
+    echo "installed /opt/stickllm/ui/$base"
+    installed=1
+  done
+  shopt -u nullglob
+fi
+
+if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
+  sed -i 's/\r$//' "$SRC/etc/sudoers.d/stickllm" 2>/dev/null || true
+  install -m 440 "$SRC/etc/sudoers.d/stickllm" /etc/sudoers.d/stickllm
+  if ! visudo -cf /etc/sudoers.d/stickllm >/dev/null 2>&1; then
+    echo "ERROR: invalid sudoers after install" >&2
+    exit 1
+  fi
+  echo "installed /etc/sudoers.d/stickllm"
+  installed=1
+fi
+
+if [[ "$installed" -eq 0 ]]; then
+  echo "Nothing to install under $SRC" >&2
+  exit 1
+fi
+
+if [[ "$units_changed" -eq 1 ]]; then
+  systemctl daemon-reload
+fi
+
+if [[ "$#" -gt 0 ]]; then
+  for u in "$@"; do
+    case "$u" in
+      stickllm-*.service|stickllm-*) ;;
+      *) echo "refusing non-stickllm unit: $u" >&2; exit 1 ;;
+    esac
+    systemctl reset-failed "$u" 2>/dev/null || true
+    systemctl restart "$u"
+    echo "restarted $u"
+  done
+else
+  echo "Installed; pass unit names to restart (e.g. stickllm-kiosk.service)."
+fi

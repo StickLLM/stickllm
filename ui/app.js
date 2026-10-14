@@ -38,6 +38,8 @@
   let dlProgressMeta = document.getElementById("dlProgressMeta");
   let lastDownload = {};
   let dlPollTimer = null;
+  // null = not seeded yet (avoid re-announcing an old remint on kiosk refresh)
+  let lastRemintId = null;
 
   function authHeaders(extra = {}) {
     const h = {
@@ -50,8 +52,13 @@
 
   function applyLocalChrome(local) {
     isLocalMode = !!local;
-    // On-stick Chat UI: hide Pair button (loopback needs no pair), keep connect banner.
-    if (pairBtn) pairBtn.hidden = isLocalMode;
+    // Pair always remints a LAN code; stick shows it in chat, LAN opens enter-code.
+    if (pairBtn) {
+      pairBtn.hidden = false;
+      pairBtn.title = isLocalMode
+        ? "Unpair LAN browsers and show a new pair code"
+        : "Mint a new pair code on the stick and enter it here";
+    }
     if (input && isLocalMode) {
       input.placeholder = "Ask anything";
     }
@@ -161,6 +168,75 @@
     return false;
   }
 
+  async function remintPairCode() {
+    const r = await fetch("/api/pair/remint", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: "{}",
+      cache: "no-store",
+    });
+    let j = {};
+    try {
+      j = await r.json();
+    } catch (_) {}
+    if (!r.ok) {
+      throw new Error(j.message || j.error || `remint ${r.status}`);
+    }
+    return j;
+  }
+
+  function announceRemintFromConnect(connect) {
+    if (!isLocalMode) return;
+    const c = connect || {};
+    const rid = String(c.remint_id || "").trim();
+    const code = String(c.pair_code || "").trim();
+    // Seed on first local health so a later LAN remint is not treated as "old".
+    if (lastRemintId === null) {
+      lastRemintId = rid;
+      return;
+    }
+    if (!rid || rid === lastRemintId) return;
+    lastRemintId = rid;
+    if (!/^\d{4,8}$/.test(code)) return;
+    addBubble(
+      "system",
+      `New PAIR CODE: ${code} — open the URL above on phone/desktop and enter this code. Previous paired browsers were unpaired.`
+    );
+    statusLine.textContent = `pair code ${code}`;
+  }
+
+  async function issuePairFromStick() {
+    statusLine.textContent = "minting pair code…";
+    const j = await remintPairCode();
+    const rid = String(j.remint_id || "").trim();
+    if (rid) lastRemintId = rid;
+    const code = String(j.pair_code || "").trim();
+    if (code) {
+      addBubble(
+        "system",
+        `New PAIR CODE: ${code} — open the URL above on phone/desktop and enter this code. Previous paired browsers were unpaired.`
+      );
+      statusLine.textContent = `pair code ${code}`;
+    } else {
+      addBubble("system", "New pair code minted — see Pair banner above.");
+      statusLine.textContent = "pair code ready";
+    }
+    await refreshStatus();
+    return code;
+  }
+
+  async function issuePairFromLan() {
+    statusLine.textContent = "requesting new pair code…";
+    clearPairSession();
+    await remintPairCode();
+    statusLine.textContent = "enter PAIR CODE from stick chat";
+    addBubble(
+      "system",
+      "New pair code minted on the stick. Enter the PAIR CODE shown in the stick/kiosk chat."
+    );
+    await ensurePaired(true);
+  }
+
   async function refreshStatus() {
     try {
       const r = await fetch(`/api/health`, { cache: "no-store" });
@@ -206,6 +282,7 @@
           }
         }
       } catch (_) {}
+      announceRemintFromConnect(j.connect);
     } catch (e) {
       statusLine.textContent = "waiting for gateway…";
     }
@@ -612,7 +689,18 @@
 
   modelsBtn?.addEventListener("click", () => openModels());
   settingsBtn?.addEventListener("click", () => openSettings());
-  pairBtn?.addEventListener("click", () => ensurePaired(true));
+  pairBtn?.addEventListener("click", async () => {
+    try {
+      if (isLocalMode) {
+        await issuePairFromStick();
+      } else {
+        await issuePairFromLan();
+      }
+    } catch (e) {
+      addBubble("system", `Pair remint failed: ${e.message}`);
+      statusLine.textContent = "pair remint failed";
+    }
+  });
   document.getElementById("modelsClose")?.addEventListener("click", () => {
     stopDlPoll();
     modelsDialog.close();
@@ -682,10 +770,13 @@
 
   addBubble(
     "system",
-    "StickLLM v0.3.1 — Pair | URL | Model above. Settings → System has How to connect. Models = catalog; Settings = WiFi / USB / backend. No LAN? Term: stickllm-wifi-setup."
+    "StickLLM v0.3.2 — Pair | URL | Model above. Pair mints a new LAN code (unpairs old browsers); the stick chat shows the code. Settings → System has How to connect. No LAN? Term: stickllm-wifi-setup."
   );
   refreshStatus();
-  setInterval(refreshStatus, 8000);
+  // Stick kiosk polls faster so LAN Pair remints show in chat promptly.
+  setInterval(() => {
+    refreshStatus();
+  }, 2500);
   ensurePaired(false).then(async () => {
     try {
       const st = await pairStatus();

@@ -10,7 +10,7 @@ to the USB or internal disks unless you explicitly approve a write.
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
 | Shipping golden | **v0.2.0** (Drive / Samsung — immutable) |
-| Current line | **v0.3.0** (harden + CPU fallback + Local WiFi/UI); polish toward **v0.3.1** |
+| Current line | **v0.3.2** (pair remint + bootstatus/kiosk polish); prior **v0.3.0** / **v0.3.1** |
 | Checkpoint | **v0.2.1-local-nvidia-kbd** (Local browser + keyboard on NVIDIA) |
 | Profile | **AMD desktop CPU · 32 GB RAM · NVIDIA RTX 3090 (24 GB)** |
 | Release | [v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) · [v0.3.0](https://github.com/StickLLM/stickllm/releases/tag/v0.3.0) |

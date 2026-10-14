@@ -76,7 +76,7 @@ rsync -a "$STICKLLM/overlay/etc/modules-load.d/stickllm-nvidia.conf" "$work/sq/e
 rsync -a "$STICKLLM/overlay/etc/sudoers.d/stickllm" "$work/sq/etc/sudoers.d/stickllm"
 rsync -a "$STICKLLM/config/models/catalog.toml" "$work/sq/etc/stickllm/models/catalog.toml"
 rsync -a "$STICKLLM/ui/" "$work/sq/opt/stickllm/ui/"
-printf '%s\n' '{"mode":"ephemeral","profile":"amd-rtx3090","version":"0.3.1"}' \
+printf '%s\n' '{"mode":"ephemeral","profile":"amd-rtx3090","version":"0.3.2"}' \
   >"$work/sq/opt/stickllm/ui/stickllm.json"
 
 # Strip CRLF from every StickLLM helper (Windows checkout -> exec 127 on shebang).
