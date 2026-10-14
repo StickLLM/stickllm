@@ -399,6 +399,349 @@ print(json.dumps({
 PY
 }
 
+# Device + folder browser for Settings picker (read-only listing; mkdir is separate).
+list_devices() {
+  python3 <<'PY'
+import json, os, subprocess
+
+DATA_MNT = os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data")
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+def ordinary(fstype: str) -> bool:
+    return fstype in {
+        "ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs",
+        "ntfs", "ntfs3", "exfat", "vfat", "fuseblk",
+    }
+
+def disk_for_source(src: str) -> dict:
+    name = sh("lsblk", "-no", "PKNAME", src) or sh("lsblk", "-no", "NAME", src)
+    if not name:
+        return {}
+    # Walk up to disk
+    cur = name.split()[0]
+    for _ in range(6):
+        typ = sh("lsblk", "-no", "TYPE", f"/dev/{cur}")
+        if typ == "disk":
+            break
+        parent = sh("lsblk", "-no", "PKNAME", f"/dev/{cur}")
+        if not parent:
+            break
+        cur = parent.split()[0]
+    path = f"/dev/{cur}"
+    size_raw = (sh("lsblk", "-nb", "-o", "SIZE", path) or "0").splitlines()[0].strip()
+    return {
+        "name": cur,
+        "path": path,
+        "model": (sh("lsblk", "-no", "MODEL", path) or "").splitlines()[0].strip(),
+        "size": size_raw or "0",
+        "tran": (sh("lsblk", "-no", "TRAN", path) or "").splitlines()[0].strip(),
+        "rm": (sh("lsblk", "-no", "RM", path) or "").splitlines()[0].strip() in ("1", "true", "True"),
+        "serial": (sh("lsblk", "-no", "SERIAL", path) or "").splitlines()[0].strip(),
+    }
+
+def is_stick_usb(mnt: str, src: str) -> bool:
+    if mnt in (DATA_MNT, "/mnt/stickllm-data") or mnt.startswith(DATA_MNT + "/"):
+        return True
+    if mnt.startswith(("/run/live", "/usr/lib/live/mount/medium", "/lib/live/mount/medium")):
+        return True
+    label = sh("lsblk", "-no", "LABEL", src) or ""
+    if label in ("STICKLLM-DATA", "STICKLLM"):
+        return True
+    boot = sh("findmnt", "-n", "-o", "SOURCE", "--target", "/run/live/medium") or \
+           sh("findmnt", "-n", "-o", "SOURCE", "--target", "/lib/live/mount/medium")
+    if boot and src:
+        bd = sh("lsblk", "-no", "PKNAME", boot) or sh("lsblk", "-no", "NAME", boot)
+        sd = sh("lsblk", "-no", "PKNAME", src) or sh("lsblk", "-no", "NAME", src)
+        if bd and sd and bd.split()[0] == sd.split()[0]:
+            return True
+    return False
+
+devices = []
+seen = set()
+mnt_out = sh("findmnt", "-J", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS,AVAIL,SIZE")
+try:
+    mdata = json.loads(mnt_out or "{}")
+except Exception:
+    mdata = {}
+
+def walk(node):
+    tgt = node.get("target") or ""
+    fst = (node.get("fstype") or "").strip()
+    opts = node.get("options") or ""
+    src = node.get("source") or ""
+    avail = node.get("avail")
+    size = node.get("size")
+    ro = "ro" in opts.split(",")
+    if tgt and tgt not in seen and ordinary(fst) and not tgt.startswith(
+        ("/proc", "/sys", "/dev", "/run/credentials", "/run/user")
+    ):
+        seen.add(tgt)
+        stick = is_stick_usb(tgt, src)
+        system = tgt in ("/", "/usr", "/var", "/etc") or tgt.startswith(("/boot", "/efi", "/rofs"))
+        disk = disk_for_source(src) if src else {}
+        selectable = ordinary(fst) and not ro and not system
+        if stick:
+            kind = "usb_stick"
+            label = "StickLLM USB (boot stick / STICKLLM-DATA)"
+            warn = (
+                "This is the StickLLM USB — data leaves when you remove the stick. "
+                "Intended vault target is a mounted host SSD folder."
+            )
+            # Allowed with warning (user may still pick); not preferred.
+            recommended = False
+        elif disk.get("rm") or (disk.get("tran") or "").lower() == "usb":
+            kind = "other_usb"
+            label = f"Other USB — {disk.get('model') or disk.get('name') or src}"
+            warn = "Removable USB drive (not the StickLLM stick)."
+            recommended = selectable
+        elif (disk.get("tran") or "").lower() in ("nvme", "sata", "ata", "scsi") or (
+            disk.get("name") or ""
+        ).startswith("nvme"):
+            kind = "host_ssd"
+            label = f"Host SSD/internal — {disk.get('model') or disk.get('name') or src}"
+            warn = ""
+            recommended = selectable
+        else:
+            kind = "other"
+            label = f"Other mount — {tgt}"
+            warn = "Unclear device type; confirm this is the drive you intend."
+            recommended = selectable
+        if not selectable:
+            kind = "blocked"
+            recommended = False
+            warn = "Read-only or system mount — don't touch"
+        devices.append({
+            "id": tgt,
+            "kind": kind,
+            "label": label,
+            "mount_path": tgt,
+            "source": src,
+            "fstype": fst,
+            "avail": avail,
+            "size": size,
+            "selectable": selectable,
+            "recommended": recommended,
+            "warn": warn,
+            "disk": disk,
+        })
+    for c in node.get("children") or []:
+        walk(c)
+
+for fs in mdata.get("filesystems") or []:
+    walk(fs)
+
+# Informational blocked disks (encrypted / unmounted internal)
+blocked_disks = []
+try:
+    blk = json.loads(sh("lsblk", "-J", "-b", "-o",
+        "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,RM,RO,TRAN") or "{}")
+except Exception:
+    blk = {}
+for d in blk.get("blockdevices") or []:
+    if d.get("type") != "disk":
+        continue
+    ambiguous = False
+    mounted_any = False
+    for c in d.get("children") or []:
+        ft = c.get("fstype") or ""
+        if c.get("mountpoint"):
+            mounted_any = True
+        if ft in ("crypto_LUKS", "BitLocker", "linux_raid_member", "LVM2_member", "zfs_member") or (
+            c.get("type") in ("crypt", "lvm", "raid")
+        ):
+            ambiguous = True
+    if ambiguous or (not mounted_any and not d.get("rm")):
+        blocked_disks.append({
+            "path": d.get("path") or ("/dev/" + d.get("name", "")),
+            "model": (d.get("model") or "").strip(),
+            "size_gb": round(int(d.get("size") or 0) / (1024**3), 2),
+            "tran": d.get("tran") or "",
+            "rm": bool(d.get("rm")),
+            "reason": (
+                "Encrypted/complex layout — unlock in host OS first (StickLLM will not touch)."
+                if ambiguous else
+                "Internal disk has no mounted folder yet — mount in host OS first."
+            ),
+            "selectable": False,
+        })
+
+# Sort: recommended host SSD first, then other, USB stick last among selectable
+order = {"host_ssd": 0, "other": 1, "other_usb": 2, "usb_stick": 3, "blocked": 9}
+devices.sort(key=lambda x: (order.get(x["kind"], 5), x["mount_path"]))
+
+print(json.dumps({
+    "ok": True,
+    "read_only_probe": True,
+    "safety": "Pick a device, then a folder. Never formats disks. Encrypted layouts are not offered.",
+    "devices": devices,
+    "blocked_disks": blocked_disks,
+}))
+PY
+}
+
+list_dirs() {
+  local raw="${1:-}"
+  [[ -n "$raw" ]] || die "usage: list-dirs <directory>"
+  STICKLLM_LIST_DIRS_PATH="$raw" python3 <<'PY'
+import json, os, stat
+from pathlib import Path
+
+raw = os.environ.get("STICKLLM_LIST_DIRS_PATH", "")
+DATA_MNT = os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data")
+
+def fail(msg):
+    print(json.dumps({"ok": False, "error": msg}))
+    raise SystemExit(0)
+
+if not raw or raw.startswith("/dev/"):
+    fail("directory path required (not a block device)")
+
+try:
+    root = Path(raw).resolve(strict=False)
+except Exception as e:
+    fail(str(e))
+
+if not root.exists():
+    fail(f"path does not exist: {root}")
+if not root.is_dir():
+    fail(f"not a directory: {root}")
+
+# Must stay on a real mount; refuse escaping via .. (resolve already)
+mnt = os.path.realpath(str(root))
+# Walk up to find mount root via findmnt
+import subprocess
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+mount_tgt = sh("findmnt", "-n", "-o", "TARGET", "--target", str(root))
+if not mount_tgt:
+    fail("path is not on a mounted filesystem")
+fst = sh("findmnt", "-n", "-o", "FSTYPE", "--target", str(root))
+opts = sh("findmnt", "-n", "-o", "OPTIONS", "--target", str(root))
+src = sh("findmnt", "-n", "-o", "SOURCE", "--target", str(root))
+if fst not in {"ext2","ext3","ext4","xfs","btrfs","f2fs","ntfs","ntfs3","exfat","vfat","fuseblk"}:
+    fail(f"filesystem '{fst}' not browsable (encrypted/unknown — unlock in host OS)")
+if "ro" in opts.split(","):
+    fail("read-only mount")
+
+# Confine listing to the mount root (no browsing into other mounts via bind tricks)
+try:
+    root.relative_to(Path(mount_tgt))
+except ValueError:
+    fail("path escapes its mount root")
+
+stick = (
+    mount_tgt in (DATA_MNT, "/mnt/stickllm-data")
+    or str(root).startswith(DATA_MNT + "/")
+    or mount_tgt.startswith(("/run/live", "/usr/lib/live/mount/medium", "/lib/live/mount/medium"))
+)
+warn = ""
+if stick:
+    warn = (
+        "You are browsing the StickLLM USB. Vault data on the stick leaves when removed; "
+        "host SSD is the intended target."
+    )
+
+entries = []
+try:
+    for ent in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        try:
+            if ent.name.startswith("."):
+                continue
+            if not ent.is_dir():
+                continue
+            # skip obvious system dirs at mount root
+            if str(root) in ("/",) and ent.name in {
+                "proc", "sys", "dev", "run", "boot", "efi", "lost+found"
+            }:
+                continue
+            st = ent.lstat()
+            if stat.S_ISLNK(st.st_mode):
+                continue  # no symlink traversal
+            entries.append({
+                "name": ent.name,
+                "path": str(ent.resolve()),
+                "type": "dir",
+            })
+        except Exception:
+            continue
+except PermissionError:
+    fail(f"permission denied listing {root}")
+
+parent = str(root.parent) if str(root) != mount_tgt else None
+if parent and not str(Path(parent).resolve()).startswith(mount_tgt.rstrip("/") + "/") and str(Path(parent).resolve()) != mount_tgt:
+    # parent above mount → stop
+    if str(root) == mount_tgt:
+        parent = None
+    else:
+        try:
+            Path(parent).resolve().relative_to(Path(mount_tgt))
+        except ValueError:
+            parent = mount_tgt if str(root) != mount_tgt else None
+
+print(json.dumps({
+    "ok": True,
+    "path": str(root),
+    "mount_path": mount_tgt,
+    "parent": parent if str(root) != mount_tgt else None,
+    "entries": entries,
+    "can_mkdir": os.access(str(root), os.W_OK | os.X_OK),
+    "is_stick_usb": stick,
+    "warn": warn,
+    "source": src,
+    "fstype": fst,
+}))
+PY
+}
+
+mkdir_vault_dir() {
+  local parent="${1:-}"
+  local name="${2:-}"
+  [[ -n "$parent" && -n "$name" ]] || die "usage: mkdir <parent-dir> <new-folder-name>"
+  # Safe folder names only
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid folder name (use letters, digits, . _ -)"
+  [[ "$name" != "." && "$name" != ".." ]] || die "invalid folder name"
+  STICKLLM_MKDIR_PARENT="$parent" STICKLLM_MKDIR_NAME="$name" python3 <<'PY'
+import json, os, re
+from pathlib import Path
+import subprocess
+
+parent = Path(os.environ["STICKLLM_MKDIR_PARENT"]).resolve()
+name = os.environ["STICKLLM_MKDIR_NAME"]
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+    print(json.dumps({"ok": False, "error": "invalid folder name"})); raise SystemExit(0)
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+if not parent.is_dir():
+    print(json.dumps({"ok": False, "error": f"parent not a directory: {parent}"})); raise SystemExit(0)
+mount_tgt = sh("findmnt", "-n", "-o", "TARGET", "--target", str(parent))
+if not mount_tgt:
+    print(json.dumps({"ok": False, "error": "not on a mounted filesystem"})); raise SystemExit(0)
+try:
+    parent.relative_to(Path(mount_tgt))
+except ValueError:
+    print(json.dumps({"ok": False, "error": "parent escapes mount"})); raise SystemExit(0)
+fst = sh("findmnt", "-n", "-o", "FSTYPE", "--target", str(parent))
+if fst not in {"ext2","ext3","ext4","xfs","btrfs","f2fs","ntfs","ntfs3","exfat","vfat","fuseblk"}:
+    print(json.dumps({"ok": False, "error": "filesystem not writable for mkdir"})); raise SystemExit(0)
+target = parent / name
+if target.exists():
+    print(json.dumps({"ok": False, "error": f"already exists: {target}"})); raise SystemExit(0)
+try:
+    target.mkdir(mode=0o755)
+except Exception as e:
+    print(json.dumps({"ok": False, "error": str(e)})); raise SystemExit(0)
+print(json.dumps({"ok": True, "path": str(target.resolve()), "parent": str(parent), "name": name}))
+PY
+}
+
 # --- Meta / recovery -------------------------------------------------------
 
 ensure_dirs_in_vault() {
@@ -846,6 +1189,9 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
 
   stickllm-vault status
   stickllm-vault list-disks          # read-only probe (not write targets)
+  stickllm-vault list-devices        # USB vs host SSD mounts for picker
+  stickllm-vault list-dirs <dir>     # browse folders under a mount
+  stickllm-vault mkdir <parent> <name>  # create subfolder (no format)
   stickllm-vault setup <dir> [gb]    # create dir if needed + NEW sparse blob
   stickllm-vault grow <add_gb>       # expand blob (free-space checked)
   stickllm-vault unlock
@@ -866,6 +1212,9 @@ main() {
   case "$cmd" in
     status) cmd_status ;;
     list-disks|disks) list_disks ;;
+    list-devices|devices) list_devices ;;
+    list-dirs|ls-dirs) list_dirs "$@" ;;
+    mkdir) mkdir_vault_dir "$@" ;;
     setup) cmd_setup "$@" ;;
     create-file) cmd_create_file "$@" ;;
     create-partition)

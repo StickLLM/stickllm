@@ -46,6 +46,8 @@
   let sessionMode = "ephemeral";
   let sessionModeBusy = false;
   let activeChatId = null;
+  let vaultPickerDevice = null;
+  let vaultBrowsePath = "";
 
   function authHeaders(extra = {}) {
     const h = {
@@ -314,6 +316,38 @@
     return j;
   }
 
+  function isStickUsbVaultPath(path) {
+    const p = String(path || "").trim().replace(/\/+$/, "");
+    if (!p) return false;
+    const bad = [
+      "/mnt/stickllm-data",
+      "/run/live",
+      "/usr/lib/live/mount/medium",
+      "/lib/live/mount/medium",
+    ];
+    return bad.some((b) => p === b || p.startsWith(`${b}/`));
+  }
+
+  function setVaultSetupFeedback(msg, kind = "info") {
+    const hint = document.getElementById("vaultSetupHint");
+    if (!hint) return;
+    hint.textContent = msg || "";
+    hint.classList.remove("is-info", "is-ok", "is-err");
+    if (msg) {
+      hint.classList.add(
+        kind === "ok" ? "is-ok" : kind === "err" ? "is-err" : "is-info"
+      );
+      try {
+        hint.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      } catch (_) {}
+    }
+    const vaultStatus = document.getElementById("vaultStatus");
+    if (vaultStatus && msg && (kind === "ok" || kind === "err")) {
+      vaultStatus.textContent =
+        kind === "ok" ? `Vault: ${msg}` : `Vault create/unlock: ${msg}`;
+    }
+  }
+
   function fmtBytes(n) {
     if (!n || n < 0) return "—";
     const gb = n / 1024 ** 3;
@@ -516,13 +550,17 @@
       addBubble(
         "system",
         st === "absent" || !st
-          ? "Vault mode — set up storage in Settings (folder + blob), then unlock."
+          ? "Vault mode — create a blob on a mounted host SSD folder in Settings (not the StickLLM USB). List storage → Select → Create."
           : "Vault mode — unlock the vault with your passcode in Settings."
       );
       if (settingsDialog && !settingsDialog.open) {
         await openSettings();
       }
-      document.getElementById("vaultPass")?.focus();
+      if (st === "absent" || !st) {
+        document.getElementById("vaultSetupPath")?.focus();
+      } else {
+        document.getElementById("vaultPass")?.focus();
+      }
     } catch (e) {
       applySessionModeUi(sessionMode);
       addBubble("system", `Could not switch mode: ${e.message}`);
@@ -688,8 +726,205 @@
     try {
       const st = await control("status");
       renderSettingsStatus(st);
+      await refreshVaultPicker({ quiet: true });
     } catch (e) {
       if (settingsBody) settingsBody.textContent = `Could not load: ${e.message}`;
+    }
+  }
+
+  function setVaultUsbWarn(msg) {
+    const el = document.getElementById("vaultUsbWarn");
+    if (!el) return;
+    if (msg) {
+      el.hidden = false;
+      el.textContent = msg;
+    } else {
+      el.hidden = true;
+      el.textContent = "";
+    }
+  }
+
+  function kindLabel(kind) {
+    if (kind === "host_ssd") return "SSD";
+    if (kind === "usb_stick") return "Stick USB";
+    if (kind === "other_usb") return "USB";
+    if (kind === "blocked") return "Blocked";
+    return "Other";
+  }
+
+  async function refreshVaultPicker({ quiet = false } = {}) {
+    const list = document.getElementById("vaultDeviceList");
+    const diskList = document.getElementById("diskList");
+    if (list) list.textContent = "Loading devices…";
+    try {
+      const res = await control("vault_devices");
+      if (!res.ok) throw new Error(res.error || "device list failed");
+      if (list) list.innerHTML = "";
+      const devices = Array.isArray(res.devices) ? res.devices : [];
+      const selectable = devices.filter((d) => d.selectable);
+      if (!selectable.length) {
+        if (list) {
+          list.textContent =
+            "No browsable mounts. Mount a host SSD folder in the host OS first (encrypted volumes stay locked).";
+        }
+        if (!quiet) {
+          setVaultSetupFeedback(
+            "No device available — mount host SSD in the host OS, then Refresh devices.",
+            "err"
+          );
+        }
+      }
+      for (const d of devices) {
+        if (!list) break;
+        const row = document.createElement("div");
+        row.className =
+          "vaultPickRow" +
+          (d.selectable ? "" : " is-blocked") +
+          (vaultPickerDevice?.mount_path === d.mount_path ? " is-selected" : "");
+        const tag = document.createElement("span");
+        tag.className = `vaultKind ${d.kind || "other"}`;
+        tag.textContent = kindLabel(d.kind);
+        const text = document.createElement("span");
+        const free = d.avail ? ` · free ${d.avail}` : "";
+        text.textContent = `${d.label || d.mount_path}${free}`;
+        row.appendChild(tag);
+        row.appendChild(text);
+        if (d.selectable) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "actionBtn";
+          btn.textContent = "Open";
+          btn.addEventListener("click", () => selectVaultDevice(d));
+          row.appendChild(btn);
+        } else {
+          const why = document.createElement("span");
+          why.className = "muted";
+          why.textContent = d.warn || "don't touch";
+          row.appendChild(why);
+        }
+        list.appendChild(row);
+      }
+      if (diskList) {
+        diskList.textContent = "";
+        const blocked = Array.isArray(res.blocked_disks) ? res.blocked_disks : [];
+        if (blocked.length) {
+          diskList.textContent =
+            "Not offered (encrypted / unmounted internal):\n" +
+            blocked
+              .map(
+                (b) =>
+                  `${b.path}  ${b.size_gb ?? "?"} GiB  ${b.model || ""} — ${b.reason || ""}`
+              )
+              .join("\n");
+        } else {
+          diskList.textContent =
+            res.safety ||
+            "Pick Device → Folder above. Encrypted disks are never offered.";
+        }
+      }
+      return res;
+    } catch (e) {
+      if (list) list.textContent = `Error: ${e.message}`;
+      if (!quiet) setVaultSetupFeedback(`Device list failed: ${e.message}`, "err");
+      throw e;
+    }
+  }
+
+  async function selectVaultDevice(device) {
+    vaultPickerDevice = device;
+    setVaultUsbWarn(
+      device.kind === "usb_stick" || device.kind === "other_usb"
+        ? device.warn ||
+            "USB selected — data on the stick leaves when removed. Prefer host SSD for the vault."
+        : ""
+    );
+    await browseVaultDir(device.mount_path);
+    await refreshVaultPicker({ quiet: true });
+  }
+
+  async function browseVaultDir(path) {
+    const folderList = document.getElementById("vaultFolderList");
+    const pathEl = document.getElementById("vaultBrowsePath");
+    const upBtn = document.getElementById("actVaultBrowseUp");
+    const useBtn = document.getElementById("actVaultBrowseUse");
+    const newBtn = document.getElementById("actVaultBrowseNew");
+    if (folderList) folderList.textContent = "Loading folders…";
+    try {
+      const res = await control("vault_list_dirs", { path });
+      if (!res.ok) throw new Error(res.error || "list dirs failed");
+      vaultBrowsePath = res.path || path;
+      if (pathEl) pathEl.textContent = vaultBrowsePath;
+      if (upBtn) upBtn.disabled = !res.parent;
+      if (useBtn) useBtn.disabled = false;
+      if (newBtn) newBtn.disabled = !res.can_mkdir;
+      if (res.is_stick_usb || res.warn) {
+        setVaultUsbWarn(
+          res.warn ||
+            "Browsing StickLLM USB — vault data leaves when the stick is removed."
+        );
+      } else if (vaultPickerDevice?.kind === "host_ssd") {
+        setVaultUsbWarn("");
+      }
+      if (folderList) {
+        folderList.innerHTML = "";
+        const entries = Array.isArray(res.entries) ? res.entries : [];
+        if (!entries.length) {
+          folderList.textContent = "(no subfolders — you can Use this folder or New folder)";
+        }
+        for (const ent of entries) {
+          const row = document.createElement("div");
+          row.className = "vaultPickRow";
+          row.textContent = ent.name;
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "actionBtn";
+          btn.textContent = "Open";
+          btn.addEventListener("click", () => browseVaultDir(ent.path));
+          row.appendChild(document.createTextNode(" "));
+          row.appendChild(btn);
+          folderList.appendChild(row);
+        }
+      }
+      return res;
+    } catch (e) {
+      if (folderList) folderList.textContent = `Error: ${e.message}`;
+      setVaultSetupFeedback(`Folder browse failed: ${e.message}`, "err");
+      throw e;
+    }
+  }
+
+  function useVaultBrowseFolder() {
+    const path = (vaultBrowsePath || "").trim();
+    const input = document.getElementById("vaultSetupPath");
+    if (!path) {
+      setVaultSetupFeedback("Choose a folder — open a device, then Use this folder.", "err");
+      return;
+    }
+    if (input) input.value = path;
+    const usb = isStickUsbVaultPath(path) || vaultPickerDevice?.kind === "usb_stick";
+    setVaultSetupFeedback(
+      usb
+        ? `Selected USB folder ${path} — data leaves when stick is removed. Prefer host SSD.`
+        : `Selected folder ${path}`,
+      usb ? "err" : "ok"
+    );
+  }
+
+  async function createVaultBrowseFolder() {
+    if (!vaultBrowsePath) {
+      setVaultSetupFeedback("Open a device/folder first.", "err");
+      return;
+    }
+    const name = window.prompt("New folder name (letters, digits, . _ -):", "StickLLM");
+    if (!name) return;
+    try {
+      const res = await control("vault_mkdir", { path: vaultBrowsePath, name: name.trim() });
+      if (!res.ok) throw new Error(res.error || "mkdir failed");
+      setVaultSetupFeedback(`Created folder ${res.path}`, "ok");
+      await browseVaultDir(res.path || vaultBrowsePath);
+      useVaultBrowseFolder();
+    } catch (e) {
+      setVaultSetupFeedback(`New folder failed: ${e.message}`, "err");
     }
   }
 
@@ -946,25 +1181,37 @@
     const pass = document.getElementById("vaultSetupPass")?.value || "";
     const pass2 = document.getElementById("vaultSetupPass2")?.value || "";
     const confirm = (document.getElementById("vaultSetupConfirm")?.value || "").trim();
-    const hint = document.getElementById("vaultSetupHint");
     const recoveryEl = document.getElementById("vaultRecovery");
     if (!path) {
-      if (hint) hint.textContent = "Enter or select a mounted folder path.";
+      setVaultSetupFeedback(
+        "Choose a folder — pick Device → open folders → Use this folder (path is blank).",
+        "err"
+      );
       return;
     }
     if (path.startsWith("/dev/") || path.startsWith("\\\\.\\")) {
-      if (hint) hint.textContent = "Refusing block device — pick a mounted folder.";
+      setVaultSetupFeedback("Refusing block device — pick a mounted host SSD folder.", "err");
+      return;
+    }
+    if (isStickUsbVaultPath(path)) {
+      setVaultSetupFeedback(
+        "Refusing StickLLM USB / STICKLLM-DATA — vault must be on a mounted host SSD folder.",
+        "err"
+      );
       return;
     }
     if (confirm !== "CREATE-VAULT") {
-      if (hint) hint.textContent = "Type CREATE-VAULT exactly to confirm (never formats your drive).";
+      setVaultSetupFeedback(
+        "Type CREATE-VAULT exactly to confirm (never formats your drive).",
+        "err"
+      );
       return;
     }
     if (pass.length < 8 || pass !== pass2) {
-      if (hint) hint.textContent = "Passcode must match and be at least 8 characters.";
+      setVaultSetupFeedback("Passcode must match and be at least 8 characters.", "err");
       return;
     }
-    if (hint) hint.textContent = "Creating vault blob (non-destructive)…";
+    setVaultSetupFeedback("Creating vault blob on host path (non-destructive)…", "info");
     try {
       const res = await control("vault_setup", {
         path,
@@ -975,7 +1222,16 @@
         passcode2: pass2,
         space_confirm: "SPACE-OK",
       });
-      if (!res.ok) throw new Error(res.error || res.stderr || "setup failed");
+      if (!res.ok) {
+        throw new Error(res.error || res.stderr || res.note || "setup failed");
+      }
+      if (String(res.status || "").toLowerCase() === "absent") {
+        throw new Error(
+          res.error ||
+            res.stderr ||
+            "API reported success but vault is still absent — refuse silent success"
+        );
+      }
       if (document.getElementById("vaultSetupPass")) document.getElementById("vaultSetupPass").value = "";
       if (document.getElementById("vaultSetupPass2")) document.getElementById("vaultSetupPass2").value = "";
       if (document.getElementById("vaultSetupConfirm")) document.getElementById("vaultSetupConfirm").value = "";
@@ -990,24 +1246,30 @@
       const finishBtn = document.getElementById("actVaultSetupFinish");
       if (savedLabel) savedLabel.hidden = false;
       if (finishBtn) finishBtn.hidden = false;
-      if (hint) {
-        hint.textContent =
-          "Vault created and unlocked. Write the recovery phrase, type SAVED, then Finish.";
-      }
-      addBubble("system", "Vault created — write down the recovery phrase in Settings.");
+      const blob = res.blob || `${path.replace(/\/$/, "")}/stickllm-vault.img`;
+      setVaultSetupFeedback(
+        `Success — vault created at ${blob} (folder ${path}). Write the recovery phrase, type SAVED, then Finish.`,
+        "ok"
+      );
+      addBubble(
+        "system",
+        `Vault created — full path ${blob}. Write down the recovery phrase in Settings.`
+      );
       await setSessionMode("vault");
-      if (settingsDialog?.open) await openSettings();
+      if (settingsDialog?.open) {
+        const st = await control("status");
+        renderSettingsStatus(st);
+      }
     } catch (e) {
-      if (hint) hint.textContent = `Setup failed: ${e.message}`;
+      setVaultSetupFeedback(`Setup failed: ${e.message}`, "err");
       addBubble("system", `Vault setup failed: ${e.message}`);
     }
   });
   document.getElementById("actVaultSetupFinish")?.addEventListener("click", () => {
     const saved = (document.getElementById("vaultSetupSaved")?.value || "").trim();
-    const hint = document.getElementById("vaultSetupHint");
     const recoveryEl = document.getElementById("vaultRecovery");
     if (saved !== "SAVED") {
-      if (hint) hint.textContent = "Type SAVED after writing the recovery phrase.";
+      setVaultSetupFeedback("Type SAVED after writing the recovery phrase.", "err");
       return;
     }
     if (recoveryEl) {
@@ -1018,7 +1280,7 @@
     if (savedLabel) savedLabel.hidden = true;
     if (finishBtn) finishBtn.hidden = true;
     if (document.getElementById("vaultSetupSaved")) document.getElementById("vaultSetupSaved").value = "";
-    if (hint) hint.textContent = "Recovery phrase acknowledged. Keep your written copy safe.";
+    setVaultSetupFeedback("Recovery phrase acknowledged. Keep your written copy safe.", "ok");
     addBubble("system", "Recovery phrase acknowledged.");
   });
   document.getElementById("actVaultGrow")?.addEventListener("click", async () => {
@@ -1107,60 +1369,25 @@
     }
   });
   document.getElementById("actVaultDisks")?.addEventListener("click", async () => {
-    const el = document.getElementById("diskList");
-    if (el) el.textContent = "Read-only probe…";
     try {
-      const res = await control("vault_disks");
-      if (!el) return;
-      el.innerHTML = "";
-      const safety = document.createElement("div");
-      safety.textContent =
-        res.safety || "Creates a file in a folder you choose. Never formats your drive.";
-      el.appendChild(safety);
-      const mounts = res.mounts || [];
-      const head = document.createElement("div");
-      head.textContent = mounts.length
-        ? "Mounted folders (click OK to select):"
-        : "No candidate mounts (unlock host BitLocker/LUKS in the host OS first).";
-      el.appendChild(head);
-      for (const m of mounts) {
-        const row = document.createElement("div");
-        const flag = m.writable_candidate ? "OK" : "REFUSE";
-        const why = m.refuse_reason ? ` — ${m.refuse_reason}` : "";
-        row.textContent = `[${flag}] ${m.path}  ${m.fstype || "?"}  ${m.source || ""}${why}`;
-        if (m.writable_candidate) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "actionBtn";
-          btn.textContent = "Select";
-          btn.addEventListener("click", () => {
-            const input = document.getElementById("vaultSetupPath");
-            if (input) {
-              // Prefer a StickLLM subfolder under the mount (create if missing at setup).
-              const base = String(m.path || "").replace(/\/$/, "");
-              input.value = `${base}/StickLLM`;
-            }
-            const hint = document.getElementById("vaultSetupHint");
-            if (hint) {
-              hint.textContent = `Selected ${m.path} — path set to ${m.path}/StickLLM (existing models folder OK if you edit the path).`;
-            }
-          });
-          row.appendChild(document.createTextNode(" "));
-          row.appendChild(btn);
-        }
-        el.appendChild(row);
-      }
-      const diskHead = document.createElement("div");
-      diskHead.textContent = "Disks (informational only — never write targets):";
-      el.appendChild(diskHead);
-      for (const d of res.disks || []) {
-        const row = document.createElement("div");
-        const warn = d.ambiguous_or_encrypted ? " [encrypted/complex — hands off]" : "";
-        row.textContent = `${d.path}  ${d.size_gb} GiB  ${d.model || ""}${warn}`;
-        el.appendChild(row);
-      }
+      await refreshVaultPicker({ quiet: false });
+    } catch (_) {}
+  });
+  document.getElementById("actVaultPickerRefresh")?.addEventListener("click", async () => {
+    try {
+      await refreshVaultPicker({ quiet: false });
+    } catch (_) {}
+  });
+  document.getElementById("actVaultBrowseUse")?.addEventListener("click", () => useVaultBrowseFolder());
+  document.getElementById("actVaultBrowseNew")?.addEventListener("click", () => createVaultBrowseFolder());
+  // Up is rebound per browseVaultDir response (once). Keep a stable handler too.
+  document.getElementById("actVaultBrowseUp")?.addEventListener("click", async () => {
+    if (!vaultBrowsePath || !vaultPickerDevice) return;
+    try {
+      const cur = await control("vault_list_dirs", { path: vaultBrowsePath });
+      if (cur.parent) await browseVaultDir(cur.parent);
     } catch (e) {
-      if (el) el.textContent = `Error: ${e.message}`;
+      setVaultSetupFeedback(`Up failed: ${e.message}`, "err");
     }
   });
   document.getElementById("actVaultUnlock")?.addEventListener("click", async () => {
@@ -1170,13 +1397,18 @@
     try {
       const res = await control("vault_unlock", { passcode: pass });
       if (document.getElementById("vaultPass")) document.getElementById("vaultPass").value = "";
-      if (vaultStatus) {
-        vaultStatus.textContent = res.ok
-          ? "Vault: unlocked"
-          : `Unlock failed: ${res.error || res.stderr || "bad passcode"}`;
+      if (res.ok) {
+        setVaultSetupFeedback("Vault unlocked.", "ok");
+        if (vaultStatus) vaultStatus.textContent = "Vault: unlocked";
+      } else {
+        const msg = res.error || res.stderr || "bad passcode / no vault configured";
+        setVaultSetupFeedback(`Unlock failed: ${msg}`, "err");
+        if (vaultStatus) vaultStatus.textContent = `Unlock failed: ${msg}`;
       }
-      await openSettings();
+      const st = await control("status");
+      renderSettingsStatus(st);
     } catch (e) {
+      setVaultSetupFeedback(`Unlock error: ${e.message}`, "err");
       if (vaultStatus) vaultStatus.textContent = `Error: ${e.message}`;
     }
   });

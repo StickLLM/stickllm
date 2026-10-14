@@ -313,6 +313,78 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--ink);
 }
 .pairErr { color: var(--danger); font-size: 0.85rem; }
+.vaultFeedback {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+}
+.vaultFeedback:empty { display: none; }
+.vaultFeedback.is-info { border-color: var(--line); color: var(--muted); }
+.vaultFeedback.is-ok {
+  border-color: var(--accent);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.vaultFeedback.is-err {
+  border-color: var(--danger);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+.vaultPicker {
+  border: 1px solid var(--line);
+  padding: 0.65rem 0.75rem;
+  margin: 0.75rem 0;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+}
+.vaultPickerHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+.vaultBrowsePath {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+.vaultDeviceList, .vaultFolderList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 10rem;
+  overflow: auto;
+  margin: 0.35rem 0 0.5rem;
+}
+.vaultPickRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  border-top: 1px solid var(--line);
+  padding: 0.4rem 0 0.15rem;
+  font-size: 0.85rem;
+}
+.vaultPickRow.is-selected { border-color: var(--accent); }
+.vaultPickRow.is-blocked { opacity: 0.55; }
+.vaultKind {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid var(--line);
+  padding: 0.05rem 0.3rem;
+}
+.vaultKind.host_ssd { border-color: var(--accent); color: var(--accent); }
+.vaultKind.usb_stick { border-color: var(--danger); color: var(--danger); }
+.vaultKind.blocked { color: var(--muted); }
+.vaultBrowseBar { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.35rem 0; }
 .futurePanel { opacity: 0.85; }
 .futureTag {
   font-size: 0.7rem;

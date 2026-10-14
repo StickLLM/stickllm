@@ -64,6 +64,20 @@ def read_json(path: Path) -> dict:
         return {}
 
 
+def merge_vault_run(r: dict) -> dict:
+    """Merge /run vault.json without letting status ok=True hide a failed command."""
+    cmd_ok = bool(r.get("ok"))
+    prior_err = str(r.get("error") or "").strip()
+    prior_stderr = str(r.get("stderr") or "").strip()
+    st = read_json(RUN / "vault.json")
+    st.pop("ok", None)
+    r.update(st)
+    r["ok"] = cmd_ok
+    if not cmd_ok and not str(r.get("error") or "").strip():
+        r["error"] = prior_err or prior_stderr or "vault command failed"
+    return r
+
+
 def model_dirs() -> list[Path]:
     dirs: list[Path] = []
     # Vault / SSD models only when user consciously selected Vault mode.
@@ -739,6 +753,12 @@ def handle(action: str, params: dict) -> dict:
         return vault_action("status", params)
     if action == "vault_disks":
         return vault_action("list-disks", params)
+    if action == "vault_devices":
+        return vault_action("list-devices", params)
+    if action == "vault_list_dirs":
+        return vault_action("list-dirs", params)
+    if action == "vault_mkdir":
+        return vault_action("mkdir", params)
     if action == "vault_setup":
         return vault_action("setup", params)
     if action == "vault_create_file":
@@ -800,13 +820,48 @@ def vault_action(cmd: str, params: dict) -> dict:
             )
             return data
         except Exception:
-            return {"ok": False, "error": "list-disks parse failed", **r}
+            return {**r, "ok": False, "error": "list-disks parse failed"}
+    if cmd == "list-devices":
+        r = sh([script, "list-devices"], timeout=30)
+        try:
+            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
+            data = json.loads(lines[-1] if lines else "{}")
+            data["ok"] = bool(data.get("ok", True))
+            return data
+        except Exception:
+            return {**r, "ok": False, "error": "list-devices parse failed"}
+    if cmd == "list-dirs":
+        path = str(params.get("path") or "").strip()
+        if not path:
+            return {"ok": False, "error": "path required"}
+        if _looks_like_block_device(path):
+            return {"ok": False, "error": "refusing block device path"}
+        r = sh([script, "list-dirs", path], timeout=30)
+        try:
+            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
+            data = json.loads(lines[-1] if lines else "{}")
+            return data
+        except Exception:
+            return {**r, "ok": False, "error": "list-dirs parse failed"}
+    if cmd == "mkdir":
+        parent = str(params.get("path") or params.get("parent") or "").strip()
+        name = str(params.get("name") or "").strip()
+        if not parent or not name:
+            return {"ok": False, "error": "path and name required"}
+        if _looks_like_block_device(parent):
+            return {"ok": False, "error": "refusing block device path"}
+        r = sh([script, "mkdir", parent, name], timeout=30)
+        try:
+            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
+            data = json.loads(lines[-1] if lines else "{}")
+            return data
+        except Exception:
+            err = (r.get("stderr") or r.get("error") or "mkdir failed").strip()
+            return {**r, "ok": False, "error": err}
     if cmd == "lock":
         sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
         r = sh([script, "lock"], timeout=120)
-        st = read_json(RUN / "vault.json")
-        r.update(st)
-        return r
+        return merge_vault_run(r)
     if cmd == "unlock":
         passcode = str(params.get("passcode") or "")
         env = os.environ.copy()
@@ -829,8 +884,7 @@ def vault_action(cmd: str, params: dict) -> dict:
             }
         except Exception as e:
             r = {"ok": False, "error": str(e)}
-        r.update(read_json(RUN / "vault.json"))
-        return r
+        return merge_vault_run(r)
     if cmd == "setup":
         path = str(params.get("path") or params.get("dir") or "").strip()
         size_gb = str(params.get("size_gb") or "8").strip()
@@ -902,8 +956,7 @@ def vault_action(cmd: str, params: dict) -> dict:
             }
         except Exception as e:
             r = {"ok": False, "error": str(e)}
-        r.update(read_json(RUN / "vault.json"))
-        return r
+        return merge_vault_run(r)
     if cmd == "grow":
         add_gb = str(params.get("add_gb") or "").strip()
         confirm = str(params.get("confirm") or "")
@@ -930,8 +983,7 @@ def vault_action(cmd: str, params: dict) -> dict:
             }
         except Exception as e:
             r = {"ok": False, "error": str(e)}
-        r.update(read_json(RUN / "vault.json"))
-        return r
+        return merge_vault_run(r)
     if cmd == "list-movable":
         r = sh([script, "list-movable"], timeout=30)
         try:
@@ -940,7 +992,7 @@ def vault_action(cmd: str, params: dict) -> dict:
             data["ok"] = True
             return data
         except Exception:
-            return {"ok": False, "error": "list-movable parse failed", **r}
+            return {**r, "ok": False, "error": "list-movable parse failed"}
     if cmd == "set-wipe-after":
         n = str(params.get("n") or params.get("wipe_after") or "0").strip()
         confirm = str(params.get("confirm") or "")
@@ -969,8 +1021,7 @@ def vault_action(cmd: str, params: dict) -> dict:
             }
         except Exception as e:
             r = {"ok": False, "error": str(e)}
-        r.update(read_json(RUN / "vault.json"))
-        return r
+        return merge_vault_run(r)
     if cmd == "move-model":
         src = str(params.get("path") or "").strip()
         confirm = str(params.get("confirm") or "")

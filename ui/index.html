@@ -134,13 +134,33 @@
           <button type="button" id="actSettingsRefresh" class="actionBtn">Refresh</button>
         </div>
         <p class="modelsHint">
-          Create a new folder or select an existing mounted folder (e.g. one that already
-          has models). StickLLM only creates <code>models/</code> if missing and a new
-          expandable <code>stickllm-vault.img</code> blob — never formats your drive.
+          Pick a <strong>device</strong>, then a <strong>folder</strong>. Intended target is a
+          mounted <strong>host SSD</strong>. StickLLM USB works only with a warning (data leaves
+          when the stick is removed). Encrypted/unknown disks are not offered. Creates
+          <code>stickllm-vault.img</code> in the folder — never formats your drive.
         </p>
-        <label class="fieldLabel">Vault folder path (mounted &amp; writable; click a mount below to fill)
-          <input id="vaultSetupPath" type="text" autocomplete="off" placeholder="/mnt/host/StickLLM" />
-        </label>
+        <div class="vaultPicker" id="vaultPicker">
+          <div class="vaultPickerHead">
+            <strong>1. Device</strong>
+            <button type="button" id="actVaultPickerRefresh" class="actionBtn">Refresh devices</button>
+          </div>
+          <div id="vaultDeviceList" class="vaultDeviceList">Loading devices…</div>
+          <div class="vaultPickerHead" style="margin-top:0.75rem">
+            <strong>2. Folder</strong>
+            <span id="vaultBrowsePath" class="vaultBrowsePath muted">Select a device first</span>
+          </div>
+          <div id="vaultUsbWarn" class="vaultFeedback is-err" hidden></div>
+          <div class="vaultBrowseBar">
+            <button type="button" id="actVaultBrowseUp" class="actionBtn" disabled>Up</button>
+            <button type="button" id="actVaultBrowseUse" class="actionBtn" disabled>Use this folder</button>
+            <button type="button" id="actVaultBrowseNew" class="actionBtn" disabled>New folder…</button>
+          </div>
+          <div id="vaultFolderList" class="vaultFolderList">—</div>
+          <p class="modelsHint">Selected vault folder (filled by picker; advanced edit allowed):</p>
+          <label class="fieldLabel">Path
+            <input id="vaultSetupPath" type="text" autocomplete="off" placeholder="Choose a folder above — no default path" />
+          </label>
+        </div>
         <label class="fieldLabel">Initial blob size (GiB)
           <input id="vaultSetupSize" type="number" min="1" max="2000" value="8" />
         </label>
@@ -154,7 +174,7 @@
           <input id="vaultSetupConfirm" type="text" autocomplete="off" placeholder="CREATE-VAULT" />
         </label>
         <button type="button" id="actVaultSetup" class="actionBtn">Create vault here</button>
-        <p id="vaultSetupHint" class="modelsHint"></p>
+        <p id="vaultSetupHint" class="vaultFeedback" role="status" aria-live="polite"></p>
         <pre id="vaultRecovery" class="modelsBody" style="max-height:6rem;overflow:auto;display:none"></pre>
         <label class="fieldLabel" id="vaultSavedLabel" hidden>Type SAVED after writing the recovery phrase
           <input id="vaultSetupSaved" type="text" autocomplete="off" placeholder="SAVED" />
@@ -226,6 +246,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=22"></script>
+  <script src="app.js?v=24"></script>
 </body>
 </html>
