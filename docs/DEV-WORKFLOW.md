@@ -47,7 +47,7 @@ Useful: `stickllm-status`, `nvidia-smi`, `curl -s localhost:8080/health`,
 # Reuse overlay llama when present (default). Force only if binaries missing:
 # STICKLLM_FORCE_LLAMA_BUILD=1 ./scripts/build.sh
 ./scripts/build.sh
-# → out/v0.3.2/stickllm-amd-rtx3090-v0.3.2.hybrid.iso + SHA256SUMS
+# → out/v0.3.4/stickllm-amd-rtx3090-v0.3.4.hybrid.iso + SHA256SUMS
 ```
 
 Preserve N-2 restore slots and Drive golden — see [RESTORE.md](RESTORE.md).

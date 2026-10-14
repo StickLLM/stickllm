@@ -1,4 +1,4 @@
-# Encrypted SSD vault (v0.3.3 / `feature/encrypted-ssd-vault`)
+# Encrypted SSD vault (v0.3.4 / `feature/encrypted-ssd-vault`)
 
 **Creates a file in a folder you choose. Never formats your drive.**
 
@@ -25,13 +25,13 @@ Encoded from product docs and shipping rules:
 | Wipe-after-N **default off**; typed confirm if enabled | [MODELS.md](MODELS.md), `catalog.toml` `[vault]` |
 | Never auto-format; never partition for vault | FEATURES + this branch |
 
-**v0.3.3 posture:**
+**v0.3.4 posture:**
 
 1. **Encrypted host volume** (BitLocker, host LUKS, etc.) → do not unlock, reformat, or re-encrypt. User unlocks/mounts in the **host OS** first.
 2. **Unknown / RAID / LVM / exotic / ambiguous** partition layout → refuse; do not offer as a write target.
 3. **Only** act on a clearly **mounted, writable, ordinary** filesystem: create a directory (if needed) + a **new sparse LUKS2 file blob** after typed `CREATE-VAULT`.
 4. **Never** `cryptsetup luksFormat` / wipefs / partition against a block device (`/dev/sd*`, `nvme*`, …).
-5. **Never** rewrite partition tables for any reason in v0.3.3.
+5. **Never** rewrite partition tables for any reason in v0.3.4.
 6. Disk listing is a **read-only** probe. Raw devices are never vault targets.
 7. Existing files in a selected `models/` folder are **kept**; move into vault only via explicit `MOVE-MODEL`.
 8. Blob growth checks free space and keeps a reserve; wipe-after-N destroys **only** the blob’s LUKS header when user enabled it (default off).
