@@ -112,14 +112,25 @@ if ($BootMode -eq "chat" -or $BootMode -eq "local") {
 $append = ($append -replace '\s+', ' ').Trim()
 
 function Start-Qemu([string]$accel, [string]$cpu) {
-  # Single hostfwd only — dual hostfwd breaks under Windows Start-Process.
-  # Use one ArgumentList string (not a PS array): array form splits -append on spaces
-  # ("components: Could not open"), while a single string preserves commas for -qmp.
+  # Single hostfwd only. Never use Start-Process -ArgumentList for -append:
+  # PS re-tokenizes and QEMU sees bare "components" as a disk image path.
+  # ProcessStartInfo.Arguments is passed to CreateProcess intact (PS 5.1 safe).
   $netdev = "user,id=n0,hostfwd=tcp:127.0.0.1:${HostFwdPort}-:80"
-  # Chat/Local need headroom for CPU llama (3B Q4 + 4k ctx); Term can stay leaner.
   $mem = if ($isLocal) { 6144 } else { 4096 }
   $argLine = "-m $mem -smp 2 -machine q35 -accel $accel -cpu $cpu -device virtio-vga -display none -serial `"file:$Serial`" -qmp tcp:127.0.0.1:${QmpPort},server,nowait -netdev $netdev -device virtio-net-pci,netdev=n0 -cdrom `"$Iso`" -boot d -kernel `"$Vmlinuz`" -initrd `"$Initrd`" -append `"$append`""
-  return Start-Process -FilePath $Qemu -ArgumentList $argLine -PassThru -WindowStyle Hidden -RedirectStandardError $Stderr
+  Set-Content -Path $Stderr -Value ("QEMU_ARGS=" + $argLine) -Encoding ascii
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $Qemu
+  $psi.Arguments = $argLine
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  # Do not RedirectStandardError — PS5.1 has no ThreadJob to drain the pipe safely.
+  $psi.RedirectStandardError = $false
+  $psi.RedirectStandardOutput = $false
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  [void]$proc.Start()
+  return $proc
 }
 
 Write-Host "ISO=$Iso"
