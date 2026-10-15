@@ -87,7 +87,7 @@ if getent passwd user >/dev/null 2>&1; then
   passwd -l user 2>/dev/null || true
 fi
 
-# Do not auto-start SSH on every boot — only menu 3 Terminal / 4 Test (stickllm.ssh)
+# Do not auto-start SSH on every boot — only menu 2 Terminal / 3 Test (stickllm.ssh)
 systemctl disable ssh.service 2>/dev/null || true
 systemctl disable sshd.service 2>/dev/null || true
 

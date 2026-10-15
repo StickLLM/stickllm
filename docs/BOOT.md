@@ -24,13 +24,12 @@ steps — USB above the NVMe entry. That hardware is an example, not a requireme
 | # | Entry | What you get |
 |---|---|---|
 | **1** | **Server / Local** | On-stick browser when a display is present + LAN UI (`stickllm.chat`). Loopback needs no pair; phone/LAN uses pair code. |
-| **2** | **Secure Client** | Menu stub for now (`stickllm.client`) — dedicated client stick in a later release. |
-| **3** | **Terminal** | Console login or `ssh stickllm@<ip>` — `nvidia-smi`, `stickllm-status` (`stickllm.ssh`). |
-| **4** | **Test** | Same as Server / Local plus SSH (`stickllm.chat stickllm.ssh`). Random SSH password on READY before the browser takes the screen. |
+| **2** | **Terminal** | Console login or `ssh stickllm@<ip>` — `nvidia-smi`, `stickllm-status` (`stickllm.ssh`). |
+| **3** | **Test** | Same as Server / Local plus SSH (`stickllm.chat stickllm.ssh`). Random SSH password on READY before the browser takes the screen. |
 
-Menu timeout ~**20s**; default is **1 Server / Local**.
+Menu timeout ~**20s**; default is **1 Server / Local**. Secure Client returns when that path ships.
 
-### Terminal / Test SSH credentials (menu 3 / 4)
+### Terminal / Test SSH credentials (menu 2 / 3)
 
 | | |
 |---|---|
@@ -38,7 +37,7 @@ Menu timeout ~**20s**; default is **1 Server / Local**.
 | Password | Random per boot (shown on console READY; Test also prints before kiosk handoff) |
 | Useful | `stickllm-status` · `nvidia-smi` · `curl -s localhost:8080/health` |
 
-SSH is **off** unless you pick menu **3** or **4**.
+SSH is **off** unless you pick menu **2** or **3**.
 
 ## NVIDIA / display (do / don’t)
 
@@ -51,7 +50,7 @@ SSH is **off** unless you pick menu **3** or **4**.
 ## Boot sequence (expected)
 
 1. Firmware boots the USB (or chainload from another bootloader).
-2. StickLLM menu → pick **1** (Server / Local), **2** (Secure Client stub), **3** (Terminal), or **4** (Test).
+2. StickLLM menu → pick **1** (Server / Local), **2** (Terminal), or **3** (Test).
 3. Console: UI loading (no model auto-load — Activate from Models when ready).
 4. **Server / Local / Terminal / Test:** READY with `http://<lan-ip>/` and pair code when the UI path is up. Test also shows the SSH password.
 5. **Local path:** cage + Chromium on the NVIDIA HDMI output when a display is present; keyboard works. Load a model: Models → radio select → context slider → Activate.
@@ -79,7 +78,7 @@ Phone on the same LAN: open the Chat UI URL from the READY screen and enter the 
 |---|---|
 | Lands in another OS | Firmware boot order — USB not first |
 | Firmware ignores USB | Wrong port; try USB2; Secure Boot on |
-| Black screen, no status | GPU init hang — reboot; try Terminal (menu **3**) to diagnose |
+| Black screen, no status | GPU init hang — reboot; try Terminal (menu **2**) to diagnose |
 | Local blank / no browser | Wrong ISO; modeset mistake; no DRM |
 | Local no keyboard | `WLR_LIBINPUT_NO_DEVICES=1` or missing libinput backend |
 | UI up, empty replies | Model missing or still loading |

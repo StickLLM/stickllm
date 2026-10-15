@@ -19,7 +19,7 @@ Hardware validation stays on real sticks (example: 3090 desktop + ASUS laptop).
 
 ## SSH iterate (preferred)
 
-Boot menu **3 Terminal** or **4 Test** (SSH on). From the READY screen note the
+Boot menu **2 Terminal** or **3 Test** (SSH on). From the READY screen note the
 random password, then:
 
 ```bash

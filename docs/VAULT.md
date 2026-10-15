@@ -87,7 +87,7 @@ from Settings → System (Test/Term, on-stick) for hot-deploy on older sticks.
 SSH-test on a running stick first when iterating. Do not touch older `out/v0.3.*/`
 dirs or rewrite published shipping tags/checksums.
 
-### Hot-deploy (running stick, menu 3/4)
+### Hot-deploy (running stick, menu 2/3)
 
 Password is **random per boot** (READY screen) — do not invent it.
 
