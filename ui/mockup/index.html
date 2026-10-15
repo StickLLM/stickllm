@@ -1,404 +1,382 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>StickLLM — UI mockup</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="mockup.css" />
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>StickLLM — UI mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="mockup.css" />
 </head>
 <body>
-  <div class="app" id="app">
-    <!-- Backdrop for mobile drawer -->
-    <div class="scrim" id="scrim" hidden></div>
+<div class="app" id="app">
+  <div class="scrim" id="scrim" hidden></div>
 
-    <!-- Left drawer / hamburger nav -->
-    <aside class="drawer" id="drawer" aria-label="Navigation">
-      <div class="drawerBrand">
-        <span class="logoMark" aria-hidden="true"></span>
-        <div>
-          <div class="logoWord">StickLLM</div>
-          <div class="logoSub">Privacy AI USB · mockup</div>
-        </div>
-      </div>
-
-      <button type="button" class="navPrimary" id="navNewChat">
-        <span class="navIcon" aria-hidden="true">+</span> New chat
+  <!-- Sidebar: conversations -->
+  <aside class="sidebar" id="sidebar" aria-label="Conversations">
+    <div class="sideHead">
+      <div class="brand"><span class="logo" aria-hidden="true"></span>StickLLM</div>
+      <button class="iconBtn" id="collapseBtn" aria-label="Collapse sidebar" title="Collapse sidebar (Ctrl+B)">
+        <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
-
-      <div class="navSection">
-        <div class="navLabel">Session</div>
-        <button type="button" class="navItem" data-panel="chats" id="navChats" disabled title="Switch Mode to Vault">
-          Chats <span class="navHint">Vault</span>
-        </button>
-      </div>
-
-      <div class="navSection">
-        <div class="navLabel">Stick</div>
-        <button type="button" class="navItem" data-panel="models">Models</button>
-        <button type="button" class="navItem" data-panel="vault">Vault</button>
-        <button type="button" class="navItem" data-panel="pair">Pair</button>
-        <button type="button" class="navItem" data-panel="settings">Settings</button>
-      </div>
-
-      <div class="navSection">
-        <button type="button" class="navItem navDanger" id="navLock" disabled title="Unlock vault first">
-          Lock vault
-        </button>
-      </div>
-
-      <div class="drawerFoot">
-        <div class="modeSeg" role="group" aria-label="Storage mode">
-          <button type="button" class="modeBtn is-on" data-mode="ephemeral">Ephemeral</button>
-          <button type="button" class="modeBtn" data-mode="vault">Vault</button>
-        </div>
-        <p class="footHint" id="sessionHint">Ephemeral — no SSD vault writes</p>
-      </div>
-    </aside>
-
-    <!-- Main chat column -->
-    <div class="main">
-      <header class="chrome">
-        <button type="button" class="iconBtn hamburger" id="menuBtn" aria-label="Open menu">
-          <span></span><span></span><span></span>
-        </button>
-        <div class="chromeBrand">
-          <span class="chromeWord">StickLLM</span>
-          <span class="modeBadge" id="modeBadge">Ephemeral</span>
-        </div>
-        <nav class="chromeLinks" aria-label="Quick links">
-          <button type="button" class="ghostBtn" data-panel="models">Models</button>
-          <button type="button" class="ghostBtn" data-panel="vault">Vault</button>
-          <button type="button" class="ghostBtn" data-panel="settings">Settings</button>
-        </nav>
-        <button type="button" class="ghostBtn lockChrome" id="lockChrome" disabled title="Lock vault (Ctrl+Shift+L)">Lock</button>
-      </header>
-
-      <div class="statusStrip" id="statusStrip" aria-label="Connection status">
-        <span class="stCell"><span class="stLab">Pair</span> <strong id="stPair" class="mono">482917</strong></span>
-        <span class="stSep" aria-hidden="true">·</span>
-        <span class="stCell"><span class="stLab">URL</span> <a id="stUrl" class="mono stLink" href="#">http://192.168.1.42/</a></span>
-        <span class="stSep" aria-hidden="true">·</span>
-        <span class="stCell"><span class="stLab">Model</span> <strong id="stModel">Qwen2.5-7B · CUDA</strong></span>
-        <span class="stSep" aria-hidden="true">·</span>
-        <span class="stCell muted" id="stUplink">online</span>
-      </div>
-
-      <main class="thread" id="thread" aria-live="polite"></main>
-
-      <form class="composer" id="composer">
-        <div class="composerRow">
-          <button type="button" class="slotBtn" id="attachBtn" disabled title="Attach files — coming later" aria-label="Attach (coming later)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
-          </button>
-          <textarea id="input" rows="1" placeholder="Ask anything" autocomplete="off"></textarea>
-          <button type="button" class="slotBtn" id="micBtn" disabled title="Voice input — coming later" aria-label="Mic (coming later)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
-          </button>
-          <button type="submit" class="sendBtn" id="send">Send</button>
-        </div>
-        <div class="composerMeta">
-          <label class="webToggle" title="Look up live web results when needed (needs internet)">
-            <input type="checkbox" id="webToggle" checked />
-            <span>Web lookup</span>
-          </label>
-          <span class="composerNote muted">Attach &amp; mic reserved · Enter to send</span>
-        </div>
-      </form>
     </div>
+    <button class="btn primary block" id="newChatBtn" title="New chat (Ctrl+Shift+O)">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> New chat
+    </button>
+    <div class="modeSeg" role="radiogroup" aria-label="Storage mode">
+      <button role="radio" aria-checked="true" data-mode="ephemeral" class="on">Ephemeral</button>
+      <button role="radio" aria-checked="false" data-mode="vault">Vault</button>
+    </div>
+    <p class="sideHint" id="modeHint">Nothing is written to disk. Chats are lost at reboot.</p>
+    <nav class="convList" id="convList" aria-label="Chat history"></nav>
+    <div class="sideFoot">
+      <button class="navBtn" data-open="models"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>Models</button>
+      <button class="navBtn" data-open="storage"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Storage &amp; Vault</button>
+      <button class="navBtn" data-open="general"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
+    </div>
+  </aside>
 
-    <!-- ========== PANELS ========== -->
-
-    <!-- Models -->
-    <section class="sheet" id="panel-models" hidden aria-labelledby="modelsTitle">
-      <div class="sheetHead">
-        <h2 id="modelsTitle">Models</h2>
-        <button type="button" class="iconBtn closeSheet" data-close aria-label="Close">×</button>
+  <!-- Main -->
+  <div class="main">
+    <header class="top">
+      <button class="iconBtn" id="menuBtn" aria-label="Open conversations" title="Conversations (Ctrl+B)">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <h1 class="chatTitle" id="chatTitle">New chat</h1>
+      <div class="topRight">
+        <button class="chip" id="statusChip" aria-haspopup="true" aria-expanded="false" title="Model and connection status">
+          <span class="dot ok"></span><span id="chipModel">Qwen2.5 7B</span><span class="chipSep">·</span><span class="chipMeta">CUDA</span>
+        </button>
+        <div class="popover" id="statusPop" hidden>
+          <dl>
+            <dt>Model</dt><dd>Qwen2.5-7B-Instruct Q5_K_M</dd>
+            <dt>Context</dt><dd>8,192 tokens</dd>
+            <dt>Backend</dt><dd>CUDA · RTX 4090</dd>
+            <dt>Uplink</dt><dd>Online (HomeLAN)</dd>
+            <dt>Vault</dt><dd id="popVault">Locked</dd>
+          </dl>
+          <button class="btn sm" data-open="models">Manage models</button>
+        </div>
+        <button class="iconBtn" id="lockBtn" aria-label="Lock vault" title="Lock vault (Ctrl+Shift+L)" hidden>
+          <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>
+        </button>
+        <button class="iconBtn" id="themeBtn" aria-label="Toggle light/dark theme" title="Toggle theme">
+          <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>
+        </button>
+        <button class="iconBtn" data-open="general" aria-label="Settings" title="Settings (Ctrl+,)">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
+        </button>
       </div>
-      <div class="sheetBody">
-        <pre class="statusBlock" id="modelsStatus">Backend: CUDA · VRAM ~24 GB
-Optimum: Qwen2.5-7B-Instruct-Q5_K_M (~5.2 GB)
-Running: Qwen2.5-7B-Instruct-Q5_K_M (health ok)
-Models: /mnt/stickllm-data/models</pre>
+    </header>
 
-        <div class="dlProgress" id="dlProgress" hidden>
-          <div class="dlLabel" id="dlLabel">Download</div>
-          <div class="dlBar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
-            <div class="dlFill" id="dlFill"></div>
-          </div>
-          <div class="dlMeta muted" id="dlMeta"></div>
-        </div>
+    <main class="thread" id="thread" aria-live="polite"></main>
 
-        <div class="btnRow">
-          <button type="button" class="actionBtn" id="actProbe">Probe VRAM / recommend</button>
-          <button type="button" class="actionBtn" id="actDownloadRec">Download recommended</button>
-          <button type="button" class="actionBtn" id="actRefreshModels">Refresh</button>
-        </div>
-
-        <div class="catalog" id="catalog" role="radiogroup" aria-label="Model catalog"></div>
-
-        <div class="ctxPanel" id="ctxPanel">
-          <label class="field">
-            Context size
-            <div class="ctxRow">
-              <input type="range" id="ctxSlider" min="2048" max="8192" step="1024" value="8192" />
-              <strong id="ctxValue">8192</strong>
-            </div>
-          </label>
-          <p class="hint" id="ctxMeta">Slider range 2k–8k tokens · loaded 8k · ~18 GB free after load</p>
-          <div class="btnRow">
-            <button type="button" class="actionBtn primary" id="actActivate">Activate selected</button>
-          </div>
-        </div>
-
-        <div class="managePanel" id="modelManage">
-          <p class="hint" id="manageHint"></p>
-          <div class="btnRow">
-            <button type="button" class="actionBtn" id="actModelDl" hidden>Download this model</button>
-            <button type="button" class="actionBtn danger" id="actModelDel" hidden>Delete selected</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Vault (first-class — all storage / SSD / create / unlock) -->
-    <section class="sheet sheetWide" id="panel-vault" hidden aria-labelledby="vaultTitle">
-      <div class="sheetHead">
-        <h2 id="vaultTitle">Vault</h2>
-        <button type="button" class="iconBtn closeSheet" data-close aria-label="Close">×</button>
-      </div>
-      <div class="sheetBody">
-        <p class="vaultStatusLine" id="vaultStatus">Vault: locked · wipe-after-N off · file-blob only — never formats your drive</p>
-        <p class="hint">
-          Creates a file in a folder you choose. Never formats your drive.
-          Encrypted/BitLocker volumes stay blocked — unlock in the host OS first, then Mount.
-        </p>
-
-        <div class="subTabs" role="tablist">
-          <button type="button" class="subTab is-on" data-vtab="storage">Storage</button>
-          <button type="button" class="subTab" data-vtab="unlock">Unlock</button>
-          <button type="button" class="subTab" data-vtab="create">Create</button>
-          <button type="button" class="subTab" data-vtab="advanced">Advanced</button>
-        </div>
-
-        <!-- Storage / mount / browse -->
-        <div class="vtab" id="vtab-storage">
-          <div class="btnRow">
-            <button type="button" class="actionBtn" id="actClaim">Claim USB free space</button>
-            <button type="button" class="actionBtn" id="actListStorage">List storage</button>
-            <button type="button" class="actionBtn" id="actFindVault">Find existing vault</button>
-            <button type="button" class="actionBtn" id="actVaultRefresh">Refresh</button>
-          </div>
-          <pre class="statusBlock compact" id="diskList">Storage devices (Stick USB + Host SSD):
-SSD        /mnt/stickllm-host/nvme0n1p3 · free 412G · Open
-SSD · unmounted  /dev/nvme0n1p4 · 500 GiB · Mount
-Stick USB  /mnt/stickllm-data · free 28G — data leaves with stick
-Not offered: /dev/nvme0n1p2  BitLocker — unlock in host OS</pre>
-
-          <div class="picker">
-            <div class="pickerHead">
-              <strong>1. Device</strong>
-              <button type="button" class="actionBtn" id="actDevRefresh">Refresh devices</button>
-            </div>
-            <div class="pickList" id="deviceList"></div>
-
-            <div class="pickerHead">
-              <strong>2. Folder</strong>
-              <span class="mono pathChip" id="browsePath">/mnt/stickllm-host/nvme0n1p3/home/nink/models</span>
-            </div>
-            <div class="warnBanner" id="usbWarn" hidden>USB selected — data leaves when removed. Prefer host SSD.</div>
-            <div class="btnRow wrap">
-              <button type="button" class="actionBtn" id="actBrowseUp">Up</button>
-              <button type="button" class="actionBtn" id="actUseFolder">Use this folder</button>
-              <button type="button" class="actionBtn primary" id="actOpenExisting">Open existing vault</button>
-              <button type="button" class="actionBtn" id="actNewFolder">New folder…</button>
-              <button type="button" class="actionBtn" id="actFindModels">Find existing models</button>
-            </div>
-            <div class="pickList" id="modelHits" hidden></div>
-            <div class="pickList" id="folderList"></div>
-            <p class="okBanner" id="blobHint" hidden>Found existing vault blob: …/stickllm-vault.img — Open existing, then Unlock.</p>
-            <label class="field">
-              Selected vault folder
-              <input type="text" id="vaultPath" class="mono" value="/mnt/stickllm-host/nvme0n1p3/home/nink/models" />
-            </label>
-          </div>
-        </div>
-
-        <!-- Unlock -->
-        <div class="vtab" id="vtab-unlock" hidden>
-          <label class="field">
-            Unlock passcode
-            <input type="password" id="vaultPass" autocomplete="off" placeholder="Vault passcode" />
-          </label>
-          <div class="btnRow">
-            <button type="button" class="actionBtn primary" id="actUnlock">Unlock vault</button>
-            <button type="button" class="actionBtn" id="actLockVault">Lock vault</button>
-          </div>
-          <p class="hint">After reflash: Find existing vault or browse → Open existing vault (config only), then Unlock. Do not Create again if the blob exists.</p>
-        </div>
-
-        <!-- Create -->
-        <div class="vtab" id="vtab-create" hidden>
-          <p class="hint">Create only if this folder has <strong>no</strong> stickllm-vault.img. Prefer host SSD.</p>
-          <label class="field">Initial blob size (GiB)
-            <input type="number" id="vaultSize" min="1" max="2000" value="8" />
-          </label>
-          <label class="field">New vault passcode (min 8)
-            <input type="password" id="vaultPassNew" autocomplete="new-password" placeholder="Passcode" />
-          </label>
-          <label class="field">Confirm passcode
-            <input type="password" id="vaultPassNew2" autocomplete="new-password" placeholder="Confirm" />
-          </label>
-          <label class="field">Type CREATE-VAULT to confirm
-            <input type="text" id="vaultCreateConfirm" autocomplete="off" placeholder="CREATE-VAULT" />
-          </label>
-          <button type="button" class="actionBtn primary" id="actCreateVault">Create vault here</button>
-          <pre class="statusBlock" id="recoveryPhrase" hidden></pre>
-          <label class="field" id="savedLabel" hidden>Type SAVED after writing the recovery phrase
-            <input type="text" id="vaultSaved" autocomplete="off" placeholder="SAVED" />
-          </label>
-          <button type="button" class="actionBtn" id="actFinishSetup" hidden>Finish setup (SAVED)</button>
-        </div>
-
-        <!-- Advanced -->
-        <div class="vtab" id="vtab-advanced" hidden>
-          <label class="field">Grow blob by (GiB)
-            <input type="number" id="vaultGrowGb" min="1" max="500" value="8" />
-          </label>
-          <button type="button" class="actionBtn" id="actGrow">Grow vault</button>
-          <label class="field">Wrong-PIN wipe after N tries (0 = off)
-            <input type="number" id="vaultWipeN" min="0" max="10" value="0" />
-          </label>
-          <button type="button" class="actionBtn" id="actWipe">Apply wipe setting</button>
-          <p class="hint">Wipe destroys only this vault blob’s LUKS header — never host partitions. Off unless you confirm WIPE-OK.</p>
-
-          <h3 class="subHead">Move USB models → vault</h3>
-          <pre class="statusBlock compact" id="movableList">Unlock vault + Vault mode, then Refresh movable.</pre>
-          <button type="button" class="actionBtn" id="actMovable">Refresh movable</button>
-        </div>
-
-        <p class="feedback" id="vaultFeedback" role="status" aria-live="polite"></p>
-      </div>
-    </section>
-
-    <!-- Pair -->
-    <section class="sheet" id="panel-pair" hidden aria-labelledby="pairTitle">
-      <div class="sheetHead">
-        <h2 id="pairTitle">Pair</h2>
-        <button type="button" class="iconBtn closeSheet" data-close aria-label="Close">×</button>
-      </div>
-      <div class="sheetBody">
-        <p class="hint">
-          Look at the StickLLM computer screen for a 6-digit <strong>PAIR CODE</strong>.
-          It is never sent over the network except as you type it here.
-        </p>
-        <div class="pairDisplay">
-          <span class="stLab">On stick</span>
-          <strong class="mono pairBig" id="pairDisplayCode">482917</strong>
-        </div>
-        <label class="field">
-          Code
-          <input id="pairCode" class="pairInput" inputmode="numeric" maxlength="8" placeholder="123456" autocomplete="one-time-code" />
-        </label>
-        <p class="err" id="pairErr" hidden></p>
-        <div class="btnRow">
-          <button type="button" class="actionBtn primary" id="actPairSubmit">Pair</button>
-          <button type="button" class="actionBtn" id="actRemint">Mint new code</button>
-        </div>
-        <p class="hint" id="howToConnect">
-          Open http://192.168.1.42/ on the same LAN and enter the PAIR CODE from the stick screen.
-          Loopback on the stick needs no pair. No LAN? Term: stickllm-wifi-setup.
-        </p>
-      </div>
-    </section>
-
-    <!-- Settings (client-appropriate: Network + System; vault lives in Vault panel) -->
-    <section class="sheet" id="panel-settings" hidden aria-labelledby="settingsTitle">
-      <div class="sheetHead">
-        <h2 id="settingsTitle">Settings</h2>
-        <button type="button" class="iconBtn closeSheet" data-close aria-label="Close">×</button>
-      </div>
-      <div class="sheetBody">
-        <pre class="statusBlock" id="settingsBody">Backend: CUDA
-USB DATA: mounted (28 GiB free)
-Uplink: online</pre>
-
-        <div class="subTabs" role="tablist">
-          <button type="button" class="subTab is-on" data-stab="network">Network</button>
-          <button type="button" class="subTab" data-stab="system">System</button>
-        </div>
-
-        <div class="stab" id="stab-network">
-          <h3 class="subHead">Network / WiFi</h3>
-          <p class="hint">
-            Use when the stick already has LAN. If there is <strong>no</strong> network yet, use Term:
-            <code>stickllm-wifi-setup</code>
-          </p>
-          <p class="hint" id="netStatus">Online: yes · WiFi HomeLAN</p>
-          <label class="field">SSID
-            <input id="wifiSsid" autocomplete="off" placeholder="Network name" />
-          </label>
-          <label class="field">Password
-            <input id="wifiPass" type="password" autocomplete="off" placeholder="WiFi password" />
-          </label>
-          <button type="button" class="actionBtn primary" id="actWifi">Connect WiFi</button>
-        </div>
-
-        <div class="stab" id="stab-system" hidden>
-          <h3 class="subHead">System</h3>
-          <p class="hint"><strong>How to load a model</strong></p>
-          <p class="hint">No model loads at boot. Open Models → radio select → context slider → Activate.</p>
-          <p class="hint"><strong>How to connect</strong></p>
-          <p class="hint" id="howToConnectSettings">
-            Open the URL on the same LAN and click Pair. The stick/kiosk chat shows New PAIR CODE; enter it here.
-            Loopback on the stick needs no pair.
-          </p>
-          <p class="hint muted">
-            SSH credentials (Test / Term) are shown on the stick console only — not in this browser client.
-          </p>
-          <div class="futureBlock">
-            <h3 class="subHead">Coming later</h3>
-            <p class="hint">Context size / inference defaults · Setup WiFi access point (bootstrap if no Ethernet)</p>
-          </div>
+    <form class="composer" id="composer">
+      <div class="composerBox">
+        <div class="attachments" id="attachments" hidden aria-label="Attachments"></div>
+        <textarea id="input" rows="1" placeholder="Message StickLLM" aria-label="Message"></textarea>
+        <div class="composerBar">
+          <button type="button" class="iconBtn" id="attachBtn" disabled title="Attach files — coming later" aria-label="Attach (coming later)">
+            <svg viewBox="0 0 24 24"><path d="M21.4 11l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"/></svg>
+          </button>
+          <button type="button" class="toggleChip" id="webToggle" aria-pressed="true" title="Allow live web lookup when needed (needs internet)">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>Web
+          </button>
+          <span class="grow"></span>
+          <button type="button" class="iconBtn" id="micBtn" disabled title="Voice input — coming later" aria-label="Mic (coming later)">
+            <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
+          </button>
+          <button type="submit" class="sendBtn" id="sendBtn" aria-label="Send (Enter)">
+            <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
         </div>
       </div>
-    </section>
-
-    <!-- Chats (Vault mode) -->
-    <section class="sheet" id="panel-chats" hidden aria-labelledby="chatsTitle">
-      <div class="sheetHead">
-        <h2 id="chatsTitle">Saved chats</h2>
-        <button type="button" class="iconBtn closeSheet" data-close aria-label="Close">×</button>
-      </div>
-      <div class="sheetBody">
-        <p class="hint">Stored only inside the unlocked vault when Mode is Vault. Ephemeral never writes chats to disk.</p>
-        <div class="catalog" id="chatsList"></div>
-        <div class="btnRow">
-          <button type="button" class="actionBtn primary" id="actChatNew">New chat</button>
-          <button type="button" class="actionBtn" id="actChatSave">Save current</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- Delete confirm -->
-    <dialog class="modal" id="deleteDialog">
-      <form method="dialog" class="modalInner">
-        <h2>ARE YOU SURE</h2>
-        <p class="hint" id="deleteBody">This permanently deletes the downloaded model files. Type <strong>ARE YOU SURE</strong> to confirm.</p>
-        <label class="field">Confirmation
-          <input id="deleteConfirmInput" type="text" autocomplete="off" placeholder="ARE YOU SURE" />
-        </label>
-        <p class="err" id="deleteErr" hidden></p>
-        <div class="btnRow end">
-          <button type="button" class="actionBtn" id="deleteCancel" value="cancel">Cancel</button>
-          <button type="button" class="actionBtn danger" id="deleteOk">Delete files</button>
-        </div>
-      </form>
-    </dialog>
+      <p class="composerNote" id="composerNote">Ephemeral · local only · Attach &amp; Mic reserved</p>
+    </form>
   </div>
 
-  <script src="mockup.js"></script>
+  <!-- Settings modal -->
+  <div class="modalWrap" id="settings" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+      <nav class="setNav" aria-label="Settings sections">
+        <div class="setNavHead" id="setTitle">Settings</div>
+        <button data-sec="general">General</button>
+        <button data-sec="models">Models</button>
+        <button data-sec="storage">Storage &amp; Vault</button>
+        <button data-sec="chats">Chats</button>
+        <button data-sec="devices">Devices &amp; Pairing</button>
+        <button data-sec="network">Network</button>
+        <button data-sec="system">System</button>
+        <button data-sec="about">About</button>
+      </nav>
+      <div class="setBody">
+        <header class="setHead">
+          <button class="iconBtn backBtn" id="setBack" aria-label="Back to sections"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+          <h2 id="secTitle">General</h2>
+          <button class="iconBtn" id="setClose" aria-label="Close settings (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </header>
+        <div class="setScroll">
+
+<!-- GENERAL -->
+<section class="sec" id="sec-general" data-title="General">
+  <div class="group">
+    <div class="row"><div><b>Theme</b><small>Dark is the default on the kiosk.</small></div>
+      <div class="seg" id="themeSeg"><button data-theme="dark" class="on">Dark</button><button data-theme="light">Light</button></div></div>
+    <div class="row"><div><b>Storage mode</b><small>Ephemeral never writes to disk. Vault saves chats inside the encrypted vault.</small></div>
+      <div class="seg" id="modeSeg2"><button data-mode="ephemeral" class="on">Ephemeral</button><button data-mode="vault">Vault</button></div></div>
+    <div class="row"><div><b>Web lookup by default</b><small>Same as the Web toggle in the composer. Sources are listed only when used.</small></div>
+      <label class="switch"><input type="checkbox" checked id="webDefault"><span></span></label></div>
+  </div>
+  <h3>Keyboard shortcuts</h3>
+  <div class="group kbd">
+    <div class="row"><span>Send message</span><span><kbd>Enter</kbd></span></div>
+    <div class="row"><span>New line</span><span><kbd>Shift</kbd> <kbd>Enter</kbd></span></div>
+    <div class="row"><span>New chat</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>O</kbd></span></div>
+    <div class="row"><span>Toggle sidebar</span><span><kbd>Ctrl</kbd> <kbd>B</kbd></span></div>
+    <div class="row"><span>Settings</span><span><kbd>Ctrl</kbd> <kbd>,</kbd></span></div>
+    <div class="row"><span>Lock vault</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>L</kbd></span></div>
+    <div class="row"><span>Close dialog</span><span><kbd>Esc</kbd></span></div>
+  </div>
+</section>
+
+<!-- MODELS -->
+<section class="sec" id="sec-models" data-title="Models" hidden>
+  <div class="summary">
+    <div><small>Running</small><b>Qwen2.5-7B-Instruct Q5_K_M</b><span class="pill ok">healthy</span></div>
+    <div><small>Recommended for this GPU</small><b>Qwen2.5-7B Q5_K_M</b><button class="link" id="probeBtn">Re-check GPU</button></div>
+    <div><small>Models folder</small><b class="mono" id="modelDir">/mnt/stickllm-data/models</b><button class="link" id="pickModelDir">Change…</button></div>
+  </div>
+  <div class="dl" id="dlBox" hidden>
+    <div class="dlTop"><span id="dlName">Downloading</span><span id="dlPct">0%</span></div>
+    <div class="bar"><i id="dlFill"></i></div>
+    <small id="dlMeta" class="muted"></small>
+  </div>
+  <div class="secTools">
+    <h3>Library</h3>
+    <span class="grow"></span>
+    <button class="btn sm" id="refreshCatalog">Refresh</button>
+  </div>
+  <div class="modelList" id="modelList" role="radiogroup" aria-label="Models"></div>
+
+  <h3>Preset</h3>
+  <div class="presets" id="presets" role="radiogroup">
+    <button data-preset="fast"><b>Fast</b><small>4k ctx · q8 KV · temp 0.7</small></button>
+    <button data-preset="balanced" class="on"><b>Balanced</b><small>8k ctx · f16 KV · temp 0.7</small></button>
+    <button data-preset="long"><b>Long context</b><small>32k ctx · q4 KV · temp 0.6</small></button>
+  </div>
+
+  <details class="adv" id="advanced">
+    <summary>Advanced</summary>
+    <div class="advBody">
+      <label class="field"><span>Context size <b id="ctxVal">8,192</b> tokens</span>
+        <input type="range" id="ctx" min="2048" max="32768" step="1024" value="8192"></label>
+      <div class="vram">
+        <div class="vramBar" aria-label="VRAM usage"><i class="w" id="vW"></i><i class="kv" id="vKV"></i><i class="free" id="vFree"></i></div>
+        <div class="legend"><span><i class="w"></i>Weights <b id="lW"></b></span><span><i class="kv"></i>KV cache <b id="lKV"></b></span><span><i class="free"></i>Free <b id="lFree"></b></span><span class="muted">of 24 GB</span></div>
+        <p class="warn" id="vramWarn" hidden>Doesn't fit in VRAM. Lower the context or use a smaller KV cache type.</p>
+      </div>
+      <div class="row2">
+        <div class="field"><span>KV cache type</span>
+          <div class="seg" id="kvSeg"><button data-kv="f16" class="on">f16</button><button data-kv="q8">q8_0</button><button data-kv="q4">q4_0</button></div></div>
+        <label class="field"><span>Temperature <b id="tempVal">0.7</b></span><input type="range" id="temp" min="0" max="2" step="0.05" value="0.7"></label>
+        <label class="field"><span>Top-p <b id="toppVal">0.9</b></span><input type="range" id="topp" min="0" max="1" step="0.01" value="0.9"></label>
+        <label class="field"><span>Top-k</span><input type="number" id="topk" value="40" min="0" max="200"></label>
+        <label class="field"><span>Repeat penalty</span><input type="number" id="rep" value="1.1" step="0.05" min="1" max="2"></label>
+        <label class="field"><span>Max reply tokens</span><input type="number" id="maxtok" value="1024" min="64" max="8192" step="64"></label>
+      </div>
+      <button class="link" id="resetPreset">Reset to preset</button>
+    </div>
+  </details>
+
+  <div class="actions sticky">
+    <span class="muted" id="selHint">Selected: Qwen2.5-7B Q5_K_M</span>
+    <span class="grow"></span>
+    <button class="btn danger ghost" id="delModel">Delete…</button>
+    <button class="btn" id="dlModel" hidden>Download</button>
+    <button class="btn primary" id="activate">Reload with these settings</button>
+  </div>
+</section>
+
+<!-- STORAGE -->
+<section class="sec" id="sec-storage" data-title="Storage &amp; Vault" hidden>
+  <div class="vaultCard" id="vaultCard">
+    <div class="vcIcon"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg></div>
+    <div class="vcText"><b id="vcState">Vault locked</b><small id="vcSub">/mnt/stickllm-host/nvme0n1p3/stickllm/stickllm-vault.img · 32 GiB</small></div>
+    <form class="vcUnlock" id="unlockForm"><input type="password" id="vaultPass" placeholder="Vault passcode" autocomplete="off" aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
+    <button class="btn" id="lockBtn2" hidden>Lock</button>
+  </div>
+
+  <div class="secTools"><h3>Drives</h3><span class="grow"></span>
+    <button class="btn sm" id="actClaim" title="Create a data partition on the StickLLM USB stick only">Use free space on the stick</button>
+    <button class="btn sm" id="actFindVault" title="Scan for vault files">Find existing vault</button>
+    <button class="btn sm" id="actFindModels" title="Scan for .gguf models">Find existing models</button>
+    <button class="btn sm" id="refreshDrives">Refresh</button>
+  </div>
+  <div class="drives" id="drives"></div>
+  <div class="group" id="findHits" hidden></div>
+  <p class="note calm"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>StickLLM never partitions or formats your own drives. To prepare one, use your computer's disk tools.</p>
+  <p class="muted small">Pick an existing drive or partition, then a folder. The vault is created as a file inside it. Encrypted host volumes (BitLocker, LUKS) are never opened — unlock them in the host OS first. “Use free space on the stick” creates a data partition <b>only on the StickLLM USB stick</b> (the flashed image), never on your own disks.</p>
+
+  <div class="secTools"><h3>Vault location</h3></div>
+  <div class="row card"><div><b>Open an existing vault</b><small>Browse to a <span class="mono">stickllm-vault.img</span>. Vault files are detected automatically.</small></div><button class="btn sm primary" id="pickVault">Choose…</button></div>
+
+  <details class="adv">
+    <summary>Create a new vault file</summary>
+    <div class="advBody">
+      <p class="muted small" id="ctHint" style="margin-top:12px">Creates <span class="mono">stickllm-vault.img</span> in the selected folder. Nothing else on the drive is touched.</p>
+      <div class="row2">
+        <div class="field"><span>Folder</span><div class="pathPick"><input class="mono" id="vaultPath" value="/mnt/stickllm-host/nvme0n1p3/stickllm" readonly aria-label="Vault folder"><button class="btn sm" id="pickCreate">Choose…</button></div></div>
+        <label class="field" id="sizeField"><span>Size (GiB)</span><input type="number" id="vaultSize" value="32" min="1" max="2000"></label>
+        <label class="field"><span>Passcode (min 8)</span><input type="password" id="np1" autocomplete="new-password"></label>
+        <label class="field"><span>Confirm passcode</span><input type="password" id="np2" autocomplete="new-password"></label>
+      </div>
+      <button class="btn primary" id="createVault">Create vault…</button>
+    </div>
+  </details>
+
+  <details class="adv">
+    <summary>Vault options</summary>
+    <div class="advBody">
+      <div class="row"><div><b>Grow vault</b><small>Add space to the vault file.</small></div><div class="inline"><input type="number" id="growGb" value="8" min="1" max="500" aria-label="Grow by GiB"> GiB <button class="btn sm" id="growBtn">Grow</button></div></div>
+      <div class="row"><div><b>Wipe after wrong passcodes</b><small>Destroys only this vault's key header. 0 = off.</small></div><div class="inline"><input type="number" id="wipeN" value="0" min="0" max="10" aria-label="Tries"> tries <button class="btn sm" id="wipeBtn">Apply</button></div></div>
+    </div>
+  </details>
+
+  <div class="secTools"><h3>Move models into vault</h3><span class="grow"></span><button class="btn sm" id="refreshMovable">Refresh</button></div>
+  <div class="group" id="movable"></div>
+</section>
+
+<!-- CHATS -->
+<section class="sec" id="sec-chats" data-title="Chats" hidden>
+  <div class="group">
+    <div class="row"><div><b>Where chats live</b><small id="chatWhere">Ephemeral: in memory only, gone at reboot.</small></div>
+      <div class="seg" id="modeSeg3"><button data-mode="ephemeral" class="on">Ephemeral</button><button data-mode="vault">Vault</button></div></div>
+    <div class="row"><div><b>Save current chat to vault</b><small>Vault mode saves automatically after each reply.</small></div><button class="btn sm" id="saveChat">Save now</button></div>
+  </div>
+  <div class="secTools"><h3>Saved in vault</h3><span class="grow"></span><button class="btn sm" id="exportAll">Export all (.json)</button><button class="btn sm danger ghost" id="deleteAll">Delete all…</button></div>
+  <div class="group" id="savedChats"></div>
+</section>
+
+<!-- DEVICES -->
+<section class="sec" id="sec-devices" data-title="Devices &amp; Pairing" hidden>
+  <div class="pairCard">
+    <div><small>Pair a phone or laptop</small><p>On the new device, open the address below and enter the code shown <b>on the stick's screen</b>.</p>
+      <div class="mono big" id="lanUrl2">http://192.168.1.42/</div></div>
+    <div class="code"><small>Pair code (shown on the kiosk only)</small><b class="mono" id="pairCodeShow">482 917</b><button class="btn sm" id="remint">New code</button></div>
+  </div>
+  <div class="secTools"><h3>Enter a code</h3></div>
+  <form class="inline" id="pairForm"><input id="pairIn" class="mono" inputmode="numeric" maxlength="6" placeholder="123456" aria-label="Pair code"><button class="btn primary">Pair this browser</button><span class="err" id="pairErr" hidden></span></form>
+  <div class="secTools"><h3>Paired devices</h3><span class="grow"></span><button class="btn sm danger ghost" id="revokeAll">Revoke all</button></div>
+  <div class="group" id="devices"></div>
+  <p class="muted small">A new pair code signs out every browser that isn't paired again.</p>
+</section>
+
+<!-- NETWORK -->
+<section class="sec" id="sec-network" data-title="Network" hidden>
+  <div class="group">
+    <div class="row"><div><b>LAN address</b><small>Open this on any device on the same network.</small></div><span class="mono">http://192.168.1.42/ <button class="link" id="copyUrl">Copy</button></span></div>
+    <div class="row"><div><b>Status</b><small>WiFi · HomeLAN · 192.168.1.42</small></div><span class="pill ok">Online</span></div>
+    <div class="row"><div><b>Offline mode</b><small>Block all outbound traffic. Web lookup and updates are disabled.</small></div><label class="switch"><input type="checkbox" id="offline"><span></span></label></div>
+    <div class="row dim"><div><b>Route web lookup through Tor</b><small>Coming later.</small></div><label class="switch"><input type="checkbox" disabled><span></span></label></div>
+  </div>
+  <h3>WiFi</h3>
+  <div class="row2">
+    <label class="field"><span>Network name (SSID)</span><input id="ssid" placeholder="HomeLAN"></label>
+    <label class="field"><span>Password</span><input id="wpass" type="password" autocomplete="off"></label>
+  </div>
+  <div class="actions"><button class="btn primary" id="wifiBtn">Connect</button></div>
+  <p class="muted small">No network yet? Run <span class="mono">stickllm-wifi-setup</span> in the stick's terminal. A WiFi access point mode is coming later.</p>
+</section>
+
+<!-- SYSTEM -->
+<section class="sec" id="sec-system" data-title="System" hidden>
+  <div class="group">
+    <div class="row"><div><b>Inference backend</b><small>Auto picks the fastest available.</small></div>
+      <div class="seg" id="backendSeg"><button class="on">Auto</button><button>CUDA</button><button>Vulkan</button><button>CPU</button></div></div>
+    <div class="row"><div><b>GPU</b><small>NVIDIA RTX 4090 · driver 560.35</small></div><span class="mono">24 GB VRAM</span></div>
+    <div class="row"><div><b>Stick storage</b><small>USB DATA partition</small></div><span class="mono">28 GiB free</span></div>
+    <div class="row"><div><b>Memory</b><small>System RAM</small></div><span class="mono">64 GB</span></div>
+  </div>
+  <h3>Updates</h3>
+  <div class="group">
+    <div class="row"><div><b>StickLLM 0.9.4</b><small>llama.cpp b4521 · last checked today 14:20</small></div><button class="btn sm" id="checkUpd">Check for updates</button></div>
+  </div>
+  <h3>Help</h3>
+  <div class="group">
+    <div class="row"><div><b>Loading a model</b><small>No model loads at boot. Go to Models, pick one, choose a preset, then Reload.</small></div><button class="btn sm" data-sec-go="models">Open Models</button></div>
+    <div class="row"><div><b>Connecting another device</b><small>Open the LAN address and enter the pair code from the stick's screen.</small></div><button class="btn sm" data-sec-go="devices">Open Pairing</button></div>
+    <div class="row"><div><b>Terminal access (SSH)</b><small>Login details are shown on the stick's console only, never in the browser.</small></div></div>
+  </div>
+</section>
+
+<!-- ABOUT -->
+<section class="sec" id="sec-about" data-title="About" hidden>
+  <div class="about">
+    <span class="logo lg" aria-hidden="true"></span>
+    <h3>StickLLM</h3>
+    <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
+    <div class="group">
+      <div class="row"><span>Version</span><span class="mono">0.9.4</span></div>
+      <div class="row"><span>llama.cpp</span><span class="mono">b4521</span></div>
+      <div class="row"><span>UI</span><span class="mono">mockup (Grok IA + StickLLM DNA)</span></div>
+      <div class="row"><span>License</span><span>Open source</span></div>
+    </div>
+  </div>
+</section>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Choose folder dialog (reusable) -->
+  <div class="modalWrap top2" id="picker" hidden>
+    <div class="modal fp" role="dialog" aria-modal="true" aria-labelledby="fpTitle">
+      <header class="fpHead"><h2 id="fpTitle">Choose folder</h2><button class="iconBtn" id="fpClose" aria-label="Cancel (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+      <div class="fpBar">
+        <button class="iconBtn" id="fpBackB" aria-label="Back" title="Back (Alt+←)"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <button class="iconBtn" id="fpFwd" aria-label="Forward" title="Forward (Alt+→)"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <button class="iconBtn" id="fpUp" aria-label="Up one folder" title="Up (Backspace)"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+        <div class="crumbs" id="fpCrumbs" title="Click empty space to type a path"></div>
+        <input class="mono fpPathIn" id="fpPathIn" hidden aria-label="Path">
+        <div class="fpFileTools" id="fpFileTools" hidden>
+          <div class="seg" id="fpFilter" role="radiogroup" aria-label="File type"><button data-flt="images">Images</button><button data-flt="docs">Documents</button><button data-flt="all" class="on">All</button></div>
+          <div class="seg icons" id="fpView" aria-label="View"><button data-view="list" class="on" aria-label="List view" title="List"><svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg></button><button data-view="grid" aria-label="Grid view" title="Grid"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button></div>
+        </div>
+        <button class="iconBtn" id="fpNew" aria-label="New folder" title="New folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2zM12 11v5M9.5 13.5h5"/></svg></button>
+      </div>
+      <div class="fpMain">
+        <nav class="fpSide" id="fpSide" aria-label="Drives"></nav>
+        <div class="fpListWrap">
+          <div class="fpCols"><span>Name</span><span>Modified</span><span>Size</span></div>
+          <div class="fpList" id="fpList" role="listbox" tabindex="0" aria-label="Folder contents"></div>
+        </div>
+      </div>
+      <footer class="fpFoot">
+        <div class="fpSel"><small id="fpSelLabel">Selected folder</small><span class="mono" id="fpSel"></span></div>
+        <button class="btn" id="fpCancel">Cancel</button>
+        <button class="btn primary" id="fpOk">Select folder</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Confirm dialog -->
+  <div class="modalWrap top2" id="confirm" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="cfTitle">
+      <div class="cfBody">
+        <h2 id="cfTitle">Are you sure?</h2>
+        <p id="cfText"></p>
+        <pre class="recovery" id="cfExtra" hidden></pre>
+        <label class="field"><span id="cfLabel">Type <b class="mono" id="cfWord">ARE YOU SURE</b> to confirm</span><input id="cfInput" autocomplete="off"></label>
+        <div class="actions"><span class="grow"></span><button class="btn" id="cfCancel">Cancel</button><button class="btn danger" id="cfOk" disabled>Delete</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</div>
+<script src="mockup.js"></script>
 </body>
 </html>
