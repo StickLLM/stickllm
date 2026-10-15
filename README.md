@@ -86,7 +86,7 @@ Set firmware to **boot the USB first** ([docs/BOOT.md](docs/BOOT.md)).
 |---|---|
 | **1 Server / Local** | On-stick browser (when display present) + LAN UI. Loopback needs no pair; phone/LAN uses pair code. |
 | **2 Terminal** | Console or SSH — diagnose, `stickllm-wifi-setup`, `nvidia-smi`. SSH password is **random per boot**. |
-| **3 Test** | Server / Local UI + SSH. Same random SSH password on READY. |
+| **3 Test - SSH Enabled** | Server / Local UI + SSH. Same random SSH password on READY. |
 
 | Endpoint | Purpose |
 |---|---|

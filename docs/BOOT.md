@@ -25,16 +25,16 @@ steps — USB above the NVMe entry. That hardware is an example, not a requireme
 |---|---|---|
 | **1** | **Server / Local** | On-stick browser when a display is present + LAN UI (`stickllm.chat`). Loopback needs no pair; phone/LAN uses pair code. |
 | **2** | **Terminal** | Console login or `ssh stickllm@<ip>` — `nvidia-smi`, `stickllm-status` (`stickllm.ssh`). |
-| **3** | **Test** | Same as Server / Local plus SSH (`stickllm.chat stickllm.ssh`). Random SSH password on READY before the browser takes the screen. |
+| **3** | **Test - SSH Enabled** | Same as Server / Local plus SSH (`stickllm.chat stickllm.ssh`). Random SSH password on READY before the browser takes the screen. |
 
 Menu timeout ~**20s**; default is **1 Server / Local**. Secure Client returns when that path ships.
 
-### Terminal / Test SSH credentials (menu 2 / 3)
+### Terminal / Test - SSH Enabled credentials (menu 2 / 3)
 
 | | |
 |---|---|
 | User | `stickllm` |
-| Password | Random per boot (shown on console READY; Test also prints before kiosk handoff) |
+| Password | Random per boot (shown on console READY; Test - SSH Enabled also prints before kiosk handoff) |
 | Useful | `stickllm-status` · `nvidia-smi` · `curl -s localhost:8080/health` |
 
 SSH is **off** unless you pick menu **2** or **3**.
@@ -50,9 +50,9 @@ SSH is **off** unless you pick menu **2** or **3**.
 ## Boot sequence (expected)
 
 1. Firmware boots the USB (or chainload from another bootloader).
-2. StickLLM menu → pick **1** (Server / Local), **2** (Terminal), or **3** (Test).
+2. StickLLM menu → pick **1** (Server / Local), **2** (Terminal), or **3** (Test - SSH Enabled).
 3. Console: UI loading (no model auto-load — Activate from Models when ready).
-4. **Server / Local / Terminal / Test:** READY with `http://<lan-ip>/` and pair code when the UI path is up. Test also shows the SSH password.
+4. **Server / Local / Terminal / Test - SSH Enabled:** READY with `http://<lan-ip>/` and pair code when the UI path is up. Test - SSH Enabled also shows the SSH password.
 5. **Local path:** cage + Chromium on the NVIDIA HDMI output when a display is present; keyboard works. Load a model: Models → radio select → context slider → Activate.
 
 ## First checks
