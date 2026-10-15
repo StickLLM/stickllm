@@ -15,7 +15,8 @@
 | USB stick | **16 GB** OK for base; **32–64 GB** recommended for `STICKLLM-DATA` downloads |
 | Network | Optional LAN for phone clients; needed for model upgrades |
 
-Baked models today: small text GGUFs on the ISO (3B + 7B class). Larger models (e.g. 27B) download to DATA when catalog-pinned and space allows.
+Baked models today (through v0.3.8): small text GGUFs on the ISO (3B + 7B class).
+Next ship (ISS-020): bake 3B only; 7B+ download to DATA when catalog-pinned and space allows.
 
 ## Target model tiers (by VRAM)
 

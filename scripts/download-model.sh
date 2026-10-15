@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fetch pinned GGUFs into models/ (gitignored) with catalog sha256 verify.
 # Default bake set: Qwen2.5-3B Q4_K_M (base) + Qwen2.5-7B Q5_K_M (also on ISO).
+# TODO(post-v0.3.8 / ISS-020): bake/fetch 3B only; 7B becomes catalog download, not ISO bake.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
