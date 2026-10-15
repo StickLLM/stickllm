@@ -1,0 +1,13 @@
+# StickLLM v0.3.8 ISO — verify after download from Google Drive
+# File: StickLLM-v0.3.8.iso
+# Public current ship in StickLLM-releases Drive folder (see README)
+# Hash of record lives in this repo / GitHub Release — do not trust Drive alone.
+#
+# Windows (PowerShell):
+#   (Get-FileHash .\StickLLM-v0.3.8.iso -Algorithm SHA256).Hash
+# Linux / macOS:
+#   sha256sum StickLLM-v0.3.8.iso
+#
+# Expected (uppercase or lowercase — same digest):
+
+88f781545762a986bb3a1dce9183601b7bbe173d0d56a20ca03bef7a533201cb  StickLLM-v0.3.8.iso

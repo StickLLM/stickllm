@@ -660,9 +660,10 @@ for d in blk.get("blockdevices") or []:
         })
         continue
     if is_stick_disk:
-        # Stick disk partitions are not host Mount targets.
+        # Stick disk partitions are not host Mount targets (DATA already listed via findmnt).
         continue
     offered_any = False
+    blocked_before = len(blocked_disks)
     for c in children:
         if (c.get("type") or "") != "part":
             continue
@@ -704,18 +705,22 @@ for d in blk.get("blockdevices") or []:
         if mp:
             offered_any = True
             continue  # already in devices via findmnt
-        # Unmounted clear ordinary FS on host/internal (or non-stick) disk → Mount action
-        hostish = (not rm) or tran in ("nvme", "sata", "ata", "scsi")
-        if not hostish and tran == "usb":
-            # other USB unmounted — allow Mount with other_usb kind
+        # Unmounted clear ordinary FS → Mount (host SSD, SATA, or other USB data drives).
+        # USB bridges often omit TRAN; treat RM=1 as removable USB.
+        if rm or tran == "usb":
             kind = "other_usb"
-        else:
+            kind_label = "USB"
+        elif tran in ("nvme", "sata", "ata", "scsi") or dname.startswith("nvme"):
             kind = "host_ssd"
+            kind_label = "Host SSD/internal"
+        else:
+            kind = "other"
+            kind_label = "Disk"
         mname = safe_mnt_name(model, cname, label)
         mountable.append({
             "id": cpath,
             "kind": kind,
-            "label": f"{'Host SSD/internal' if kind == 'host_ssd' else 'USB'} — {model or dname} ({ft}"
+            "label": f"{kind_label} — {model or dname} ({ft}"
                      + (f", {label}" if label else "")
                      + f", unmounted)",
             "device": cpath,
@@ -732,14 +737,24 @@ for d in blk.get("blockdevices") or []:
             "disk": {"name": dname, "path": dpath, "model": model, "tran": tran, "rm": rm},
         })
         offered_any = True
-    if not offered_any and not rm and not children:
+    if not offered_any and len(blocked_disks) == blocked_before:
+        # Surface disks we can see but cannot Mount (empty/unknown FS, etc.)
+        # so a plugged-in Seagate/USB is not silently missing from the UI.
+        if not children:
+            reason = "No partitions visible — StickLLM will not partition or format disks."
+        else:
+            reason = (
+                "No clear unencrypted filesystem to Mount "
+                "(empty/unknown partitions only). Unlock BitLocker/LUKS in the host OS first if needed. "
+                "StickLLM never partitions or formats your disks."
+            )
         blocked_disks.append({
             "path": dpath,
             "model": model,
             "size_gb": round(int(d.get("size") or 0) / (1024**3), 2),
             "tran": tran,
             "rm": rm,
-            "reason": "No clear partitions — StickLLM will not touch unknown layouts.",
+            "reason": reason,
             "selectable": False,
             "mountable": False,
         })
