@@ -30,6 +30,7 @@ threads = 8
 
 [model]
 # Default: small 3B Q4_K_M (fast first boot). 7B Q5_K_M also baked for upgrade.
+# TODO(post-v0.3.8 / ISS-020): drop [model_also_baked] from ISO bake; 7B download-only.
 id = "qwen25-3b-q4km"
 filename = "qwen2.5-3b-instruct-q4_k_m.gguf"
 hf_repo = "Qwen/Qwen2.5-3B-Instruct-GGUF"

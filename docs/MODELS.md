@@ -13,10 +13,16 @@ on demand from a **pinned Hugging Face catalog**, with hashes that live on the U
 | **Base (default ship)** | ~4–6 GB ISO | **16 GB** USB is enough | OS + runtime + **lite** model (anything / RAM / 8 GB class) |
 | **Optional fat build** | ~18–22 GB | 32–64 GB | Base + large model pre-baked (power users / air-gap) |
 
-Current ship **v0.3.6** and checkpoint `v0.2.1-local-nvidia-kbd` ship small text models
-on the ISO (3B + 7B class) and download larger catalog entries (e.g. 27B) to
+Current ship **v0.3.8** (and earlier 0.3.x / `v0.2.1-local-nvidia-kbd`) ships small text
+models on the ISO (**3B + 7B** class) and downloads larger catalog entries (e.g. 27B) to
 `STICKLLM-DATA` when space/VRAM allow. Optional durable store: encrypted SSD vault
 ([VAULT.md](VAULT.md)). Target retail base still moves toward a cheaper **16 GB** stick + lite GGUF.
+
+**Next (post-v0.3.8) — plan only (ISS-020 / ISS-021):** stop baking **Qwen2.5-7B Instruct
+Q5_K_M** into the ISO; keep **~2 GB Qwen2.5-3B Q4_K_M** as the built-in test model.
+7B stays in `catalog.toml` as a pinned download. Product focus next: HuggingFace
+download UX (Verified / Fits in VRAM / Untrusted filters) and activating Advanced
+model controls. Do **not** change v0.3.8 artifacts while implementing that later.
 
 ## First boot / “upgrade models” flow
 

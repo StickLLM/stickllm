@@ -56,7 +56,7 @@ WSL2 Ubuntu is optional. On Windows the preferred path is **Git Bash + Docker De
 - Proprietary NVIDIA driver stack for RTX 3090
 - `/opt/stickllm/bin/llama-server` (CUDA) + `llama-server-vulkan` + `llama-server-cpu`
 - Mesa Vulkan drivers / loader for AMD/Intel
-- Bundled Qwen2.5 models (3B + 7B class)
+- Bundled Qwen2.5 models (3B + 7B class through v0.3.8; next ship: 3B only — ISS-020)
 - Chat UI on `:80`, llama on loopback `:8080`
 - Default boot: **ephemeral** (`nopersistence`)
 

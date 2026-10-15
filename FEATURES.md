@@ -26,6 +26,8 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [x] P0 Accurate loaded-model identity in UI/status (show what's actually loaded)
 - [x] P0 Model load progress UX — clear Loading model / progress so Term/LAN 503 isn't mistaken for broken pairing
 - [x] P0 Signed model catalog, pinned SHA-256, re-checked at load (v0.3: fatal sha256 on download)
+- [ ] **Next (post-v0.3.8)** Slim ISO: bake **3B Q4 only** (~2 GB); stop baking **Qwen2.5-7B Q5_K_M** (downloadable via catalog) — ISS-020
+- [ ] **Next (post-v0.3.8)** HuggingFace / catalog download UX: filter checkboxes (Verified / Fits in VRAM / Untrusted / …); wire Advanced model controls now greyed in UI — ISS-021
 - [ ] P1 VRAM-based model suggestions
 - [ ] P1 Vision models (restore image input; mmproj hash-pinned)
 - [ ] P1 Download unsupported models with explicit warning

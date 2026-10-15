@@ -1326,6 +1326,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 // Disable greyed / coming-soon controls that still have handlers in markup
+// TODO(post-v0.3.8 / ISS-021): wire Advanced model knobs + download filter UX (Verified / VRAM / Untrusted).
 ["#offline", "#exportAll", "#deleteAll", "#revokeAll", "#checkUpd", "#pickModelDir"].forEach((sel) => {
   const el = $(sel); if (!el) return;
   el.onclick = (e) => { e.preventDefault(); toast("Coming soon"); };
