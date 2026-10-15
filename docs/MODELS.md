@@ -20,9 +20,12 @@ models on the ISO (**3B + 7B** class) and downloads larger catalog entries (e.g.
 
 **Next (post-v0.3.8) — plan only (ISS-020 / ISS-021):** stop baking **Qwen2.5-7B Instruct
 Q5_K_M** into the ISO; keep **~2 GB Qwen2.5-3B Q4_K_M** as the built-in test model.
-7B stays in `catalog.toml` as a pinned download. Product focus next: HuggingFace
-download UX (Verified / Fits in VRAM / Untrusted filters) and activating Advanced
-model controls. Do **not** change v0.3.8 artifacts while implementing that later.
+7B stays in `catalog.toml` as a pinned download. **HF download + search/browse does not
+exist yet** — next product work builds that entire flow (ISS-021), including filter UX
+(**Verified** / known-hash open-weight, **Fits in VRAM**, **Untrusted**, …). Those filters
+must apply to the **download browser and to installed models** when choosing what to load
+into memory/VRAM. Also activate Advanced model controls. Do **not** change v0.3.8
+artifacts while implementing that later.
 
 ## First boot / “upgrade models” flow
 

@@ -22,15 +22,15 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 | **Summary** | Next version: stop baking **Qwen2.5-7B Instruct Q5_K_M** (~5 GB split GGUF) into the ISO. Keep **Qwen2.5-3B Instruct Q4_K_M** (~2 GB) as the built-in test/default model. Users download 7B (and larger) via the hash-pinned catalog. |
 | **Notes** | Touches when implementing (not now): `models/qwen2.5-7b-instruct-q5_k_m-*.gguf`, `scripts/download-model.sh`, `scripts/build.sh` + `scripts/lib/docker-build-live.sh` (`MODEL_SHARD*`), `config/models/catalog.toml` (`qwen25-7b-q5km` notes / bake wording — keep as **downloadable** pin), `config/profiles/amd-rtx3090.toml`, docs (`MODELS.md`, `BUILD.md`, `HARDWARE.md`). `overlay/etc/stickllm/default-model.env` already points at 3B. Leave shipping `out/v0.3.8/`, checksums, and Drive ISO alone. |
 
-### ISS-021 — Next focus: HuggingFace model download UX + Advanced
+### ISS-021 — Next focus: build HF download/search + shared load filters + Advanced
 | | |
 |---|---|
 | **ID** | ISS-021 |
 | **Mode** | Local / Term / Server (Models UI) |
 | **Severity** | PRODUCT (P0 next focus after v0.3.8) |
-| **Status** | Open — plan only |
-| **Summary** | Improve **Models → Download** (Hugging Face / catalog) UX: filter checkboxes such as **Verified** (supported open-weight with known hash), **Fits in VRAM**, **Untrusted**, etc. Also activate or properly wire **Advanced** model controls that are currently greyed / “coming soon” (sampling knobs, KV, backend segment — see `ui/app.js` disable block near presets / `#temp` `#topp` `#topk`). |
-| **Notes** | Pairs with ISS-020 (slim ISO → downloads matter more). Catalog trust: `config/models/catalog.toml`. Related FEATURES: VRAM suggestions, unsupported-download warning, Advanced settings panel. |
+| **Status** | Open — plan only; **not implemented yet** |
+| **Summary** | **We do not have Hugging Face download + search/browse yet.** Next version must **build the entire HF download/search/browse flow** (not merely add checkboxes onto an existing browser). Filters such as **Verified** (known-hash open-weight / catalog-pinned), **Fits in VRAM**, **Untrusted**, etc. are part of that **new** UX. The **same filters must also apply to installed models** when choosing what to **load into memory/VRAM** — not only the download browser. Also activate or properly wire **Advanced** model controls that are currently greyed / “coming soon” (sampling knobs, KV, backend segment — see `ui/app.js` disable block near presets / `#temp` `#topp` `#topk`). |
+| **Notes** | Pairs with ISS-020 (slim ISO → downloads matter more). Shared filter surface: download/search list **and** installed → load list. Catalog trust: `config/models/catalog.toml`. Related FEATURES: VRAM suggestions, unsupported-download warning, Advanced settings panel. Do **not** treat current Models menu stubs as “HF search already shipped.” |
 
 ### ISS-012 — stickllm-kiosk usermod + world-writable /run/stickllm
 | | |
