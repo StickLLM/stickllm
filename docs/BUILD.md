@@ -22,7 +22,15 @@ Or: `./scripts/build.sh` (calls the above as needed). Dev loop: [DEV-WORKFLOW.md
 
 Override version: `STICKLLM_VERSION=0.3.7 ./scripts/build.sh` → `out/v0.3.7/StickLLM-v0.3.7.iso`.
 
-Builds run `scripts/lib/iso-integrity-check.sh` so truncated hybrids fail before publish.
+Builds run `scripts/lib/iso-integrity-check.sh` inside Docker so truncated hybrids fail before publish. On Windows hosts, `xorriso` is usually absent — re-check with Docker if you need a second pass:
+
+```bash
+docker run --rm -v "$PWD/scripts/lib/iso-integrity-check.sh:/check.sh:ro" \
+  -v "$PWD/out/v0.3.7:/iso:ro" debian:bookworm \
+  bash -c 'apt-get update -qq && apt-get install -y -qq xorriso >/dev/null && bash /check.sh /iso/StickLLM-v0.3.7.iso'
+```
+That check needs `xorriso`; on Windows/Git Bash (no host xorriso) it uses Docker
+automatically — same Docker dependency as the build itself.
 
 ## ISO filename convention
 

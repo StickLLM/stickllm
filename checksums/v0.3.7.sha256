@@ -1,0 +1,11 @@
+# StickLLM v0.3.7 ISO — built artifact checksum (WIP / next ship; not tagged golden)
+# File: StickLLM-v0.3.7.iso
+#
+# Windows (PowerShell):
+#   (Get-FileHash .\StickLLM-v0.3.7.iso -Algorithm SHA256).Hash
+# Linux / macOS:
+#   sha256sum StickLLM-v0.3.7.iso
+#
+# Expected (uppercase or lowercase — same digest):
+
+fc45858a5cc06ff951a39303be7c9cdb6926e61ee3d1e9ab40ecf608fe9c5660  StickLLM-v0.3.7.iso
