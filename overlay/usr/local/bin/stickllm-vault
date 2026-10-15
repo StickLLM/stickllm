@@ -1517,6 +1517,14 @@ ensure_dirs_in_vault() {
   chmod 700 "$MNT_POINT" "$MNT_POINT"/chats "$MNT_POINT"/settings 2>/dev/null || true
 }
 
+refresh_gateway_vault_view() {
+  # stickllm-ui uses ProtectSystem=full (private mount NS). Vault mounts that
+  # happen after the unit starts are invisible to stickllm-gateway ismount(),
+  # so /api/chats falsely reports "vault locked" while the host mount is fine.
+  # Restart picks up the LUKS mount so saved chats list again.
+  systemctl try-restart stickllm-ui.service >/dev/null 2>&1 || true
+}
+
 write_location_pointer() {
   # Durable hint on STICKLLM-DATA (USB free-space partition). No passcode ever.
   local root="$1" blob="$2"
@@ -1988,6 +1996,7 @@ cmd_setup() {
   printf 'models dir kept at %s; encrypted chats/settings in blob\n' "$models" >"$META_DIR/note"
   unset PASS PASS2 rec_key
   json_state unlocked "setup complete at $root"
+  refresh_gateway_vault_view
   echo "Vault unlocked at $MNT_POINT"
   echo "Models folder (unchanged files): $models"
   echo "Encrypted blob: $blob"
@@ -2066,7 +2075,12 @@ bump_fail() {
 
 cmd_unlock() {
   need_root
-  is_mounted && { json_state unlocked "already mounted"; return 0; }
+  if is_mounted; then
+    json_state unlocked "already mounted"
+    refresh_gateway_vault_view
+    echo "Vault unlocked at $MNT_POINT"
+    return 0
+  fi
   local tgt
   tgt="$(vault_target)" || die "no vault configured (run: stickllm-vault setup <dir>)"
   [[ -f "$tgt" ]] || die "blob missing: $tgt"
@@ -2086,6 +2100,7 @@ cmd_unlock() {
       printf '0\n' >"$META_DIR/unlock_fails"
       unset pass
       json_state unlocked "already open"
+      refresh_gateway_vault_view
       echo "Vault unlocked at $MNT_POINT"
       return 0
     fi
@@ -2105,6 +2120,7 @@ cmd_unlock() {
   printf '0\n' >"$META_DIR/unlock_fails"
   unset pass
   json_state unlocked "unlocked $tgt"
+  refresh_gateway_vault_view
   echo "Vault unlocked at $MNT_POINT"
 }
 

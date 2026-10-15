@@ -334,10 +334,23 @@ CHATS_DIR = VAULT_MNT / "chats"
 
 
 def vault_unlocked() -> bool:
+    """True when the LUKS vault is mounted in *this* process mount namespace."""
     try:
-        return os.path.ismount(str(VAULT_MNT))
+        if os.path.ismount(str(VAULT_MNT)):
+            return True
     except Exception:
-        return False
+        pass
+    # Fallback: ismount can lag behind /proc after late mounts into ProtectSystem NS.
+    try:
+        mnt = str(VAULT_MNT)
+        with open("/proc/self/mounts", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == mnt:
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def chats_available() -> tuple[bool, str]:
