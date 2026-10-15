@@ -143,7 +143,7 @@ or an internal SSD, encrypted at rest.
 |---|---|---|
 | Ephemeral (RAM only) | **On** | Safest; reboot clears chats |
 | USB `STICKLLM-DATA` models | Off until first-boot claim | Needed for download SKU |
-| Encrypted **context vault** (USB or user-chosen SSD file) | **Off** | Passphrase unlock each boot |
+| Encrypted **context vault** (USB or user-chosen SSD file) | **Off** | Passphrase unlock in UI (not at boot) |
 | Wipe-after-N-fail (e.g. 3 bad passwords → delete vault) | **Off** | Duress / anti-coercion; see threat model |
 
 Wipe-after-N is a deliberate **risk increaser**: typo lockouts, power loss mid-prompt,

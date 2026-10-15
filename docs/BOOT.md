@@ -88,3 +88,4 @@ Phone on the same LAN: open the Chat UI URL from the READY screen and enter the 
 
 - Default: ephemeral (RAM; reboot wipes session).
 - **Persist config** is explicit only (`stickllm-persist`).
+- **Encrypted vault:** no unlock/skip prompt at boot. Unlock/create/attach only in the UI (Settings). Server/Local continue automatically with the vault locked.
