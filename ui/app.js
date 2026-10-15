@@ -1988,7 +1988,6 @@
   document.getElementById("actVaultBrowseNew")?.addEventListener("click", () => createVaultBrowseFolder());
   document.getElementById("actVaultFindModels")?.addEventListener("click", () => findVaultModels());
   document.getElementById("actVaultFindExisting")?.addEventListener("click", () => findExistingVault());
-  document.getElementById("actVaultFindExisting")?.addEventListener("click", () => findExistingVault());
   // Up is rebound per browseVaultDir response (once). Keep a stable handler too.
   document.getElementById("actVaultBrowseUp")?.addEventListener("click", async () => {
     if (!vaultBrowsePath || !vaultPickerDevice) return;
