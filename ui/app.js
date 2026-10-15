@@ -1162,7 +1162,7 @@
       setVaultSetupFeedback(
         res.already_mounted
           ? `Already mounted at ${mp} — opening folder browser.`
-          : `Mounted ${device} at ${mp}. Browse to your models folder — Use existing vault if stickllm-vault.img is there, else CREATE-VAULT for a new blob.`,
+          : `Mounted ${device} at ${mp}. Browse to your models folder — Open existing vault if stickllm-vault.img is there, else CREATE-VAULT for a new blob.`,
         "ok"
       );
       await refreshVaultPicker({ quiet: true });
@@ -1247,14 +1247,14 @@
         if (res.best) {
           useVaultBrowseFolder();
           const blobNote = res.best.has_vault_blob
-            ? " Existing stickllm-vault.img found — Use existing vault, then Unlock."
+            ? " Existing stickllm-vault.img found — Open existing vault, then Unlock."
             : "";
           setVaultSetupFeedback(
             `Best match: ${res.best.relative || res.best.path} (${res.best.reason || "models"}).${blobNote}`,
             "ok"
           );
           if (res.best.has_vault_blob) {
-            // Auto-bind meta only (never formats); user still enters passcode to Unlock.
+            // Auto-attach meta only (never formats); user still enters passcode to Unlock.
             await useExistingVault();
           }
         } else {
@@ -1286,7 +1286,7 @@
       if (hasBlob) {
         hint.hidden = false;
         hint.textContent =
-          `Found existing vault blob: ${vaultBrowseBlobPath}. Click “Use existing vault”, then Unlock with your passcode — do not Create vault (that refuses/overwrites nothing, but is the wrong path).`;
+          `Found existing vault blob: ${vaultBrowseBlobPath}. Click “Open existing vault”, then Unlock with your passcode — do not type CREATE-VAULT (Create refuses if the img exists and never attaches).`;
         hint.classList.add("is-ok");
         hint.classList.remove("is-err");
       } else {
@@ -1336,7 +1336,7 @@
         const entries = Array.isArray(res.entries) ? res.entries : [];
         if (!entries.length) {
           folderList.textContent = vaultBrowseHasBlob
-            ? "(no subfolders — Use existing vault, then Unlock)"
+            ? "(no subfolders — Open existing vault, then Unlock)"
             : "(no subfolders — you can Use this folder or New folder)";
         }
         for (const ent of entries) {
@@ -1359,7 +1359,7 @@
           const bindBtn = document.createElement("button");
           bindBtn.type = "button";
           bindBtn.className = "actionBtn";
-          bindBtn.textContent = "Use existing";
+          bindBtn.textContent = "Open existing";
           bindBtn.addEventListener("click", () => useExistingVault());
           blobRow.appendChild(document.createTextNode(" "));
           blobRow.appendChild(bindBtn);
@@ -1386,7 +1386,7 @@
     const usb = isStickUsbVaultPath(path) || vaultPickerDevice?.kind === "usb_stick";
     if (vaultBrowseHasBlob && !usb) {
       setVaultSetupFeedback(
-        `Selected ${path} — existing stickllm-vault.img found. Click “Use existing vault”, then Unlock (do not Create).`,
+        `Selected ${path} — existing stickllm-vault.img found. Click “Open existing vault”, then Unlock (do not Create).`,
         "ok"
       );
       return;
@@ -1406,7 +1406,7 @@
       (vaultBrowseBlobPath || "").trim();
     if (!path) {
       setVaultSetupFeedback(
-        "Browse to the folder that contains stickllm-vault.img (e.g. …/home/nink/models), then Use existing vault.",
+        "Browse to the folder that contains stickllm-vault.img (e.g. …/home/nink/models), then Open existing vault.",
         "err"
       );
       return;
@@ -1417,33 +1417,33 @@
     }
     if (isStickUsbVaultPath(path)) {
       setVaultSetupFeedback(
-        "Refusing StickLLM USB — bind the host SSD folder that holds stickllm-vault.img.",
+        "Refusing StickLLM USB — attach the host SSD folder that holds stickllm-vault.img.",
         "err"
       );
       return;
     }
     const input = document.getElementById("vaultSetupPath");
     if (input && !input.value.trim()) input.value = path.replace(/\/stickllm-vault\.img$/i, "");
-    setVaultSetupFeedback("Binding existing vault blob (meta only — not formatting)…", "info");
+    setVaultSetupFeedback("Attaching existing vault blob (config only — not formatting)…", "info");
     try {
-      const res = await control("vault_use", { path });
+      const res = await control("vault_attach", { path });
       if (!res.ok) {
-        throw new Error(res.error || res.stderr || res.note || "use existing failed");
+        throw new Error(res.error || res.stderr || res.note || "attach existing failed");
       }
       const blob = res.blob || vaultBrowseBlobPath || `${path.replace(/\/$/, "")}/stickllm-vault.img`;
       setVaultSetupFeedback(
-        `Existing vault attached: ${blob}. Enter your passcode below and Unlock — Create vault is not needed.`,
+        `Existing vault attached: ${blob}. Enter your passcode below and Unlock — CREATE-VAULT is not needed.`,
         "ok"
       );
-      addBubble("system", `Existing vault bound at ${blob}. Unlock with your passcode.`);
+      addBubble("system", `Existing vault attached at ${blob}. Unlock with your passcode.`);
       document.getElementById("vaultPass")?.focus();
       if (settingsDialog?.open) {
         const st = await control("status");
         renderSettingsStatus(st);
       }
     } catch (e) {
-      setVaultSetupFeedback(`Use existing failed: ${e.message}`, "err");
-      addBubble("system", `Use existing vault failed: ${e.message}`);
+      setVaultSetupFeedback(`Open existing failed: ${e.message}`, "err");
+      addBubble("system", `Open existing vault failed: ${e.message}`);
     }
   }
 
@@ -1955,7 +1955,7 @@
         let msg = res.error || res.stderr || "bad passcode / no vault configured";
         if (/no vault configured/i.test(String(msg))) {
           msg +=
-            " — browse to the folder with stickllm-vault.img, click Use existing vault, then Unlock again.";
+            " — browse to the folder with stickllm-vault.img, click Open existing vault, then Unlock again.";
         }
         setVaultSetupFeedback(`Unlock failed: ${msg}`, "err");
         if (vaultStatus) vaultStatus.textContent = `Unlock failed: ${msg}`;

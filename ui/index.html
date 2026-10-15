@@ -188,7 +188,7 @@
           <div class="vaultBrowseBar">
             <button type="button" id="actVaultBrowseUp" class="actionBtn" disabled>Up</button>
             <button type="button" id="actVaultBrowseUse" class="actionBtn" disabled>Use this folder</button>
-            <button type="button" id="actVaultUseExisting" class="actionBtn" disabled title="Bind existing stickllm-vault.img — never formats or overwrites">Use existing vault</button>
+            <button type="button" id="actVaultUseExisting" class="actionBtn" disabled title="Attach existing stickllm-vault.img — writes config only, never formats or overwrites">Open existing vault</button>
             <button type="button" id="actVaultBrowseNew" class="actionBtn" disabled>New folder…</button>
             <button type="button" id="actVaultFindModels" class="actionBtn" disabled title="Search this volume for GGUF folders, Ollama, LM Studio, HuggingFace caches">Find existing models</button>
           </div>
@@ -201,7 +201,7 @@
           </label>
         </div>
         <div id="vaultCreatePanel">
-          <p class="modelsHint">Create only if this folder has <strong>no</strong> <code>stickllm-vault.img</code>. After a reflash, prefer <strong>Use existing vault</strong> then Unlock.</p>
+          <p class="modelsHint">Create only if this folder has <strong>no</strong> <code>stickllm-vault.img</code>. After a reflash, prefer <strong>Open existing vault</strong> then Unlock — CREATE-VAULT is not needed and will not attach an existing blob.</p>
           <label class="fieldLabel">Initial blob size (GiB)
             <input id="vaultSetupSize" type="number" min="1" max="2000" value="8" />
           </label>

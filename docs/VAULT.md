@@ -51,8 +51,9 @@ When unlocked, blob mounts at `/var/lib/stickllm/vault` (`models/`, `chats/`, `s
 ```bash
 sudo stickllm-vault list-disks          # read-only
 sudo stickllm-vault setup /mnt/host/StickLLM 32   # NEW blob only
-# After reflash (meta wiped, blob still on SSD) — bind without format:
-sudo stickllm-vault use /mnt/stickllm-host/.../home/nink/models
+# After reflash (meta wiped, blob still on SSD) — attach without format:
+sudo stickllm-vault attach /mnt/stickllm-host/.../home/nink/models
+# (aliases: use | setup --existing)
 sudo stickllm-vault unlock
 sudo stickllm-vault lock
 sudo stickllm-vault grow 16
@@ -66,13 +67,15 @@ USB reflash clears on-stick `vault-meta` / `vault.json`. The LUKS file
 in that folder (setup refuses if the blob exists; never overwrites).
 
 **UI (next bake/hotfix with this branch):** Settings → Mount host SSD if needed →
-browse to the folder with `stickllm-vault.img` → **Use existing vault** → Unlock
-with your passcode.
+browse to the folder with `stickllm-vault.img` → **Open existing vault** → Unlock
+with your passcode. Unlock also auto-attaches when Path points at that folder and
+meta is missing.
 
-**UI on shipping v0.3.4:** Unlock alone fails until meta is restored. There is no
-“Use existing” button yet — boot a Test/hotfix image built from this branch, or
-use Terminal/`stickllm-vault use` when SSH/Test console is available. Never run
-Create vault hoping it will “adopt” the blob.
+**UI on shipping v0.3.4:** Unlock alone fails until meta is restored. Selecting a
+folder and typing CREATE-VAULT does **not** attach an existing blob. Create vault
+**refuses** if `stickllm-vault.img` already exists (no wipe, but also no config
+write). Boot **Test** once and hot-deploy this branch, or wait for the next ISO.
+Never run Create vault hoping it will “adopt” the blob.
 
 ## Workflow
 

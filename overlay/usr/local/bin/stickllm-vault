@@ -2025,6 +2025,7 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault mount-host <part>   # Mount clear unencrypted FS (MOUNT-HOST)
   stickllm-vault setup <dir> [gb]    # create dir if needed + NEW sparse blob
   stickllm-vault use <dir|blob>      # bind EXISTING stickllm-vault.img (no format)
+  stickllm-vault attach <dir|blob>   # alias for use (reflash recovery)
   stickllm-vault grow <add_gb>       # expand blob (free-space checked)
   stickllm-vault unlock
   stickllm-vault lock
@@ -2050,8 +2051,16 @@ main() {
     find-models) find_models "$@" ;;
     mkdir) mkdir_vault_dir "$@" ;;
     mount-host) mount_host "$@" ;;
-    setup) cmd_setup "$@" ;;
-    use|bind|use-existing|open-existing) cmd_use "$@" ;;
+    use|attach|bind|use-existing|open-existing) cmd_use "$@" ;;
+    setup)
+      # setup --existing <dir> → attach meta only (never luksFormat)
+      if [[ "${1:-}" == "--existing" || "${1:-}" == "-e" ]]; then
+        shift || true
+        cmd_use "$@"
+      else
+        cmd_setup "$@"
+      fi
+      ;;
     create-file) cmd_create_file "$@" ;;
     create-partition)
       cmd_create_partition "$@"
