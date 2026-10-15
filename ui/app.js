@@ -1149,13 +1149,24 @@
         list.appendChild(row);
       }
       if (diskList) {
-        diskList.textContent = "";
         const blocked = Array.isArray(res.blocked_disks) ? res.blocked_disks : [];
         const lines = [];
-        if (mountable.length) {
+        lines.push("Storage devices (Stick USB + Host SSD):");
+        for (const d of devices) {
+          const kind = kindLabel(d.kind);
+          const free = d.avail ? ` · free ${d.avail}` : "";
+          const note = d.selectable ? " · Open" : d.warn ? ` — ${d.warn}` : "";
           lines.push(
-            `Clear unencrypted volumes ready to Mount (${mountable.length}) — never formats.`
+            `${kind.padEnd(10)} ${d.mount_path || d.label || "?"}${free}${note}`
           );
+        }
+        for (const m of mountable) {
+          lines.push(
+            `${kindLabel(m.kind).padEnd(10)} ${m.device} · ${m.size_gb ?? "?"} GiB · unmounted · Mount`
+          );
+        }
+        if (!devices.length && !mountable.length) {
+          lines.push("(none listed — use Refresh devices / List storage)");
         }
         if (blocked.length) {
           lines.push("Not offered (encrypted / unclear):");
@@ -1165,10 +1176,7 @@
             );
           }
         }
-        diskList.textContent =
-          lines.join("\n") ||
-          res.safety ||
-          "Pick Device → Folder above. Encrypted disks are never offered.";
+        diskList.textContent = lines.join("\n");
       }
       return res;
     } catch (e) {

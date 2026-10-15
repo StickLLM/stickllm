@@ -458,6 +458,7 @@ list_devices() {
 import json, os, subprocess
 
 DATA_MNT = os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data")
+VAULT_MNT = os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault")
 
 def sh(*a):
     p = subprocess.run(a, capture_output=True, text=True, check=False)
@@ -468,6 +469,11 @@ def ordinary(fstype: str) -> bool:
         "ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs",
         "ntfs", "ntfs3", "exfat", "vfat", "fuseblk",
     }
+
+def first_line(s: str, default: str = "") -> str:
+    for line in (s or "").splitlines():
+        return line.strip()
+    return default
 
 def disk_for_source(src: str) -> dict:
     name = sh("lsblk", "-no", "PKNAME", src) or sh("lsblk", "-no", "NAME", src)
@@ -484,15 +490,17 @@ def disk_for_source(src: str) -> dict:
             break
         cur = parent.split()[0]
     path = f"/dev/{cur}"
-    size_raw = (sh("lsblk", "-nb", "-o", "SIZE", path) or "0").splitlines()[0].strip()
+    # Empty MODEL/TRAN/SERIAL is common (USB bridges, mappers) — never IndexError.
+    size_raw = first_line(sh("lsblk", "-nb", "-o", "SIZE", path), "0")
+    rm_raw = first_line(sh("lsblk", "-no", "RM", path), "0")
     return {
         "name": cur,
         "path": path,
-        "model": (sh("lsblk", "-no", "MODEL", path) or "").splitlines()[0].strip(),
+        "model": first_line(sh("lsblk", "-no", "MODEL", path)),
         "size": size_raw or "0",
-        "tran": (sh("lsblk", "-no", "TRAN", path) or "").splitlines()[0].strip(),
-        "rm": (sh("lsblk", "-no", "RM", path) or "").splitlines()[0].strip() in ("1", "true", "True"),
-        "serial": (sh("lsblk", "-no", "SERIAL", path) or "").splitlines()[0].strip(),
+        "tran": first_line(sh("lsblk", "-no", "TRAN", path)),
+        "rm": rm_raw in ("1", "true", "True"),
+        "serial": first_line(sh("lsblk", "-no", "SERIAL", path)),
     }
 
 def is_stick_usb(mnt: str, src: str) -> bool:
@@ -532,54 +540,57 @@ def walk(node):
         ("/proc", "/sys", "/dev", "/run/credentials", "/run/user")
     ):
         seen.add(tgt)
-        stick = is_stick_usb(tgt, src)
-        system = tgt in ("/", "/usr", "/var", "/etc") or tgt.startswith(("/boot", "/efi", "/rofs"))
-        disk = disk_for_source(src) if src else {}
-        selectable = ordinary(fst) and not ro and not system
-        if stick:
-            kind = "usb_stick"
-            label = "StickLLM USB (boot stick / STICKLLM-DATA)"
-            warn = (
-                "This is the StickLLM USB — data leaves when you remove the stick. "
-                "Intended vault target is a mounted host SSD folder."
-            )
-            # Allowed with warning (user may still pick); not preferred.
-            recommended = False
-        elif disk.get("rm") or (disk.get("tran") or "").lower() == "usb":
-            kind = "other_usb"
-            label = f"Other USB — {disk.get('model') or disk.get('name') or src}"
-            warn = "Removable USB drive (not the StickLLM stick)."
-            recommended = selectable
-        elif (disk.get("tran") or "").lower() in ("nvme", "sata", "ata", "scsi") or (
-            disk.get("name") or ""
-        ).startswith("nvme"):
-            kind = "host_ssd"
-            label = f"Host SSD/internal — {disk.get('model') or disk.get('name') or src}"
-            warn = ""
-            recommended = selectable
-        else:
-            kind = "other"
-            label = f"Other mount — {tgt}"
-            warn = "Unclear device type; confirm this is the drive you intend."
-            recommended = selectable
-        if not selectable:
-            kind = "blocked"
-            recommended = False
-            warn = "Read-only or system mount — don't touch"
-        devices.append({
-            "id": tgt,
-            "kind": kind,
-            "label": label,
-            "mount_path": tgt,
-            "source": src,
-            "fstype": fst,
-            "avail": avail,
-            "size": size,
-            "selectable": selectable,
-            "recommended": recommended,
-            "warn": warn,
-            "disk": disk,
-        })
+        # Skip the unlocked LUKS vault itself — picker is for Stick USB / host SSD.
+        skip_vault = tgt == VAULT_MNT or tgt.startswith(VAULT_MNT + "/")
+        if not skip_vault:
+            stick = is_stick_usb(tgt, src)
+            system = tgt in ("/", "/usr", "/var", "/etc") or tgt.startswith(("/boot", "/efi", "/rofs"))
+            disk = disk_for_source(src) if src else {}
+            selectable = ordinary(fst) and not ro and not system
+            if stick:
+                kind = "usb_stick"
+                label = "StickLLM USB (boot stick / STICKLLM-DATA)"
+                warn = (
+                    "This is the StickLLM USB — data leaves when you remove the stick. "
+                    "Intended vault target is a mounted host SSD folder."
+                )
+                # Allowed with warning (user may still pick); not preferred.
+                recommended = False
+            elif disk.get("rm") or (disk.get("tran") or "").lower() == "usb":
+                kind = "other_usb"
+                label = f"Other USB — {disk.get('model') or disk.get('name') or src}"
+                warn = "Removable USB drive (not the StickLLM stick)."
+                recommended = selectable
+            elif (disk.get("tran") or "").lower() in ("nvme", "sata", "ata", "scsi") or (
+                disk.get("name") or ""
+            ).startswith("nvme"):
+                kind = "host_ssd"
+                label = f"Host SSD/internal — {disk.get('model') or disk.get('name') or src}"
+                warn = ""
+                recommended = selectable
+            else:
+                kind = "other"
+                label = f"Other mount — {tgt}"
+                warn = "Unclear device type; confirm this is the drive you intend."
+                recommended = selectable
+            if not selectable:
+                kind = "blocked"
+                recommended = False
+                warn = "Read-only or system mount — don't touch"
+            devices.append({
+                "id": tgt,
+                "kind": kind,
+                "label": label,
+                "mount_path": tgt,
+                "source": src,
+                "fstype": fst,
+                "avail": avail,
+                "size": size,
+                "selectable": selectable,
+                "recommended": recommended,
+                "warn": warn,
+                "disk": disk,
+            })
     for c in node.get("children") or []:
         walk(c)
 
@@ -1517,12 +1528,79 @@ ensure_dirs_in_vault() {
   chmod 700 "$MNT_POINT" "$MNT_POINT"/chats "$MNT_POINT"/settings 2>/dev/null || true
 }
 
+ui_vault_mounted() {
+  local pid="$1"
+  [[ -n "$pid" && "$pid" != "0" && -r "/proc/$pid/ns/mnt" ]] || return 1
+  nsenter --mount="/proc/$pid/ns/mnt" -- mountpoint -q "$MNT_POINT" 2>/dev/null
+}
+
+schedule_ui_vault_refresh() {
+  # Deferred restart: let control/gateway finish writing the HTTP response first.
+  # Synchronous try-restart mid-unlock drops the browser connection ("Failed to fetch").
+  if command -v systemd-run >/dev/null 2>&1; then
+    systemd-run --quiet --collect --on-active=2s --timer-property=AccuracySec=100ms \
+      /bin/systemctl try-restart stickllm-ui.service >/dev/null 2>&1 && return 0
+  fi
+  ( sleep 2; systemctl try-restart stickllm-ui.service >/dev/null 2>&1 ) &
+  disown 2>/dev/null || true
+}
+
 refresh_gateway_vault_view() {
   # stickllm-ui uses ProtectSystem=full (private mount NS). Vault mounts that
   # happen after the unit starts are invisible to stickllm-gateway ismount(),
   # so /api/chats falsely reports "vault locked" while the host mount is fine.
-  # Restart picks up the LUKS mount so saved chats list again.
-  systemctl try-restart stickllm-ui.service >/dev/null 2>&1 || true
+  #
+  # Prefer remounting into the UI mount namespace (no HTTP drop). Fall back to a
+  # *deferred* try-restart so the unlock API response can finish first.
+  local pid mapper log="/run/stickllm/vault-ui-refresh.log"
+  mkdir -p /run/stickllm 2>/dev/null || true
+  pid="$(systemctl show -p MainPID --value stickllm-ui.service 2>/dev/null || true)"
+  mapper="$(readlink -f "$MAPPER" 2>/dev/null || echo "$MAPPER")"
+  {
+    echo "ts=$(date -Is) pid=${pid:-none} host_mounted=$(is_mounted && echo yes || echo no) mapper=$mapper"
+  } >>"$log" 2>/dev/null || true
+
+  if [[ -n "$pid" && "$pid" != "0" && -r "/proc/$pid/ns/mnt" ]] && is_mounted; then
+    nsenter --mount="/proc/$pid/ns/mnt" -- mkdir -p "$MNT_POINT" 2>/dev/null || true
+    if ui_vault_mounted "$pid"; then
+      echo "result=already-in-ui-ns" >>"$log" 2>/dev/null || true
+      return 0
+    fi
+    # Mount mapper into UI private NS (same device already open on host).
+    if nsenter --mount="/proc/$pid/ns/mnt" -- mount -t ext4 -o rw "$mapper" "$MNT_POINT" 2>>"$log" \
+      || nsenter --mount="/proc/$pid/ns/mnt" -- mount "$mapper" "$MNT_POINT" 2>>"$log"; then
+      if ui_vault_mounted "$pid"; then
+        echo "result=nsenter-mounted" >>"$log" 2>/dev/null || true
+        return 0
+      fi
+    fi
+    echo "result=nsenter-failed-defer-restart" >>"$log" 2>/dev/null || true
+  else
+    echo "result=no-ui-or-unmounted-defer-restart" >>"$log" 2>/dev/null || true
+  fi
+  schedule_ui_vault_refresh
+  return 0
+}
+
+drop_gateway_vault_view() {
+  # Best-effort umount inside UI private mount NS on lock (avoid stale ismount).
+  local pid
+  pid="$(systemctl show -p MainPID --value stickllm-ui.service 2>/dev/null || true)"
+  if ui_vault_mounted "$pid"; then
+    nsenter --mount="/proc/$pid/ns/mnt" -- umount "$MNT_POINT" 2>/dev/null || true
+  fi
+}
+
+cmd_ui_mount_status() {
+  need_root
+  local pid host="no" ui="no"
+  pid="$(systemctl show -p MainPID --value stickllm-ui.service 2>/dev/null || true)"
+  is_mounted && host="yes"
+  ui_vault_mounted "$pid" && ui="yes"
+  printf '{"ok":true,"host_mounted":%s,"ui_mounted":%s,"ui_pid":"%s"}\n' \
+    "$([[ "$host" == yes ]] && echo true || echo false)" \
+    "$([[ "$ui" == yes ]] && echo true || echo false)" \
+    "${pid:-}"
 }
 
 write_location_pointer() {
@@ -2126,6 +2204,7 @@ cmd_unlock() {
 
 cmd_lock() {
   need_root
+  drop_gateway_vault_view
   if is_mounted; then
     sync || true
     umount "$MNT_POINT" || die "umount failed — is a process using the vault?"
@@ -2275,6 +2354,7 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault grow <add_gb>       # expand blob (free-space checked)
   stickllm-vault unlock
   stickllm-vault lock
+  stickllm-vault ui-mount-status     # host vs stickllm-ui mount namespace
   stickllm-vault move-model <gguf>   # explicit MOVE-MODEL confirm
   stickllm-vault list-movable        # USB models eligible to move
   stickllm-vault set-wipe-after <N>  # 0=off (default); WIPE-OK if N>0
@@ -2315,6 +2395,7 @@ main() {
     grow) cmd_grow "$@" ;;
     unlock) cmd_unlock "$@" ;;
     lock) cmd_lock "$@" ;;
+    ui-mount-status|ui-ns) cmd_ui_mount_status ;;
     move-model) cmd_move_model "$@" ;;
     list-movable) cmd_list_movable "$@" ;;
     set-wipe-after) cmd_set_wipe_after "$@" ;;
