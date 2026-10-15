@@ -1,5 +1,5 @@
 ---
-description: Windows StickLLM USB flash — prefer safe-flash/Rufus; no letter ≠ missing stick
+description: Windows StickLLM USB flash — Rufus for consumers; no letter ≠ missing stick
 alwaysApply: true
 ---
 
@@ -9,8 +9,8 @@ Windows does not like Linux-flashed USB keys. StickLLM isohybrid often has **no 
 
 ## Prefer
 
-1. Elevated `C:\Python314\python.exe` + `out/safe-flash-samsung-auth.py` (Clear-Disk + FSCTL lock/dismount + WriteFile). Proven FLASH_OK path.
-2. Fallback: **Rufus DD Image** mode.
+1. **Consumers / public docs:** [Rufus](https://rufus.ie/) **DD Image** mode (or `dd` on Linux). Documented in `docs/FLASH.md`.
+2. **Maintainer lab (this machine):** elevated `C:\Python314\python.exe` + `out/safe-flash-samsung-auth.py` (Clear-Disk + FSCTL lock/dismount + WriteFile) when Rufus is unavailable — see `docs/MAINTAINER.md`. Do not present this as the README preferred path unless the script is copied into `scripts/` and documented.
 
 ## Avoid
 

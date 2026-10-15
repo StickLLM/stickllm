@@ -6,6 +6,9 @@ ISO="${1:?iso}"
 work=/tmp/smoke-iso-verify-$$
 rm -rf "$work"
 mkdir -p "$work"
+# Truncated hybrids boot to GRUB then loop (kernel/initrd past EOF).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "$SCRIPT_DIR/iso-integrity-check.sh" "$ISO"
 xorriso -osirrox on -indev "$ISO" \
   -extract /live/filesystem.squashfs "$work/filesystem.squashfs" \
   -extract /boot/grub/grub.cfg "$work/grub.cfg" >/dev/null

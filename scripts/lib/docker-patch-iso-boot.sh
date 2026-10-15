@@ -39,4 +39,5 @@ xorriso -indev "$IN" -outdev "$OUT" -boot_image any replay \
   -commit
 
 ls -lh "$OUT"
+bash "$STICKLLM/scripts/lib/iso-integrity-check.sh" "$OUT"
 echo "docker-patch-iso-boot: OK"

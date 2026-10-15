@@ -144,7 +144,11 @@ lb build
 mkdir -p /stickllm-out
 shopt -s nullglob
 for f in /work/*.hybrid.iso /work/*.iso; do
-  cp -f "$f" /stickllm-out/
-  ls -lh "$f"
+  # Verify on the Docker volume first (source of truth).
+  bash /stickllm/scripts/lib/iso-integrity-check.sh "$f"
+  cp -f "$f" "/stickllm-out/$(basename "$f")"
+  # OneDrive/NTFS bind mounts have truncated hybrids before — fail loud.
+  bash /stickllm/scripts/lib/iso-integrity-check.sh "/stickllm-out/$(basename "$f")"
+  ls -lh "$f" "/stickllm-out/$(basename "$f")"
 done
 echo "docker-build-live: OK"
