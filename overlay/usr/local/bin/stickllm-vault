@@ -1298,6 +1298,23 @@ while q and visited < MAX_DIRS and (time.monotonic() - t0) < MAX_SECONDS and len
             continue
         q.append((ent, depth + 1))
 
+# Prefer directories that already hold stickllm-vault.img (reflash recovery).
+vault_blob_hits = []
+for key, h in list(hits.items()):
+    try:
+        p = Path(key)
+        blob = p / "stickllm-vault.img"
+        if blob.is_file() and not blob.is_symlink():
+            h["has_vault_blob"] = True
+            h["vault_blob"] = str(blob.resolve())
+            h["score"] = int(h.get("score") or 0) + 100
+            h["reason"] = ((h.get("reason") or "") + "; existing stickllm-vault.img").strip("; ")
+            vault_blob_hits.append(h)
+        else:
+            h["has_vault_blob"] = False
+    except Exception:
+        h["has_vault_blob"] = False
+
 ranked = sorted(hits.values(), key=lambda h: (-h["score"], -h["gguf_count"], h["path"]))
 best = ranked[0] if ranked else None
 # If we found models, prefer jumping start to best's parent-friendly path
@@ -1312,6 +1329,7 @@ print(json.dumps({
     "best": best,
     "jump_dir": jump,
     "hits": ranked[:MAX_HITS],
+    "vault_blob_hits": vault_blob_hits[:MAX_HITS],
     "scanned_dirs": visited,
     "elapsed_ms": int((time.monotonic() - t0) * 1000),
     "fstype": fst,
@@ -1421,6 +1439,11 @@ if parent and not str(Path(parent).resolve()).startswith(mount_tgt.rstrip("/") +
         except ValueError:
             parent = mount_tgt if str(root) != mount_tgt else None
 
+blob = root / "stickllm-vault.img"
+has_blob = blob.is_file() and not blob.is_symlink()
+blob_path = str(blob.resolve()) if has_blob else None
+blob_size = int(blob.stat().st_size) if has_blob else 0
+
 print(json.dumps({
     "ok": True,
     "path": str(root),
@@ -1432,6 +1455,9 @@ print(json.dumps({
     "warn": warn,
     "source": src,
     "fstype": fst,
+    "has_vault_blob": has_blob,
+    "existing_vault_blob": blob_path,
+    "existing_vault_blob_size": blob_size,
 }))
 PY
 }
@@ -1530,6 +1556,70 @@ cmd_status() {
     st="locked"
   fi
   json_state "$st" "$(cat "$META_DIR/note" 2>/dev/null || true)"
+}
+
+# --- Bind existing blob (meta only — never format / never overwrite) --------
+
+cmd_use() {
+  # Re-attach after reflash when stickllm-vault.img still lives on the host SSD.
+  # Writes vault-meta + vault.json only. Never luksFormat, truncate, or wipe.
+  need_root
+  local raw="${1:-}"
+  [[ -n "$raw" ]] || die "usage: use <directory-or-stickllm-vault.img>"
+
+  local root="" blob=""
+  if [[ -f "$raw" ]]; then
+    is_block_device_path "$raw" && die "refusing block device path"
+    local base
+    base="$(basename "$raw")"
+    [[ "$base" == "$BLOB_NAME" || "$base" == *.img ]] || \
+      die "expected $BLOB_NAME (or *.img), got: $base"
+    blob="$(readlink -f "$raw" 2>/dev/null || realpath "$raw" 2>/dev/null || echo "$raw")"
+    [[ -f "$blob" ]] || die "blob not found: $raw"
+    root="$(dirname "$blob")"
+    root="$(assert_safe_vault_root "$root")"
+    # Prefer canonical name in the same directory when present.
+    if [[ -f "$root/$BLOB_NAME" ]]; then
+      blob="$root/$BLOB_NAME"
+    fi
+  else
+    root="$(assert_safe_vault_root "$raw")"
+    [[ -d "$root" ]] || die "directory missing: $root — Mount the host SSD folder first"
+    blob="$root/$BLOB_NAME"
+  fi
+
+  [[ -f "$blob" ]] || die "no $BLOB_NAME in $root — Use existing only when the blob file is present; Create vault makes a NEW blob"
+  is_block_device_path "$blob" && die "refusing: blob path looks like a block device"
+  [[ -b "$blob" ]] && die "refusing block device"
+  [[ -L "$blob" ]] && die "refusing symlink blob path (fail-closed)"
+
+  # Confirm LUKS without opening or rewriting headers.
+  cryptsetup isLuks "$blob" 2>/dev/null || \
+    die "file exists but is not a LUKS vault blob — refuse (will not format or overwrite)"
+
+  if is_mounted; then
+    local cur=""
+    cur="$(vault_target 2>/dev/null || true)"
+    if [[ -n "$cur" && "$cur" != "$blob" ]]; then
+      die "vault unlocked on a different blob — Lock first, then Use existing"
+    fi
+    write_meta "$root" "$blob"
+    printf 'bound existing blob (already unlocked)\n' >"$META_DIR/note"
+    json_state unlocked "bound existing vault at $blob"
+    echo "Bound existing vault (already unlocked): $blob"
+    return 0
+  fi
+
+  # Stale mapper from another session — close only if not mounted (safe).
+  if mapper_open && ! is_mounted; then
+    cryptsetup close "$MAPPER_NAME" 2>/dev/null || true
+  fi
+
+  write_meta "$root" "$blob"
+  printf 'bound existing blob after reflash/meta loss (no format)\n' >"$META_DIR/note"
+  json_state locked "bound existing vault at $blob — enter passcode to unlock"
+  echo "Bound existing vault (meta only; blob untouched): $blob"
+  echo "Next: stickllm-vault unlock"
 }
 
 # --- Setup: create or use directory + new sparse blob ----------------------
@@ -1934,6 +2024,7 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault mkdir <parent> <name>  # create subfolder (no format)
   stickllm-vault mount-host <part>   # Mount clear unencrypted FS (MOUNT-HOST)
   stickllm-vault setup <dir> [gb]    # create dir if needed + NEW sparse blob
+  stickllm-vault use <dir|blob>      # bind EXISTING stickllm-vault.img (no format)
   stickllm-vault grow <add_gb>       # expand blob (free-space checked)
   stickllm-vault unlock
   stickllm-vault lock
@@ -1960,6 +2051,7 @@ main() {
     mkdir) mkdir_vault_dir "$@" ;;
     mount-host) mount_host "$@" ;;
     setup) cmd_setup "$@" ;;
+    use|bind|use-existing|open-existing) cmd_use "$@" ;;
     create-file) cmd_create_file "$@" ;;
     create-partition)
       cmd_create_partition "$@"

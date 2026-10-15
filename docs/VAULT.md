@@ -50,12 +50,29 @@ When unlocked, blob mounts at `/var/lib/stickllm/vault` (`models/`, `chats/`, `s
 
 ```bash
 sudo stickllm-vault list-disks          # read-only
-sudo stickllm-vault setup /mnt/host/StickLLM 32
+sudo stickllm-vault setup /mnt/host/StickLLM 32   # NEW blob only
+# After reflash (meta wiped, blob still on SSD) — bind without format:
+sudo stickllm-vault use /mnt/stickllm-host/.../home/nink/models
 sudo stickllm-vault unlock
 sudo stickllm-vault lock
 sudo stickllm-vault grow 16
 sudo stickllm-vault move-model /path/model.gguf
 ```
+
+### Reflash / “no vault configured”
+
+USB reflash clears on-stick `vault-meta` / `vault.json`. The LUKS file
+`stickllm-vault.img` on the host SSD is untouched. Do **not** Create vault again
+in that folder (setup refuses if the blob exists; never overwrites).
+
+**UI (next bake/hotfix with this branch):** Settings → Mount host SSD if needed →
+browse to the folder with `stickllm-vault.img` → **Use existing vault** → Unlock
+with your passcode.
+
+**UI on shipping v0.3.4:** Unlock alone fails until meta is restored. There is no
+“Use existing” button yet — boot a Test/hotfix image built from this branch, or
+use Terminal/`stickllm-vault use` when SSH/Test console is available. Never run
+Create vault hoping it will “adopt” the blob.
 
 ## Workflow
 

@@ -1188,6 +1188,8 @@ def handle(action: str, params: dict) -> dict:
         return vault_action("mount-host", params)
     if action == "vault_setup":
         return vault_action("setup", params)
+    if action == "vault_use":
+        return vault_action("use", params)
     if action == "vault_create_file":
         return vault_action("setup", params)
     if action == "vault_create_partition":
@@ -1351,11 +1353,92 @@ def vault_action(cmd: str, params: dict) -> dict:
         sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
         r = sh([script, "lock"], timeout=120)
         return merge_vault_run(r)
+    if cmd == "use":
+        # Bind meta to an existing stickllm-vault.img — never CREATE / luksFormat.
+        path = str(params.get("path") or params.get("dir") or "").strip()
+        if not path:
+            return {"ok": False, "error": "path (directory or stickllm-vault.img) required"}
+        if _looks_like_block_device(path):
+            return {
+                "ok": False,
+                "error": (
+                    "Refusing block device path. Pick the mounted folder that "
+                    "contains stickllm-vault.img (or the .img path itself)."
+                ),
+            }
+        try:
+            p = subprocess.run(
+                [script, "use", path],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            r = {
+                "ok": p.returncode == 0,
+                "code": p.returncode,
+                "stdout": (p.stdout or "")[-4000:],
+                "stderr": (p.stderr or "")[-2000:],
+                "path": path,
+            }
+            if p.returncode != 0 and not r.get("error"):
+                err = (p.stderr or "").strip().splitlines()
+                r["error"] = (err[-1] if err else "use existing vault failed")[:500]
+        except Exception as e:
+            r = {"ok": False, "error": str(e)}
+        return merge_vault_run(r)
     if cmd == "unlock":
         passcode = str(params.get("passcode") or "")
+        # Optional path: bind existing blob first only when meta is missing (reflash).
+        bind_path = str(params.get("path") or params.get("dir") or "").strip()
         env = os.environ.copy()
         if passcode:
             env["STICKLLM_VAULT_PASS"] = passcode
+
+        def _vault_meta_blob() -> str:
+            for meta in (Path("/var/lib/stickllm/vault-meta"), MNT / "vault-meta"):
+                c = meta / "container"
+                if c.is_file():
+                    try:
+                        p = c.read_text(encoding="utf-8").strip()
+                    except Exception:
+                        p = ""
+                    if p and Path(p).is_file():
+                        return p
+            st = read_json(RUN / "vault.json")
+            blob = str(st.get("blob") or "").strip()
+            if blob and Path(blob).is_file():
+                return blob
+            return ""
+
+        need_bind = bind_path and not _vault_meta_blob()
+        if need_bind:
+            if _looks_like_block_device(bind_path):
+                return {"ok": False, "error": "refusing block device path for unlock bind"}
+            try:
+                b = subprocess.run(
+                    [script, "use", bind_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                    env=env,
+                )
+                if b.returncode != 0:
+                    err_lines = (b.stderr or "").strip().splitlines()
+                    return merge_vault_run(
+                        {
+                            "ok": False,
+                            "code": b.returncode,
+                            "stdout": (b.stdout or "")[-2000:],
+                            "stderr": (b.stderr or "")[-2000:],
+                            "error": (err_lines[-1] if err_lines else "could not bind existing vault")[
+                                :500
+                            ],
+                        }
+                    )
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
         try:
             p = subprocess.run(
                 [script, "unlock"],

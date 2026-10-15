@@ -48,6 +48,8 @@
   let activeChatId = null;
   let vaultPickerDevice = null;
   let vaultBrowsePath = "";
+  let vaultBrowseHasBlob = false;
+  let vaultBrowseBlobPath = "";
   let selectedModelId = null;
   let lastCatalog = [];
 
@@ -1160,7 +1162,7 @@
       setVaultSetupFeedback(
         res.already_mounted
           ? `Already mounted at ${mp} — opening folder browser.`
-          : `Mounted ${device} at ${mp}. Pick a folder, then CREATE-VAULT.`,
+          : `Mounted ${device} at ${mp}. Browse to your models folder — Use existing vault if stickllm-vault.img is there, else CREATE-VAULT for a new blob.`,
         "ok"
       );
       await refreshVaultPicker({ quiet: true });
@@ -1208,14 +1210,16 @@
       row.className = "vaultPickRow";
       const label = document.createElement("span");
       const gguf = hit.gguf_count ? ` · ${hit.gguf_count} GGUF` : "";
-      label.textContent = `${hit.relative || hit.path}${gguf} — ${hit.reason || hit.kind || ""}`;
+      const vaultTag = hit.has_vault_blob ? " · vault blob" : "";
+      label.textContent = `${hit.relative || hit.path}${gguf}${vaultTag} — ${hit.reason || hit.kind || ""}`;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "actionBtn";
-      btn.textContent = "Open";
+      btn.textContent = hit.has_vault_blob ? "Open + use vault" : "Open";
       btn.addEventListener("click", async () => {
         await browseVaultDir(hit.path);
         useVaultBrowseFolder();
+        if (hit.has_vault_blob) await useExistingVault();
       });
       row.appendChild(label);
       row.appendChild(btn);
@@ -1242,10 +1246,17 @@
         await browseVaultDir(jump);
         if (res.best) {
           useVaultBrowseFolder();
+          const blobNote = res.best.has_vault_blob
+            ? " Existing stickllm-vault.img found — Use existing vault, then Unlock."
+            : "";
           setVaultSetupFeedback(
-            `Best match: ${res.best.relative || res.best.path} (${res.best.reason || "models"}).`,
+            `Best match: ${res.best.relative || res.best.path} (${res.best.reason || "models"}).${blobNote}`,
             "ok"
           );
+          if (res.best.has_vault_blob) {
+            // Auto-bind meta only (never formats); user still enters passcode to Unlock.
+            await useExistingVault();
+          }
         } else {
           setVaultSetupFeedback(
             `No strong model hits — started at ${res.start_dir || jump} (${res.start_reason || "default"}).`,
@@ -1261,6 +1272,33 @@
     } finally {
       if (findBtn) findBtn.disabled = !vaultPickerDevice;
     }
+  }
+
+  function setVaultExistingBlobUi(hasBlob, blobPath, folderPath) {
+    vaultBrowseHasBlob = !!hasBlob;
+    vaultBrowseBlobPath = hasBlob ? String(blobPath || `${folderPath}/stickllm-vault.img`) : "";
+    const hint = document.getElementById("vaultExistingBlobHint");
+    const useExistingBtn = document.getElementById("actVaultUseExisting");
+    const createPanel = document.getElementById("vaultCreatePanel");
+    const setupBtn = document.getElementById("actVaultSetup");
+    if (useExistingBtn) useExistingBtn.disabled = !hasBlob;
+    if (hint) {
+      if (hasBlob) {
+        hint.hidden = false;
+        hint.textContent =
+          `Found existing vault blob: ${vaultBrowseBlobPath}. Click “Use existing vault”, then Unlock with your passcode — do not Create vault (that refuses/overwrites nothing, but is the wrong path).`;
+        hint.classList.add("is-ok");
+        hint.classList.remove("is-err");
+      } else {
+        hint.hidden = true;
+        hint.textContent = "";
+      }
+    }
+    if (createPanel) {
+      createPanel.style.opacity = hasBlob ? "0.45" : "";
+      createPanel.style.pointerEvents = hasBlob ? "none" : "";
+    }
+    if (setupBtn) setupBtn.disabled = !!hasBlob;
   }
 
   async function browseVaultDir(path) {
@@ -1280,6 +1318,11 @@
       if (useBtn) useBtn.disabled = false;
       if (newBtn) newBtn.disabled = !res.can_mkdir;
       if (findBtn) findBtn.disabled = !(vaultPickerDevice?.mount_path || vaultBrowsePath);
+      setVaultExistingBlobUi(
+        !!(res.has_vault_blob || res.existing_vault_blob),
+        res.existing_vault_blob,
+        vaultBrowsePath
+      );
       if (res.is_stick_usb || res.warn) {
         setVaultUsbWarn(
           res.warn ||
@@ -1292,7 +1335,9 @@
         folderList.innerHTML = "";
         const entries = Array.isArray(res.entries) ? res.entries : [];
         if (!entries.length) {
-          folderList.textContent = "(no subfolders — you can Use this folder or New folder)";
+          folderList.textContent = vaultBrowseHasBlob
+            ? "(no subfolders — Use existing vault, then Unlock)"
+            : "(no subfolders — you can Use this folder or New folder)";
         }
         for (const ent of entries) {
           const row = document.createElement("div");
@@ -1307,11 +1352,25 @@
           row.appendChild(btn);
           folderList.appendChild(row);
         }
+        if (vaultBrowseHasBlob) {
+          const blobRow = document.createElement("div");
+          blobRow.className = "vaultPickRow";
+          blobRow.textContent = `stickllm-vault.img (existing encrypted vault)`;
+          const bindBtn = document.createElement("button");
+          bindBtn.type = "button";
+          bindBtn.className = "actionBtn";
+          bindBtn.textContent = "Use existing";
+          bindBtn.addEventListener("click", () => useExistingVault());
+          blobRow.appendChild(document.createTextNode(" "));
+          blobRow.appendChild(bindBtn);
+          folderList.prepend(blobRow);
+        }
       }
       return res;
     } catch (e) {
       if (folderList) folderList.textContent = `Error: ${e.message}`;
       setVaultSetupFeedback(`Folder browse failed: ${e.message}`, "err");
+      setVaultExistingBlobUi(false, "", "");
       throw e;
     }
   }
@@ -1325,12 +1384,67 @@
     }
     if (input) input.value = path;
     const usb = isStickUsbVaultPath(path) || vaultPickerDevice?.kind === "usb_stick";
+    if (vaultBrowseHasBlob && !usb) {
+      setVaultSetupFeedback(
+        `Selected ${path} — existing stickllm-vault.img found. Click “Use existing vault”, then Unlock (do not Create).`,
+        "ok"
+      );
+      return;
+    }
     setVaultSetupFeedback(
       usb
         ? `Selected USB folder ${path} — data leaves when stick is removed. Prefer host SSD.`
         : `Selected folder ${path}`,
       usb ? "err" : "ok"
     );
+  }
+
+  async function useExistingVault() {
+    const path =
+      (document.getElementById("vaultSetupPath")?.value || "").trim() ||
+      (vaultBrowsePath || "").trim() ||
+      (vaultBrowseBlobPath || "").trim();
+    if (!path) {
+      setVaultSetupFeedback(
+        "Browse to the folder that contains stickllm-vault.img (e.g. …/home/nink/models), then Use existing vault.",
+        "err"
+      );
+      return;
+    }
+    if (path.startsWith("/dev/") || path.startsWith("\\\\.\\")) {
+      setVaultSetupFeedback("Refusing block device — pick the mounted folder with the blob.", "err");
+      return;
+    }
+    if (isStickUsbVaultPath(path)) {
+      setVaultSetupFeedback(
+        "Refusing StickLLM USB — bind the host SSD folder that holds stickllm-vault.img.",
+        "err"
+      );
+      return;
+    }
+    const input = document.getElementById("vaultSetupPath");
+    if (input && !input.value.trim()) input.value = path.replace(/\/stickllm-vault\.img$/i, "");
+    setVaultSetupFeedback("Binding existing vault blob (meta only — not formatting)…", "info");
+    try {
+      const res = await control("vault_use", { path });
+      if (!res.ok) {
+        throw new Error(res.error || res.stderr || res.note || "use existing failed");
+      }
+      const blob = res.blob || vaultBrowseBlobPath || `${path.replace(/\/$/, "")}/stickllm-vault.img`;
+      setVaultSetupFeedback(
+        `Existing vault attached: ${blob}. Enter your passcode below and Unlock — Create vault is not needed.`,
+        "ok"
+      );
+      addBubble("system", `Existing vault bound at ${blob}. Unlock with your passcode.`);
+      document.getElementById("vaultPass")?.focus();
+      if (settingsDialog?.open) {
+        const st = await control("status");
+        renderSettingsStatus(st);
+      }
+    } catch (e) {
+      setVaultSetupFeedback(`Use existing failed: ${e.message}`, "err");
+      addBubble("system", `Use existing vault failed: ${e.message}`);
+    }
   }
 
   async function createVaultBrowseFolder() {
@@ -1802,6 +1916,7 @@
     } catch (_) {}
   });
   document.getElementById("actVaultBrowseUse")?.addEventListener("click", () => useVaultBrowseFolder());
+  document.getElementById("actVaultUseExisting")?.addEventListener("click", () => useExistingVault());
   document.getElementById("actVaultBrowseNew")?.addEventListener("click", () => createVaultBrowseFolder());
   document.getElementById("actVaultFindModels")?.addEventListener("click", () => findVaultModels());
   // Up is rebound per browseVaultDir response (once). Keep a stable handler too.
@@ -1817,9 +1932,18 @@
   document.getElementById("actVaultUnlock")?.addEventListener("click", async () => {
     const pass = document.getElementById("vaultPass")?.value || "";
     const vaultStatus = document.getElementById("vaultStatus");
+    const bindPath =
+      (document.getElementById("vaultSetupPath")?.value || "").trim() ||
+      (vaultBrowseHasBlob ? vaultBrowsePath || vaultBrowseBlobPath : "") ||
+      "";
     if (vaultStatus) vaultStatus.textContent = "Unlocking…";
     try {
-      const res = await control("vault_unlock", { passcode: pass });
+      // Control binds only when meta is missing (reflash). Pass folder if selected.
+      const payload = { passcode: pass };
+      if (bindPath && !bindPath.startsWith("/dev/")) {
+        payload.path = bindPath;
+      }
+      const res = await control("vault_unlock", payload);
       if (document.getElementById("vaultPass")) document.getElementById("vaultPass").value = "";
       if (res.ok) {
         setVaultSetupFeedback("Vault unlocked.", "ok");
@@ -1828,7 +1952,11 @@
           await setSessionMode("vault");
         }
       } else {
-        const msg = res.error || res.stderr || "bad passcode / no vault configured";
+        let msg = res.error || res.stderr || "bad passcode / no vault configured";
+        if (/no vault configured/i.test(String(msg))) {
+          msg +=
+            " — browse to the folder with stickllm-vault.img, click Use existing vault, then Unlock again.";
+        }
         setVaultSetupFeedback(`Unlock failed: ${msg}`, "err");
         if (vaultStatus) vaultStatus.textContent = `Unlock failed: ${msg}`;
       }

@@ -188,29 +188,34 @@
           <div class="vaultBrowseBar">
             <button type="button" id="actVaultBrowseUp" class="actionBtn" disabled>Up</button>
             <button type="button" id="actVaultBrowseUse" class="actionBtn" disabled>Use this folder</button>
+            <button type="button" id="actVaultUseExisting" class="actionBtn" disabled title="Bind existing stickllm-vault.img — never formats or overwrites">Use existing vault</button>
             <button type="button" id="actVaultBrowseNew" class="actionBtn" disabled>New folder…</button>
             <button type="button" id="actVaultFindModels" class="actionBtn" disabled title="Search this volume for GGUF folders, Ollama, LM Studio, HuggingFace caches">Find existing models</button>
           </div>
           <div id="vaultModelHits" class="vaultModelHits" hidden></div>
           <div id="vaultFolderList" class="vaultFolderList">—</div>
+          <p id="vaultExistingBlobHint" class="vaultFeedback is-ok" hidden role="status"></p>
           <p class="modelsHint">Selected vault folder (filled by picker; advanced edit allowed):</p>
           <label class="fieldLabel">Path
             <input id="vaultSetupPath" type="text" autocomplete="off" placeholder="Choose a folder above — no default path" />
           </label>
         </div>
-        <label class="fieldLabel">Initial blob size (GiB)
-          <input id="vaultSetupSize" type="number" min="1" max="2000" value="8" />
-        </label>
-        <label class="fieldLabel">New vault passcode (min 8)
-          <input id="vaultSetupPass" type="password" autocomplete="new-password" placeholder="Passcode" />
-        </label>
-        <label class="fieldLabel">Confirm passcode
-          <input id="vaultSetupPass2" type="password" autocomplete="new-password" placeholder="Confirm" />
-        </label>
-        <label class="fieldLabel">Type CREATE-VAULT to confirm
-          <input id="vaultSetupConfirm" type="text" autocomplete="off" placeholder="CREATE-VAULT" />
-        </label>
-        <button type="button" id="actVaultSetup" class="actionBtn">Create vault here</button>
+        <div id="vaultCreatePanel">
+          <p class="modelsHint">Create only if this folder has <strong>no</strong> <code>stickllm-vault.img</code>. After a reflash, prefer <strong>Use existing vault</strong> then Unlock.</p>
+          <label class="fieldLabel">Initial blob size (GiB)
+            <input id="vaultSetupSize" type="number" min="1" max="2000" value="8" />
+          </label>
+          <label class="fieldLabel">New vault passcode (min 8)
+            <input id="vaultSetupPass" type="password" autocomplete="new-password" placeholder="Passcode" />
+          </label>
+          <label class="fieldLabel">Confirm passcode
+            <input id="vaultSetupPass2" type="password" autocomplete="new-password" placeholder="Confirm" />
+          </label>
+          <label class="fieldLabel">Type CREATE-VAULT to confirm
+            <input id="vaultSetupConfirm" type="text" autocomplete="off" placeholder="CREATE-VAULT" />
+          </label>
+          <button type="button" id="actVaultSetup" class="actionBtn">Create vault here</button>
+        </div>
         <p id="vaultSetupHint" class="vaultFeedback" role="status" aria-live="polite"></p>
         <pre id="vaultRecovery" class="modelsBody" style="max-height:6rem;overflow:auto;display:none"></pre>
         <label class="fieldLabel" id="vaultSavedLabel" hidden>Type SAVED after writing the recovery phrase
