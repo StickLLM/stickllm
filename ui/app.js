@@ -125,6 +125,30 @@
         connectModel.textContent = `${name} (loading)`;
       }
     }
+    renderSshCredentials(c);
+  }
+
+  function renderSshCredentials(connect) {
+    const panel = document.getElementById("sshCredPanel");
+    const line = document.getElementById("sshCredLine");
+    if (!panel || !line) return;
+    const c = connect || {};
+    // Gateway only includes ssh_password on loopback (Test/Term with stickllm.ssh).
+    const pass = String(c.ssh_password || "").trim();
+    const enabled = !!c.ssh_enabled;
+    if (enabled && pass) {
+      const user = c.ssh_user || "stickllm";
+      const host = c.ssh_host || c.ip || "127.0.0.1";
+      panel.hidden = false;
+      line.textContent = `${user}@${host}  password: ${pass}`;
+    } else if (enabled && isLocalMode) {
+      panel.hidden = false;
+      line.textContent =
+        "SSH enabled — password not in this response yet (reload Settings, or check READY screen).";
+    } else {
+      panel.hidden = true;
+      line.textContent = "";
+    }
   }
 
   const messages = [
@@ -513,6 +537,15 @@
       how.textContent =
         `Open ${url} on the same LAN and enter the PAIR CODE from the stick screen (or Pair | URL | Model above). Loopback on the stick needs no pair. No LAN? Term console: stickllm-wifi-setup.`;
     }
+  }
+
+  async function refreshSshCredentialsInSettings() {
+    try {
+      const r = await fetch("/api/health", { cache: "no-store" });
+      if (!r.ok && r.status !== 503) return;
+      const j = await r.json();
+      renderSshCredentials(j.connect || {});
+    } catch (_) {}
   }
 
   function applySessionModeUi(mode) {
@@ -981,9 +1014,44 @@
     try {
       const st = await control("status");
       renderSettingsStatus(st);
+      await refreshSshCredentialsInSettings();
       await refreshVaultPicker({ quiet: true });
     } catch (e) {
       if (settingsBody) settingsBody.textContent = `Could not load: ${e.message}`;
+    }
+  }
+
+  async function findExistingVault() {
+    setVaultSetupFeedback("Searching USB DATA pointer + mounted host paths for stickllm-vault.img…", "info");
+    try {
+      const res = await control("vault_find");
+      if (!res.ok) throw new Error(res.error || "find-vault failed");
+      const best = res.best;
+      const hits = Array.isArray(res.candidates) ? res.candidates : [];
+      if (!best && !hits.length) {
+        setVaultSetupFeedback(
+          res.data_mounted
+            ? "No stickllm-vault.img found. Mount the Fanxiang SSD, then Find again — or browse to …/home/nink/models."
+            : "No vault found. Claim USB free space (STICKLLM-DATA) so a location pointer can survive reflash; Mount host SSD and browse to the models folder.",
+          "err"
+        );
+        return;
+      }
+      const path = best?.root || best?.blob || hits[0]?.root;
+      const input = document.getElementById("vaultSetupPath");
+      if (input && path) input.value = String(path).replace(/\/stickllm-vault\.img$/i, "");
+      if (best?.root) {
+        try {
+          await browseVaultDir(best.root);
+        } catch (_) {}
+      }
+      setVaultSetupFeedback(
+        `Found vault (${best?.source || "scan"}): ${best?.blob || path}. Attaching (config only)…`,
+        "ok"
+      );
+      await useExistingVault();
+    } catch (e) {
+      setVaultSetupFeedback(`Find existing vault failed: ${e.message}`, "err");
     }
   }
 
@@ -1919,6 +1987,8 @@
   document.getElementById("actVaultUseExisting")?.addEventListener("click", () => useExistingVault());
   document.getElementById("actVaultBrowseNew")?.addEventListener("click", () => createVaultBrowseFolder());
   document.getElementById("actVaultFindModels")?.addEventListener("click", () => findVaultModels());
+  document.getElementById("actVaultFindExisting")?.addEventListener("click", () => findExistingVault());
+  document.getElementById("actVaultFindExisting")?.addEventListener("click", () => findExistingVault());
   // Up is rebound per browseVaultDir response (once). Keep a stable handler too.
   document.getElementById("actVaultBrowseUp")?.addEventListener("click", async () => {
     if (!vaultBrowsePath || !vaultPickerDevice) return;

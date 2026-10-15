@@ -106,12 +106,18 @@ grep -qw 'stickllm.client' /proc/cmdline 2>/dev/null && {
 }
 
 ssh_password_line() {
-  # Print one SSH credential line when menu enabled SSH (Terminal or Test).
+  # Print SSH credentials when menu enabled SSH (Terminal or Test).
+  # Kept visually loud — READY can hand off to the browser quickly.
   [[ "$SSH_ON" -eq 1 ]] || return 0
   local ip="${1:-}" pass=""
   pass="$(tr -d '[:space:]' <"$RUN/ssh-password.txt" 2>/dev/null || true)"
   if [[ -n "${pass:-}" ]]; then
-    say "  SSH: stickllm@${ip:-<lan-ip>}  password: ${pass}"
+    say "  ----------------------------------------"
+    say "  SSH (copy now — also in Settings → System on this screen)"
+    say "  user: stickllm"
+    say "  host: ${ip:-<lan-ip>}   (or 127.0.0.1 from the stick)"
+    say "  password: ${pass}"
+    say "  ----------------------------------------"
     serial_only "STICKLLM_SSH_PASS stickllm@${ip:-<lan-ip>} ${pass}"
   else
     say "  SSH: stickllm@${ip:-<lan-ip>}  (password on boot /run/stickllm/ssh-password.txt)"
@@ -869,11 +875,15 @@ while (( SECONDS < deadline )); do
   if [[ "$phase" == "READY" ]]; then
     if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
       # Local/Test: UI required (detect_phase); model is on-demand via Activate.
-      # Test: linger a bit so SSH password on READY is readable before browser takes tty1.
+      # Test: linger so SSH password on READY is readable before browser takes tty1.
+      # (No model load at boot — READY arrives too fast to catch otherwise.)
       draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
       ready_drawn=1
       if [[ "$SSH_ON" -eq 1 ]]; then
-        sleep 8
+        # Repaint once mid-linger in case the first paint scrolled off.
+        sleep 12
+        draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
+        sleep 18
       else
         sleep 2
       fi

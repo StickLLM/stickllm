@@ -180,8 +180,36 @@ def discover_lan_ip() -> str:
     return ip
 
 
+def ssh_enabled() -> bool:
+    """True when boot menu enabled SSH (Term/Test) — never invent a password."""
+    try:
+        cmdline = Path("/proc/cmdline").read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        cmdline = ""
+    if "stickllm.ssh" in cmdline.split():
+        return True
+    return (RUN_DIR / "ssh-password.txt").is_file()
+
+
+def ssh_password_for_loopback() -> dict:
+    """SSH credentials for on-stick UI only. Never include in LAN responses."""
+    if not ssh_enabled():
+        return {"ssh_enabled": False}
+    passwd = read_text_safe(RUN_DIR / "ssh-password.txt").strip()
+    ip = discover_lan_ip()
+    out = {
+        "ssh_enabled": True,
+        "ssh_user": "stickllm",
+        "ssh_host": ip or "127.0.0.1",
+        "ssh_note": "Random per boot. Shown only on this stick (loopback). Not sent to LAN clients.",
+    }
+    if passwd:
+        out["ssh_password"] = passwd
+    return out
+
+
 def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
-    """IP / model / URL (+ pair code on loopback only) for the on-stick status banner."""
+    """IP / model / URL (+ pair code / SSH password on loopback only)."""
     ip = discover_lan_ip()
     model_name, model_path = resolve_model()
     if not model_name:
@@ -220,8 +248,14 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         rid = str(remint.get("id") or "").strip()
         if rid:
             out["remint_id"] = rid
+        # Test/Term: surface SSH password in Settings on the stick only.
+        out.update(ssh_password_for_loopback())
     else:
         out["how"] = f"Open {url} and enter the PAIR CODE from the stick screen."
+        # Explicitly omit credentials on LAN (even for paired browsers).
+        out["ssh_enabled"] = ssh_enabled()
+        out["ssh_password"] = None
+        out["ssh_note"] = "SSH password is only shown on the stick screen / Settings (loopback)."
     return out
 
 

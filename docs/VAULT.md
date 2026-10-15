@@ -62,20 +62,22 @@ sudo stickllm-vault move-model /path/model.gguf
 
 ### Reflash / “no vault configured”
 
-USB reflash clears on-stick `vault-meta` / `vault.json`. The LUKS file
+USB reflash clears ephemeral `/run` + ISO overlay. The LUKS file
 `stickllm-vault.img` on the host SSD is untouched. Do **not** Create vault again
 in that folder (setup refuses if the blob exists; never overwrites).
 
-**UI (next bake/hotfix with this branch):** Settings → Mount host SSD if needed →
-browse to the folder with `stickllm-vault.img` → **Open existing vault** → Unlock
-with your passcode. Unlock also auto-attaches when Path points at that folder and
-meta is missing.
+**USB DATA pointer (survives ISO reflash if Claim kept `STICKLLM-DATA`):**
+after successful setup/attach, StickLLM writes
+`/mnt/stickllm-data/stickllm-vault-location.json` with blob path + disk hints
+only — **never** the passcode. **Find existing vault** reads that pointer, else
+scans `/mnt/stickllm-host` for `stickllm-vault.img`, then attaches + prompts Unlock.
 
-**UI on shipping v0.3.4:** Unlock alone fails until meta is restored. Selecting a
-folder and typing CREATE-VAULT does **not** attach an existing blob. Create vault
-**refuses** if `stickllm-vault.img` already exists (no wipe, but also no config
-write). Boot **Test** once and hot-deploy this branch, or wait for the next ISO.
-Never run Create vault hoping it will “adopt” the blob.
+**UI (this branch / hot-deploy):** Settings → **Find existing vault** (or Mount SSD →
+browse → **Open existing vault**) → Unlock with passcode.
+
+**UI on shipping v0.3.4:** Unlock alone fails until attach is deployed. CREATE-VAULT
+does **not** attach an existing blob (refuses if img exists). Paste SSH password
+from Settings → System (Test/Term, on-stick) for hot-deploy.
 
 ## Workflow
 

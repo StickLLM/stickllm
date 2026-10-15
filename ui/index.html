@@ -191,6 +191,7 @@
             <button type="button" id="actVaultUseExisting" class="actionBtn" disabled title="Attach existing stickllm-vault.img — writes config only, never formats or overwrites">Open existing vault</button>
             <button type="button" id="actVaultBrowseNew" class="actionBtn" disabled>New folder…</button>
             <button type="button" id="actVaultFindModels" class="actionBtn" disabled title="Search this volume for GGUF folders, Ollama, LM Studio, HuggingFace caches">Find existing models</button>
+            <button type="button" id="actVaultFindExisting" class="actionBtn" title="Read USB DATA pointer and/or scan mounted host paths for stickllm-vault.img (never formats)">Find existing vault</button>
           </div>
           <div id="vaultModelHits" class="vaultModelHits" hidden></div>
           <div id="vaultFolderList" class="vaultFolderList">—</div>
@@ -253,6 +254,11 @@
           (unpairs old browsers). The stick/kiosk chat shows <strong>New PAIR CODE</strong>;
           enter it here. Loopback on the stick needs no pair.
         </p>
+        <div id="sshCredPanel" class="apiPanel" hidden>
+          <p class="modelsHint"><strong>SSH (Test / Term — this stick only)</strong></p>
+          <p id="sshCredLine" class="modelsHint" style="font-family:ui-monospace,monospace;user-select:all"></p>
+          <p class="modelsHint muted">Random per boot. Shown only on loopback Settings — not to unpaired LAN browsers.</p>
+        </div>
       </div>
 
       <div class="apiPanel futurePanel">

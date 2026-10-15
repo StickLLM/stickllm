@@ -1190,6 +1190,8 @@ def handle(action: str, params: dict) -> dict:
         return vault_action("setup", params)
     if action == "vault_use" or action == "vault_attach":
         return vault_action("use", params)
+    if action == "vault_find" or action == "vault_find_existing":
+        return vault_action("find-vault", params)
     if action == "vault_create_file":
         return vault_action("setup", params)
     if action == "vault_create_partition":
@@ -1353,6 +1355,15 @@ def vault_action(cmd: str, params: dict) -> dict:
         sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
         r = sh([script, "lock"], timeout=120)
         return merge_vault_run(r)
+    if cmd == "find-vault":
+        r = sh([script, "find-vault"], timeout=45)
+        try:
+            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
+            data = json.loads(lines[-1] if lines else "{}")
+            data["ok"] = bool(data.get("ok", True))
+            return data
+        except Exception:
+            return {**r, "ok": False, "error": "find-vault parse failed"}
     if cmd == "use":
         # Bind meta to an existing stickllm-vault.img — never CREATE / luksFormat.
         path = str(params.get("path") or params.get("dir") or "").strip()

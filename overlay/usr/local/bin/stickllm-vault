@@ -43,6 +43,10 @@ DEFAULT_WIPE_AFTER=0
 RESERVE_MIB="${STICKLLM_VAULT_RESERVE_MIB:-1024}"
 MIN_SIZE_GB=1
 MAX_SIZE_GB=2000
+# Survives ISO reflash when STICKLLM-DATA partition is kept (Claim USB free space).
+# Never stores passcode — path/disk hints only.
+LOCATION_FILE="${STICKLLM_VAULT_LOCATION:-$DATA_MNT/stickllm-vault-location.json}"
+HOST_MNT_ROOT="${STICKLLM_HOST_MNT:-/mnt/stickllm-host}"
 
 mkdir -p "$RUN" 2>/dev/null || true
 
@@ -1513,6 +1517,83 @@ ensure_dirs_in_vault() {
   chmod 700 "$MNT_POINT" "$MNT_POINT"/chats "$MNT_POINT"/settings 2>/dev/null || true
 }
 
+write_location_pointer() {
+  # Durable hint on STICKLLM-DATA (USB free-space partition). No passcode ever.
+  local root="$1" blob="$2"
+  STICKLLM_LOC_ROOT="$root" STICKLLM_LOC_BLOB="$blob" \
+    STICKLLM_LOC_FILE="$LOCATION_FILE" STICKLLM_LOC_DATA="$DATA_MNT" \
+    STICKLLM_LOC_HOST="$HOST_MNT_ROOT" python3 <<'PY'
+import json, os, subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+root = Path(os.environ["STICKLLM_LOC_ROOT"])
+blob = Path(os.environ["STICKLLM_LOC_BLOB"])
+loc_file = Path(os.environ["STICKLLM_LOC_FILE"])
+data_mnt = Path(os.environ["STICKLLM_LOC_DATA"])
+host_root = Path(os.environ["STICKLLM_LOC_HOST"])
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+# Only persist on mounted STICKLLM-DATA (survives ISO reflash; not live RAM overlay).
+if not data_mnt.is_dir() or not sh("findmnt", "-n", str(data_mnt)):
+    raise SystemExit(0)
+
+src = sh("findmnt", "-n", "-o", "SOURCE", "--target", str(blob.parent if blob.parent.is_dir() else root))
+fst = sh("findmnt", "-n", "-o", "FSTYPE", "--target", str(root))
+mnt = sh("findmnt", "-n", "-o", "TARGET", "--target", str(root))
+pk = (sh("lsblk", "-no", "PKNAME", src).splitlines()[0] if src else "").strip()
+part = Path(src).name if src else ""
+model = ""
+if pk:
+    model = (sh("lsblk", "-no", "MODEL", f"/dev/{pk}").splitlines() or [""])[0].strip()
+
+rel_under_mount = ""
+mount_leaf = ""
+rel_from_host = ""
+try:
+    if mnt:
+        rel_under_mount = str(blob.resolve().relative_to(Path(mnt))).replace("\\", "/")
+        mount_leaf = Path(mnt).name
+except Exception:
+    pass
+try:
+    if host_root.is_dir():
+        rel_from_host = str(blob.resolve().relative_to(host_root)).replace("\\", "/")
+except Exception:
+    pass
+
+doc = {
+    "version": 1,
+    "blob": str(blob),
+    "root": str(root),
+    "blob_name": blob.name,
+    "relative_under_mount": rel_under_mount or None,
+    "relative_from_host_mnt": rel_from_host or None,
+    "mount_path": mnt or None,
+    "mount_leaf": mount_leaf or None,
+    "part_name": part or None,
+    "disk_model": model or None,
+    "fstype": fst or None,
+    "source": src or None,
+    "updated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "safety": "path hint only — never stores passcode or recovery phrase",
+}
+# Refuse accidental secret fields
+for bad in ("pass", "passcode", "password", "recovery", "key", "pin"):
+    doc.pop(bad, None)
+
+loc_file.parent.mkdir(parents=True, exist_ok=True)
+tmp = loc_file.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+os.replace(tmp, loc_file)
+os.chmod(loc_file, 0o644)
+print(str(loc_file))
+PY
+}
+
 write_meta() {
   local root="$1" blob="$2"
   mkdir -p "$META_DIR"
@@ -1523,6 +1604,8 @@ write_meta() {
   printf '%s\n' "${WIPE_AFTER:-$DEFAULT_WIPE_AFTER}" >"$META_DIR/wipe_after"
   printf '0\n' >"$META_DIR/unlock_fails"
   chmod 600 "$META_DIR"/* 2>/dev/null || true
+  # Best-effort durable pointer on USB DATA (survives ISO reflash if DATA kept).
+  write_location_pointer "$root" "$blob" >/dev/null 2>&1 || true
 }
 
 gen_recovery() {
@@ -1556,6 +1639,152 @@ cmd_status() {
     st="locked"
   fi
   json_state "$st" "$(cat "$META_DIR/note" 2>/dev/null || true)"
+}
+
+# --- Find existing vault (DATA pointer + host scan; never formats) ----------
+
+cmd_find_vault() {
+  # Read-only discovery. Prefer USB DATA pointer (survives ISO reflash if DATA kept).
+  STICKLLM_LOC_FILE="$LOCATION_FILE" STICKLLM_LOC_DATA="$DATA_MNT" \
+    STICKLLM_LOC_HOST="$HOST_MNT_ROOT" STICKLLM_BLOB_NAME="$BLOB_NAME" python3 <<'PY'
+import json, os, subprocess, time
+from pathlib import Path
+from collections import deque
+
+loc_file = Path(os.environ.get("STICKLLM_LOC_FILE", "/mnt/stickllm-data/stickllm-vault-location.json"))
+data_mnt = Path(os.environ.get("STICKLLM_LOC_DATA", "/mnt/stickllm-data"))
+host_root = Path(os.environ.get("STICKLLM_LOC_HOST", "/mnt/stickllm-host"))
+blob_name = os.environ.get("STICKLLM_BLOB_NAME", "stickllm-vault.img")
+MAX_DIRS = 2000
+MAX_DEPTH = 8
+MAX_SECONDS = 10.0
+MAX_HITS = 20
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+def is_luks(path: Path) -> bool:
+    p = subprocess.run(["cryptsetup", "isLuks", str(path)], capture_output=True, check=False)
+    return p.returncode == 0
+
+def cand(path: Path, source: str, score: int, note: str = "") -> dict | None:
+    try:
+        if not path.is_file() or path.is_symlink():
+            return None
+        if path.name != blob_name and not path.name.endswith(".img"):
+            return None
+        if not is_luks(path):
+            return None
+        root = path.parent
+        return {
+            "blob": str(path.resolve()),
+            "root": str(root.resolve()),
+            "source": source,
+            "score": score,
+            "size": path.stat().st_size,
+            "note": note or source,
+        }
+    except Exception:
+        return None
+
+candidates = []
+seen = set()
+
+def add(c):
+    if not c:
+        return
+    key = c["blob"]
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append(c)
+
+pointer = None
+pointer_path = str(loc_file) if loc_file.is_file() else None
+data_mounted = bool(sh("findmnt", "-n", str(data_mnt))) if data_mnt.is_dir() else False
+
+if loc_file.is_file():
+    try:
+        pointer = json.loads(loc_file.read_text(encoding="utf-8"))
+    except Exception:
+        pointer = None
+    # Never trust/emit secret-looking fields from a corrupted pointer.
+    if isinstance(pointer, dict):
+        for bad in ("pass", "passcode", "password", "recovery", "key", "pin"):
+            pointer.pop(bad, None)
+
+if isinstance(pointer, dict):
+    blob = Path(str(pointer.get("blob") or ""))
+    c = cand(blob, "usb_data_pointer", 200, "path from STICKLLM-DATA stickllm-vault-location.json")
+    add(c)
+    # Remount path may differ — try host-relative + mount_leaf hints.
+    rel_host = str(pointer.get("relative_from_host_mnt") or "").strip().lstrip("/")
+    if rel_host and host_root.is_dir():
+        add(cand(host_root / rel_host, "usb_data_hint_host", 180, "rebuilt from relative_from_host_mnt"))
+    leaf = str(pointer.get("mount_leaf") or "").strip()
+    rel_mnt = str(pointer.get("relative_under_mount") or "").strip().lstrip("/")
+    if leaf and rel_mnt and host_root.is_dir():
+        add(cand(host_root / leaf / rel_mnt, "usb_data_hint_leaf", 170, "rebuilt from mount_leaf + relative_under_mount"))
+    # Any stickllm-host/* matching relative_under_mount
+    if rel_mnt and host_root.is_dir():
+        try:
+            for child in host_root.iterdir():
+                if child.is_dir():
+                    add(cand(child / rel_mnt, "usb_data_hint_scan", 160, f"under {child.name}"))
+        except Exception:
+            pass
+
+# Bounded scan under /mnt/stickllm-host for stickllm-vault.img
+t0 = time.monotonic()
+visited = 0
+if host_root.is_dir():
+    q = deque([(host_root, 0)])
+    while q and visited < MAX_DIRS and (time.monotonic() - t0) < MAX_SECONDS and len(candidates) < MAX_HITS:
+        cur, depth = q.popleft()
+        visited += 1
+        try:
+            entries = list(cur.iterdir())
+        except Exception:
+            continue
+        for ent in entries:
+            try:
+                if ent.name == blob_name and ent.is_file() and not ent.is_symlink():
+                    add(cand(ent, "host_scan", 100, "found under /mnt/stickllm-host"))
+            except Exception:
+                continue
+        if depth >= MAX_DEPTH:
+            continue
+        for ent in entries:
+            try:
+                if not ent.is_dir() or ent.is_symlink():
+                    continue
+                n = ent.name.lower()
+                if n in {"proc", "sys", "dev", "boot", "efi", "windows", "lost+found", "$recycle.bin"}:
+                    continue
+                q.append((ent, depth + 1))
+            except Exception:
+                continue
+
+ranked = sorted(candidates, key=lambda c: (-c["score"], -c.get("size", 0), c["blob"]))
+best = ranked[0] if ranked else None
+print(json.dumps({
+    "ok": True,
+    "read_only": True,
+    "data_mounted": data_mounted,
+    "location_file": pointer_path,
+    "pointer": pointer,
+    "best": best,
+    "candidates": ranked[:MAX_HITS],
+    "scanned_dirs": visited,
+    "elapsed_ms": int((time.monotonic() - t0) * 1000),
+    "safety": "Never formats. Never stores passcode. Pointer lives on STICKLLM-DATA (USB free space).",
+    "note": (
+        "Claim USB free space so STICKLLM-DATA persists across ISO reflash; "
+        "then setup/attach writes stickllm-vault-location.json there."
+    ),
+}))
+PY
 }
 
 # --- Bind existing blob (meta only — never format / never overwrite) --------
@@ -2026,6 +2255,7 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault setup <dir> [gb]    # create dir if needed + NEW sparse blob
   stickllm-vault use <dir|blob>      # bind EXISTING stickllm-vault.img (no format)
   stickllm-vault attach <dir|blob>   # alias for use (reflash recovery)
+  stickllm-vault find-vault          # DATA pointer + scan for stickllm-vault.img
   stickllm-vault grow <add_gb>       # expand blob (free-space checked)
   stickllm-vault unlock
   stickllm-vault lock
@@ -2052,6 +2282,7 @@ main() {
     mkdir) mkdir_vault_dir "$@" ;;
     mount-host) mount_host "$@" ;;
     use|attach|bind|use-existing|open-existing) cmd_use "$@" ;;
+    find-vault|find) cmd_find_vault "$@" ;;
     setup)
       # setup --existing <dir> → attach meta only (never luksFormat)
       if [[ "${1:-}" == "--existing" || "${1:-}" == "-e" ]]; then
