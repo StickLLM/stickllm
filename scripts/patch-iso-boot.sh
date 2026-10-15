@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-IN="${1:-out/stickllm-amd-rtx3090.hybrid.iso}"
-OUT="${2:-out/stickllm-amd-rtx3090.hybrid.iso}"
-TMP_OUT="out/stickllm-amd-rtx3090.patched.iso"
+# Prefer explicit args. Defaults avoid clobbering Drive golden / shipped names.
+IN="${1:-out/StickLLM-v0.3.7.iso}"
+OUT="${2:-out/StickLLM-v0.3.7.iso}"
+TMP_OUT="out/StickLLM.patched.iso"
 
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'

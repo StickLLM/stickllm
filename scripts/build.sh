@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Reproducible StickLLM live ISO build (Debian live-build in Docker).
-# Profile: amd-rtx3090 only.
+# Host profile toml: amd-rtx3090 (hardware defaults; not part of ISO filename).
+#
+# ISO naming (v0.3.7+): StickLLM-vX.Y.Z.iso  (exact; no .hybrid / no profile)
+# Through v0.3.6 ships used stickllm-amd-rtx3090-v*.hybrid.iso — leave those alone.
 #
 # Important on Windows: live-build/debootstrap must run on a Docker named
 # volume (Linux fs). Building directly on a OneDrive/NTFS bind mount fails
@@ -10,17 +13,25 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PROFILE="amd-rtx3090"
-# v0.3.5 ships under out/v0.3.5/ — never overwrite Drive golden v0.2
-# or published out/v0.3.0..v0.3.4 / checksums/v0.3*.sha256.
-VERSION_DIR="v0.3.5"
-ISO_NAME="stickllm-${PROFILE}-v0.3.5.hybrid.iso"
-CHECKSUM_FILE="checksums/v0.3.5.sha256"
+# Next unshipped line. Override: STICKLLM_VERSION=0.4.0 ./scripts/build.sh
+# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6).
+VERSION="${STICKLLM_VERSION:-0.3.7}"
+VERSION_DIR="v${VERSION}"
+ISO_NAME="StickLLM-v${VERSION}.iso"
+CHECKSUM_FILE="checksums/v${VERSION}.sha256"
 MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
 MODEL_SHARD1="qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
 MODEL_SHARD2="qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf"
 VOL_WORK="stickllm-lb-work"
 
-echo "=== StickLLM build (${PROFILE}) ==="
+case "$VERSION_DIR" in
+  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6)
+    echo "REFUSE: VERSION=${VERSION} would overwrite a shipping artifact" >&2
+    exit 1
+    ;;
+esac
+
+echo "=== StickLLM build (${ISO_NAME}) ==="
 ./scripts/verify-host.sh
 
 if [[ ! -f "models/${MODEL_3B}" || ! -f "models/${MODEL_SHARD1}" || ! -f "models/${MODEL_SHARD2}" ]]; then
@@ -60,8 +71,12 @@ elif compgen -G "out/live-image-amd64.hybrid.iso" >/dev/null; then
 elif compgen -G "out/*.hybrid.iso" >/dev/null; then
   shopt -s nullglob
   for f in out/*.hybrid.iso; do
-    # Never treat the Drive golden v0.2 name as the new build artifact.
-    [[ "$(basename "$f")" == "stickllm-amd-rtx3090.hybrid.iso" ]] && continue
+    # Never treat a published shipping ISO name as the new build artifact.
+    case "$(basename "$f")" in
+      stickllm-amd-rtx3090.hybrid.iso|stickllm-amd-rtx3090-v0.2.hybrid.iso|stickllm-amd-rtx3090-v0.3.6.hybrid.iso)
+        continue
+        ;;
+    esac
     SRC_ISO="$f"
     break
   done
@@ -72,7 +87,7 @@ if [[ -z "$SRC_ISO" || ! -f "$SRC_ISO" ]]; then
   exit 1
 fi
 cp -f "$SRC_ISO" "out/${VERSION_DIR}/${ISO_NAME}"
-# Also leave a copy at out/${ISO_NAME} for scripts that look there (not the golden name).
+# Also leave a copy at out/${ISO_NAME} for scripts that look there (not a shipping name).
 cp -f "$SRC_ISO" "out/${ISO_NAME}"
 (
   cd "out/${VERSION_DIR}"
@@ -84,4 +99,4 @@ ls -lh "out/${VERSION_DIR}/${ISO_NAME}"
 echo "=== Build complete: out/${VERSION_DIR}/${ISO_NAME} ==="
 echo "Checksum: ${CHECKSUM_FILE}"
 echo "Flash with docs/FLASH.md (Windows: .\\scripts\\flash-windows.ps1 -DriveLetter E)"
-echo "Note: does not overwrite checksums/v0.3.sha256 (v0.3.0 N ship) or Drive golden."
+echo "Note: does not overwrite checksums/v0.3.6.sha256 or Drive golden; Naming: StickLLM-vX.Y.Z.iso"

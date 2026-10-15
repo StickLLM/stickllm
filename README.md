@@ -29,7 +29,7 @@ Keep the **last two recoverable ships** (N and N-1) plus the Drive golden foreve
 | SHA-256 | [`checksums/v0.2.sha256`](checksums/v0.2.sha256) → `4914087d…` | [`checksums/v0.3.sha256`](checksums/v0.3.sha256) → `f3db9113…` | [`checksums/v0.3.6.sha256`](checksums/v0.3.6.sha256) → `fb559d9f…` |
 | Role | Immutable forever | Previous ship — do not delete when cutting v0.4 | Current ship |
 
-When cutting **v0.4+**: new tag + new `out/<version>/` + new checksum; **never** delete N/N-1 tags or ISO dirs; **never** overwrite Drive `v0.2.0` or Drive `v0.3.6` under the same name.
+When cutting **v0.4+**: new tag + new `out/<version>/StickLLM-vX.Y.Z.iso` + new checksum; **never** delete N/N-1 tags or ISO dirs; **never** overwrite Drive `v0.2.0` or Drive `v0.3.6` under the same name. Through **v0.3.6**, ISO files keep the historical `stickllm-amd-rtx3090-v….hybrid.iso` names; newer ships use exactly `StickLLM-vX.Y.Z.iso` (example: `StickLLM-v0.3.7.iso`; see [docs/BUILD.md](docs/BUILD.md)).
 
 **Do not flash `v0.3.5`** — truncated/broken ISO. Use **v0.3.6**.
 

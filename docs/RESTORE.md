@@ -12,12 +12,17 @@ Keep the **last two recoverable product ships** plus the immutable Drive golden.
 
 Older tags (`v0.2.1-local-nvidia-kbd`, `v0.3.1`–`v0.3.4`, …) and their `out/` dirs remain recoverable; they are simply outside the rolling N/N-1 window. Never delete them when cutting the next ship.
 
+## ISO naming (future N)
+
+- **Through v0.3.6:** keep historical filenames (`stickllm-amd-rtx3090-v….hybrid.iso`) for restore paths above — do not rename.
+- **v0.3.7 and later:** exactly `StickLLM-vX.Y.Z.iso` under `out/vX.Y.Z/` (example: `StickLLM-v0.3.7.iso`; see [BUILD.md](BUILD.md)). When a newer ship becomes **N**, document it with that pattern; leave older rows on their original names.
+
 ## Rules
 
 - When cutting **v0.4** (or any next ship): keep **N** and **N-1** tags and `out/` ISO dirs; do not delete or overwrite them.
 - Drive **v0.2.0** is outside the rolling window — never retag, rewrite checksum, or replace the Drive artifact.
 - Current **v0.3.6** also lives on **Google Drive** (StickLLM-releases folder; GitHub asset limit is 2 GB). Same folder as prior Drive ships — do not invent a new URL.
-- New ships get new tag names, new `out/<version>/` dirs, and new `checksums/<version>.sha256` files.
+- New ships get new tag names, new `out/<version>/` dirs, new `StickLLM-vX.Y.Z.iso` filenames, and new `checksums/<version>.sha256` files.
 
 ## Restore N (v0.3.6)
 

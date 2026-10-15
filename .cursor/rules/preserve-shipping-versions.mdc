@@ -30,8 +30,9 @@ Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship)
 
 ## New work gets new names
 
-- New product work → new tag (`v0.4.0`, `v0.3.7`, …), new `out/<version>/` ISO filename, new checksum file.
-- Rebuilds of an older line → distinct name, e.g. `out/stickllm-amd-rtx3090-v0.2-rebuild.iso`. Compare hash to the shipping checksum; report bit-identical if equal.
+- New product work → new tag (`v0.4.0`, `v0.3.7`, …), new `out/<version>/StickLLM-vX.Y.Z.iso`, new checksum file.
+- **Naming:** v0.3.7+ use exactly `StickLLM-vX.Y.Z.iso` (example: `StickLLM-v0.3.7.iso`). Through v0.3.6, published files stay `stickllm-amd-rtx3090-v….hybrid.iso` — never rename or rewrite those.
+- Rebuilds of an older line → distinct `out/` path; never overwrite a shipping ISO name. Compare hash to the shipping checksum; report bit-identical if equal.
 - WIP / abandoned experiments → branch only (`wip/…`); never replace a shipping tag or Drive ISO.
 
 ## Examples
@@ -41,7 +42,9 @@ Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship)
 ❌ BAD: build v0.3 and write over out/stickllm-amd-rtx3090.hybrid.iso (the v0.2 Drive ship)
 ❌ BAD: git tag -f v0.2.0 <new-commit>
 ❌ BAD: edit checksums/v0.2.sha256 to match a different ISO
+❌ BAD: rename stickllm-amd-rtx3090-v0.3.6.hybrid.iso to StickLLM-v0.3.6.iso
 
-✅ GOOD: out/v0.3.6/…hybrid.iso + checksums/v0.3.6.sha256 + tag v0.3.6
-✅ GOOD: out/v0.4.0/… + checksums/v0.4.sha256 + tag v0.4.0 (keep v0.3.6 + v0.3.0 dirs/tags)
+✅ GOOD: out/v0.3.6/stickllm-amd-rtx3090-v0.3.6.hybrid.iso + checksums/v0.3.6.sha256 (historical N; leave as-is)
+✅ GOOD: out/v0.3.7/StickLLM-v0.3.7.iso + checksums/v0.3.7.sha256 + tag v0.3.7
+✅ GOOD: out/v0.4.0/StickLLM-v0.4.0.iso + checksums/v0.4.0.sha256 + tag v0.4.0 (keep prior N/N-1)
 ```

@@ -46,13 +46,17 @@ Useful: `stickllm-status`, `nvidia-smi`, `curl -s localhost:8080/health`,
 ```bash
 # Reuse overlay llama when present (default). Force only if binaries missing:
 # STICKLLM_FORCE_LLAMA_BUILD=1 ./scripts/build.sh
+# Optional: STICKLLM_VERSION=0.4.0 ./scripts/build.sh
 ./scripts/build.sh
-# → out/v0.3.6/stickllm-amd-rtx3090-v0.3.6.hybrid.iso + SHA256SUMS
+# → out/v0.3.7/StickLLM-v0.3.7.iso + SHA256SUMS
 # Run ISO integrity check before flash/publish (reject truncated images like v0.3.5).
 ```
 
+**ISO names (v0.3.7+):** exactly `StickLLM-vX.Y.Z.iso` under `out/vX.Y.Z/` (example: `StickLLM-v0.3.7.iso`). No hybrid/GPU/arch tokens on current amd64 ships; add a suffix only for a distinct platform later (e.g. `-arm64`).  
+Through **v0.3.6**, ships used `stickllm-amd-rtx3090-v….hybrid.iso` — leave those paths and checksums unchanged. Details: [BUILD.md](BUILD.md).
+
 Preserve N-2 restore slots and Drive golden — see [RESTORE.md](RESTORE.md).
-Current **N** is **v0.3.6** (Drive); **N-1** is **v0.3.0**. Never overwrite published
+Current **N** is **v0.3.6** (Drive; old filename); **N-1** is **v0.3.0**. Never overwrite published
 checksums or shipping tags. **Do not flash v0.3.5** (truncated).
 
 ## After flash
