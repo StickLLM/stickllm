@@ -65,9 +65,13 @@ Full flash notes: [docs/FLASH.md](docs/FLASH.md). Then boot: [docs/BOOT.md](docs
 
 ## What’s in v0.3.8
 
-- Encrypted SSD vault (file blob only; Find/Open existing after reflash)
-- StickLLM chat UI on `:80` (pair code on LAN; loopback needs no pair; **F9** remints PAIR CODE on kiosk)
-- llama on **127.0.0.1:8080** only; backends CUDA → Vulkan → CPU
+- Boot: **Local/Server**, **Terminal**, **Test - SSH Enabled**
+- Inference: **CUDA → Vulkan → CPU** fallback
+- Built-in model; downloadable Qwen models (hash-pinned catalog)
+- Kiosk chat UI on `:80`; LAN pair code (loopback needs no pair; **F9** remints PAIR CODE on kiosk)
+- Ephemeral by default; optional encrypted SSD vault unlock from the UI (file blob; Find/Open existing after reflash)
+- Mount host drives; claim stick free space for durable downloads
+- llama on **127.0.0.1:8080** only
 - **StickLLM UI only** — external OpenAI-style `/v1` clients get **410** (see [FEATURES.md](FEATURES.md))
 
 Release notes: [GitHub Release v0.3.8](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8).
