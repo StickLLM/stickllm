@@ -24,6 +24,8 @@ test -f "$SQ"
 
 echo "[stickllm] unsquashfs..."
 unsquashfs -f -d "$work/sq" "$SQ" >/dev/null
+# Drop extracted squashfs copy early — frees ~8GB before overlay/mksquashfs.
+rm -f "$SQ"
 
 echo "[stickllm] injecting overlay..."
 rsync -a \
@@ -37,14 +39,21 @@ rsync -a \
   "$STICKLLM/overlay/usr/local/bin/stickllm-model-probe" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-download-model" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-vault" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-vault-boot" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-persist" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-status" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-pair" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-control" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-lan-ip" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-wifi-apply" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-wifi-setup" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-kiosk" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-llama-start" \
   "$work/sq/usr/local/bin/"
 rsync -a \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-bootstatus.service" \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-local.service" \
+  "$STICKLLM/overlay/etc/systemd/system/stickllm-kiosk.service" \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-console-setup.service" \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-ssh.service" \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-ui.service" \
@@ -55,7 +64,7 @@ rsync -a \
   "$work/sq/etc/systemd/system/"
 mkdir -p "$work/sq/etc/ssh/sshd_config.d" "$work/sq/opt/stickllm/ui" \
   "$work/sq/etc/modprobe.d" "$work/sq/etc/modules-load.d" "$work/sq/etc/sudoers.d" \
-  "$work/sq/etc/stickllm/models"
+  "$work/sq/etc/stickllm/models" "$work/sq/var/lib/stickllm" "$work/sq/run/stickllm"
 rsync -a "$STICKLLM/overlay/etc/ssh/sshd_config.d/stickllm.conf" "$work/sq/etc/ssh/sshd_config.d/"
 rsync -a "$STICKLLM/overlay/etc/modprobe.d/stickllm-nvidia-alias.conf" "$work/sq/etc/modprobe.d/"
 # Local NVIDIA DRM KMS for Wayland (included in live squashfs / initramfs path via overlay).
@@ -68,46 +77,33 @@ fi
 rsync -a "$STICKLLM/overlay/etc/modules-load.d/stickllm-nvidia.conf" "$work/sq/etc/modules-load.d/"
 rsync -a "$STICKLLM/overlay/etc/sudoers.d/stickllm" "$work/sq/etc/sudoers.d/stickllm"
 rsync -a "$STICKLLM/config/models/catalog.toml" "$work/sq/etc/stickllm/models/catalog.toml"
+mkdir -p "$work/sq/etc/stickllm"
+if [[ -f "$STICKLLM/overlay/etc/stickllm/default-model.env" ]]; then
+  rsync -a "$STICKLLM/overlay/etc/stickllm/default-model.env" "$work/sq/etc/stickllm/default-model.env"
+fi
 rsync -a "$STICKLLM/ui/" "$work/sq/opt/stickllm/ui/"
-printf '%s\n' '{"mode":"ephemeral","profile":"amd-rtx3090","version":"0.2.0"}' \
-  >"$work/sq/opt/stickllm/ui/stickllm.json"
+if [[ -f "$STICKLLM/overlay/opt/stickllm/ui/stickllm.json" ]]; then
+  rsync -a "$STICKLLM/overlay/opt/stickllm/ui/stickllm.json" "$work/sq/opt/stickllm/ui/stickllm.json"
+else
+  printf '%s\n' '{"mode":"ephemeral","profile":"amd-rtx3090","version":"0.3.4"}' \
+    >"$work/sq/opt/stickllm/ui/stickllm.json"
+fi
 
+# Strip CRLF from every StickLLM helper (Windows checkout -> exec 127 on shebang).
+find "$work/sq/usr/local/bin" -maxdepth 1 -type f -name 'stickllm-*' -exec sed -i 's/\r$//' {} +
 sed -i 's/\r$//' \
-  "$work/sq/usr/local/bin/stickllm-bootstatus" \
-  "$work/sq/usr/local/bin/stickllm-local-chat" \
-  "$work/sq/usr/local/bin/stickllm-console-setup" \
-  "$work/sq/usr/local/bin/stickllm-gateway" \
-  "$work/sq/usr/local/bin/stickllm-nvidia-prep" \
-  "$work/sq/usr/local/bin/stickllm-pick-gpus" \
-  "$work/sq/usr/local/bin/stickllm-usb-claim" \
-  "$work/sq/usr/local/bin/stickllm-model-probe" \
-  "$work/sq/usr/local/bin/stickllm-download-model" \
-  "$work/sq/usr/local/bin/stickllm-vault" \
-  "$work/sq/usr/local/bin/stickllm-persist" \
-  "$work/sq/usr/local/bin/stickllm-status" \
-  "$work/sq/usr/local/bin/stickllm-pair" \
-  "$work/sq/usr/local/bin/stickllm-control" \
   "$work/sq/etc/systemd/system/"stickllm-*.service \
   "$work/sq/etc/ssh/sshd_config.d/stickllm.conf" \
   "$work/sq/etc/modprobe.d/stickllm-nvidia-alias.conf" \
   "$work/sq/etc/modules-load.d/stickllm-nvidia.conf" \
   "$work/sq/etc/sudoers.d/stickllm" \
-  "$work/sq/etc/stickllm/models/catalog.toml"
-chmod 755 \
-  "$work/sq/usr/local/bin/stickllm-bootstatus" \
-  "$work/sq/usr/local/bin/stickllm-local-chat" \
-  "$work/sq/usr/local/bin/stickllm-console-setup" \
-  "$work/sq/usr/local/bin/stickllm-gateway" \
-  "$work/sq/usr/local/bin/stickllm-nvidia-prep" \
-  "$work/sq/usr/local/bin/stickllm-pick-gpus" \
-  "$work/sq/usr/local/bin/stickllm-usb-claim" \
-  "$work/sq/usr/local/bin/stickllm-model-probe" \
-  "$work/sq/usr/local/bin/stickllm-download-model" \
-  "$work/sq/usr/local/bin/stickllm-vault" \
-  "$work/sq/usr/local/bin/stickllm-persist" \
-  "$work/sq/usr/local/bin/stickllm-status" \
-  "$work/sq/usr/local/bin/stickllm-pair" \
-  "$work/sq/usr/local/bin/stickllm-control"
+  "$work/sq/etc/stickllm/models/catalog.toml" \
+  "$work/sq/etc/stickllm/default-model.env" \
+  "$work/sq/opt/stickllm/ui/"*.js \
+  "$work/sq/opt/stickllm/ui/"*.html \
+  "$work/sq/opt/stickllm/ui/"*.css \
+  "$work/sq/opt/stickllm/ui/stickllm.json" 2>/dev/null || true
+find "$work/sq/usr/local/bin" -maxdepth 1 -type f -name 'stickllm-*' -exec chmod 755 {} +
 chmod 644 "$work/sq/etc/systemd/system/"stickllm-*.service
 chmod 644 "$work/sq/etc/ssh/sshd_config.d/stickllm.conf"
 chmod 644 "$work/sq/etc/modprobe.d/stickllm-nvidia-alias.conf"
@@ -153,7 +149,10 @@ fi
 echo "[stickllm] mksquashfs..."
 rm -f "$work/new/filesystem.squashfs"
 mksquashfs "$work/sq" "$work/new/filesystem.squashfs" -comp xz -b 1M -Xdict-size 100% -noappend >/dev/null
+rm -rf "$work/sq"
+mkdir -p "$work/iso/live"
 cp -f "$work/new/filesystem.squashfs" "$work/iso/live/filesystem.squashfs"
+rm -f "$work/new/filesystem.squashfs"
 
 echo "[stickllm] rebuilding hybrid ISO..."
 rm -f "$OUT"

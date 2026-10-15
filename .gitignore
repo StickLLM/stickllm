@@ -19,10 +19,18 @@ models/*.bin
 models/*.sha256
 !models/.gitkeep
 
-# Vendor binaries fetched at build time
-overlay/opt/stickllm/bin/llama-server
-overlay/opt/stickllm/lib/
+# Vendor binaries built at build time (CUDA + CPU llama; never commit SSE-only forks)
+overlay/opt/stickllm/bin/
+overlay/opt/stickllm/lib/**
+overlay/opt/stickllm/lib-cpu/
+overlay/opt/stickllm/lib-vulkan/
+!overlay/opt/stickllm/lib/
 !overlay/opt/stickllm/lib/.gitkeep
+!overlay/opt/stickllm/lib/stickllm-cuda-register.c
+scripts/lib/docker-build-llama-cpu-portable.sh
+**/_patch-dvol.sh
+**/_inject-llama*.sh
+**/_light-remaster.sh
 
 # Local / OS
 .DS_Store

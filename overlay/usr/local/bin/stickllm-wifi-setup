@@ -1,0 +1,241 @@
+#!/bin/bash
+# Interactive console WiFi bootstrap (Term / tty) — no browser required.
+# Writes the same NetworkManager profile as web Settings → Network via stickllm-wifi-apply.
+set -euo pipefail
+
+APPLY="${STICKLLM_WIFI_APPLY:-/usr/local/bin/stickllm-wifi-apply}"
+LAN_IP_BIN="${STICKLLM_LAN_IP:-/usr/local/bin/stickllm-lan-ip}"
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+
+say() { printf '%s\n' "$*"; }
+err() { printf '%s\n' "$*" >&2; }
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    err "missing command: $1"
+    exit 1
+  }
+}
+
+run_apply() {
+  local ssid="$1" pass="$2"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$APPLY" "$ssid" "$pass"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$APPLY" "$ssid" "$pass"
+  else
+    err "need root or sudo to run $APPLY"
+    exit 1
+  fi
+}
+
+ensure_nm() {
+  systemctl start --no-block NetworkManager.service 2>/dev/null || true
+  # Bring wifi radios up; ignore failures on Ethernet-only hosts.
+  if command -v nmcli >/dev/null 2>&1; then
+    nmcli radio wifi on >/dev/null 2>&1 || true
+    nmcli networking on >/dev/null 2>&1 || true
+    while IFS=: read -r dev typ state _; do
+      [[ "$typ" == "wifi" ]] || continue
+      nmcli device set "$dev" managed yes >/dev/null 2>&1 || true
+    done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
+  fi
+}
+
+# Fill SSIDS[] and SECS[] (parallel arrays); unique by SSID, strongest first.
+scan_wifi() {
+  SSIDS=()
+  SECS=()
+  local -A seen=()
+  local line ssid sec signal
+  # Refresh scan (may take a couple seconds).
+  nmcli device wifi rescan >/dev/null 2>&1 || true
+  sleep 1
+  while IFS=: read -r ssid sec signal; do
+    [[ -n "$ssid" ]] || continue
+    [[ -z "${seen[$ssid]:-}" ]] || continue
+    seen[$ssid]=1
+    SSIDS+=("$ssid")
+    SECS+=("$sec")
+  done < <(
+    nmcli -t -f SSID,SECURITY,SIGNAL device wifi list 2>/dev/null \
+      | awk -F: 'NF>=3 && $1!="" {print}' \
+      | sort -t: -k3 -nr
+  )
+}
+
+print_list() {
+  local i
+  say ""
+  say "Nearby WiFi networks:"
+  if [[ "${#SSIDS[@]}" -eq 0 ]]; then
+    say "  (none found — check antenna / rfkill, or type SSID manually)"
+    return
+  fi
+  for i in "${!SSIDS[@]}"; do
+    local n=$((i + 1))
+    local sec="${SECS[$i]:-}"
+    local tag="open"
+    [[ -n "$sec" && "$sec" != "--" && "$sec" != " " ]] && tag="$sec"
+    printf '  %2d) %s  [%s]\n' "$n" "${SSIDS[$i]}" "$tag"
+  done
+}
+
+resolve_lan_ip() {
+  local wait_secs="${1:-0}" ip=""
+  if [[ -x "$LAN_IP_BIN" ]]; then
+    if [[ "$wait_secs" -gt 0 ]]; then
+      ip="$("$LAN_IP_BIN" --wait "$wait_secs" 2>/dev/null || true)"
+    else
+      ip="$("$LAN_IP_BIN" 2>/dev/null || true)"
+    fi
+    ip="$(printf '%s' "$ip" | tr -d '[:space:]')"
+    printf '%s' "$ip"
+    return 0
+  fi
+  # Fallback if helper missing from an older hot-deploy.
+  ip="$(ip -4 -o addr show scope global 2>/dev/null \
+    | awk '!/[[:space:]]lo[[:space:]]/ && $4 !~ /^169\.254\./ {print $4; exit}' \
+    | cut -d/ -f1)"
+  if [[ -z "$ip" ]]; then
+    ip="$(hostname -I 2>/dev/null \
+      | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./ && $i !~ /^169\.254\./){print $i; exit}}')"
+  fi
+  printf '%s' "${ip:-}"
+}
+
+show_status() {
+  local ip ssid wait_secs="${1:-45}"
+  ssid=""
+  if [[ -f "$RUN/wifi.json" ]]; then
+    ssid="$(awk -F= '/^ssid=/{print substr($0,6); exit}' "$RUN/wifi.json" 2>/dev/null || true)"
+  fi
+  say ""
+  say "Waiting for LAN IP (DHCP)…"
+  ip="$(resolve_lan_ip "$wait_secs")"
+  say ""
+  say "========================================"
+  if [[ -n "${ip:-}" ]]; then
+    say "  WiFi connected${ssid:+  ($ssid)}"
+    say "  LAN IP:   ${ip}"
+    say "  Browser:  http://${ip}/"
+    say "  URL:      http://${ip}/"
+    say "========================================"
+    say "Open that URL on another device, then Pair (Server/Term)."
+    say "Ctrl+Alt+F1 → READY / Chat screen (LAN IP refreshes there too)."
+  else
+    say "  WiFi profile saved${ssid:+  ($ssid)}"
+    say "  LAN IP:   (not yet — wait a few seconds)"
+    say "  Browser:  http://<lan-ip>/"
+    say "========================================"
+    say "Check SSID/password, then re-run stickllm-wifi-setup."
+    say "Or: stickllm-lan-ip --wait 30   /   stickllm-status"
+    say "Ctrl+Alt+F1 → READY screen once DHCP assigns an address."
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+stickllm-wifi-setup — keyboard WiFi bootstrap (no browser)
+
+  Interactive scan + connect. Same profile as Settings → Network.
+
+  Usage:
+    stickllm-wifi-setup              # scan, pick number or type SSID
+    stickllm-wifi-setup --ssid NAME  # non-interactive (prompts password)
+    stickllm-wifi-setup -h
+
+  No-network Server tip: Ctrl+Alt+F2 → login (user / stickllm) → this command.
+  Or: Local mode once to save WiFi on DATA, then reboot into Server.
+  Or: plug Ethernet once, then Settings → Network in the browser.
+EOF
+}
+
+DIRECT_SSID=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --ssid) DIRECT_SSID="${2:-}"; shift 2 ;;
+    --ssid=*) DIRECT_SSID="${1#*=}"; shift ;;
+    *) err "unknown arg: $1"; usage; exit 2 ;;
+  esac
+done
+
+need_cmd nmcli
+need_cmd "$APPLY"
+ensure_nm
+
+say "StickLLM WiFi setup (console)"
+say "Profile is written via stickllm-wifi-apply (NM + optional DATA persist)."
+
+if [[ -n "$DIRECT_SSID" ]]; then
+  SSID="$DIRECT_SSID"
+  say "SSID: $SSID"
+  printf 'Password (empty if open): '
+  stty -echo 2>/dev/null || true
+  IFS= read -r PASS || true
+  stty echo 2>/dev/null || true
+  say ""
+  run_apply "$SSID" "${PASS:-}"
+  show_status 45
+  exit 0
+fi
+
+scan_wifi
+print_list
+
+while true; do
+  say ""
+  printf 'Pick number, type SSID, [r]escan, or [q]uit: '
+  IFS= read -r choice || exit 1
+  choice="${choice#"${choice%%[![:space:]]*}"}"
+  choice="${choice%"${choice##*[![:space:]]}"}"
+  case "$choice" in
+    q|Q|quit|exit) say "Cancelled."; exit 0 ;;
+    r|R|rescan)
+      say "Scanning…"
+      scan_wifi
+      print_list
+      continue
+      ;;
+    '')
+      continue
+      ;;
+  esac
+
+  SSID=""
+  NEED_PASS=1
+  if [[ "$choice" =~ ^[0-9]+$ ]]; then
+    idx=$((choice - 1))
+    if [[ "$idx" -lt 0 || "$idx" -ge "${#SSIDS[@]}" ]]; then
+      say "Invalid number."
+      continue
+    fi
+    SSID="${SSIDS[$idx]}"
+    sec="${SECS[$idx]:-}"
+    if [[ -z "$sec" || "$sec" == "--" ]]; then
+      NEED_PASS=0
+    fi
+  else
+    SSID="$choice"
+  fi
+
+  PASS=""
+  if [[ "$NEED_PASS" -eq 1 ]]; then
+    printf 'Password for "%s" (empty if open): ' "$SSID"
+    stty -echo 2>/dev/null || true
+    IFS= read -r PASS || true
+    stty echo 2>/dev/null || true
+    say ""
+  else
+    say "Open network — no password."
+  fi
+
+  say "Connecting to $SSID…"
+  if run_apply "$SSID" "${PASS:-}"; then
+    show_status 45
+    exit 0
+  else
+    err "Connect failed — check password or pick another network."
+  fi
+done

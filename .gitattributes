@@ -1,5 +1,11 @@
 # Shell / live-build inputs must stay LF or apt/hooks break on Windows checkouts.
+# CRLF shebangs cause exec 127 on the live stick (stickllm-pair, etc.).
 * text=auto eol=lf
 *.ps1 text eol=crlf
 *.md text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+overlay/usr/local/bin/** text eol=lf
+live-build/hooks/** text eol=lf
+overlay/etc/sudoers.d/** text eol=lf
 *.gguf filter=lfs diff=lfs merge=lfs -text

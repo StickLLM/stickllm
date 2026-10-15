@@ -44,12 +44,65 @@ if ! flock -n 9; then
   exit 0
 fi
 
-if findmnt -n "$MNT" >/dev/null 2>&1; then
-  DEST_DIR="$MNT/models"
+# Session mode (header dropdown): ephemeral = no vault/SSD writes; vault = prefer vault.
+SESSION_MODE="${STICKLLM_SESSION_MODE:-}"
+if [[ -z "$SESSION_MODE" && -f "$RUN/session-mode.json" ]]; then
+  SESSION_MODE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("mode","ephemeral"))' "$RUN/session-mode.json" 2>/dev/null || echo ephemeral)"
+fi
+SESSION_MODE="$(printf '%s' "${SESSION_MODE:-ephemeral}" | tr '[:upper:]' '[:lower:]')"
+
+VAULT_MNT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
+DATA_MNT_META="${STICKLLM_VAULT_META:-}"
+if [[ -z "$DATA_MNT_META" ]]; then
+  if findmnt -n "$MNT" >/dev/null 2>&1; then
+    DATA_MNT_META="$MNT/vault-meta"
+  else
+    DATA_MNT_META="/var/lib/stickllm/vault-meta"
+  fi
+fi
+DEST_DIR=""
+if [[ "$SESSION_MODE" == "vault" ]]; then
+  # Prefer clear host SSD models folder (vault setup root). Chats stay in LUKS blob only.
+  ROOT_DIR=""
+  if [[ -f /run/stickllm/vault.json ]]; then
+    ROOT_DIR="$(python3 -c 'import json,sys;print(json.load(open("/run/stickllm/vault.json")).get("root") or "")' 2>/dev/null || true)"
+  fi
+  if [[ -z "$ROOT_DIR" && -f "$DATA_MNT_META/root" ]]; then
+    ROOT_DIR="$(tr -d '\n' <"$DATA_MNT_META/root")"
+  fi
+  if [[ -z "$ROOT_DIR" && -f /var/lib/stickllm/vault-meta/root ]]; then
+    ROOT_DIR="$(tr -d '\n' </var/lib/stickllm/vault-meta/root)"
+  fi
+  if [[ -n "$ROOT_DIR" && -d "$ROOT_DIR" ]]; then
+    base="$(basename -- "$ROOT_DIR")"
+    if [[ "${base,,}" == "models" ]]; then
+      DEST_DIR="$ROOT_DIR"
+    else
+      DEST_DIR="$ROOT_DIR/models"
+    fi
+    echo "Download target: SSD models folder ($DEST_DIR)"
+  elif findmnt -n "$VAULT_MNT" >/dev/null 2>&1 && [[ -d "$VAULT_MNT/models" ]]; then
+    # Fallback only when host root unknown but vault is unlocked.
+    DEST_DIR="$VAULT_MNT/models"
+    echo "Download target: vault-internal models ($DEST_DIR) — host root not configured"
+  fi
+  if [[ -z "$DEST_DIR" ]]; then
+    echo "Vault mode selected but vault is locked/absent — unlock or setup in Settings → Storage."
+    echo "Refusing USB/RAM fallback in vault mode (fail-closed)."
+    exit 1
+  fi
 else
-  DEST_DIR="/opt/stickllm/models"
-  echo "WARNING: STICKLLM-DATA not mounted — writing to live RAM ($DEST_DIR)."
-  echo "Run: sudo stickllm-usb-claim --auto --yes"
+  echo "Session mode: ephemeral — not writing to SSD vault."
+fi
+if [[ -z "$DEST_DIR" ]]; then
+  if findmnt -n "$MNT" >/dev/null 2>&1; then
+    DEST_DIR="$MNT/models"
+    echo "Download target: USB STICKLLM-DATA ($DEST_DIR)"
+  else
+    DEST_DIR="/opt/stickllm/models"
+    echo "WARNING: STICKLLM-DATA not mounted — writing to live RAM ($DEST_DIR)."
+    echo "Run: sudo stickllm-usb-claim --auto --yes"
+  fi
 fi
 mkdir -p "$DEST_DIR"
 
@@ -281,23 +334,15 @@ while IFS= read -r f; do
   i=$((i+1))
 done <<<"$FILES"
 
-# Point runtime at first file / shard
+# Download only — do not auto-load. User Activates from Models UI when ready.
 FIRST="$(echo "$FILES" | head -1)"
 if [[ -n "$FIRST" ]]; then
-  mkdir -p "$RUN"
-  {
-    printf 'STICKLLM_MODEL=%s\n' "${DEST_DIR}/${FIRST}"
-    printf 'STICKLLM_MODEL_ID=%s\n' "$ID"
-    printf 'STICKLLM_MODEL_NAME=%s\n' "$NAME"
-  } >"$RUN/model.env"
-  ln -sfn "${DEST_DIR}/${FIRST}" "$RUN/current.gguf" 2>/dev/null || true
-  echo "Active model → ${DEST_DIR}/${FIRST}"
+  echo "Downloaded → ${DEST_DIR}/${FIRST}"
+  echo "Load when ready: Models → radio select → context slider → Activate"
 fi
 
-systemctl daemon-reload || true
-systemctl restart stickllm-llama.service || true
 write_progress "done" "" "$TOTAL_BYTES" "$TOTAL_BYTES" "complete"
-echo "Downloaded and verified. llama-server restart requested."
+echo "Downloaded and verified. Activate from the Models page to load."
 stickllm-status || true
 sleep 2
 write_progress "idle" "" 0 0 ""

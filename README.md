@@ -9,11 +9,12 @@ to the USB or internal disks unless you explicitly approve a write.
 | | |
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
-| Shipping golden | **v0.2.0** (Drive / Samsung — immutable) |
-| Current line | **v0.3.0** (harden + CPU fallback + Local WiFi/UI) |
-| Checkpoint | **v0.2.1-local-nvidia-kbd** (Local browser + keyboard on NVIDIA) |
+| Drive golden (forever) | **v0.2.0** (Samsung — immutable) |
+| Current ship (**N**) | **v0.3.6** (encrypted SSD vault + ISO integrity check; Drive) |
+| Previous ship (**N-1**) | **v0.3.0** (apiready) |
+| Checkpoint | **v0.2.1-local-nvidia-kbd** (Local browser + keyboard on NVIDIA; outside N window) |
 | Profile | **AMD desktop CPU · 32 GB RAM · NVIDIA RTX 3090 (24 GB)** |
-| Release | [v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) · [v0.3.0](https://github.com/StickLLM/stickllm/releases/tag/v0.3.0) |
+| Release | [v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) · [v0.3.0](https://github.com/StickLLM/stickllm/releases/tag/v0.3.0) · [v0.3.6](https://github.com/StickLLM/stickllm/releases/tag/v0.3.6) |
 | X / Twitter | [@stickllm](https://x.com/stickllm) |
 | Web | [stickllm.org](https://stickllm.org) |
 
@@ -21,44 +22,44 @@ to the USB or internal disks unless you explicitly approve a write.
 
 Keep the **last two recoverable ships** (N and N-1) plus the Drive golden forever. Details: [docs/RESTORE.md](docs/RESTORE.md).
 
-| | Drive golden **v0.2.0** | **N-1** `v0.2.1-local-nvidia-kbd` | **N** `v0.3.0` |
+| | Drive golden **v0.2.0** | **N-1** `v0.3.0` | **N** `v0.3.6` |
 |---|---|---|---|
-| Tag | [`v0.2.0`](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) | [`v0.2.1-local-nvidia-kbd`](https://github.com/StickLLM/stickllm/releases/tag/v0.2.1-local-nvidia-kbd) | [`v0.3.0`](https://github.com/StickLLM/stickllm/releases/tag/v0.3.0) |
-| ISO | Drive `stickllm-amd-rtx3090-v0.2.hybrid.iso` | `out/v0.2.1-local-nvidia-kbd/…v0.2-local-nvidia-kbd.hybrid.iso` | `out/v0.3.0/…v0.3-apiready.hybrid.iso` |
-| SHA-256 | [`checksums/v0.2.sha256`](checksums/v0.2.sha256) → `4914087d…` | [`checksums/v0.2-local-nvidia-kbd.sha256`](checksums/v0.2-local-nvidia-kbd.sha256) → `9F665ACA…` | [`checksums/v0.3.sha256`](checksums/v0.3.sha256) → `f3db9113…` |
+| Tag | [`v0.2.0`](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) | [`v0.3.0`](https://github.com/StickLLM/stickllm/releases/tag/v0.3.0) | [`v0.3.6`](https://github.com/StickLLM/stickllm/releases/tag/v0.3.6) |
+| ISO | Drive `stickllm-amd-rtx3090-v0.2.hybrid.iso` | `out/v0.3.0/…v0.3-apiready.hybrid.iso` | Drive / `out/v0.3.6/…v0.3.6.hybrid.iso` |
+| SHA-256 | [`checksums/v0.2.sha256`](checksums/v0.2.sha256) → `4914087d…` | [`checksums/v0.3.sha256`](checksums/v0.3.sha256) → `f3db9113…` | [`checksums/v0.3.6.sha256`](checksums/v0.3.6.sha256) → `fb559d9f…` |
 | Role | Immutable forever | Previous ship — do not delete when cutting v0.4 | Current ship |
 
-When cutting **v0.4+**: new tag + new `out/<version>/` + new checksum; **never** delete N/N-1 tags or ISO dirs; **never** overwrite Drive `v0.2.0`.
+When cutting **v0.4+**: new tag + new `out/<version>/StickLLM-vX.Y.Z.iso` + new checksum; **never** delete N/N-1 tags or ISO dirs; **never** overwrite Drive `v0.2.0` or Drive `v0.3.6` under the same name. Through **v0.3.6**, ISO files keep the historical `stickllm-amd-rtx3090-v….hybrid.iso` names; newer ships use exactly `StickLLM-vX.Y.Z.iso` (example: `StickLLM-v0.3.7.iso`; see [docs/BUILD.md](docs/BUILD.md)).
 
-Golden baseline: [docs/BASELINE-v0.2.md](docs/BASELINE-v0.2.md). Roadmap: [FEATURES.md](FEATURES.md). Issues: [ISSUES.md](ISSUES.md).
+**Do not flash `v0.3.5`** — truncated/broken ISO. Use **v0.3.6**.
 
-## Download golden v0.2 ISO
+Golden baseline: [docs/BASELINE-v0.2.md](docs/BASELINE-v0.2.md). Roadmap: [FEATURES.md](FEATURES.md). Issues: [ISSUES.md](ISSUES.md). Vault: [docs/VAULT.md](docs/VAULT.md). Flash: [docs/FLASH.md](docs/FLASH.md).
 
-ISO is on **Google Drive** (GitHub asset limit is 2 GB):  
+## Download current ship v0.3.6
+
+ISO is on **Google Drive** (GitHub asset limit is 2 GB) — same StickLLM-releases folder as v0.2:  
 https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing  
 
-File: `stickllm-amd-rtx3090-v0.2.hybrid.iso`
+File: `stickllm-amd-rtx3090-v0.3.6.hybrid.iso`  
+Checksum: [`checksums/v0.3.6.sha256`](checksums/v0.3.6.sha256) · Tag: `git checkout v0.3.6`
+
+```powershell
+(Get-FileHash .\stickllm-amd-rtx3090-v0.3.6.hybrid.iso -Algorithm SHA256).Hash
+# expect FB559D9F0CC5182406F0851F09C1E28C302F911C01B46CAC545EF4D920E1A43D
+```
+
+Windows flash: elevated `out/safe-flash-samsung-auth.py` (or Rufus DD). No drive letter after isohybrid is normal — confirm the disk with Get-Disk, not Explorer.
+
+## Download Drive golden v0.2 ISO
+
+Same Google Drive folder. File: `stickllm-amd-rtx3090-v0.2.hybrid.iso`
 
 ```powershell
 (Get-FileHash .\stickllm-amd-rtx3090-v0.2.hybrid.iso -Algorithm SHA256).Hash
 # expect 4914087D502D13327DBBD9196C9A4A7DF46EE079D423FF4B0BC6280E1C7B1A48
 ```
 
-## Restore the Local checkpoint
-
-```text
-ISO:      out/v0.2.1-local-nvidia-kbd/stickllm-amd-rtx3090-v0.2-local-nvidia-kbd.hybrid.iso
-Checksum: checksums/v0.2-local-nvidia-kbd.sha256
-          (same digest as out/v0.2.1-local-nvidia-kbd/v0.2-local-nvidia-kbd.sha256)
-Tag:      git checkout v0.2.1-local-nvidia-kbd
-```
-
-```powershell
-(Get-FileHash .\out\v0.2.1-local-nvidia-kbd\stickllm-amd-rtx3090-v0.2-local-nvidia-kbd.hybrid.iso -Algorithm SHA256).Hash
-# expect 9F665ACAA0D60B9DE822781A3A3A3F56C6C4924536E677599C09DBC8D339A1FC
-```
-
-## Restore v0.3.0 (N)
+## Restore N-1 (v0.3.0)
 
 ```text
 ISO:      out/v0.3.0/stickllm-amd-rtx3090-v0.3-apiready.hybrid.iso
@@ -71,13 +72,11 @@ Tag:      git checkout v0.3.0
 # expect F3DB91133AE6FD1CAACAFD385A61DA6949064F32AC60045378BE4D69441FC218
 ```
 
-## v0.3.0 notes
+## v0.3.6 notes
 
-- ISO: `out/v0.3.0/stickllm-amd-rtx3090-v0.3-apiready.hybrid.iso` + [`checksums/v0.3.sha256`](checksums/v0.3.sha256) (`f3db9113…`) — **does not** overwrite Drive golden v0.2.
-- llama binds **127.0.0.1:8080** only; CPU fallback when no NVIDIA; external OpenAI LAN API removed (StickLLM UI only).
-- SSH: random per-boot password; pairing rate-limit/expiry/CSP; WiFi SSID UI; model delete; kiosk packages in live-build list.
-- HW: RTX 3090 desktop + Asus laptop (no NVIDIA); Local WiFi OK; CPU path OK.
-- See [ISSUES.md](ISSUES.md) / [FEATURES.md](FEATURES.md) for what landed vs deferred.
+- Encrypted SSD vault (file blob only; Find/Open existing after reflash); ISO integrity check before ship; Windows safe-flash path documented.
+- llama binds **127.0.0.1:8080** only; CUDA → Vulkan → CPU backends; StickLLM UI only (no external OpenAI LAN API).
+- **Does not** overwrite Drive golden v0.2. See [ISSUES.md](ISSUES.md) / [FEATURES.md](FEATURES.md).
 
 ## Threat model (summary)
 
@@ -123,6 +122,10 @@ stickllm/
 ./scripts/build.sh                   # produces a hybrid ISO under out/
 ```
 
+**Dev loop:** feature branch → SSH-test on a running stick → one clean ISO when
+the batch is done (never patch ISO) → user HW confirm before tag/push.
+See [docs/DEV-WORKFLOW.md](docs/DEV-WORKFLOW.md).
+
 Build: [docs/BUILD.md](docs/BUILD.md) · Flash: [docs/FLASH.md](docs/FLASH.md) ·
 Boot: [docs/BOOT.md](docs/BOOT.md) · Hardware: [docs/HARDWARE.md](docs/HARDWARE.md) ·
 Models: [docs/MODELS.md](docs/MODELS.md)
@@ -133,10 +136,19 @@ Set the PC firmware to **boot the USB first** (see [docs/BOOT.md](docs/BOOT.md))
 
 | Entry | What you get |
 |---|---|
-| **1 StickLLM Server** | Console READY + pair code; phone/LAN browser chat over **HTTP**. |
-| **2 StickLLM Local** | Same-box **cage + Chromium** on the NVIDIA HDMI path (checkpoint). Keyboard via DRM + libinput. Loopback UI; no pair on this box. |
-| **3 StickLLM Term** | Console login or `ssh user@<ip>` (password `stickllm`) — `nvidia-smi`, etc. |
-| **4 StickLLM Failsafe** | No NVIDIA — recover from GPU/black-screen hangs (Term/SSH only). |
+| **1 Server / Local** | On-stick browser (when display present) + LAN UI. Loopback needs no pair; phone/LAN uses pair code. Status banner shows pair / IP / model / URL. |
+| **2 Secure Client** | Coming later (menu stub). |
+| **3 Terminal** | Console (tty2) or SSH — diagnose, `stickllm-wifi-setup`, `nvidia-smi`. SSH password is **random per boot** (shown on console). |
+| **4 Test** | Server / Local UI + SSH (`stickllm.chat stickllm.ssh`). Same random SSH password on READY. |
+
+### WiFi (Server / Term / Local)
+
+| Situation | What to do |
+|---|---|
+| Stick already has LAN (Ethernet or saved WiFi) | Browser → **Settings → Network** (after Pair on Server/Term; Local needs no pair) |
+| Server/Term with **no** uplink (no Ethernet) | `Ctrl+Alt+F2` → login `user` / `stickllm` → run **`stickllm-wifi-setup`** (scan + password). Same NM profile as the web form. |
+| Alternate bootstrap | Boot **Local** once, connect WiFi (saves on DATA when claimed), reboot into Server; or plug Ethernet once, then Settings → Network |
+| Not yet | Temporary setup AP — Settings stub only |
 
 | Endpoint | Purpose |
 |---|---|
@@ -145,9 +157,9 @@ Set the PC firmware to **boot the USB first** (see [docs/BOOT.md](docs/BOOT.md))
 | `http://<lan-ip>/v1/chat/completions` | OpenAI-compatible API (gateway; pair Bearer required). **Present on current flash; deprecated — going away next version** (ISS-004: StickLLM UI only; no external clients). |
 | `http://<lan-ip>:8080/v1/*` | Raw llama.cpp (no pair auth; no web lookup). Not a supported product surface for apps. |
 
-After pairing, **Models → API key** shows the session token until reboot (naming/UX: ISS-003; third-party API story ends next version per ISS-004).
+**Models** = catalog / download / activate / delete. **Settings** = Network/WiFi, claim USB, future stubs (context, SSD vault). Local hides the Pair button.
 
-Helpers on PATH: `stickllm-status`, `stickllm-persist`, `stickllm-download-model`, `stickllm-local-chat`.
+Helpers on PATH: `stickllm-status`, `stickllm-persist`, `stickllm-download-model`, `stickllm-local-chat`, `stickllm-wifi-setup`, `stickllm-wifi-apply`.
 
 ### Local (NVIDIA) notes — checkpoint
 
@@ -159,9 +171,9 @@ Working on RTX 3090 HDMI with tag `v0.2.1-local-nvidia-kbd`:
 
 ## Working today (checkpoint)
 
-- Boot menu: Local / Server / Term (+ Failsafe)
-- Pair code → browser chat + Models menu; session token shown as API key (third-party OpenAI LAN API deprecated — removed next version, ISS-004)
-- Term/Server LAN READY + pair + URL
+- Boot menu: Server / Local, Secure Client, Terminal, Test
+- Pair code → browser chat (Local: no pair chrome); Models + Settings menus
+- Term/Server LAN READY + pair + URL; console `stickllm-wifi-setup` when no uplink
 - Local cage + Chromium + keyboard on NVIDIA DRM
 - USB DATA claim; catalog downloads (27B → DATA when pinned/space allows)
 - Ephemeral by default

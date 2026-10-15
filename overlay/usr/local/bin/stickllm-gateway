@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -24,9 +25,16 @@ UA = "StickLLM/0.3 (+local privacy USB; StickLLM UI only)"
 RUN_DIR = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 AUTH_PATH = RUN_DIR / "auth.json"
 PAIR_RATE_PATH = RUN_DIR / "pair-rate.json"
+REMINT_RATE_PATH = RUN_DIR / "remint-rate.json"
+PAIR_REMINT_PATH = RUN_DIR / "pair-remint.json"
+SESSION_MODE_PATH = RUN_DIR / "session-mode.json"
 PAIR_MAX_ATTEMPTS = 8
 PAIR_WINDOW_SECS = 300
 PAIR_CODE_TTL_SECS = 900
+REMINT_MAX = 10
+REMINT_WINDOW_SECS = 300
+# Storage session mode (header dropdown) — not boot/kiosk profile in stickllm.json.
+SESSION_MODES = frozenset({"ephemeral", "vault"})
 CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
@@ -89,6 +97,168 @@ def token_ok(header: str | None, doc: dict) -> bool:
     return hmac.compare_digest(th, stored)
 
 
+
+def read_text_safe(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _parse_env_kv(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def resolve_model() -> tuple[str, str]:
+    """Return (display_name, model_path) from Activate model.env or live llama breadcrumb."""
+    model_name = ""
+    model_path = ""
+    envf = RUN_DIR / "model.env"
+    if envf.is_file():
+        kv = _parse_env_kv(read_text_safe(envf))
+        model_name = kv.get("STICKLLM_MODEL_NAME") or ""
+        model_path = kv.get("STICKLLM_MODEL") or ""
+    if not model_path:
+        rt = RUN_DIR / "llama-runtime.env"
+        if rt.is_file():
+            kv = _parse_env_kv(read_text_safe(rt))
+            model_path = kv.get("model") or kv.get("STICKLLM_MODEL") or ""
+    if not model_name and model_path:
+        model_name = Path(model_path).name
+    return model_name, model_path
+
+
+def detect_backend() -> str:
+    for name in ("llama-runtime.env", "cuda.env"):
+        text = read_text_safe(RUN_DIR / name)
+        if not text:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("backend="):
+                b = line.split("=", 1)[1].strip().lower()
+                if b in ("cuda", "vulkan", "cpu"):
+                    return b
+            if line.startswith("STICKLLM_BACKEND="):
+                b = line.split("=", 1)[1].strip().lower()
+                if b in ("cuda", "vulkan", "cpu"):
+                    return b
+    return "cpu"
+
+
+def discover_lan_ip() -> str:
+    """Fresh LAN IPv4 for connect banner; refresh lan-ip.txt after late WiFi DHCP."""
+    probed = ""
+    helper = Path("/usr/local/bin/stickllm-lan-ip")
+    if helper.is_file():
+        try:
+            r = subprocess.run(
+                [str(helper)],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            probed = (r.stdout or "").strip().splitlines()[0].strip() if r.stdout else ""
+        except (OSError, subprocess.SubprocessError, IndexError):
+            probed = ""
+    cached = read_text_safe(RUN_DIR / "lan-ip.txt")
+    ip = probed or cached
+    if probed and probed != cached:
+        try:
+            RUN_DIR.mkdir(parents=True, exist_ok=True)
+            (RUN_DIR / "lan-ip.txt").write_text(probed + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    return ip
+
+
+def ssh_enabled() -> bool:
+    """True when boot menu enabled SSH (Term/Test) — never invent a password."""
+    try:
+        cmdline = Path("/proc/cmdline").read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        cmdline = ""
+    if "stickllm.ssh" in cmdline.split():
+        return True
+    return (RUN_DIR / "ssh-password.txt").is_file()
+
+
+def ssh_password_for_loopback() -> dict:
+    """SSH credentials for on-stick UI only. Never include in LAN responses."""
+    if not ssh_enabled():
+        return {"ssh_enabled": False}
+    passwd = read_text_safe(RUN_DIR / "ssh-password.txt").strip()
+    ip = discover_lan_ip()
+    out = {
+        "ssh_enabled": True,
+        "ssh_user": "stickllm",
+        "ssh_host": ip or "127.0.0.1",
+        "ssh_note": "Random per boot. Shown only on this stick (loopback). Not sent to LAN clients.",
+    }
+    if passwd:
+        out["ssh_password"] = passwd
+    return out
+
+
+def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
+    """IP / model / URL (+ pair code / SSH password on loopback only)."""
+    ip = discover_lan_ip()
+    model_name, model_path = resolve_model()
+    if not model_name:
+        # No Activate yet — do not imply a boot-time load is in progress.
+        model_name = "ready" if llama_ok else "none"
+    elif model_name.lower().startswith("loading") and llama_ok:
+        model_name = Path(model_path).name if model_path else "ready"
+    scheme = "https" if (RUN_DIR / "tls.enabled").is_file() else "http"
+    url = f"{scheme}://{ip}/" if ip else f"{scheme}://<lan-ip>/"
+    local_url = "http://127.0.0.1/"
+    out: dict = {
+        "ip": ip or "",
+        "model": model_name,
+        "model_path": model_path,
+        "url": url,
+        "local_url": local_url,
+        "backend": detect_backend(),
+    }
+    if loopback:
+        out["how"] = (
+            f"This screen: {local_url} (no pair). "
+            f"Phone/LAN: {url} + PAIR CODE below."
+        )
+        code = read_text_safe(RUN_DIR / "pair-code.txt")
+        auth = load_auth()
+        if auth.get("paired"):
+            out["pair_code"] = "(paired — Pair remints)"
+            out["pair_state"] = "paired"
+        elif code:
+            out["pair_code"] = code
+            out["pair_state"] = "code"
+        else:
+            out["pair_code"] = "(starting…)"
+            out["pair_state"] = "waiting"
+        remint = read_json_safe(PAIR_REMINT_PATH) or {}
+        rid = str(remint.get("id") or "").strip()
+        if rid:
+            out["remint_id"] = rid
+        # Test/Term: surface SSH password in Settings on the stick only.
+        out.update(ssh_password_for_loopback())
+    else:
+        out["how"] = f"Open {url} and enter the PAIR CODE from the stick screen."
+        # Explicitly omit credentials on LAN (even for paired browsers).
+        out["ssh_enabled"] = ssh_enabled()
+        out["ssh_password"] = None
+        out["ssh_note"] = "SSH password is only shown on the stick screen / Settings (loopback)."
+    return out
+
+
 def stickllm_ui_client(headers) -> bool:
     """StickLLM web UI only — external OpenAI clients are rejected (ISS-004)."""
     marker = (headers.get("X-StickLLM-Client") or "").strip().lower()
@@ -96,6 +266,194 @@ def stickllm_ui_client(headers) -> bool:
         return True
     # Loopback Local chat may omit the header; still StickLLM-controlled.
     return False
+
+
+def read_json_safe(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def get_session_mode() -> str:
+    """Default boot: ephemeral — no SSD/vault writes until user selects Vault."""
+    doc = read_json_safe(SESSION_MODE_PATH) or {}
+    mode = str(doc.get("mode") or "ephemeral").strip().lower()
+    return mode if mode in SESSION_MODES else "ephemeral"
+
+
+def set_session_mode(mode: str) -> dict:
+    mode = str(mode or "").strip().lower()
+    if mode not in SESSION_MODES:
+        return {"ok": False, "error": "mode must be ephemeral or vault"}
+    prev = get_session_mode()
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "mode": mode,
+        "updated": int(time.time()),
+        "note": (
+            "Vault mode: models may use clear SSD folder; chats/settings only in LUKS blob."
+            if mode == "vault"
+            else "Ephemeral: do not write to SSD/vault; RAM/USB-DATA only as before."
+        ),
+    }
+    # Ephemeral → unload model then lock/unmount LUKS. Mode write still succeeds;
+    # report lock errors so UI can surface them.
+    if mode == "ephemeral" and (prev == "vault" or vault_unlocked()):
+        try:
+            subprocess.run(
+                ["systemctl", "stop", "stickllm-llama.service"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            p = subprocess.run(
+                ["/usr/local/bin/stickllm-vault", "lock"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            doc["vault_locked"] = p.returncode == 0
+            if p.returncode != 0:
+                doc["vault_lock_error"] = (p.stderr or p.stdout or "lock failed")[-500:]
+        except Exception as e:
+            doc["vault_locked"] = False
+            doc["vault_lock_error"] = str(e)[:300]
+    SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(SESSION_MODE_PATH, 0o644)
+    except Exception:
+        pass
+    return {"ok": True, **doc}
+
+
+VAULT_MNT = Path(os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault"))
+CHATS_DIR = VAULT_MNT / "chats"
+
+
+def vault_unlocked() -> bool:
+    """True when the LUKS vault is mounted in *this* process mount namespace."""
+    try:
+        if os.path.ismount(str(VAULT_MNT)):
+            return True
+    except Exception:
+        pass
+    # Fallback: ismount can lag behind /proc after late mounts into ProtectSystem NS.
+    try:
+        mnt = str(VAULT_MNT)
+        with open("/proc/self/mounts", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == mnt:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def chats_available() -> tuple[bool, str]:
+    if get_session_mode() != "vault":
+        return False, "switch Mode to Vault to save chats (ephemeral never writes chats to disk)"
+    if not vault_unlocked():
+        return False, "vault locked — unlock in Settings → Storage first"
+    return True, ""
+
+
+def list_vault_chats() -> dict:
+    ok, err = chats_available()
+    if not ok:
+        return {"ok": False, "error": err, "chats": []}
+    out = []
+    for p in sorted(CHATS_DIR.glob("*.json")):
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        out.append(
+            {
+                "id": doc.get("id") or p.stem,
+                "title": doc.get("title") or p.stem,
+                "updated": doc.get("updated") or int(p.stat().st_mtime),
+                "messages": len(doc.get("messages") or []),
+            }
+        )
+    out.sort(key=lambda x: int(x.get("updated") or 0), reverse=True)
+    return {"ok": True, "chats": out}
+
+
+def load_vault_chat(chat_id: str) -> dict:
+    ok, err = chats_available()
+    if not ok:
+        return {"ok": False, "error": err}
+    cid = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
+    if not cid:
+        return {"ok": False, "error": "id required"}
+    path = CHATS_DIR / f"{cid}.json"
+    if not path.is_file():
+        return {"ok": False, "error": "not found"}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["ok"] = True
+        return doc
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def save_vault_chat(title: str, messages: list, chat_id: str | None = None) -> dict:
+    ok, err = chats_available()
+    if not ok:
+        return {"ok": False, "error": err}
+    # Never write chats outside the vault mount (encrypted blob only).
+    if not str(CHATS_DIR).startswith(str(VAULT_MNT)):
+        return {"ok": False, "error": "refuse: chats path outside vault"}
+    if not os.path.ismount(str(VAULT_MNT)):
+        return {"ok": False, "error": "vault not mounted — refuse plaintext chat write"}
+    CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(CHATS_DIR, 0o700)
+    except Exception:
+        pass
+    cid = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
+    if not cid:
+        cid = secrets.token_hex(8)
+    # Strip system prompt noise optional — store user/assistant only + keep system if present
+    clean = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "")
+        content = str(m.get("content") or "")
+        if role in ("user", "assistant", "system") and content:
+            clean.append({"role": role, "content": content[:100_000]})
+    title = (title or "Chat").strip()[:120] or "Chat"
+    doc = {
+        "id": cid,
+        "title": title,
+        "updated": int(time.time()),
+        "messages": clean,
+    }
+    path = CHATS_DIR / f"{cid}.json"
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+    return {"ok": True, "id": cid, "title": title, "updated": doc["updated"]}
+
+
+def delete_vault_chat(chat_id: str) -> dict:
+    ok, err = chats_available()
+    if not ok:
+        return {"ok": False, "error": err}
+    cid = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
+    if not cid:
+        return {"ok": False, "error": "id required"}
+    path = CHATS_DIR / f"{cid}.json"
+    if path.is_file():
+        path.unlink()
+    return {"ok": True, "deleted": cid}
 
 
 def pair_rate_load() -> dict:
@@ -149,6 +507,96 @@ def code_expired(auth: dict) -> bool:
     if created <= 0:
         return False
     return (time.time() - created) > PAIR_CODE_TTL_SECS
+
+
+def note_pair_remint(code: str) -> str:
+    """Record remint so the on-stick chat UI can announce the new code."""
+    rid = secrets.token_hex(8)
+    doc = {"id": rid, "code": code, "at": int(time.time())}
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        PAIR_REMINT_PATH.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+        os.chmod(PAIR_REMINT_PATH, 0o644)
+    except Exception:
+        pass
+    return rid
+
+
+def remint_rate_blocked() -> tuple[bool, str]:
+    try:
+        doc = json.loads(REMINT_RATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        doc = {"at": []}
+    now = time.time()
+    recent = [t for t in doc.get("at") or [] if now - float(t) < REMINT_WINDOW_SECS]
+    if len(recent) >= REMINT_MAX:
+        oldest = min(recent) if recent else now
+        wait = max(1, int(REMINT_WINDOW_SECS - (now - oldest)))
+        return True, f"Too many pair remints — wait {wait}s"
+    return False, ""
+
+
+def remint_rate_mark() -> None:
+    try:
+        doc = json.loads(REMINT_RATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        doc = {"at": []}
+    now = time.time()
+    recent = [t for t in doc.get("at") or [] if now - float(t) < REMINT_WINDOW_SECS]
+    recent.append(now)
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        REMINT_RATE_PATH.write_text(json.dumps({"at": recent}) + "\n", encoding="utf-8")
+        os.chmod(REMINT_RATE_PATH, 0o600)
+    except Exception:
+        pass
+
+
+def remint_pair_code() -> tuple[str, str]:
+    """Invalidate any paired LAN session and mint a fresh pair code.
+
+    Returns (code, remint_id). remint_id is for the stick chat to announce.
+    """
+    code = ""
+    pair_bin = Path("/usr/local/bin/stickllm-pair")
+    if pair_bin.is_file():
+        try:
+            out = subprocess.check_output(
+                [str(pair_bin), "--force"],
+                text=True,
+                timeout=10,
+                env={**os.environ, "STICKLLM_RUN": str(RUN_DIR)},
+            )
+            code = (out.strip().splitlines() or [""])[-1].strip()
+            if not re.fullmatch(r"[0-9]{4,8}", code):
+                code = ""
+        except Exception:
+            code = ""
+    if not code:
+        # Inline fallback (same shape as stickllm-pair --force).
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        doc = {
+            "version": 2,
+            "created": int(time.time()),
+            "code_hash": hashlib.sha256(code.encode()).hexdigest(),
+            "token_hash": "",
+            "paired": False,
+            "require_pair": True,
+        }
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        save_auth(doc)
+        (RUN_DIR / "pair-code.txt").write_text(code + "\n", encoding="utf-8")
+        try:
+            os.chmod(RUN_DIR / "pair-code.txt", 0o644)
+        except Exception:
+            pass
+        for stale in ("api-key.txt", "pair-rate.json"):
+            try:
+                (RUN_DIR / stale).unlink(missing_ok=True)
+            except Exception:
+                pass
+    rid = note_pair_remint(code)
+    return code, rid
 
 
 def uplink_ok() -> bool:
@@ -340,7 +788,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path in ("/health", "/api/health"):
             auth = load_auth()
-            local_mode = self._is_loopback() or (RUN_DIR / "local-mode").is_file()
+            # Pair skip is loopback-only; Chat serves LAN with pair.
+            local_mode = self._is_loopback()
             if local_mode:
                 pair = {"require_pair": False, "paired": True, "local": True}
             else:
@@ -361,16 +810,21 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 llama = {"status": "down", "error": friendly_llama_error(e)}
             online = uplink_ok()
+            backend = detect_backend()
+            session_mode = get_session_mode()
             data = {
                 "gateway": "ok",
                 "web": online,
                 "online": online,
-                "version": "0.3",
+                "version": "0.3.2",
                 "bind": f"{HOST}:{PORT}",
                 "llama": llama,
                 "llama_ok": llama_ok,
+                "backend": backend,
                 "pair": pair,
                 "external_api": False,
+                "session_mode": session_mode,
+                "connect": connect_info(self._is_loopback(), llama_ok=llama_ok),
             }
             if path == "/api/health":
                 self._json(200, data)
@@ -384,7 +838,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/pair/status":
             auth = load_auth()
-            local_mode = self._is_loopback() or (RUN_DIR / "local-mode").is_file()
+            # Pair skip is loopback-only; Chat serves LAN with pair.
+            local_mode = self._is_loopback()
             if local_mode:
                 self._json(
                     200,
@@ -392,7 +847,8 @@ class Handler(SimpleHTTPRequestHandler):
                         "require_pair": False,
                         "paired": True,
                         "local": True,
-                        "hint": "Local mode — chat on this PC, no pair code.",
+                        "hint": "On-stick browser — no pair for this screen. LAN clients still pair.",
+                        "session_mode": get_session_mode(),
                     },
                 )
                 return
@@ -401,8 +857,36 @@ class Handler(SimpleHTTPRequestHandler):
                 {
                     "require_pair": bool(auth.get("require_pair", True)),
                     "paired": bool(auth.get("paired")),
+                    "session_mode": get_session_mode(),
                 },
             )
+            return
+        if path == "/api/session-mode":
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "mode": get_session_mode(),
+                    "modes": sorted(SESSION_MODES),
+                    "default": "ephemeral",
+                    "vault_unlocked": vault_unlocked(),
+                },
+            )
+            return
+        if path == "/api/chats":
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required"})
+                return
+            self._json(200, list_vault_chats())
+            return
+        if path.startswith("/api/chats/"):
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required"})
+                return
+            cid = path.rsplit("/", 1)[-1]
+            self._json(200, load_vault_chat(cid))
             return
         if path in ("/api/storage", "/api/models/status"):
             doc, ok = self._auth()
@@ -437,6 +921,80 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(400, {"error": "bad json"})
             return
 
+        if path == "/api/session-mode":
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"error": "ui_only", "message": "Session mode is StickLLM UI only."})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok and not self._is_loopback():
+                self._json(401, {"error": "pair_required"})
+                return
+            result = set_session_mode(str(req.get("mode") or ""))
+            code = 200 if result.get("ok") else 400
+            self._json(code, result)
+            return
+
+        if path == "/api/chats":
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"error": "ui_only"})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required"})
+                return
+            if req.get("delete"):
+                result = delete_vault_chat(str(req.get("id") or ""))
+                self._json(200 if result.get("ok") else 400, result)
+                return
+            result = save_vault_chat(
+                str(req.get("title") or ""),
+                list(req.get("messages") or []),
+                str(req.get("id") or "") or None,
+            )
+            self._json(200 if result.get("ok") else 400, result)
+            return
+
+        if path == "/api/pair/remint":
+            # StickLLM UI only (stick or LAN). Code itself is never returned over LAN —
+            # the stick/kiosk chat announces it via remint_id + pair banner.
+            if not stickllm_ui_client(self.headers):
+                self._json(
+                    403,
+                    {
+                        "error": "ui_only",
+                        "message": "Pair remint is only available from the StickLLM UI.",
+                    },
+                )
+                return
+            blocked, reason = remint_rate_blocked()
+            if blocked:
+                self._json(429, {"error": "rate_limited", "message": reason})
+                return
+            try:
+                code, remint_id = remint_pair_code()
+            except Exception as e:
+                self._json(500, {"error": "remint_failed", "message": str(e)})
+                return
+            remint_rate_mark()
+            body: dict = {
+                "ok": True,
+                "remint_id": remint_id,
+                "message": (
+                    "Unpaired LAN browsers and minted a new pair code. "
+                    "Read the code on the stick screen chat, then enter it here."
+                    if not self._is_loopback()
+                    else (
+                        "Unpaired LAN browsers and minted a new pair code. "
+                        "Enter it on phone/desktop at the LAN URL."
+                    )
+                ),
+            }
+            # Plaintext code only on the stick itself (same as banner / chat).
+            if self._is_loopback():
+                body["pair_code"] = code
+            self._json(200, body)
+            return
+
         if path == "/api/pair":
             blocked, reason = pair_rate_blocked()
             if blocked:
@@ -447,7 +1005,14 @@ class Handler(SimpleHTTPRequestHandler):
             if not auth.get("code_hash"):
                 self._json(503, {"error": "pairing not initialized — reboot stick"})
                 return
-            if code_expired(auth):
+            expect = str(auth.get("code_hash") or "")
+            got = hashlib.sha256(code.encode()).hexdigest()
+            # Accept the code currently shown on the stick even after TTL.
+            # TTL only drives remint (stickllm-pair / bootstatus); rejecting a
+            # still-displayed matching code caused "expired" while the HDMI code worked.
+            if expect and hmac.compare_digest(got, expect):
+                pass
+            elif code_expired(auth):
                 pair_rate_fail()
                 self._json(
                     403,
@@ -457,9 +1022,7 @@ class Handler(SimpleHTTPRequestHandler):
                     },
                 )
                 return
-            expect = str(auth.get("code_hash") or "")
-            got = hashlib.sha256(code.encode()).hexdigest()
-            if not expect or not hmac.compare_digest(got, expect):
+            elif not expect or not hmac.compare_digest(got, expect):
                 pair_rate_fail()
                 self._json(403, {"error": "bad_code", "message": "Wrong code — check the stick screen."})
                 return
@@ -591,13 +1154,6 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(e.code, {"error": friendly_llama_error(e)})
         except Exception as e:
             self._json(502, {"error": friendly_llama_error(e)})
-
-
-def read_json_safe(path: Path) -> dict | None:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
 
 
 def main() -> int:

@@ -1,0 +1,77 @@
+#!/bin/bash
+# Resolve the stick's primary LAN IPv4 and keep /run/stickllm/lan-ip.txt fresh.
+# Used by bootstatus, wifi-setup, kiosk, status, and the gateway connect banner.
+set -euo pipefail
+
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+WAIT=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --wait)
+      WAIT="${2:-30}"
+      shift 2
+      ;;
+    --wait=*)
+      WAIT="${1#*=}"
+      shift
+      ;;
+    -h|--help)
+      printf '%s\n' "usage: stickllm-lan-ip [--wait SECS]"
+      exit 0
+      ;;
+    *)
+      printf '%s\n' "unknown arg: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+detect() {
+  local ip=""
+  # Prefer global IPv4 on a real NIC (skip lo + link-local).
+  ip="$(ip -4 -o addr show scope global 2>/dev/null \
+    | awk '!/[[:space:]]lo[[:space:]]/ && $4 !~ /^169\.254\./ {print $4; exit}' \
+    | cut -d/ -f1)"
+  if [[ -z "$ip" ]]; then
+    ip="$(hostname -I 2>/dev/null \
+      | awk '{
+          for (i = 1; i <= NF; i++)
+            if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ \
+                && $i !~ /^127\./ && $i !~ /^169\.254\./) {
+              print $i; exit
+            }
+        }')"
+  fi
+  if [[ -z "$ip" ]]; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null \
+      | awk '/src/ {for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}')"
+    case "${ip:-}" in
+      127.*|169.254.*) ip="" ;;
+    esac
+  fi
+  printf '%s' "${ip:-}"
+}
+
+publish() {
+  local ip="$1"
+  mkdir -p "$RUN" 2>/dev/null || true
+  [[ -n "$ip" ]] || return 0
+  printf '%s\n' "$ip" >"$RUN/lan-ip.txt" 2>/dev/null || true
+}
+
+deadline=$((SECONDS + WAIT))
+while true; do
+  ip="$(detect)"
+  if [[ -n "$ip" ]]; then
+    publish "$ip"
+    printf '%s\n' "$ip"
+    exit 0
+  fi
+  if [[ "$WAIT" -le 0 || SECONDS -ge deadline ]]; then
+    break
+  fi
+  sleep 1
+done
+
+exit 1

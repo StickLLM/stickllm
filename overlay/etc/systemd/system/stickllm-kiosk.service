@@ -2,9 +2,10 @@
 Description=StickLLM Local WebUI kiosk (Wayland browser on tty1)
 ConditionKernelCommandLine=|stickllm.kiosk
 ConditionKernelCommandLine=|stickllm.local
+ConditionKernelCommandLine=|stickllm.chat
 ConditionPathExists=/run/stickllm/allow-local-chat
-After=stickllm-bootstatus.service stickllm-console-setup.service stickllm-ui.service seatd.service stickllm-llama.service
-Wants=stickllm-ui.service stickllm-llama.service seatd.service
+After=stickllm-bootstatus.service stickllm-console-setup.service stickllm-ui.service seatd.service
+Wants=stickllm-ui.service seatd.service
 Conflicts=getty@tty1.service stickllm-local.service
 StartLimitIntervalSec=600
 StartLimitBurst=8
@@ -14,7 +15,9 @@ Type=simple
 # Breadcrumb even if script fails to parse — proves unit started.
 ExecStartPre=/usr/bin/mkdir -p /run/stickllm/kiosk-profile /run/user/0
 ExecStartPre=/bin/sh -c 'printf "STICKLLM_KIOSK_UNIT_START\n" >/dev/ttyS0 2>/dev/null; printf "STICKLLM_KIOSK_UNIT_START\n" >>/run/stickllm/kiosk.log 2>/dev/null; true'
-ExecStart=/usr/local/bin/stickllm-kiosk
+# Windows checkout can ship CRLF shebangs → execve 127; strip before launch.
+ExecStartPre=/bin/sh -c 'sed -i "s/\\r$//" /usr/local/bin/stickllm-kiosk 2>/dev/null; true'
+ExecStart=/bin/bash /usr/local/bin/stickllm-kiosk
 Restart=on-failure
 RestartSec=20
 StandardInput=tty

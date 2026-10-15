@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -12,35 +13,25 @@ from pathlib import Path
 
 RUN = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 AUTH = RUN / "auth.json"
+CODE_PATH = RUN / "pair-code.txt"
 CODE_TTL = 900
+CODE_RE = re.compile(r"^[0-9]{4,8}$")
 
 
-def main() -> int:
-    RUN.mkdir(parents=True, exist_ok=True)
-    code_path = RUN / "pair-code.txt"
-    force = "--force" in sys.argv or os.environ.get("STICKLLM_PAIR_FORCE") == "1"
+def _read_code() -> str:
+    try:
+        raw = CODE_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    return raw.replace("\r", "").strip()
 
-    if not force and AUTH.is_file():
-        try:
-            doc = json.loads(AUTH.read_text(encoding="utf-8"))
-            if doc.get("paired") and doc.get("token_hash"):
-                print("PAIRED", flush=True)
-                return 0
-        except Exception:
-            pass
 
-    if not force and AUTH.is_file() and code_path.is_file():
-        try:
-            doc = json.loads(AUTH.read_text(encoding="utf-8"))
-            code = code_path.read_text(encoding="utf-8").strip()
-            created = int(doc.get("created") or 0)
-            fresh = created <= 0 or (time.time() - created) < CODE_TTL
-            if code and not doc.get("paired") and fresh:
-                print(code)
-                return 0
-        except Exception:
-            pass
+def _write_code(code: str) -> None:
+    CODE_PATH.write_text(code + "\n", encoding="utf-8")
+    os.chmod(CODE_PATH, 0o644)
 
+
+def _mint() -> str:
     code = f"{secrets.randbelow(1_000_000):06d}"
     code_hash = hashlib.sha256(code.encode()).hexdigest()
     # Hashes only on disk — session token is minted at successful pair (ISS-009).
@@ -54,14 +45,43 @@ def main() -> int:
     }
     AUTH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     os.chmod(AUTH, 0o600)
-    code_path.write_text(code + "\n", encoding="utf-8")
-    os.chmod(code_path, 0o644)
+    _write_code(code)
     for stale in ("api-key.txt", "pair-rate.json"):
         try:
             (RUN / stale).unlink(missing_ok=True)
         except Exception:
             pass
-    print(code)
+    return code
+
+
+def main() -> int:
+    RUN.mkdir(parents=True, exist_ok=True)
+    force = "--force" in sys.argv or os.environ.get("STICKLLM_PAIR_FORCE") == "1"
+
+    if not force and AUTH.is_file():
+        try:
+            doc = json.loads(AUTH.read_text(encoding="utf-8"))
+            if doc.get("paired") and doc.get("token_hash"):
+                # Never write "PAIRED" into pair-code.txt (broke console display).
+                print("PAIRED", flush=True)
+                return 0
+        except Exception:
+            pass
+
+    if not force and AUTH.is_file() and CODE_PATH.is_file():
+        try:
+            doc = json.loads(AUTH.read_text(encoding="utf-8"))
+            code = _read_code()
+            created = int(doc.get("created") or 0)
+            fresh = created <= 0 or (time.time() - created) < CODE_TTL
+            if CODE_RE.match(code) and not doc.get("paired") and fresh:
+                print(code, flush=True)
+                return 0
+        except Exception:
+            pass
+
+    code = _mint()
+    print(code, flush=True)
     return 0
 
 

@@ -164,13 +164,11 @@ pick_console_drm() {
   return 1
 }
 
-# Prefer DRM card with a connected connector.
-# Pragmatic order for now:
+# Prefer DRM card with a connected connector → exported as WLR_DRM_DEVICES.
+# Order:
 #   1) connected AMD/Intel iGPU
 #   2) connected NVIDIA (monitor on dGPU / 3090 HDMI — needs nvidia-drm modeset=1)
 #   3) virtio (QEMU), console DRM, simpledrm fallbacks
-# TODO(future): single helper that returns the card owning the first
-# status=connected connector (any vendor), then preference only as tie-break.
 pick_display_drm() {
   local card driver path conn status
   local connected_igpu="" best_igpu="" connected_virtio="" best_virtio=""
@@ -756,34 +754,61 @@ try_launch() {
 }
 
 hold_error() {
-  local reason="$1"
+  local reason="${1:-unknown}"
   restore_display_console "hold_error"
   printf '\033c' >"$TTY" 2>/dev/null || true
   paint "========================================"
-  paint "  StickLLM LOCAL — browser failed"
+  if grep -Eqw 'stickllm\.chat' /proc/cmdline 2>/dev/null; then
+    paint "  StickLLM Chat - browser deferred"
+  else
+    paint "  StickLLM LOCAL - browser failed"
+  fi
   paint "========================================"
   paint ""
   paint "  $reason"
   paint "  Target: $URL"
-  paint "  Diag:   $FAIL_LOG"
-  paint "  Reboot menu 3 (Term) then:"
-  paint "    cat /run/stickllm/kiosk-fail.log"
-  paint "  Retrying browser stack in 45s…"
+  if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+    _ip="$(/usr/local/bin/stickllm-lan-ip 2>/dev/null | tr -d '[:space:]' || true)"
+  else
+    _ip="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./){print $i; exit}}')"
+  fi
+  _pair="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
+  _model="$(tr -d '\r\n' <"$RUN/model-label.txt" 2>/dev/null || true)"
+  [[ -n "$_model" ]] || _model="(loading / see Models)"
+  paint "  Model:     $_model"
+  if [[ -n "$_ip" ]]; then
+    paint "  >>> LAN IP:  $_ip"
+    paint "  How to:      http://${_ip}/  (phone/LAN - enter PAIR CODE)"
+  else
+    paint "  >>> LAN IP:  (waiting - Ethernet or stickllm-wifi-setup)"
+  fi
+  paint "  Local UI:  $URL  (this screen - no pair)"
+  if [[ -n "$_pair" && "$_pair" =~ ^[0-9]{4,8}$ ]]; then
+    paint "  +-------------------------+"
+    paint "  |  PAIR CODE:  $_pair     |"
+    paint "  +-------------------------+"
+  fi
+  paint "  Diag:      $FAIL_LOG"
+  paint "  Retrying browser stack in 45s..."
   paint ""
-  # Product is browser — do not exec tty chat. Exit non-zero so unit restarts ladder.
   sleep 45
   exit 1
 }
 
+
 # --- main ---
-if ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then
-  hold_error "not local/kiosk mode"
+# Chat (stickllm.chat) shares the on-stick browser; local/kiosk are aliases.
+CHAT_MODE=0
+if grep -Eqw 'stickllm\.chat' /proc/cmdline 2>/dev/null; then
+  CHAT_MODE=1
+elif ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then
+  hold_error "not chat/local/kiosk mode"
 fi
 
 mkdir -p "$RUN"
 prepare_kiosk_user
 touch "$RUN/local-mode"
-serial_note "STICKLLM_KIOSK_START fails=$(fail_count)"
+serial_note "STICKLLM_KIOSK_START chat=$CHAT_MODE fails=$(fail_count)"
 collect_drm_diag
 
 if ! command -v cage >/dev/null 2>&1 && ! command -v weston >/dev/null 2>&1; then
@@ -798,13 +823,52 @@ ensure_seatd || fail_note "STICKLLM_KIOSK_SEATD_WARN seatd not confirmed"
 
 printf '\033c' >"$TTY" 2>/dev/null || true
 paint "========================================"
-paint "  StickLLM LOCAL"
+if [[ "$CHAT_MODE" -eq 1 ]]; then
+  paint "  StickLLM Chat — starting browser"
+else
+  paint "  StickLLM LOCAL"
+fi
 paint "========================================"
 paint ""
 paint "  On-stick browser → $URL"
-paint "  (no pair code)"
+if [[ "$CHAT_MODE" -eq 1 ]]; then
+  # Keep LAN join info visible while the compositor comes up.
+  # Brief wait: WiFi DHCP may land just after READY handoff.
+  if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+    _ip="$(/usr/local/bin/stickllm-lan-ip --wait 8 2>/dev/null | tr -d '[:space:]' || true)"
+  else
+    _ip="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./){print $i; exit}}')"
+  fi
+  _pair="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
+  _model="$(tr -d '\r\n' <"$RUN/model-label.txt" 2>/dev/null || true)"
+  [[ -n "$_model" ]] || _model="(see Models in UI)"
+  paint "  Mode:     Chat (this screen + LAN)"
+  paint "  Model:    $_model"
+  if [[ -n "$_ip" ]]; then
+    paint "  >>> LAN IP:  $_ip"
+    paint "  Browser:     http://${_ip}/  (LAN needs PAIR CODE)"
+  else
+    paint "  >>> LAN IP:  (waiting - Ethernet or stickllm-wifi-setup)"
+  fi
+  [[ -n "$_pair" ]] && paint "  PAIR CODE: $_pair"
+  paint "  Local:    $URL  (this screen — no pair)"
+else
+  paint "  (no pair code)"
+fi
 paint ""
-
+# If an SSD vault blob is configured, offer unlock (skip → stay ephemeral).
+# Never formats disks; never unlocks host BitLocker/LUKS volumes.
+if [[ -x /usr/local/bin/stickllm-vault-boot ]]; then
+  /usr/local/bin/stickllm-vault-boot || true
+  if findmnt -n /var/lib/stickllm/vault >/dev/null 2>&1; then
+    printf '%s\n' '{"mode":"vault","note":"unlocked at boot"}' >"$RUN/session-mode.json" 2>/dev/null || true
+    serial_note "STICKLLM_VAULT_BOOT unlocked → session_mode=vault"
+    paint "  Vault: unlocked (Mode → Vault)"
+  else
+    serial_note "STICKLLM_VAULT_BOOT skipped_or_absent"
+  fi
+  paint ""
+fi
 paint "  Waiting for UI HTTP 200…"
 ui_ready=0
 code="000"

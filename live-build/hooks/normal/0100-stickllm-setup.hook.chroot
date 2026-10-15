@@ -15,9 +15,13 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-pair \
           /usr/local/bin/stickllm-llama-start \
           /usr/local/bin/stickllm-ssh-bootstrap \
+          /usr/local/bin/stickllm-lan-ip \
           /usr/local/bin/stickllm-wifi-apply \
+          /usr/local/bin/stickllm-wifi-setup \
           /usr/local/bin/stickllm-nvidia-prep \
-          /usr/local/bin/stickllm-pick-gpus || true
+          /usr/local/bin/stickllm-pick-gpus \
+          /usr/local/bin/stickllm-vault \
+          /usr/local/bin/stickllm-vault-boot || true
 
 # Force LF — CRLF in sudoers breaks ALL rules on the stick
 if [[ -f /etc/sudoers.d/stickllm ]]; then
@@ -83,7 +87,7 @@ if getent passwd user >/dev/null 2>&1; then
   passwd -l user 2>/dev/null || true
 fi
 
-# Do not auto-start SSH on every boot — only menu entry 3 (stickllm.ssh)
+# Do not auto-start SSH on every boot — only menu 3 Terminal / 4 Test (stickllm.ssh)
 systemctl disable ssh.service 2>/dev/null || true
 systemctl disable sshd.service 2>/dev/null || true
 
@@ -109,8 +113,9 @@ fi
 
 cat >/etc/motd <<'EOF'
 
-  StickLLM v0.3 — local Privacy AI (amd-rtx3090)
+  StickLLM v0.3.2 — local Privacy AI (amd-rtx3090)
   Ephemeral by default. Run: stickllm-status
+  No LAN?  stickllm-wifi-setup   (scan SSID + password; same profile as Settings → Network)
   SSH password (Term menu) is random per boot — see console /run/stickllm/ssh-password.txt
 
 EOF

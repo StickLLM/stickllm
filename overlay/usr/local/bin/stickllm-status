@@ -33,15 +33,28 @@ fi
 
 echo "llama:    $(systemctl is-active stickllm-llama.service 2>/dev/null || echo unknown)"
 echo "ui:       $(systemctl is-active stickllm-ui.service 2>/dev/null || echo unknown)"
+BACKEND="cpu"
+if [[ -f /run/stickllm/llama-runtime.env ]]; then
+  BACKEND="$(awk -F= '/^backend=/{print $2; exit}' /run/stickllm/llama-runtime.env 2>/dev/null || echo cpu)"
+elif [[ -f /run/stickllm/cuda.env ]]; then
+  BACKEND="$(awk -F= '/^STICKLLM_BACKEND=/{print $2; exit}' /run/stickllm/cuda.env 2>/dev/null || echo cpu)"
+fi
+echo "backend:  ${BACKEND}"
 echo
 
-IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+  IP="$(/usr/local/bin/stickllm-lan-ip 2>/dev/null | tr -d '[:space:]' || true)"
+else
+  IP="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./){print $i; exit}}')"
+fi
 if [[ -n "${IP:-}" ]]; then
+  echo "LAN IP:   ${IP}"
   echo "Chat UI:  http://${IP}/"
   echo "API:      http://${IP}/v1/chat/completions"
   echo "Auth:     Authorization: Bearer <pair token from Chat UI → Models>"
   echo "Raw LLM:  http://${IP}:8080/v1/chat/completions  (no pair auth)"
 else
+  echo "LAN IP:   (none yet — Ethernet or stickllm-wifi-setup)"
   echo "Chat UI:  http://127.0.0.1/"
   echo "API:      http://127.0.0.1/v1/chat/completions"
   echo "Auth:     Authorization: Bearer <pair token from Chat UI → Models>"

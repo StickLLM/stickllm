@@ -10,16 +10,44 @@
   <header class="top">
     <div class="brand">StickLLM</div>
     <div class="meta">
-      <button type="button" id="modelsBtn" class="linkBtn" title="Models & storage">Models</button>
-      <button type="button" id="pairBtn" class="linkBtn" title="Pair with stick">Pair</button>
+      <button type="button" id="modelsBtn" class="linkBtn" title="Models">Models</button>
+      <button type="button" id="chatsBtn" class="linkBtn" title="Saved chats (Vault mode)" hidden>Chats</button>
+      <button type="button" id="settingsBtn" class="linkBtn" title="Settings">Settings</button>
+      <button type="button" id="lockVaultBtn" class="linkBtn" title="Lock vault (Ctrl+Shift+L)">Lock</button>
+      <button type="button" id="pairBtn" class="linkBtn" title="Mint a new pair code (shown on stick chat)">Pair</button>
       <label class="webToggle" title="Look up live web results when needed (needs internet)">
         <input type="checkbox" id="webToggle" checked />
         Web
       </label>
-      <span id="modeBadge" class="badge">ephemeral</span>
+      <label class="modeSelectWrap" title="Storage mode — Ephemeral never writes to the SSD vault">
+        <span class="modeSelectLabel">Mode</span>
+        <select id="sessionMode" class="modeSelect" aria-label="Storage mode">
+          <option value="ephemeral" selected>Ephemeral</option>
+          <option value="vault">Vault</option>
+        </select>
+      </label>
       <span id="statusLine" class="status">connecting…</span>
     </div>
   </header>
+
+  <section id="connectPanel" class="connectPanel" aria-label="Connection status">
+    <div class="connectLine">
+      <span class="connectCell">
+        <span class="connectLabel">Pair</span>
+        <span id="connectPair" class="connectValue connectPair">…</span>
+      </span>
+      <span class="connectSep" aria-hidden="true">|</span>
+      <span class="connectCell">
+        <span class="connectLabel">URL</span>
+        <a id="connectUrl" class="connectValue connectUrl" href="#" target="_blank" rel="noopener">…</a>
+      </span>
+      <span class="connectSep" aria-hidden="true">|</span>
+      <span class="connectCell">
+        <span class="connectLabel">Model</span>
+        <span id="connectModel" class="connectValue">…</span>
+      </span>
+    </div>
+  </section>
 
   <dialog id="pairDialog" class="modelsDialog">
     <form method="dialog" class="modelsPanel" id="pairForm">
@@ -42,7 +70,7 @@
 
   <dialog id="modelsDialog" class="modelsDialog modelsWide">
     <div class="modelsPanel">
-      <h2>Models &amp; storage</h2>
+      <h2>Models</h2>
       <p id="modelsBody" class="modelsBody">Loading…</p>
       <div id="dlProgress" class="dlProgress" hidden>
         <div id="dlProgressLabel" class="dlProgressLabel">Download</div>
@@ -52,41 +80,218 @@
         <div id="dlProgressMeta" class="dlProgressMeta"></div>
       </div>
       <div class="modelsActions">
-        <button type="button" id="actClaim" class="actionBtn">Claim USB free space</button>
         <button type="button" id="actProbe" class="actionBtn">Probe VRAM / recommend</button>
         <button type="button" id="actDownload" class="actionBtn">Download recommended</button>
-        <button type="button" id="actRefresh" class="actionBtn">Refresh status</button>
+        <button type="button" id="actRefresh" class="actionBtn">Refresh</button>
       </div>
-      <div id="netPanel" class="apiPanel">
-        <h3>Network / WiFi</h3>
-        <p class="modelsHint">
-          Ethernet uses DHCP automatically. For WiFi-only hosts, enter SSID + password
-          (saved on STICKLLM-DATA when claimed). Web lookup needs an uplink.
-        </p>
-        <p id="netStatus" class="modelsHint">Online: …</p>
-        <label class="pairLabel">SSID
-          <input id="wifiSsid" autocomplete="off" placeholder="Network name" />
-        </label>
-        <label class="pairLabel">Password
-          <input id="wifiPass" type="password" autocomplete="off" placeholder="WiFi password" />
-        </label>
-        <button type="button" id="wifiConnect" class="actionBtn">Connect WiFi</button>
-      </div>
-      <p class="modelsHint">
-        SSD encrypted cache is not enabled yet (opt-in later). Downloads go to USB DATA when claimed.
-        Pairing required on LAN — StickLLM UI only (no third-party API).
-      </p>
       <div id="catalogList" class="catalogList"></div>
+      <div id="ctxPanel" class="ctxPanel" hidden>
+        <label class="fieldLabel ctxLabel">Context size
+          <div class="ctxSliderRow">
+            <input type="range" id="ctxSlider" min="2048" max="8192" step="1024" value="8192" />
+            <strong id="ctxValue">8192</strong>
+          </div>
+        </label>
+        <p id="ctxMeta" class="modelsHint"></p>
+        <div class="modelsActions">
+          <button type="button" id="actActivate" class="actionBtn">Activate selected</button>
+        </div>
+      </div>
+      <div id="modelManage" class="modelManage" hidden>
+        <p id="modelManageHint" class="modelsHint"></p>
+        <div class="modelsActions">
+          <button type="button" id="actModelDownload" class="actionBtn" hidden>Download this model</button>
+          <button type="button" id="actModelDelete" class="actionBtn" hidden>Delete selected</button>
+        </div>
+      </div>
       <menu>
         <button type="button" id="modelsClose">Close</button>
       </menu>
     </div>
   </dialog>
 
+  <dialog id="deleteConfirmDialog" class="modelsDialog">
+    <div class="modelsPanel">
+      <h2>ARE YOU SURE</h2>
+      <p id="deleteConfirmBody" class="modelsHint">
+        This permanently deletes the downloaded model files. Type
+        <strong>ARE YOU SURE</strong> to confirm.
+      </p>
+      <label class="fieldLabel">Confirmation
+        <input id="deleteConfirmInput" type="text" autocomplete="off" placeholder="ARE YOU SURE" />
+      </label>
+      <p id="deleteConfirmErr" class="pairErr" hidden></p>
+      <menu>
+        <button type="button" id="deleteConfirmCancel">Cancel</button>
+        <button type="button" id="deleteConfirmOk" class="actionBtn">Delete files</button>
+      </menu>
+    </div>
+  </dialog>
+
+  <dialog id="settingsDialog" class="modelsDialog modelsWide">
+    <div class="modelsPanel">
+      <h2>Settings</h2>
+      <p id="settingsBody" class="modelsBody">Loading…</p>
+
+      <div id="netPanel" class="apiPanel">
+        <h3>Network / WiFi</h3>
+        <p class="modelsHint">
+          Use this when the stick already has LAN (Ethernet or a saved WiFi profile).
+          If there is <strong>no</strong> network yet, use Term console:
+          <code>stickllm-wifi-setup</code>
+          (or boot Chat once to join WiFi, then reboot; or one-time Ethernet).
+        </p>
+        <p id="netStatus" class="modelsHint">Online: …</p>
+        <label class="fieldLabel">SSID
+          <input id="wifiSsid" autocomplete="off" placeholder="Network name" />
+        </label>
+        <label class="fieldLabel">Password
+          <input id="wifiPass" type="password" autocomplete="off" placeholder="WiFi password" />
+        </label>
+        <button type="button" id="wifiConnect" class="actionBtn">Connect WiFi</button>
+      </div>
+
+      <div class="apiPanel">
+        <h3>Storage</h3>
+        <p class="modelsHint">
+          <strong>Creates a file in a folder you choose. Never formats your drive.</strong>
+          StickLLM will not unlock BitLocker/host LUKS, partition disks, or write
+          outside the path you confirm. If a host volume is encrypted/locked, unlock
+          it in the host OS first, then mount and pick that folder.
+        </p>
+        <p id="vaultStatus" class="modelsHint">Vault: …</p>
+        <pre id="diskList" class="modelsBody" style="max-height:10rem;overflow:auto">Mounted folders (read-only probe): …</pre>
+        <div class="modelsActions">
+          <button type="button" id="actClaim" class="actionBtn">Claim USB free space</button>
+          <button type="button" id="actVaultDisks" class="actionBtn">List storage (read-only)</button>
+          <button type="button" id="actVaultLock" class="actionBtn">Lock vault</button>
+          <button type="button" id="actSettingsRefresh" class="actionBtn">Refresh</button>
+        </div>
+        <p class="modelsHint">
+          Pick a <strong>device</strong>, then a <strong>folder</strong>. Unmounted clear host
+          volumes (ext4/ntfs/exfat, no BitLocker/LUKS) show <strong>Mount</strong> — attaches
+          under <code>/mnt/stickllm-host/…</code> only after you click. Encrypted/unknown disks
+          stay blocked. StickLLM USB warns that data leaves with the stick. Creates
+          <code>stickllm-vault.img</code> — never formats your drive.
+        </p>
+        <div class="vaultPicker" id="vaultPicker">
+          <div class="vaultPickerHead">
+            <strong>1. Device</strong>
+            <button type="button" id="actVaultPickerRefresh" class="actionBtn">Refresh devices</button>
+          </div>
+          <div id="vaultDeviceList" class="vaultDeviceList">Loading devices…</div>
+          <div class="vaultPickerHead" style="margin-top:0.75rem">
+            <strong>2. Folder</strong>
+            <span id="vaultBrowsePath" class="vaultBrowsePath muted">Select a device first</span>
+          </div>
+          <div id="vaultUsbWarn" class="vaultFeedback is-err" hidden></div>
+          <div class="vaultBrowseBar">
+            <button type="button" id="actVaultBrowseUp" class="actionBtn" disabled>Up</button>
+            <button type="button" id="actVaultBrowseUse" class="actionBtn" disabled>Use this folder</button>
+            <button type="button" id="actVaultUseExisting" class="actionBtn" disabled title="Attach existing stickllm-vault.img — writes config only, never formats or overwrites">Open existing vault</button>
+            <button type="button" id="actVaultBrowseNew" class="actionBtn" disabled>New folder…</button>
+            <button type="button" id="actVaultFindModels" class="actionBtn" disabled title="Search this volume for GGUF folders, Ollama, LM Studio, HuggingFace caches">Find existing models</button>
+            <button type="button" id="actVaultFindExisting" class="actionBtn" title="Read USB DATA pointer and/or scan mounted host paths for stickllm-vault.img (never formats)">Find existing vault</button>
+          </div>
+          <div id="vaultModelHits" class="vaultModelHits" hidden></div>
+          <div id="vaultFolderList" class="vaultFolderList">—</div>
+          <p id="vaultExistingBlobHint" class="vaultFeedback is-ok" hidden role="status"></p>
+          <p class="modelsHint">Selected vault folder (filled by picker; advanced edit allowed):</p>
+          <label class="fieldLabel">Path
+            <input id="vaultSetupPath" type="text" autocomplete="off" placeholder="Choose a folder above — no default path" />
+          </label>
+        </div>
+        <div id="vaultCreatePanel">
+          <p class="modelsHint">Create only if this folder has <strong>no</strong> <code>stickllm-vault.img</code>. After a reflash, prefer <strong>Open existing vault</strong> then Unlock — CREATE-VAULT is not needed and will not attach an existing blob.</p>
+          <label class="fieldLabel">Initial blob size (GiB)
+            <input id="vaultSetupSize" type="number" min="1" max="2000" value="8" />
+          </label>
+          <label class="fieldLabel">New vault passcode (min 8)
+            <input id="vaultSetupPass" type="password" autocomplete="new-password" placeholder="Passcode" />
+          </label>
+          <label class="fieldLabel">Confirm passcode
+            <input id="vaultSetupPass2" type="password" autocomplete="new-password" placeholder="Confirm" />
+          </label>
+          <label class="fieldLabel">Type CREATE-VAULT to confirm
+            <input id="vaultSetupConfirm" type="text" autocomplete="off" placeholder="CREATE-VAULT" />
+          </label>
+          <button type="button" id="actVaultSetup" class="actionBtn">Create vault here</button>
+        </div>
+        <p id="vaultSetupHint" class="vaultFeedback" role="status" aria-live="polite"></p>
+        <pre id="vaultRecovery" class="modelsBody" style="max-height:6rem;overflow:auto;display:none"></pre>
+        <label class="fieldLabel" id="vaultSavedLabel" hidden>Type SAVED after writing the recovery phrase
+          <input id="vaultSetupSaved" type="text" autocomplete="off" placeholder="SAVED" />
+        </label>
+        <button type="button" id="actVaultSetupFinish" class="actionBtn" hidden>Finish setup (SAVED)</button>
+        <label class="fieldLabel">Unlock passcode
+          <input id="vaultPass" type="password" name="stickllm-vault-pin" autocomplete="off" data-lpignore="true" data-1p-ignore placeholder="Vault passcode" />
+        </label>
+        <button type="button" id="actVaultUnlock" class="actionBtn">Unlock vault</button>
+        <label class="fieldLabel">Grow blob by (GiB)
+          <input id="vaultGrowGb" type="number" min="1" max="500" value="8" />
+        </label>
+        <button type="button" id="actVaultGrow" class="actionBtn">Grow vault</button>
+        <label class="fieldLabel">Wrong-PIN wipe after N tries (0 = off, default)
+          <input id="vaultWipeN" type="number" min="0" max="10" value="0" />
+        </label>
+        <button type="button" id="actVaultWipe" class="actionBtn">Apply wipe setting</button>
+        <p class="modelsHint">Wipe destroys only this vault blob’s LUKS header — never host partitions. Off unless you confirm WIPE-OK.</p>
+        <h4 class="modelsHint" style="margin-top:0.75rem">Move USB models → vault</h4>
+        <pre id="movableList" class="modelsBody" style="max-height:8rem;overflow:auto">Unlock vault + Vault mode, then Refresh movable.</pre>
+        <button type="button" id="actVaultMovable" class="actionBtn">Refresh movable</button>
+      </div>
+
+      <div class="apiPanel">
+        <h3>System</h3>
+        <p class="modelsHint"><strong>How to load a model</strong></p>
+        <p class="modelsHint">
+          No model loads at boot. Open <strong>Models</strong> → radio select a model →
+          set the <strong>context</strong> slider → <strong>Activate</strong>.
+        </p>
+        <p class="modelsHint"><strong>How to connect</strong></p>
+        <p id="howToConnect" class="modelsHint">
+          Open the URL on the same LAN and click <strong>Pair</strong> to mint a new code
+          (unpairs old browsers). The stick/kiosk chat shows <strong>New PAIR CODE</strong>;
+          enter it here. Loopback on the stick needs no pair.
+        </p>
+        <div id="sshCredPanel" class="apiPanel" hidden>
+          <p class="modelsHint"><strong>SSH (Test / Term — this stick only)</strong></p>
+          <p id="sshCredLine" class="modelsHint" style="font-family:ui-monospace,monospace;user-select:all"></p>
+          <p class="modelsHint muted">Random per boot. Shown only on loopback Settings — not to unpaired LAN browsers.</p>
+        </div>
+      </div>
+
+      <div class="apiPanel futurePanel">
+        <h3>Coming later</h3>
+        <p class="modelsHint">
+          Context size / inference defaults — future Settings.<br/>
+          Setup WiFi access point — future bootstrap if no Ethernet (not built yet).
+        </p>
+      </div>
+
+      <menu>
+        <button type="button" id="settingsClose">Close</button>
+      </menu>
+    </div>
+  </dialog>
+
+  <dialog id="chatsDialog" class="modelsDialog modelsWide">
+    <div class="modelsPanel">
+      <h2>Saved chats</h2>
+      <p class="modelsHint">Stored only inside the unlocked vault when Mode is Vault. Ephemeral never writes chats to disk.</p>
+      <div id="chatsList" class="catalogList"></div>
+      <div class="modelsActions">
+        <button type="button" id="actChatNew" class="actionBtn">New chat</button>
+        <button type="button" id="actChatSave" class="actionBtn">Save current</button>
+        <button type="button" id="chatsClose" class="actionBtn">Close</button>
+      </div>
+    </div>
+  </dialog>
+
   <main id="log" class="log" aria-live="polite"></main>
 
   <form id="composer" class="composer">
-    <textarea id="input" rows="2" placeholder="Ask anything (pair first if prompted)" autocomplete="off" autofocus tabindex="0"></textarea>
+    <textarea id="input" rows="2" placeholder="Ask anything" autocomplete="off" autofocus tabindex="0"></textarea>
     <button type="submit" id="send">Send</button>
   </form>
 
@@ -94,6 +299,6 @@
     StickLLM UI · session until reboot · <code id="apiHint">paired browser only</code>
   </footer>
 
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=27"></script>
 </body>
 </html>

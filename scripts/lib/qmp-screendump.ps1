@@ -29,8 +29,13 @@ function Invoke-QmpScreendump {
       if ($line -match '"error"') { throw "QMP error: $line" }
     }
     $client.Close()
-    Start-Sleep -Milliseconds 400
-    if (-not (Test-Path $PpmPath)) {
+    # Wait for QEMU to finish writing PPM (TCG can be slow).
+    $ppmReady = $false
+    for ($w = 0; $w -lt 25; $w++) {
+      Start-Sleep -Milliseconds 200
+      if ((Test-Path $PpmPath) -and ((Get-Item $PpmPath).Length -gt 1000)) { $ppmReady = $true; break }
+    }
+    if (-not $ppmReady) {
       $result.Detail = "ppm_missing"
       return $result
     }
@@ -43,7 +48,7 @@ function Invoke-QmpScreendump {
     } else {
       $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
       if ($ffmpeg) {
-        & ffmpeg -y -i $PpmPath $PngPath 2>$null | Out-Null
+        & ffmpeg -y -loglevel error -i $PpmPath $PngPath 2>$null | Out-Null
         if (Test-Path $PngPath) { Remove-Item $PpmPath -Force -ErrorAction SilentlyContinue }
       } else {
         $outPath = $PpmPath

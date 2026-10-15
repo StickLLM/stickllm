@@ -37,10 +37,16 @@ autoconnect-priority=50
 [wifi]
 mode=infrastructure
 ssid=${SSID_E}
+EOF
+  if [[ -n "$PASS" ]]; then
+    cat <<EOF
 
 [wifi-security]
 key-mgmt=wpa-psk
 psk=${PASS_E}
+EOF
+  fi
+  cat <<EOF
 
 [ipv4]
 method=auto
@@ -69,7 +75,17 @@ chmod 644 "$RUN/wifi.json"
 
 systemctl start --no-block NetworkManager.service 2>/dev/null || true
 nmcli connection reload >/dev/null 2>&1 || true
-nmcli connection up "$CONN_NAME" >/dev/null 2>&1 || \
-  nmcli device wifi connect "$SSID" password "$PASS" >/dev/null 2>&1 || true
+if ! nmcli connection up "$CONN_NAME" >/dev/null 2>&1; then
+  if [[ -n "$PASS" ]]; then
+    nmcli device wifi connect "$SSID" password "$PASS" >/dev/null 2>&1 || true
+  else
+    nmcli device wifi connect "$SSID" >/dev/null 2>&1 || true
+  fi
+fi
+
+# DHCP often lags association; publish LAN IP for READY / kiosk / /api/health.
+if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+  /usr/local/bin/stickllm-lan-ip --wait 25 >/dev/null 2>&1 || true
+fi
 
 echo "OK wifi profile ${CONN_NAME} for ssid=${SSID}"

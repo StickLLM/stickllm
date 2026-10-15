@@ -13,9 +13,10 @@ on demand from a **pinned Hugging Face catalog**, with hashes that live on the U
 | **Base (default ship)** | ~4–6 GB ISO | **16 GB** USB is enough | OS + runtime + **lite** model (anything / RAM / 8 GB class) |
 | **Optional fat build** | ~18–22 GB | 32–64 GB | Base + large model pre-baked (power users / air-gap) |
 
-Checkpoint `v0.2.1-local-nvidia-kbd` ships small text models on the ISO (3B + 7B class)
-and downloads larger catalog entries (e.g. 27B) to `STICKLLM-DATA` when space/VRAM allow.
-Target retail base still moves toward a cheaper **16 GB** stick + lite GGUF.
+Current ship **v0.3.6** and checkpoint `v0.2.1-local-nvidia-kbd` ship small text models
+on the ISO (3B + 7B class) and download larger catalog entries (e.g. 27B) to
+`STICKLLM-DATA` when space/VRAM allow. Optional durable store: encrypted SSD vault
+([VAULT.md](VAULT.md)). Target retail base still moves toward a cheaper **16 GB** stick + lite GGUF.
 
 ## First boot / “upgrade models” flow
 
@@ -45,6 +46,11 @@ connectivity; no mystery URLs outside the catalog.
 In the chat menu, download stays **explicit** (no surprise mid-session pulls).
 
 ## Trust: hashes on the USB
+
+**TODO (design later):** downloads for models *not* on the approved/pinned list —
+where the list lives (today: `config/models/catalog.toml` on the USB), how it
+updates (shipped ISO vs signed OTA catalog), and UI warning + hash policy for
+ad-hoc / host-found GGUFs. No full approved-list system yet.
 
 Model weights are executable behavior. StickLLM never treats “a GGUF from the
 internet” as trusted just because Hugging Face hosted it.

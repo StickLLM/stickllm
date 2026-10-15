@@ -4,6 +4,9 @@ Description=StickLLM llama.cpp server (loopback only)
 After=network.target
 Wants=network.target
 ConditionPathExists=/opt/stickllm/bin/llama-server
+# No default model at boot — unit stays enabled but skips until Activate writes model.env.
+# (Must be under [Unit]; systemd ignores ConditionPathExists in [Service].)
+ConditionPathExists=/run/stickllm/model.env
 
 [Service]
 Type=simple
@@ -12,7 +15,7 @@ Group=stickllm-llama
 SupplementaryGroups=video render
 EnvironmentFile=-/etc/stickllm/runtime.env
 EnvironmentFile=-/run/stickllm/cuda.env
-EnvironmentFile=-/etc/stickllm/default-model.env
+# Only written by Models → Activate (or explicit download activate). Never auto-copied at boot.
 EnvironmentFile=-/run/stickllm/model.env
 Environment=LD_LIBRARY_PATH=/opt/stickllm/lib
 Environment=STICKLLM_LLAMA_HOST=127.0.0.1
@@ -32,7 +35,7 @@ ReadWritePaths=/tmp /run /var/tmp -/mnt/stickllm-data /opt/stickllm -/var/lib/st
 ProtectSystem=full
 ProtectHome=true
 NoNewPrivileges=true
-# Keep llama on Local handoff: bootstatus exits after ui=1; unit must stay enabled.
+# Started on demand by stickllm-control Activate (model.env in /run is cleared each reboot).
 RemainAfterExit=no
 
 [Install]

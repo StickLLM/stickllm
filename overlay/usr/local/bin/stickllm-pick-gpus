@@ -1,19 +1,37 @@
 #!/bin/bash
-# Pick a single large NVIDIA GPU for llama.cpp CUDA (multi-GPU is opt-in).
+# Pick GPU backend for llama.cpp: NVIDIA CUDA → AMD/Intel Vulkan → CPU.
 # Always exit 0: QEMU Local blacklists nvidia; nvidia-smi exit 9 must never
 # block stickllm-llama. No set -e / pipefail around GPU probes.
 set -u
 
 mkdir -p /run/stickllm
 OUT=/run/stickllm/cuda.env
+LIB="${STICKLLM_LIB:-/opt/stickllm/lib}"
+LIB_VK="${STICKLLM_LIB_VULKAN:-/opt/stickllm/lib-vulkan}"
+CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
+VULKAN_BIN="${STICKLLM_LLAMA_VULKAN:-/opt/stickllm/bin/llama-server-vulkan}"
+REGISTER_SO="${STICKLLM_CUDA_REGISTER:-$LIB/stickllm-cuda-register.so}"
 
 write_env() {
-  # $1 = CUDA_VISIBLE_DEVICES value (may be empty); $2 = STICKLLM_BACKEND
+  # $1 = CUDA_VISIBLE_DEVICES; $2 = STICKLLM_BACKEND; optional $3 = reason
   {
+    printf 'CUDA_DEVICE_ORDER=PCI_BUS_ID\n'
     printf 'CUDA_VISIBLE_DEVICES=%s\n' "$1"
     printf 'STICKLLM_BACKEND=%s\n' "$2"
+    if [[ "$2" == "vulkan" ]]; then
+      printf 'GGML_BACKEND_DIR=%s\n' "$LIB_VK"
+      printf 'LD_PRELOAD=\n'
+    else
+      printf 'GGML_BACKEND_DIR=%s\n' "$LIB"
+      if [[ "$2" == "cuda" && -f "$REGISTER_SO" ]]; then
+        printf 'LD_PRELOAD=%s\n' "$REGISTER_SO"
+      else
+        printf 'LD_PRELOAD=\n'
+      fi
+    fi
   } >"$OUT" 2>/dev/null || true
   chmod 644 "$OUT" 2>/dev/null || true
+  chgrp stickllm-llama "$OUT" 2>/dev/null || true
 }
 
 fallback_cpu() {
@@ -23,13 +41,85 @@ fallback_cpu() {
   exit 0
 }
 
+list_devices_has_cuda() {
+  local ids="$1"
+  local out
+  local -a envcmd
+  [[ -x "$CUDA_BIN" ]] || return 1
+  envcmd=(
+    env "LD_LIBRARY_PATH=$LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    "GGML_BACKEND_DIR=$LIB"
+    "CUDA_DEVICE_ORDER=PCI_BUS_ID"
+    "CUDA_VISIBLE_DEVICES=$ids"
+  )
+  if [[ -f "$REGISTER_SO" ]]; then
+    envcmd+=("LD_PRELOAD=$REGISTER_SO")
+  fi
+  out="$("${envcmd[@]}" "$CUDA_BIN" --list-devices 2>/dev/null || true)"
+  echo "$out" | grep -qE '^[[:space:]]*CUDA[0-9]'
+}
+
+list_devices_has_vulkan() {
+  local out
+  [[ -x "$VULKAN_BIN" ]] || return 1
+  out="$(
+    env "LD_LIBRARY_PATH=$LIB_VK${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+      "GGML_BACKEND_DIR=$LIB_VK" \
+      "$VULKAN_BIN" --list-devices 2>/dev/null || true
+  )"
+  echo "$out" | grep -qE '^[[:space:]]*Vulkan[0-9]'
+}
+
+has_amd_or_intel_gpu() {
+  # Prefer discrete/iGPU class display devices that are not NVIDIA.
+  if command -v lspci >/dev/null 2>&1; then
+    if lspci -nn 2>/dev/null | grep -qiE 'VGA|3D|Display'; then
+      if lspci -nn 2>/dev/null | grep -iE 'VGA|3D|Display' | grep -qiE 'AMD|ATI|Advanced Micro Devices|Intel'; then
+        return 0
+      fi
+    fi
+  fi
+  # Sysfs DRM drivers are enough when lspci is sparse (some live images).
+  local card driver
+  for card in /sys/class/drm/card[0-9]; do
+    [[ -d "$card" ]] || continue
+    driver="$(basename "$(readlink -f "$card/device/driver" 2>/dev/null)" 2>/dev/null || true)"
+    case "$driver" in
+      amdgpu|radeon|i915|xe) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+try_vulkan() {
+  local reason="$1"
+  if [[ ! -x "$VULKAN_BIN" ]]; then
+    fallback_cpu "CUDA unavailable and Vulkan binary missing (${reason})"
+  fi
+  if ! list_devices_has_vulkan; then
+    # Still try Vulkan on AMD/Intel even if list-devices is quirky — llama-start
+    # will fall back to CPU if launch fails. Prefer explicit list-devices proof.
+    if has_amd_or_intel_gpu; then
+      echo "stickllm-pick-gpus: Vulkan list-devices empty but AMD/Intel GPU present — trying vulkan (${reason})" >&2
+      write_env "" vulkan
+      echo "stickllm-pick-gpus: STICKLLM_BACKEND=vulkan CUDA_VISIBLE_DEVICES= (${reason})" >&2
+      exit 0
+    fi
+    fallback_cpu "CUDA unavailable and no Vulkan device (${reason})"
+  fi
+  write_env "" vulkan
+  echo "stickllm-pick-gpus: STICKLLM_BACKEND=vulkan CUDA_VISIBLE_DEVICES= (list-devices OK; ${reason})" >&2
+  exit 0
+}
+
+# --- CUDA path (NVIDIA default) ---
 if ! command -v nvidia-smi >/dev/null 2>&1; then
-  fallback_cpu "nvidia-smi missing"
+  try_vulkan "nvidia-smi missing"
 fi
 
 # Do not use set -e/pipefail here — nvidia-smi returns 9 with no usable GPU.
 if ! nvidia-smi -L >/dev/null 2>&1; then
-  fallback_cpu "nvidia-smi failed (no GPU / blacklisted)"
+  try_vulkan "nvidia-smi failed (no GPU / blacklisted)"
 fi
 
 mapfile -t LARGE < <(
@@ -49,9 +139,19 @@ else
 fi
 
 if [[ -z "${ids}" ]]; then
-  fallback_cpu "no GPUs listed"
+  try_vulkan "no NVIDIA GPUs listed"
+fi
+
+# Verify llama actually sees a CUDA device (not just nvidia-smi).
+if ! list_devices_has_cuda "$ids"; then
+  # Retry with all GPUs visible in case index remap confuses enumeration.
+  if list_devices_has_cuda ""; then
+    ids="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | paste -sd, - || true)"
+  else
+    try_vulkan "llama-server --list-devices shows no CUDA (backend not registered / libs broken)"
+  fi
 fi
 
 write_env "$ids" cuda
-echo "stickllm-pick-gpus: STICKLLM_BACKEND=cuda CUDA_VISIBLE_DEVICES=${ids}" >&2
+echo "stickllm-pick-gpus: STICKLLM_BACKEND=cuda CUDA_VISIBLE_DEVICES=${ids} (list-devices OK)" >&2
 exit 0

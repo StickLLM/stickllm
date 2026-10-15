@@ -1,13 +1,19 @@
 #!/bin/bash
-# Launch llama-server: localhost-only; STICKLLM_BACKEND=cuda|cpu from pick-gpus.
+# Launch llama-server: localhost-only.
+# Backend preference: CUDA (verified) → Vulkan → CPU last resort.
 set -euo pipefail
 
-MODEL="${STICKLLM_MODEL:-/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf}"
+# Require explicit Activate (model.env). No baked default — avoids long wrong-model boots.
+MODEL="${STICKLLM_MODEL:-}"
 HOST="${STICKLLM_LLAMA_HOST:-127.0.0.1}"
 PORT="${STICKLLM_LLAMA_PORT:-8080}"
 CTX="${STICKLLM_CTX_SIZE:-8192}"
 CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
 CPU_BIN="${STICKLLM_LLAMA_CPU:-/opt/stickllm/bin/llama-server-cpu}"
+VULKAN_BIN="${STICKLLM_LLAMA_VULKAN:-/opt/stickllm/bin/llama-server-vulkan}"
+LIB="${STICKLLM_LIB:-/opt/stickllm/lib}"
+LIB_VK="${STICKLLM_LIB_VULKAN:-/opt/stickllm/lib-vulkan}"
+REGISTER_SO="${STICKLLM_CUDA_REGISTER:-$LIB/stickllm-cuda-register.so}"
 RUN="${STICKLLM_RUN:-/run/stickllm}"
 mkdir -p "$RUN" 2>/dev/null || true
 
@@ -40,7 +46,9 @@ phys_threads() {
 }
 
 THREADS="$(phys_threads)"
-export LD_LIBRARY_PATH="/opt/stickllm/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="${LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GGML_BACKEND_DIR="${GGML_BACKEND_DIR:-$LIB}"
+export CUDA_DEVICE_ORDER="${CUDA_DEVICE_ORDER:-PCI_BUS_ID}"
 
 # /run/stickllm is prepared by unit ExecStartPre as root. Never fail the service
 # if the unprivileged User= cannot write breadcrumbs (was killing CPU/CUDA start).
@@ -57,6 +65,23 @@ write_runtime_env() {
   } >"/tmp/stickllm-llama-runtime.env" 2>/dev/null || true
 }
 
+cuda_devices_ok() {
+  local out
+  [[ -x "$CUDA_BIN" ]] || return 1
+  out="$(
+    env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
+      ${REGISTER_SO:+LD_PRELOAD="$REGISTER_SO"} \
+      CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES-}" \
+      GGML_BACKEND_DIR="$GGML_BACKEND_DIR" \
+      "$CUDA_BIN" --list-devices 2>/dev/null || true
+  )"
+  echo "$out" | grep -qE '^[[:space:]]*CUDA[0-9]'
+}
+
+if [[ -z "$MODEL" ]]; then
+  echo "stickllm-llama-start: STICKLLM_MODEL unset — Activate a model from the UI (Models → Activate)" >&2
+  exit 1
+fi
 if [[ ! -f "$MODEL" ]]; then
   echo "stickllm-llama-start: model missing: $MODEL" >&2
   exit 1
@@ -66,22 +91,60 @@ if [[ ! -r "$MODEL" ]]; then
   exit 1
 fi
 
+# 1) CUDA — only if pick-gpus said so AND list-devices still sees CUDA.
 if [[ "$BACKEND" == "cuda" ]] && [[ -x "$CUDA_BIN" ]]; then
-  echo "stickllm-llama-start: CUDA mode (-ngl 99) threads=$THREADS host=$HOST:$PORT model=$MODEL" >&2
-  write_runtime_env cuda
-  exec "$CUDA_BIN" \
-    --model "$MODEL" \
-    --host "$HOST" \
-    --port "$PORT" \
-    --ctx-size "$CTX" \
-    --n-gpu-layers "${STICKLLM_N_GPU_LAYERS:-99}" \
-    --threads "$THREADS" \
-    --metrics
+  if [[ -f "$REGISTER_SO" ]]; then
+    export LD_PRELOAD="$REGISTER_SO${LD_PRELOAD:+:$LD_PRELOAD}"
+  fi
+  if cuda_devices_ok; then
+    echo "stickllm-llama-start: STICKLLM_BACKEND=cuda (-ngl 99) threads=$THREADS host=$HOST:$PORT model=$MODEL" >&2
+    write_runtime_env cuda
+    exec "$CUDA_BIN" \
+      --model "$MODEL" \
+      --host "$HOST" \
+      --port "$PORT" \
+      --ctx-size "$CTX" \
+      --n-gpu-layers "${STICKLLM_N_GPU_LAYERS:-99}" \
+      --threads "$THREADS" \
+      --metrics
+  fi
+  echo "stickllm-llama-start: CUDA claimed but list-devices has no CUDA — not starting fake-cuda" >&2
+  unset LD_PRELOAD || true
+  BACKEND=fallback
 fi
 
-# CPU path: prefer CPU-linked binary (CUDA build may refuse to start without GPU).
+# 2) Vulkan — AMD/Intel (or CUDA failure fallback) when llama-server-vulkan ships.
+if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "fallback" ]]; then
+  if [[ -x "$VULKAN_BIN" ]]; then
+    if [[ -d "$LIB_VK" ]]; then
+      export LD_LIBRARY_PATH="${LIB_VK}:${LD_LIBRARY_PATH}"
+      export GGML_BACKEND_DIR="${LIB_VK}"
+    fi
+    echo "stickllm-llama-start: STICKLLM_BACKEND=vulkan (-ngl 99) threads=$THREADS host=$HOST:$PORT model=$MODEL" >&2
+    write_runtime_env vulkan
+    exec "$VULKAN_BIN" \
+      --model "$MODEL" \
+      --host "$HOST" \
+      --port "$PORT" \
+      --ctx-size "$CTX" \
+      --n-gpu-layers "${STICKLLM_N_GPU_LAYERS:-99}" \
+      --threads "$THREADS" \
+      --metrics
+  fi
+  if [[ "$BACKEND" == "vulkan" ]]; then
+    echo "stickllm-llama-start: Vulkan requested but $VULKAN_BIN missing — falling back to CPU" >&2
+  elif [[ "$BACKEND" == "fallback" ]]; then
+    echo "stickllm-llama-start: Vulkan unavailable after CUDA fail — falling back to CPU" >&2
+  fi
+  BACKEND=cpu
+fi
+
+# 3) CPU last resort — clear logging, never claim cuda/vulkan.
 BIN="$CPU_BIN"
-if [[ ! -x "$BIN" ]]; then
+CPU_LIB="${STICKLLM_LIB_CPU:-/opt/stickllm/lib-cpu}"
+if [[ -x "$BIN" && -d "$CPU_LIB" ]]; then
+  export LD_LIBRARY_PATH="${CPU_LIB}:${LD_LIBRARY_PATH}"
+elif [[ ! -x "$BIN" ]]; then
   BIN="$CUDA_BIN"
 fi
 if [[ ! -x "$BIN" ]]; then
@@ -93,7 +156,7 @@ fi
 if [[ -z "${STICKLLM_CTX_SIZE:-}" ]]; then
   CTX=4096
 fi
-echo "stickllm-llama-start: CPU mode (-ngl 0) threads=$THREADS host=$HOST:$PORT model=$MODEL bin=$BIN ctx=$CTX" >&2
+echo "stickllm-llama-start: STICKLLM_BACKEND=cpu (-ngl 0) threads=$THREADS host=$HOST:$PORT model=$MODEL bin=$BIN ctx=$CTX" >&2
 write_runtime_env cpu
 exec "$BIN" \
   --model "$MODEL" \

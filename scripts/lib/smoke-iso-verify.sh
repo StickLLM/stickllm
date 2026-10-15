@@ -100,7 +100,7 @@ grep -Eq "refresh_failed|FAILED:" "$BS" && pass "bootstatus surfaces FAILED unit
 grep -q "PAIR CODE" "$BS" && pass "pair code UX" || bad "pair code UX"
 grep -q "TIMER:" "$BS" && pass "loading timer UX" || bad "loading timer UX"
 grep -q "STICKLLM Network Loading" "$BS" && pass "Network Loading phase" || bad "Network Loading phase"
-grep -q "STICKLLM Model" "$BS" && pass "Model Loading phase" || bad "Model Loading phase"
+grep -qE "STICKLLM Model|STICKLLM UI Loading" "$BS" && pass "UI/Model Loading phase" || bad "UI/Model Loading phase"
 grep -q "How to connect" "$BS" && pass "connect steps UX" || bad "connect steps UX"
 grep -q "STICKLLM_LAN_URL\|Chat UI:" "$BS" && pass "LAN URL on screen" || bad "LAN URL on screen"
 grep -q "STICKLLM_HEALTH" "$BS" && pass "health breadcrumb" || bad "health breadcrumb"
@@ -139,6 +139,18 @@ else
   pass "bootstatus no console printf paint"
 fi
 grep -q 'URL:' "$BS" && pass "READY shows URL label" || bad "READY missing URL label"
+grep -q '>>> LAN IP' "$BS" && pass "READY shows LAN IP banner" || bad "READY missing LAN IP banner"
+if [[ -f "$work/sq/usr/local/bin/stickllm-lan-ip" ]]; then
+  pass "stickllm-lan-ip helper present"
+else
+  bad "stickllm-lan-ip helper missing"
+fi
+if [[ -f "$work/sq/usr/local/bin/stickllm-wifi-setup" ]]; then
+  grep -q 'Waiting for LAN IP\|resolve_lan_ip\|stickllm-lan-ip' \
+    "$work/sq/usr/local/bin/stickllm-wifi-setup" \
+    && pass "wifi-setup waits/publishes LAN IP" \
+    || bad "wifi-setup missing LAN IP wait"
+fi
 grep -q 'serial_only' "$BS" && pass "bootstatus serial_only helper" || bad "serial_only missing"
 grep -q 'allow-local-chat\|handoff_local_chat' "$BS" && pass "local handoff in bootstatus" || bad "local handoff missing"
 grep -q 'stickllm-kiosk\|STICKLLM_LOCAL_KIOSK' "$BS" && pass "local handoff queues kiosk" || bad "local handoff missing kiosk"
