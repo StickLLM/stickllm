@@ -14,31 +14,34 @@ Keep the **last two** recoverable ships (**N** and **N-1**) plus Drive golden fo
 Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship):
 
 - **Golden (forever):** `v0.2.0` / Drive ISO / `checksums/v0.2.sha256`
-- **N-1:** `v0.2.1-local-nvidia-kbd` / `out/v0.2.1-local-nvidia-kbd/` / `checksums/v0.2-local-nvidia-kbd.sha256`
-- **N:** `v0.3.0` / `out/v0.3.0/` apiready ISO / `checksums/v0.3.sha256` (`f3db9113…`)
+- **N-1:** `v0.3.0` / `out/v0.3.0/` apiready ISO / `checksums/v0.3.sha256` (`f3db9113…`)
+- **N:** `v0.3.6` / Drive + `out/v0.3.6/` / `checksums/v0.3.6.sha256` (`fb559d9f…`)
+
+**Do not flash `v0.3.5`** (truncated ISO). Prefer **v0.3.6**.
 
 ## Never overwrite
 
-- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.2.1-local-nvidia-kbd`, `v0.3.0`, or any published shipping tag.
+- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.2.1-local-nvidia-kbd`, `v0.3.0`, `v0.3.6`, or any published shipping tag.
 - Do **not** change or replace published checksum files once shipped.
 - Do **not** overwrite the Drive / StickLLM-releases **v0.2** ISO artifact (hash `4914087d…`).
+- Do **not** overwrite the Drive **v0.3.6** ISO under the same name if contents differ (hash `fb559d9f…`).
 - Do **not** flash or publish a later build under an existing release name if contents differ.
 - When cutting **v0.4+**, do **not** delete N/N-1 tags or their `out/<version>/` ISO directories.
 
 ## New work gets new names
 
-- New product work → new tag (`v0.4.0`, `v0.3.1`, …), new `out/<version>/` ISO filename, new checksum file.
+- New product work → new tag (`v0.4.0`, `v0.3.7`, …), new `out/<version>/` ISO filename, new checksum file.
 - Rebuilds of an older line → distinct name, e.g. `out/stickllm-amd-rtx3090-v0.2-rebuild.iso`. Compare hash to the shipping checksum; report bit-identical if equal.
 - WIP / abandoned experiments → branch only (`wip/…`); never replace a shipping tag or Drive ISO.
 
 ## Examples
 
 ```text
-❌ BAD: build v0.4 and delete out/v0.3.0/ or tag -d v0.3.0
+❌ BAD: build v0.4 and delete out/v0.3.6/ or tag -d v0.3.6
 ❌ BAD: build v0.3 and write over out/stickllm-amd-rtx3090.hybrid.iso (the v0.2 Drive ship)
 ❌ BAD: git tag -f v0.2.0 <new-commit>
 ❌ BAD: edit checksums/v0.2.sha256 to match a different ISO
 
-✅ GOOD: out/v0.3.0/…apiready…iso + checksums/v0.3.sha256 + tag v0.3.0
-✅ GOOD: out/v0.4.0/… + checksums/v0.4.sha256 + tag v0.4.0 (keep v0.3.0 + v0.2.1 dirs/tags)
+✅ GOOD: out/v0.3.6/…hybrid.iso + checksums/v0.3.6.sha256 + tag v0.3.6
+✅ GOOD: out/v0.4.0/… + checksums/v0.4.sha256 + tag v0.4.0 (keep v0.3.6 + v0.3.0 dirs/tags)
 ```

@@ -1,5 +1,9 @@
 # Booting StickLLM
 
+Current ship: **v0.3.6** (Drive ISO + [`checksums/v0.3.6.sha256`](../checksums/v0.3.6.sha256)).
+Do **not** flash **v0.3.5** (truncated). Flash notes: [FLASH.md](FLASH.md). Vault after
+reflash: [VAULT.md](VAULT.md).
+
 ## Always prefer the USB (recommended)
 
 Plugging the stick in does **not** force USB boot by itself. The PC firmware

@@ -14,7 +14,7 @@ WSL2 Ubuntu is optional. On this workstation the preferred path is **Git Bash + 
 ./scripts/verify-host.sh
 ./scripts/download-model.sh      # ~5.4 GB Q5_K_M (2 shards)
 ./scripts/build-llama-server.sh  # CUDA + Vulkan + CPU llama-server in nvidia/cuda container
-./scripts/build.sh               # Debian live-build → out/v0.3.4/…hybrid.iso
+./scripts/build.sh               # Debian live-build → out/v0.3.6/…hybrid.iso
 ```
 
 Or: `./scripts/build.sh` (calls the above as needed). Dev loop (SSH first, no ISO patch): [DEV-WORKFLOW.md](DEV-WORKFLOW.md).

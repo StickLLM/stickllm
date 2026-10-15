@@ -52,7 +52,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 ## Vault and security
 - [x] Ephemeral sessions (reboot clears pair + session)
 - [x] P1 Header **Mode** dropdown: Ephemeral (default, no SSD vault writes) | Vault (conscious opt-in)
-- [x] P1 Encrypted vault on host SSD — **file blob only** in a user-chosen mounted folder (`feature/encrypted-ssd-vault` / v0.3.4); never partition/format; fail-closed on BitLocker/unknown/RAID; SSH-test first
+- [x] P1 Encrypted vault on host SSD — **file blob only** in a user-chosen mounted folder (`feature/encrypted-ssd-vault` / **v0.3.6**); Find/Open existing after reflash; never partition/format; fail-closed on BitLocker/unknown/RAID
 - [x] P1 Unlock = passcode (+ optional key file on stick DATA)
 - [x] P1 One-time 12-word recovery phrase shown once at setup
 - [x] P1 Failed-attempt counter; wipe-after-N destroys **blob** LUKS header only (default **off**)

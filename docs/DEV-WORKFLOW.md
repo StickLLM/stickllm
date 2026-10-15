@@ -47,15 +47,19 @@ Useful: `stickllm-status`, `nvidia-smi`, `curl -s localhost:8080/health`,
 # Reuse overlay llama when present (default). Force only if binaries missing:
 # STICKLLM_FORCE_LLAMA_BUILD=1 ./scripts/build.sh
 ./scripts/build.sh
-# → out/v0.3.4/stickllm-amd-rtx3090-v0.3.4.hybrid.iso + SHA256SUMS
+# → out/v0.3.6/stickllm-amd-rtx3090-v0.3.6.hybrid.iso + SHA256SUMS
+# Run ISO integrity check before flash/publish (reject truncated images like v0.3.5).
 ```
 
 Preserve N-2 restore slots and Drive golden — see [RESTORE.md](RESTORE.md).
-Never overwrite published checksums or shipping tags.
+Current **N** is **v0.3.6** (Drive); **N-1** is **v0.3.0**. Never overwrite published
+checksums or shipping tags. **Do not flash v0.3.5** (truncated).
 
 ## After flash
 
+- **Windows flash:** prefer elevated `out/safe-flash-samsung-auth.py` (or Rufus DD);
+  never FileStream-only. No drive letter after isohybrid is normal — the disk is still there.
+
 User runs HW checks on 3090 + ASUS. Only after confirm: tag, push, publish
-checksum. Feature work that is not kernel/drivers (e.g. encrypted SSD vault)
-stays on a feature branch: SSH-test first, then one clean build + QEMU proof;
-do not ask the user to flash that line until HW of the prior ship is confirmed.
+checksum. Feature work that is not kernel/drivers stays on a feature branch:
+SSH-test first, then one clean build + QEMU proof + integrity check.
