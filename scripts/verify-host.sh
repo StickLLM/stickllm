@@ -30,14 +30,14 @@ else
   ok=0
 fi
 
-# Disk for ISO + model (~12–20 GB free recommended)
+# Disk for models + llama compile + live-build (~40 GB free recommended)
 if command -v df >/dev/null; then
   avail="$(df -Pk . | awk 'NR==2{print $4}')"
-  echo "  info free KiB in cwd fs: $avail (want ≥ 20000000)"
+  echo "  info free KiB in cwd fs: $avail (want ≥ 40000000 ≈ 40 GB)"
 fi
 
 if [[ "$ok" -ne 1 ]]; then
   echo "Host not ready."
   exit 1
 fi
-echo "Host OK — run ./scripts/download-model.sh then ./scripts/build.sh"
+echo "Host OK — run ./scripts/download-model.sh && ./scripts/build-llama-server.sh && ./scripts/build.sh"

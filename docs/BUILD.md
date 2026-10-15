@@ -1,5 +1,29 @@
 # Building the ISO
 
+## Cold start (from a fresh clone)
+
+```text
+1. Clone this repo
+2. Install Docker Desktop (Linux containers) + Bash (Git Bash on Windows)
+3. Free ~40 GB disk (models + llama builds + live-build work)
+4. No prebuilt llama binaries or CUDA libs are in git — you must build them
+5. Run the one-shot commands below
+6. Output (v0.3.7+): out/vX.Y.Z/StickLLM-vX.Y.Z.iso
+```
+
+```bash
+./scripts/verify-host.sh
+./scripts/download-model.sh      # GGUF cache under models/ (gitignored)
+./scripts/build-llama-server.sh  # CUDA + Vulkan + CPU llama-server in Docker
+./scripts/build.sh               # Debian live-build → StickLLM-v*.iso
+```
+
+Or: `./scripts/build.sh` (calls the above as needed). Dev loop: [DEV-WORKFLOW.md](DEV-WORKFLOW.md).
+
+Override version: `STICKLLM_VERSION=0.3.7 ./scripts/build.sh` → `out/v0.3.7/StickLLM-v0.3.7.iso`.
+
+Builds run `scripts/lib/iso-integrity-check.sh` so truncated hybrids fail before publish.
+
 ## ISO filename convention
 
 | Era | Pattern | Example |
@@ -7,28 +31,16 @@
 | **v0.3.7+** (new ships) | `StickLLM-vX.Y.Z.iso` | `StickLLM-v0.3.7.iso` |
 | Through **v0.3.6** (historical) | `stickllm-amd-rtx3090-v….hybrid.iso` | `stickllm-amd-rtx3090-v0.3.6.hybrid.iso` |
 
-Default for current amd64 ships: **exactly** `StickLLM-vX.Y.Z.iso` (example: `StickLLM-v0.3.7.iso`) — no `.hybrid`, no GPU/profile/arch segment. Add an arch/variant suffix only when shipping a distinct platform later (e.g. `StickLLM-vX.Y.Z-arm64.iso`). Do **not** rename or rewrite already-shipped artifacts (v0.3.6 and earlier stay under their old names/checksums).
-
-Override the next build version: `STICKLLM_VERSION=0.4.0 ./scripts/build.sh` → `StickLLM-v0.4.0.iso`.
+Default for current amd64 ships: **exactly** `StickLLM-vX.Y.Z.iso` — no `.hybrid`, no GPU/profile/arch segment. Add an arch/variant suffix only when shipping a distinct platform later (e.g. `StickLLM-vX.Y.Z-arm64.iso`). Do **not** rename or rewrite already-shipped artifacts (v0.3.6 and earlier stay under their old names/checksums).
 
 ## Host requirements
 
-- Docker Desktop (Linux containers) with ≥ 20 GB free disk
+- **Docker** (required for live-build / llama compile)
 - Bash (Git Bash on Windows, or Linux/macOS)
-- Network (first build pulls Debian packages, CUDA devel image, GGUF ~5.4 GB)
+- **~40 GB** free disk
+- Network (Debian packages, CUDA devel image, GGUF download)
 
-WSL2 Ubuntu is optional. On this workstation the preferred path is **Git Bash + Docker Desktop**.
-
-## One-shot
-
-```bash
-./scripts/verify-host.sh
-./scripts/download-model.sh      # ~5.4 GB Q5_K_M (2 shards)
-./scripts/build-llama-server.sh  # CUDA + Vulkan + CPU llama-server in nvidia/cuda container
-./scripts/build.sh               # Debian live-build → out/v0.3.7/StickLLM-v0.3.7.iso
-```
-
-Or: `./scripts/build.sh` (calls the above as needed). Dev loop (SSH first, no ISO patch): [DEV-WORKFLOW.md](DEV-WORKFLOW.md).
+WSL2 Ubuntu is optional. On Windows the preferred path is **Git Bash + Docker Desktop**.
 
 ## What the ISO contains
 
@@ -47,7 +59,7 @@ Or: `./scripts/build.sh` (calls the above as needed). Dev loop (SSH first, no IS
 | Model download | 5–30 min (bandwidth) |
 | llama-server CUDA compile | 15–40 min |
 | live-build ISO | 30–90 min |
-| Output ISO size (v0.1) | ~6.5 GB (includes Q5_K_M + CUDA libs + NVIDIA) |
+| Output ISO size | ~6–8 GB class |
 
 ## Windows note
 

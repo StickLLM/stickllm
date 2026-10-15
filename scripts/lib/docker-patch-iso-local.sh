@@ -178,4 +178,6 @@ XORRISO_ARGS+=(-chmod 0444 /boot/grub/grub.cfg /isolinux/live.cfg /isolinux/menu
 xorriso "${XORRISO_ARGS[@]}"
 
 ls -lh "$OUT"
+# Catch OneDrive/NTFS / interrupted copies that leave GRUB-only truncated hybrids.
+bash "$STICKLLM/scripts/lib/iso-integrity-check.sh" "$OUT"
 echo "docker-patch-iso-local: OK"

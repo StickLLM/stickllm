@@ -3,76 +3,63 @@
 **Warning:** Flashing a hybrid ISO **erases** the target USB. Confirm the device
 node / disk number before writing.
 
-## Which ISO?
+## Get the ISO
 
-| Image | Path | Checksum |
+| Image | Where | Checksum |
 |---|---|---|
-| **Current ship (N) v0.3.6** | Drive `stickllm-amd-rtx3090-v0.3.6.hybrid.iso` or `out/v0.3.6/…` | [`checksums/v0.3.6.sha256`](../checksums/v0.3.6.sha256) → `fb559d9f…` |
-| **N-1 v0.3.0** | `out/v0.3.0/stickllm-amd-rtx3090-v0.3-apiready.hybrid.iso` | [`checksums/v0.3.sha256`](../checksums/v0.3.sha256) |
-| **Drive golden v0.2** | Drive `stickllm-amd-rtx3090-v0.2.hybrid.iso` | [`checksums/v0.2.sha256`](../checksums/v0.2.sha256) |
-| **Local checkpoint** | `out/v0.2.1-local-nvidia-kbd/stickllm-amd-rtx3090-v0.2-local-nvidia-kbd.hybrid.iso` | [`checksums/v0.2-local-nvidia-kbd.sha256`](../checksums/v0.2-local-nvidia-kbd.sha256) |
+| **Current ship v0.3.6** | [Google Drive](https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing) — `stickllm-amd-rtx3090-v0.3.6.hybrid.iso` | [`checksums/v0.3.6.sha256`](../checksums/v0.3.6.sha256) → `fb559d9f…` |
 
-**Do not flash `v0.3.5`** — truncated/broken (GRUB loops). Use **v0.3.6**.
+**Do not flash `v0.3.5`** — truncated/broken. Use **v0.3.6**.
 
-Verify SHA-256 before every flash. Never overwrite the Samsung / Drive **v0.2** golden or Drive **v0.3.6** with a different digest under the same name.
+Release notes: [v0.3.6](https://github.com/StickLLM/stickllm/releases/tag/v0.3.6).
 
-Google Drive folder (ISOs over the 2 GB GitHub limit): same StickLLM-releases share as prior ships — see [README.md](../README.md).
+## Verify SHA-256
 
-## Screenshot proof gate
+```powershell
+(Get-FileHash .\stickllm-amd-rtx3090-v0.3.6.hybrid.iso -Algorithm SHA256).Hash
+# expect FB559D9F0CC5182406F0851F09C1E28C302F911C01B46CAC545EF4D920E1A43D
+```
 
-Helpers under `scripts/flash-*.ps1|sh` refuse unless:
+```bash
+sha256sum stickllm-amd-rtx3090-v0.3.6.hybrid.iso
+# expect fb559d9f0cc5182406f0851f09c1e28c302f911c01b46cac545ef4d920e1a43d
+```
 
-- `out/ISO-READY.txt` exists with `SCREENSHOT_PROOF=PASS`
-- Listed screendump PNG paths exist
-- `out/ISO-NOT-READY.txt` is absent
+## Windows
 
-Serial-only boot is not enough. See [HW-BOOT-CHECKLIST.md](HW-BOOT-CHECKLIST.md).
+1. Download [Rufus](https://rufus.ie/).
+2. Select the verified ISO.
+3. Choose **DD Image** mode (not ISO mode).
+4. Write to the USB stick.
+
+After an isohybrid flash, Windows often shows **no drive letter**. The disk is
+still there — confirm with disk number / size / bus (Get-Disk), not Explorer.
+
+Avoid naive PowerShell `FileStream` raw write (Access Denied even when elevated).
 
 ## Linux
 
 ```bash
 lsblk -d -o NAME,SIZE,MODEL,TRAN
-# Example — REPLACE sdX and pick the ISO you verified
+# REPLACE sdX with your USB device
 sudo wipefs -a /dev/sdX
-sudo dd if=out/v0.3.6/stickllm-amd-rtx3090-v0.3.6.hybrid.iso \
+sudo dd if=stickllm-amd-rtx3090-v0.3.6.hybrid.iso \
   of=/dev/sdX bs=4M status=progress oflag=sync
 sudo eject /dev/sdX
 ```
 
+Optional helper (same `dd` path):
+
 ```bash
-ISO=out/v0.3.6/stickllm-amd-rtx3090-v0.3.6.hybrid.iso \
-  ./scripts/flash-linux.sh /dev/sdX
+ISO=stickllm-amd-rtx3090-v0.3.6.hybrid.iso ./scripts/flash-linux.sh /dev/sdX
 ```
 
 ## macOS
 
 ```bash
 diskutil list
-ISO=out/v0.3.6/stickllm-amd-rtx3090-v0.3.6.hybrid.iso \
-  ./scripts/flash-macos.sh /dev/diskN
+ISO=stickllm-amd-rtx3090-v0.3.6.hybrid.iso ./scripts/flash-macos.sh /dev/diskN
 ```
-
-## Windows (preferred)
-
-Windows often shows **no drive letter** after an isohybrid flash; the disk is still
-there — confirm with disk number / size / bus (Get-Disk), not Explorer.
-
-1. **Preferred:** elevated `C:\Python314\python.exe` + `out/safe-flash-samsung-auth.py`
-   (Clear-Disk + FSCTL lock/dismount + WriteFile). Proven FLASH_OK path.
-2. **Fallback:** [Rufus](https://rufus.ie/) in **DD Image** mode with a hash-verified ISO.
-
-Avoid naive PowerShell `FileStream` raw write (Access Denied even when elevated)
-and `Set-Disk -IsOffline` on removable Samsung sticks.
-
-Or (legacy helper; prefers remountable letter):
-
-```powershell
-.\scripts\flash-windows.ps1 `
-  -Iso .\out\v0.3.6\stickllm-amd-rtx3090-v0.3.6.hybrid.iso `
-  -DriveLetter E
-```
-
-The helper refuses non-removable volumes and requires typing `FLASH`.
 
 ## After flash
 
@@ -82,3 +69,5 @@ The helper refuses non-removable volumes and requires typing `FLASH`.
    Until that exists, downloads only live in the RAM overlay.
 4. After reflashing over a stick that already used an SSD vault blob, use
    Settings → **Find existing vault** / Open existing (see [VAULT.md](VAULT.md)).
+
+Maintainer-only flash tools and lab gates: [MAINTAINER.md](MAINTAINER.md).

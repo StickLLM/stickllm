@@ -1,7 +1,7 @@
 # StickLLM development workflow
 
 Goal: ship features without rebuilding (or patching) an ISO for every tweak.
-Hardware validation stays on real sticks (3090 desktop + ASUS laptop).
+Hardware validation stays on real sticks (example: 3090 desktop + ASUS laptop).
 
 ## Rules
 
@@ -13,9 +13,9 @@ Hardware validation stays on real sticks (3090 desktop + ASUS laptop).
 3. **One clean ISO when the batch is done** — `./scripts/build.sh` (live-build in
    Docker only). **Never patch an ISO** (`docker-patch-iso*`, squashfs inject,
    etc.). Shipping artifacts are immutable; new work gets a new `out/<version>/`.
-4. **Hand to the user for HW test** (RTX 3090 + ASUS). **Do not tag or push**
-   until the user confirms hardware. Flash for a named release line is OK when
-   the user explicitly asks; tag/push still wait for HW confirm.
+4. **Hand to the user for HW test**. **Do not tag or push** until the user
+   confirms hardware. Flash for a named release line is OK when the user
+   explicitly asks; tag/push still wait for HW confirm.
 
 ## SSH iterate (preferred)
 
@@ -44,26 +44,31 @@ Useful: `stickllm-status`, `nvidia-smi`, `curl -s localhost:8080/health`,
 ## Clean release bake
 
 ```bash
-# Reuse overlay llama when present (default). Force only if binaries missing:
-# STICKLLM_FORCE_LLAMA_BUILD=1 ./scripts/build.sh
-# Optional: STICKLLM_VERSION=0.4.0 ./scripts/build.sh
+./scripts/verify-host.sh
+./scripts/download-model.sh
+./scripts/build-llama-server.sh
 ./scripts/build.sh
 # → out/v0.3.7/StickLLM-v0.3.7.iso + SHA256SUMS
-# Run ISO integrity check before flash/publish (reject truncated images like v0.3.5).
+# ISO integrity check runs in-build (reject truncated images like v0.3.5).
 ```
 
-**ISO names (v0.3.7+):** exactly `StickLLM-vX.Y.Z.iso` under `out/vX.Y.Z/` (example: `StickLLM-v0.3.7.iso`). No hybrid/GPU/arch tokens on current amd64 ships; add a suffix only for a distinct platform later (e.g. `-arm64`).  
-Through **v0.3.6**, ships used `stickllm-amd-rtx3090-v….hybrid.iso` — leave those paths and checksums unchanged. Details: [BUILD.md](BUILD.md).
+Optional: `STICKLLM_VERSION=0.4.0 ./scripts/build.sh`. Force llama rebuild only if
+binaries missing: `STICKLLM_FORCE_LLAMA_BUILD=1 ./scripts/build.sh`.
 
-Preserve N-2 restore slots and Drive golden — see [RESTORE.md](RESTORE.md).
-Current **N** is **v0.3.6** (Drive; old filename); **N-1** is **v0.3.0**. Never overwrite published
-checksums or shipping tags. **Do not flash v0.3.5** (truncated).
+**ISO names (v0.3.7+):** exactly `StickLLM-vX.Y.Z.iso` under `out/vX.Y.Z/`.  
+Through **v0.3.6**, ships used `stickllm-amd-rtx3090-v….hybrid.iso` — leave those
+paths and checksums unchanged. Details: [BUILD.md](BUILD.md).
+
+Preserve N-2 restore slots — see [RESTORE.md](RESTORE.md). Current public **N** is
+**v0.3.6** (Drive). **N-1** `v0.3.0` ISO is local/maintainer only. Never overwrite
+published checksums or shipping tags. **Do not flash v0.3.5** (truncated).
 
 ## After flash
 
-- **Windows flash:** prefer elevated `out/safe-flash-samsung-auth.py` (or Rufus DD);
-  never FileStream-only. No drive letter after isohybrid is normal — the disk is still there.
+- **Consumers:** Rufus DD or `dd` — [FLASH.md](FLASH.md).
+- **Lab Windows:** Rufus first; Samsung Python flasher is maintainer-only — [MAINTAINER.md](MAINTAINER.md).
+- No drive letter after isohybrid is normal — the disk is still there.
 
-User runs HW checks on 3090 + ASUS. Only after confirm: tag, push, publish
-checksum. Feature work that is not kernel/drivers stays on a feature branch:
-SSH-test first, then one clean build + QEMU proof + integrity check.
+User runs HW checks. Only after confirm: tag, push, publish checksum. Feature work
+that is not kernel/drivers stays on a feature branch: SSH-test first, then one
+clean build + QEMU proof + integrity check.

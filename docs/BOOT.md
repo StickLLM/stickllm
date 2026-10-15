@@ -9,14 +9,15 @@ reflash: [VAULT.md](VAULT.md).
 Plugging the stick in does **not** force USB boot by itself. The PC firmware
 boot order does.
 
-On the AMD/ROMED8 host:
-
-1. Enter firmware setup (Del / F2).
-2. Put the **StickLLM USB** above the NVMe (Ubuntu).
+1. Enter firmware setup (Del / F2 — vendor-specific).
+2. Put the **StickLLM USB** above internal disks / other OS bootloaders.
 3. Save & exit.
 
-Until that is set, Ubuntu’s GRUB will keep winning after Ctrl+Alt+Del. You can
-still chainload StickLLM from Ubuntu GRUB, but USB-first is the reliable default.
+Until USB is first, another OS’s bootloader may keep winning after reboot.
+Secure Boot: turn **off** (or enroll custom keys later — not required for v0.3.6).
+
+Example lab host (AMD desktop / ROMED8-class board with Ubuntu on NVMe): same
+steps — USB above the NVMe entry. That hardware is an example, not a requirement.
 
 ## StickLLM boot menu
 
@@ -49,11 +50,11 @@ SSH is **off** unless you pick menu **3** or **4**.
 
 ## Boot sequence (expected)
 
-1. Firmware boots the USB (or Ubuntu GRUB → StickLLM entry).
+1. Firmware boots the USB (or chainload from another bootloader).
 2. StickLLM menu → pick **1** (Server / Local), **2** (Secure Client stub), **3** (Terminal), or **4** (Test).
 3. Console: UI loading (no model auto-load — Activate from Models when ready).
 4. **Server / Local / Terminal / Test:** READY with `http://<lan-ip>/` and pair code when the UI path is up. Test also shows the SSH password.
-5. **Local path (checkpoint):** cage + Chromium on the NVIDIA HDMI output; keyboard works. Load a model: Models → radio select → context slider → Activate.
+5. **Local path:** cage + Chromium on the NVIDIA HDMI output when a display is present; keyboard works. Load a model: Models → radio select → context slider → Activate.
 
 ## First checks
 
@@ -69,8 +70,6 @@ Check `nvidia_uvm`, `journalctl -u stickllm-llama -b`, `/run/stickllm/cuda.env`,
 `llama-server --list-devices` (must show `CUDA0`, not only CPU). Backend order is
 **CUDA → Vulkan → CPU**; never claim `STICKLLM_BACKEND=cuda` without list-devices
 proof. AMD/Intel use `llama-server-vulkan` + Mesa. CPU is last resort only.
-The `stickllm-cuda-register` preload registers `libggml-cuda` when the shared
-libggml loader did not link it. Status UI / `stickllm-status` show the active backend.
 
 Phone on the same LAN: open the Chat UI URL from the READY screen and enter the pair code.
 
@@ -78,10 +77,10 @@ Phone on the same LAN: open the Chat UI URL from the READY screen and enter the 
 
 | Symptom | Likely cause |
 |---|---|
-| Lands in Ubuntu | Firmware boot order — USB not first |
-| Firmware ignores USB | Wrong port; try USB2; Secure Boot |
+| Lands in another OS | Firmware boot order — USB not first |
+| Firmware ignores USB | Wrong port; try USB2; Secure Boot on |
 | Black screen, no status | GPU init hang — reboot; try Terminal (menu **3**) to diagnose |
-| Local blank / no browser | Wrong ISO (need Local checkpoint); modeset mistake; no DRM |
+| Local blank / no browser | Wrong ISO; modeset mistake; no DRM |
 | Local no keyboard | `WLR_LIBINPUT_NO_DEVICES=1` or missing libinput backend |
 | UI up, empty replies | Model missing or still loading |
 | Phone cannot connect | Wrong IP / AP client isolation |

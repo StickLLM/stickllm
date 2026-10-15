@@ -1,6 +1,6 @@
 # StickLLM v0.3.6 ISO — verify after download from Google Drive
 # File: stickllm-amd-rtx3090-v0.3.6.hybrid.iso
-# Folder: StickLLM-releases (same Google Drive folder as v0.2)
+# Public current ship in StickLLM-releases Drive folder (see README)
 #
 # Windows (PowerShell):
 #   (Get-FileHash .\stickllm-amd-rtx3090-v0.3.6.hybrid.iso -Algorithm SHA256).Hash
