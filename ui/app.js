@@ -1,2184 +1,1358 @@
 (() => {
-  const log = document.getElementById("log");
-  const form = document.getElementById("composer");
-  const input = document.getElementById("input");
-  const send = document.getElementById("send");
-  const statusLine = document.getElementById("statusLine");
-  const sessionModeEl = document.getElementById("sessionMode");
-  const apiHint = document.getElementById("apiHint");
-  const webToggle = document.getElementById("webToggle");
-  const modelsBtn = document.getElementById("modelsBtn");
-  const chatsBtn = document.getElementById("chatsBtn");
-  const settingsBtn = document.getElementById("settingsBtn");
-  const pairBtn = document.getElementById("pairBtn");
-  const modelsDialog = document.getElementById("modelsDialog");
-  const chatsDialog = document.getElementById("chatsDialog");
-  const settingsDialog = document.getElementById("settingsDialog");
-  const chatsList = document.getElementById("chatsList");
-  const modelsBody = document.getElementById("modelsBody");
-  const settingsBody = document.getElementById("settingsBody");
-  const catalogList = document.getElementById("catalogList");
-  const pairDialog = document.getElementById("pairDialog");
-  const pairForm = document.getElementById("pairForm");
-  const pairCode = document.getElementById("pairCode");
-  const pairErr = document.getElementById("pairErr");
-  const netStatus = document.getElementById("netStatus");
-  const wifiSsid = document.getElementById("wifiSsid");
-  const wifiPass = document.getElementById("wifiPass");
-  const wifiConnect = document.getElementById("wifiConnect");
-  const connectPair = document.getElementById("connectPair");
-  const connectModel = document.getElementById("connectModel");
-  const connectUrl = document.getElementById("connectUrl");
+"use strict";
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const app = $("#app");
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const TOKEN_KEY = "stickllm_pair_token";
+let token = localStorage.getItem(TOKEN_KEY) || "";
+let isLocalMode = false;
+let sessionMode = "ephemeral";
+let sessionModeBusy = false;
+let activeChatId = null;
+let lastRemintId = null;
+let lastCatalog = [];
+let selectedModelId = null;
+let dlPollTimer = null;
+let vaultBrowsePath = "";
+let vaultPickerMount = "";
+let vaultBrowseBlobPath = "";
+const messages = [{
+  role: "system",
+  content: "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
+}];
+const state = {
+  mode: "ephemeral", vaultOpen: false, web: true, theme: "dark",
+  chats: [], ephemeral: [], current: null, attach: [],
+};
 
-  const API_BASE = window.STICKLLM_API || "";
-  const TOKEN_KEY = "stickllm_pair_token";
-  let token = localStorage.getItem(TOKEN_KEY) || "";
-  let isLocalMode = false;
-  let dlProgress = document.getElementById("dlProgress");
-  let dlProgressLabel = document.getElementById("dlProgressLabel");
-  let dlProgressFill = document.getElementById("dlProgressFill");
-  let dlProgressBar = document.getElementById("dlProgressBar");
-  let dlProgressMeta = document.getElementById("dlProgressMeta");
-  let lastDownload = {};
-  let dlPollTimer = null;
-  // null = not seeded yet (avoid re-announcing an old remint on kiosk refresh)
-  let lastRemintId = null;
-  let sessionMode = "ephemeral";
-  let sessionModeBusy = false;
-  let activeChatId = null;
-  let vaultPickerDevice = null;
-  let vaultBrowsePath = "";
-  let vaultBrowseHasBlob = false;
-  let vaultBrowseBlobPath = "";
-  let selectedModelId = null;
-  let lastCatalog = [];
-
-  function authHeaders(extra = {}) {
-    const h = {
-      "X-StickLLM-Client": "ui",
-      ...extra,
-    };
-    if (token) h.Authorization = `Bearer ${token}`;
-    return h;
+function authHeaders(extra = {}) {
+  const h = { "X-StickLLM-Client": "ui", ...extra };
+  if (token) h.Authorization = `Bearer ${token}`;
+  return h;
+}
+function clearPairSession() {
+  token = ""; localStorage.removeItem(TOKEN_KEY);
+}
+async function pairStatus() {
+  const r = await fetch("/api/pair/status", { cache: "no-store" });
+  return r.json();
+}
+async function control(action, params = {}) {
+  const r = await fetch("/api/control", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ action, params }),
+  });
+  if (r.status === 401) {
+    clearPairSession();
+    toast("Pair required — enter the code from the stick screen");
+    openSettings("devices");
+    throw new Error("Pair required");
   }
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
+  return j;
+}
 
-  function applyLocalChrome(local) {
-    isLocalMode = !!local;
-    // Pair always remints a LAN code; stick shows it in chat, LAN opens enter-code.
-    if (pairBtn) {
-      pairBtn.hidden = false;
-      pairBtn.title = isLocalMode
-        ? "Unpair LAN browsers and show a new pair code"
-        : "Mint a new pair code on the stick and enter it here";
-    }
-    if (input && isLocalMode) {
-      input.placeholder = "Ask anything";
-    }
-    refreshSessionHints();
-  }
+let tt;
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(tt); tt = setTimeout(() => (t.hidden = true), 2800);
+}
 
-  function refreshSessionHints() {
-    if (!apiHint) return;
-    if (isLocalMode) {
-      apiHint.textContent = "this screen — no pair; LAN clients pair";
-    } else {
-      apiHint.textContent = token ? "session active" : "pair if prompted";
-    }
-  }
-  refreshSessionHints();
+function setTheme(t) {
+  state.theme = t; document.documentElement.dataset.theme = t;
+  $$("#themeSeg button").forEach((b) => b.classList.toggle("on", b.dataset.theme === t));
+}
+$("#themeBtn").onclick = () => setTheme(state.theme === "dark" ? "light" : "dark");
+$$("#themeSeg button").forEach((b) => (b.onclick = () => setTheme(b.dataset.theme)));
 
-  function renderConnect(j) {
-    const c = j.connect || {};
-    if (connectPair) {
-      connectPair.textContent =
-        c.pair_code ||
-        (isLocalMode ? "…" : "(see stick screen)") ||
-        "…";
-    }
-    if (connectUrl) {
-      const url = c.url || (c.ip ? `http://${c.ip}/` : "") || c.local_url || "";
-      connectUrl.textContent = url || "…";
-      if (url && /^https?:\/\//i.test(url)) {
-        connectUrl.href = url;
-        connectUrl.removeAttribute("aria-disabled");
-      } else {
-        connectUrl.href = "#";
-        connectUrl.setAttribute("aria-disabled", "true");
+function applyModeUi(m) {
+  state.mode = m; sessionMode = m;
+  $$("[data-mode]").forEach((b) => {
+    const on = b.dataset.mode === m;
+    b.classList.toggle("on", on); b.setAttribute("aria-checked", on);
+  });
+  $("#modeHint").textContent = m === "vault"
+    ? "Chats are saved in your encrypted vault."
+    : "Nothing is written to disk. Chats are lost at reboot.";
+  $("#chatWhere").textContent = m === "vault"
+    ? "Vault: saved encrypted on the host SSD."
+    : "Ephemeral: in memory only, gone at reboot.";
+  $("#composerNote").textContent = m === "vault"
+    ? "Vault session · runs locally"
+    : "Ephemeral · runs locally";
+}
+
+async function setSessionMode(m) {
+  const next = m === "vault" ? "vault" : "ephemeral";
+  const prev = sessionMode;
+  if (sessionModeBusy) return;
+  sessionModeBusy = true;
+  try {
+    if (next === "vault") {
+      let vault = {};
+      try { vault = await control("vault_status"); } catch (_) {}
+      const st = String(vault.status || "").toLowerCase();
+      if (st === "absent" || !st) {
+        applyModeUi(prev);
+        toast("No vault yet — create or attach one in Storage");
+        openSettings("storage");
+        return;
       }
-    }
-    if (connectModel) {
-      let name = (c.model || "").trim();
-      const none =
-        !name ||
-        name === "…" ||
-        /^none\b/i.test(name) ||
-        /^loading/i.test(name);
-      if (j.llama_ok) {
-        if (none) {
-          const path = (c.model_path || "").trim();
-          name = path ? path.split(/[/\\]/).pop() : "ready";
-        }
-        connectModel.textContent = name;
-      } else if (none) {
-        connectModel.textContent = "none — Activate in Models";
-      } else {
-        connectModel.textContent = `${name} (loading)`;
+      if (!(st === "unlocked" || vault.mounted)) {
+        applyModeUi(prev);
+        toast("Unlock the vault first");
+        openSettings("storage");
+        $("#vaultPass")?.focus();
+        return;
       }
+      state.vaultOpen = true;
+      setVaultChrome(true);
     }
-    renderSshCredentials(c);
-  }
-
-  function renderSshCredentials(connect) {
-    const panel = document.getElementById("sshCredPanel");
-    const line = document.getElementById("sshCredLine");
-    if (!panel || !line) return;
-    const c = connect || {};
-    // Gateway only includes ssh_password on loopback (Test/Term with stickllm.ssh).
-    const pass = String(c.ssh_password || "").trim();
-    const enabled = !!c.ssh_enabled;
-    if (enabled && pass) {
-      const user = c.ssh_user || "stickllm";
-      const host = c.ssh_host || c.ip || "127.0.0.1";
-      panel.hidden = false;
-      line.textContent = `${user}@${host}  password: ${pass}`;
-    } else if (enabled && isLocalMode) {
-      panel.hidden = false;
-      line.textContent =
-        "SSH enabled — password not in this response yet (reload Settings, or check READY screen).";
-    } else {
-      panel.hidden = true;
-      line.textContent = "";
-    }
-  }
-
-  const messages = [
-    {
-      role: "system",
-      content:
-        "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
-    },
-  ];
-
-  function addBubble(role, text) {
-    const el = document.createElement("div");
-    el.className = `msg ${role}`;
-    const who = document.createElement("span");
-    who.className = "who";
-    who.textContent = role;
-    el.appendChild(who);
-    el.appendChild(document.createTextNode(text));
-    log.appendChild(el);
-    log.scrollTop = log.scrollHeight;
-    return el;
-  }
-
-  async function pairStatus() {
-    const r = await fetch("/api/pair/status", { cache: "no-store" });
-    return r.json();
-  }
-
-  function clearPairSession() {
-    token = "";
-    localStorage.removeItem(TOKEN_KEY);
-    refreshSessionHints();
-  }
-
-  async function sessionStillValid() {
-    if (!token) return false;
-    const t = await fetch("/api/storage", {
-      headers: authHeaders(),
-      cache: "no-store",
-    });
-    if (t.status === 401) {
-      clearPairSession();
-      return false;
-    }
-    return t.ok;
-  }
-
-  async function ensurePaired(force = false) {
-    const st = await pairStatus();
-    if (st.local) applyLocalChrome(true);
-    if (!st.require_pair || st.local) return true;
-    if (!force && token) {
-      if (await sessionStillValid()) return true;
-    }
-    pairErr.hidden = true;
-    pairCode.value = "";
-    pairDialog.showModal();
-    pairCode.focus();
-    return false;
-  }
-
-  async function remintPairCode() {
-    const r = await fetch("/api/pair/remint", {
+    const r = await fetch("/api/session-mode", {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: "{}",
-      cache: "no-store",
+      body: JSON.stringify({ mode: next }),
     });
-    let j = {};
-    try {
-      j = await r.json();
-    } catch (_) {}
-    if (!r.ok) {
-      throw new Error(j.message || j.error || `remint ${r.status}`);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || j.message || `HTTP ${r.status}`);
+    applyModeUi(next);
+    if (next === "ephemeral") {
+      state.vaultOpen = false;
+      setVaultChrome(false);
     }
-    return j;
+    toast(next === "vault" ? "Vault mode" : "Ephemeral mode");
+    renderConvs();
+    if (next === "vault") loadVaultChats().catch(() => {});
+  } catch (e) {
+    applyModeUi(prev);
+    toast("Mode switch failed: " + e.message);
+  } finally {
+    sessionModeBusy = false;
   }
+}
+$$("[data-mode]").forEach((b) => (b.onclick = () => setSessionMode(b.dataset.mode)));
 
-  function announceRemintFromConnect(connect) {
-    if (!isLocalMode) return;
-    const c = connect || {};
-    const rid = String(c.remint_id || "").trim();
-    const code = String(c.pair_code || "").trim();
-    // Seed on first local health so a later LAN remint is not treated as "old".
-    if (lastRemintId === null) {
-      lastRemintId = rid;
+function setVaultChrome(open) {
+  state.vaultOpen = open;
+  $("#vaultCard")?.classList.toggle("open", open);
+  if ($("#vcState")) $("#vcState").textContent = open ? "Vault unlocked" : "Vault locked";
+  if ($("#unlockForm")) $("#unlockForm").hidden = open;
+  if ($("#lockBtn2")) $("#lockBtn2").hidden = !open;
+  if ($("#lockBtn")) $("#lockBtn").hidden = !open;
+  if ($("#popVault")) $("#popVault").textContent = open ? "Unlocked" : "Locked";
+}
+
+async function lockVault() {
+  try {
+    const res = await control("vault_lock");
+    toast(res.ok !== false ? "Vault locked" : ("Lock failed: " + (res.error || "unknown")));
+    setVaultChrome(false);
+    if (sessionMode === "vault") await setSessionMode("ephemeral");
+  } catch (e) { toast("Lock failed: " + e.message); }
+}
+$("#lockBtn").onclick = () => lockVault();
+$("#lockBtn2").onclick = () => lockVault();
+
+const mobile = () => matchMedia("(max-width:820px)").matches;
+function toggleNav(force) {
+  if (mobile()) {
+    const open = force ?? !app.classList.contains("navOpen");
+    app.classList.toggle("navOpen", open); $("#scrim").hidden = !open;
+  } else app.classList.toggle("collapsed", force === undefined ? undefined : !force);
+}
+$("#menuBtn").onclick = () => toggleNav();
+$("#collapseBtn").onclick = () => (mobile() ? toggleNav(false) : app.classList.add("collapsed"));
+$("#scrim").onclick = () => toggleNav(false);
+
+function md(t) {
+  return esc(t).replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .split(/\n\n/).map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
+}
+function msgHtml(m) {
+  const src = m.src?.length
+    ? `<details class="sources"><summary>${m.src.length} web source${m.src.length > 1 ? "s" : ""}</summary>${m.src.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join("")}</details>`
+    : "";
+  const cls = m.r === "system" ? "system" : m.r;
+  const av = m.r === "ai" ? "S" : m.r === "system" ? "!" : "";
+  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${m.pending ? '<span class="typing"><i></i><i></i><i></i></span>' : md(m.t)}${src}</div></div>`;
+}
+function renderThread() {
+  const th = $("#thread"), c = state.current;
+  $("#chatTitle").textContent = c ? c.title : "New chat";
+  if (!c || !c.msgs.length) {
+    th.innerHTML = `<div class="empty"><span class="logo lg"></span><h2>What can I help with?</h2>
+      <p>Everything runs on this stick. ${state.mode === "vault" ? "Vault mode." : "Ephemeral — lost at reboot."}</p>
+      <div class="sugg"><button>Summarize a long article I paste in</button><button>Write a bash script to rename photos by date</button>
+      <button>Explain how LUKS encryption works</button><button>Draft a polite follow-up email</button></div></div>`;
+    $$(".sugg button", th).forEach((b) => (b.onclick = () => { $("#input").value = b.textContent; send(); }));
+    return;
+  }
+  th.innerHTML = `<div class="msgs">${c.msgs.map(msgHtml).join("")}</div>`;
+  th.scrollTop = th.scrollHeight;
+}
+function renderConvs() {
+  const list = $("#convList"); let html = "";
+  if (state.ephemeral.length) {
+    html += '<div class="convGroup">This session</div>';
+    html += state.ephemeral.map((c) =>
+      `<button class="conv ${state.current === c ? "on" : ""}" data-e="${c.id}"><span>${esc(c.title)}</span><span class="tag">temp</span></button>`
+    ).join("");
+  }
+  if (state.mode === "vault" && state.vaultOpen && state.chats.length) {
+    html += '<div class="convGroup">Saved in vault</div>';
+    html += state.chats.map((c) =>
+      `<button class="conv ${state.current && state.current.id === c.id ? "on" : ""}" data-v="${esc(c.id)}"><span>${esc(c.title || c.id)}</span></button>`
+    ).join("");
+  } else if (state.mode === "vault" && !state.vaultOpen) {
+    html += '<div class="convGroup">Saved chats</div><div class="convEmpty">Locked in the vault. <button class="link" id="unlockLink">Unlock</button></div>';
+  } else if (!state.ephemeral.length) {
+    html += '<div class="convEmpty">No chats yet</div>';
+  }
+  list.innerHTML = html;
+  $$("[data-e]", list).forEach((b) => (b.onclick = () => {
+    openChat(state.ephemeral.find((c) => String(c.id) === b.dataset.e));
+    if (mobile()) toggleNav(false);
+  }));
+  $$("[data-v]", list).forEach((b) => (b.onclick = () => {
+    openVaultChat(b.dataset.v);
+    if (mobile()) toggleNav(false);
+  }));
+  const ul = $("#unlockLink"); if (ul) ul.onclick = () => { openSettings("storage"); setTimeout(() => $("#vaultPass").focus(), 50); };
+}
+function openChat(c) { state.current = c; activeChatId = c?.id || null; renderThread(); renderConvs(); }
+function newChat() {
+  state.current = null; activeChatId = null;
+  messages.length = 1;
+  messages[0] = { role: "system", content: "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful." };
+  renderThread(); renderConvs(); $("#input").focus();
+}
+$("#newChatBtn").onclick = () => { newChat(); if (mobile()) toggleNav(false); };
+
+async function ensurePaired(force = false) {
+  try {
+    const st = await pairStatus();
+    if (st.local) { isLocalMode = true; return true; }
+    if (!st.require_pair) return true;
+    if (token && !force) {
+      const t = await fetch("/api/storage", { headers: authHeaders(), cache: "no-store" });
+      if (t.ok) return true;
+      if (t.status === 401) clearPairSession();
+    }
+    openSettings("devices");
+    toast("Enter the pair code from the stick screen");
+    return false;
+  } catch (_) { return true; }
+}
+
+function formatPerfBits(stats) {
+  if (!stats) return "";
+  const bits = [];
+  if (stats.genTps != null) bits.push(`${stats.genTps.toFixed(1)} tok/s`);
+  if (stats.promptTps != null) bits.push(`prompt ${stats.promptTps.toFixed(1)} tok/s`);
+  if (stats.genTok != null) bits.push(`${stats.genTok} tok`);
+  if (stats.ms != null) bits.push(`${(stats.ms / 1000).toFixed(1)}s`);
+  if (stats.est) bits.push("~est");
+  return bits.join(" · ");
+}
+function updatePerfStrip(stats) {
+  const text = formatPerfBits(stats);
+  // Bottom line under composer (under the composer) — primary place.
+  const bottom = $("#composerPerf");
+  if (bottom) {
+    bottom.textContent = text ? " · " + text : "";
+    bottom.hidden = !text;
+  }
+  // Keep a copy on the yellow TEST banner too.
+  const top = $("#testPerf");
+  if (top) {
+    top.textContent = text ? " · " + text : "";
+    top.hidden = !text;
+  }
+}
+function perfFromChatResponse(data, wallMs, replyText) {
+  const t = data?.timings || data?.llama_timings || {};
+  const genTps = Number(t.predicted_per_second ?? t.tokens_per_second ?? t.eval_per_second);
+  const promptTps = Number(t.prompt_per_second ?? t.prompt_tokens_per_second);
+  const genTok = Number(t.predicted_n ?? t.n_predicted ?? data?.usage?.completion_tokens);
+  const promptTok = Number(t.prompt_n ?? t.n_prompt ?? data?.usage?.prompt_tokens);
+  const predMs = Number(t.predicted_ms ?? t.eval_ms);
+  if (Number.isFinite(genTps) && genTps > 0) {
+    return {
+      genTps,
+      promptTps: Number.isFinite(promptTps) && promptTps > 0 ? promptTps : null,
+      genTok: Number.isFinite(genTok) ? genTok : null,
+      promptTok: Number.isFinite(promptTok) ? promptTok : null,
+      ms: Number.isFinite(predMs) ? predMs : wallMs,
+      est: false,
+    };
+  }
+  // Fallback: rough estimate if llama timings absent ( ~4 chars/token ).
+  const approxTok = Math.max(1, Math.round(String(replyText || "").length / 4));
+  const sec = Math.max(0.05, wallMs / 1000);
+  return {
+    genTps: approxTok / sec,
+    promptTps: null,
+    genTok: Number.isFinite(genTok) ? genTok : approxTok,
+    promptTok: Number.isFinite(promptTok) ? promptTok : null,
+    ms: wallMs,
+    est: true,
+  };
+}
+
+async function send() {
+  const inp = $("#input");
+  const text = inp.value.trim();
+  if (!text) return;
+  if (!(await ensurePaired())) return;
+  if (!state.current) {
+    const c = { id: Date.now(), title: text.slice(0, 40), msgs: [] };
+    state.ephemeral.unshift(c); state.current = c;
+  }
+  const c = state.current;
+  c.msgs.push({ r: "user", t: text });
+  const pend = { r: "ai", pending: true }; c.msgs.push(pend);
+  messages.push({ role: "user", content: text });
+  inp.value = ""; autosize(); renderThread(); renderConvs();
+  $("#sendBtn").disabled = true;
+  const t0 = performance.now();
+  try {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "stickllm", messages, stream: false, temperature: 0.7,
+        web: state.web ? "on" : "off",
+      }),
+    });
+    if (r.status === 401) {
+      clearPairSession();
+      pend.pending = false; pend.t = "Pair required — enter the code from the stick screen.";
+      pend.r = "system";
+      openSettings("devices");
       return;
     }
-    if (!rid || rid === lastRemintId) return;
-    lastRemintId = rid;
-    if (!/^\d{4,8}$/.test(code)) return;
-    addBubble(
-      "system",
-      `New PAIR CODE: ${code} — open the URL above on phone/desktop and enter this code. Previous paired browsers were unpaired.`
-    );
-    statusLine.textContent = `pair code ${code}`;
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try { const err = await r.json(); msg = err.message || err.error || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+    const data = await r.json();
+    const wallMs = performance.now() - t0;
+    let reply = data?.choices?.[0]?.message?.content?.trim() || "(empty response)";
+    const webInfo = data?.stickllm_web;
+    let src = [];
+    if (webInfo?.used && webInfo.results?.length) {
+      src = webInfo.results.slice(0, 3).map((x) => x.url).filter(Boolean);
+    }
+    messages.push({ role: "assistant", content: reply });
+    pend.pending = false; pend.t = reply; if (src.length) pend.src = src;
+    updatePerfStrip(perfFromChatResponse(data, wallMs, reply));
+    if (sessionMode === "vault" && state.vaultOpen) saveCurrentChat(true).catch(() => {});
+  } catch (e) {
+    pend.pending = false; pend.r = "system"; pend.t = "Error: " + e.message;
+  } finally {
+    $("#sendBtn").disabled = false; renderThread(); renderConvs(); $("#input").focus();
   }
+}
+$("#composer").onsubmit = (e) => { e.preventDefault(); send(); };
+const autosize = () => { const i = $("#input"); i.style.height = "auto"; i.style.height = Math.min(i.scrollHeight, 200) + "px"; };
+$("#input").addEventListener("input", autosize);
+$("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+$("#webToggle").onclick = () => {
+  state.web = !state.web;
+  $("#webToggle").setAttribute("aria-pressed", state.web);
+  $("#webDefault").checked = state.web;
+};
+$("#webDefault").onchange = (e) => {
+  state.web = e.target.checked;
+  $("#webToggle").setAttribute("aria-pressed", state.web);
+};
 
-  async function issuePairFromStick() {
-    statusLine.textContent = "minting pair code…";
+$("#statusChip").onclick = (e) => {
+  e.stopPropagation();
+  const p = $("#statusPop"); p.hidden = !p.hidden;
+  $("#statusChip").setAttribute("aria-expanded", !p.hidden);
+};
+document.addEventListener("click", (e) => {
+  if (!$("#statusPop").contains(e.target) && e.target !== $("#statusChip"))
+    $("#statusPop").hidden = true;
+});
+
+let lastFocus;
+function openSettings(sec = "general") {
+  lastFocus = document.activeElement; $("#settings").hidden = false; $("#statusPop").hidden = true;
+  if (mobile()) toggleNav(false);
+  showSec(sec, !mobile() || sec !== "__nav");
+  if (sec === "models") refreshModels().catch((e) => toast(e.message));
+  if (sec === "storage") refreshStorage().catch((e) => toast(e.message));
+  if (sec === "devices" || sec === "network" || sec === "system" || sec === "about")
+    refreshStatus().catch(() => {});
+  if (sec === "chats") renderSaved();
+}
+function showSec(sec, open = true) {
+  $$(".sec").forEach((s) => (s.hidden = s.id !== "sec-" + sec));
+  $$(".setNav [data-sec]").forEach((b) => {
+    b.classList.toggle("on", b.dataset.sec === sec);
+    b.setAttribute("aria-current", b.dataset.sec === sec ? "page" : "false");
+  });
+  $("#secTitle").innerHTML = $("#sec-" + sec).dataset.title;
+  $(".modal:not(.small):not(.fp)")?.classList.toggle("secOpen", open);
+  $(".setScroll").scrollTop = 0;
+}
+function closeSettings() { $("#settings").hidden = true; lastFocus?.focus?.(); }
+$$("[data-open]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openSettings(b.dataset.open); }));
+$$(".setNav [data-sec]").forEach((b) => (b.onclick = () => showSec(b.dataset.sec)));
+$$("[data-sec-go]").forEach((b) => (b.onclick = () => showSec(b.dataset.secGo)));
+$("#setClose").onclick = closeSettings;
+$("#setBack").onclick = () => $(".modal:not(.small):not(.fp)")?.classList.remove("secOpen");
+$("#settings").onclick = (e) => { if (e.target.id === "settings") closeSettings(); };
+
+let cfCb;
+function confirmBox({ title, text, word, ok = "Delete", extra, cb }) {
+  $("#cfTitle").textContent = title; $("#cfText").textContent = text; $("#cfWord").textContent = word;
+  $("#cfOk").textContent = ok; $("#cfOk").disabled = true; $("#cfInput").value = "";
+  $("#cfExtra").hidden = !extra; $("#cfExtra").textContent = extra || "";
+  cfCb = cb; $("#confirm").hidden = false; setTimeout(() => $("#cfInput").focus(), 20);
+}
+$("#cfInput").oninput = () => ($("#cfOk").disabled = $("#cfInput").value.trim() !== $("#cfWord").textContent);
+$("#cfInput").onkeydown = (e) => { if (e.key === "Enter" && !$("#cfOk").disabled) $("#cfOk").click(); };
+$("#cfCancel").onclick = () => ($("#confirm").hidden = true);
+$("#cfOk").onclick = () => { $("#confirm").hidden = true; cfCb?.(); };
+
+function fmtBytes(n) {
+  if (!n || n < 0) return "—";
+  const gb = n / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  return `${(n / 1024 ** 2).toFixed(0)} MB`;
+}
+
+function renderModelsList() {
+  const list = $("#modelList");
+  if (!lastCatalog.length) {
+    list.innerHTML = '<div class="row"><small>No catalog entries. Refresh after pairing.</small></div>';
+    return;
+  }
+  list.innerHTML = lastCatalog.map((m) => {
+    const id = m.id;
+    const name = m.name || id;
+    const q = m.quant || m.q || "";
+    const gbRaw = m.approx_size_gb ?? m.size_gb ?? (m.bytes != null ? m.bytes / 1e9 : null);
+    const gb = gbRaw != null && gbRaw !== "" ? Number(gbRaw).toFixed(Number(gbRaw) >= 10 ? 1 : 2) : "?";
+    const have = !!m.installed;
+    const active = !!m.active;
+    const run = !!m.running;
+    const loading = active && !run;
+    const rec = !!m.recommended;
+    const sel = id === selectedModelId;
+    const sizeBit = have ? `${gb} GB on disk` : `~${gb} GB`;
+    return `<label class="model ${sel ? "sel" : ""}">
+      <input type="radio" name="model" value="${esc(id)}" ${sel ? "checked" : ""}>
+      <div class="mi"><b>${esc(name)}</b> <span class="muted small">${esc(q)}</span>
+      <small>${sizeBit}${have ? "" : " · not downloaded"}${m.runnable === false && have ? " · won't fit" : ""}</small></div>
+      ${run ? '<span class="pill ok">running</span>' : ""}${loading ? '<span class="pill warn">loading</span>' : ""}${rec ? '<span class="pill acc">recommended</span>' : ""}${!have ? '<span class="pill">download</span>' : ""}
+    </label>`;
+  }).join("");
+  $$("#modelList input").forEach((i) => (i.onchange = () => {
+    selectedModelId = i.value; renderModelsList(); syncModelActions();
+  }));
+  syncModelActions();
+}
+function syncModelActions() {
+  const m = lastCatalog.find((x) => x.id === selectedModelId);
+  if (!m) { $("#selHint").textContent = "Select a model"; return; }
+  $("#selHint").textContent = `Selected: ${m.name || m.id}`;
+  $("#dlModel").hidden = !!m.installed;
+  $("#activate").hidden = !m.installed || m.runnable === false;
+  $("#delModel").hidden = !m.deletable;
+  $("#activate").textContent = m.running ? "Reload with these settings" : (m.active ? "Still loading… (tap to retry)" : "Load model");
+  const max = Number(m.ctx_max || m.ctxMax || 32768);
+  $("#ctx").max = max;
+  if (+$("#ctx").value > max) $("#ctx").value = max;
+  $("#ctxVal").textContent = (+$("#ctx").value).toLocaleString();
+}
+async function refreshModels() {
+  if (!(await ensurePaired())) return;
+  const st = await control("status");
+  lastCatalog = st.catalog || [];
+  const probe = st.probe || {};
+  const run = lastCatalog.find((m) => m.running || m.active) || lastCatalog.find((m) => m.installed);
+  if (!selectedModelId && run) selectedModelId = run.id;
+  if (!selectedModelId && lastCatalog[0]) selectedModelId = lastCatalog[0].id;
+  const sum = $("#sec-models .summary");
+  if (sum) {
+    const name = st.connect?.model || run?.name || "none";
+    const rec = probe.recommend_id || probe.recommend || "—";
+    $$("#sec-models .summary b")[0] && ($$("#sec-models .summary b")[0].textContent = name);
+    const pill = $("#sec-models .summary .pill");
+    if (pill) {
+      const activeLoading = lastCatalog.some((m) => m.active && !m.running);
+      if (st.llama_ok || st.llama?.status === "ok") {
+        pill.textContent = "running";
+        pill.className = "pill ok";
+      } else if (activeLoading) {
+        pill.textContent = "loading";
+        pill.className = "pill warn";
+      } else {
+        pill.textContent = "not loaded";
+        pill.className = "pill";
+      }
+    }
+    if ($$("#sec-models .summary b")[1]) $$("#sec-models .summary b")[1].textContent = String(rec);
+    if ($("#modelDir")) $("#modelDir").textContent = st.download_dir || st.models_dir || "…";
+  }
+  renderDownload(st.download || {});
+  renderModelsList();
+}
+function renderDownload(d) {
+  const box = $("#dlBox");
+  const state_ = d?.state || "idle";
+  if (!["downloading", "verifying", "starting", "failed", "done"].includes(state_)) {
+    box.hidden = true; return;
+  }
+  box.hidden = false;
+  $("#dlName").textContent = (state_ === "done" ? "Downloaded " : "Downloading ") + (d.name || d.id || "model");
+  const pct = d.percent == null ? (state_ === "done" ? 100 : 10) : Number(d.percent);
+  $("#dlFill").style.width = Math.max(2, Math.min(100, pct)) + "%";
+  $("#dlPct").textContent = Math.round(pct) + "%";
+  $("#dlMeta").textContent = d.note || `${fmtBytes(d.bytes_done)} / ${fmtBytes(d.bytes_total)}`;
+}
+function startDlPoll() {
+  stopDlPoll();
+  dlPollTimer = setInterval(async () => {
+    try {
+      const st = await control("status");
+      renderDownload(st.download || {});
+      const s = st.download?.state;
+      if (!s || s === "idle" || s === "done" || s === "failed") {
+        stopDlPoll();
+        lastCatalog = st.catalog || lastCatalog;
+        renderModelsList();
+      }
+    } catch (_) {}
+  }, 1500);
+}
+function stopDlPoll() { if (dlPollTimer) { clearInterval(dlPollTimer); dlPollTimer = null; } }
+
+$("#ctx").addEventListener("input", () => {
+  $("#ctxVal").textContent = (+$("#ctx").value).toLocaleString();
+});
+$$("#presets button").forEach((b) => (b.onclick = () => {
+  const map = { fast: 4096, balanced: 8192, long: 32768 };
+  const v = map[b.dataset.preset] || 8192;
+  $("#ctx").value = Math.min(v, +$("#ctx").max);
+  $("#ctxVal").textContent = (+$("#ctx").value).toLocaleString();
+  $$("#presets button").forEach((x) => x.classList.toggle("on", x === b));
+  toast("Context preset → " + $("#ctx").value + " (sampling knobs greyed)");
+}));
+$("#probeBtn").onclick = async () => {
+  try { toast("Probing GPU…"); await control("model_probe"); await refreshModels(); toast("Probe done"); }
+  catch (e) { toast(e.message); }
+};
+$("#refreshCatalog").onclick = () => refreshModels().then(() => toast("Catalog refreshed")).catch((e) => toast(e.message));
+let loadPollTimer = null;
+function stopLoadPoll() { if (loadPollTimer) { clearInterval(loadPollTimer); loadPollTimer = null; } }
+function startLoadPoll(expectName) {
+  stopLoadPoll();
+  let ticks = 0;
+  loadPollTimer = setInterval(async () => {
+    ticks += 1;
+    try {
+      await refreshStatus();
+      await refreshModels().catch(() => {});
+      const r = await fetch("/api/health", { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (j.llama_ok) {
+        stopLoadPoll();
+        toast("Model ready" + (expectName ? `: ${expectName}` : ""));
+        await refreshStatus();
+        return;
+      }
+      // Soft progress while llama is still coming up (weights load has no exact %).
+      const soft = Math.min(92, 8 + ticks * 3);
+      setChipLoad(true, soft, expectName);
+      if (ticks > 120) { stopLoadPoll(); toast("Still loading — check Models"); }
+    } catch (_) {}
+  }, 2000);
+}
+function setChipLoad(loading, pct, name) {
+  const chip = $("#statusChip");
+  const bar = $("#chipLoad");
+  const fill = $("#chipLoadFill");
+  if (!chip) return;
+  chip.classList.toggle("loading", !!loading);
+  chip.classList.toggle("ready", !loading && !!name && name !== "none");
+  if (bar) bar.hidden = !loading;
+  if (fill && loading) fill.style.width = Math.max(4, Math.min(100, Number(pct) || 10)) + "%";
+  if ($("#chipModel")) {
+    if (loading) {
+      const label = name && name !== "none" ? name : "model";
+      const p = pct != null ? ` ${Math.round(pct)}%` : "";
+      $("#chipModel").textContent = `loading ${label}${p}`;
+    }
+  }
+  $("#statusChip .dot")?.classList.toggle("ok", !loading);
+  $("#statusChip .dot")?.classList.toggle("busy", !!loading);
+}
+
+$("#activate").onclick = async () => {
+  const m = lastCatalog.find((x) => x.id === selectedModelId);
+  if (!m) return toast("Select a model");
+  try {
+    const name = m.name || m.id;
+    setChipLoad(true, 5, name);
+    toast("Loading " + name + "…");
+    const res = await control("model_activate", { id: m.id, ctx_size: +$("#ctx").value });
+    if (!res.ok && res.error) throw new Error(res.error);
+    if (res.running || res.load_state === "running") {
+      stopLoadPoll();
+      setChipLoad(false, 100, name);
+      toast("Model running: " + name);
+    } else {
+      toast("Model loading into GPU/RAM…");
+      startLoadPoll(name);
+    }
+    await refreshModels(); await refreshStatus();
+  } catch (e) {
+    stopLoadPoll();
+    setChipLoad(false, 0, null);
+    toast(e.message);
+  }
+};
+$("#dlModel").onclick = async () => {
+  const m = lastCatalog.find((x) => x.id === selectedModelId);
+  if (!m) return;
+  try {
+    const res = await control("model_download", { id: m.id });
+    renderDownload(res.download || { state: "starting", id: m.id, name: m.name });
+    startDlPoll(); toast("Download started");
+  } catch (e) { toast(e.message); }
+};
+$("#delModel").onclick = () => {
+  const m = lastCatalog.find((x) => x.id === selectedModelId);
+  if (!m?.deletable) return toast("This model cannot be deleted");
+  confirmBox({
+    title: "Delete model files?",
+    text: `Permanently delete ${m.name || m.id}?`,
+    word: "ARE YOU SURE", ok: "Delete files",
+    cb: async () => {
+      try {
+        await control("model_delete", { id: m.id, confirm: "ARE YOU SURE" });
+        toast("Deleted"); await refreshModels();
+      } catch (e) { toast(e.message); }
+    },
+  });
+};
+
+async function refreshStorage() {
+  if (!(await ensurePaired())) return;
+  const st = await control("status");
+  const v = st.vault || {};
+  const open = String(v.status || "").toLowerCase() === "unlocked" || !!v.mounted;
+  setVaultChrome(open);
+  if ($("#vcSub")) {
+    $("#vcSub").textContent = v.blob || v.root || v.path || (v.status || "absent");
+  }
+  const wipe = Number(v.wipe_after_failed_unlocks || 0);
+  if ($("#wipeN") && document.activeElement !== $("#wipeN")) $("#wipeN").value = String(wipe);
+  await refreshDrivesLive();
+  await refreshMovableLive();
+}
+async function refreshDrivesLive() {
+  try {
+    const res = await control("vault_devices");
+    // Backend returns devices[] with selectable flags (+ separate mountable[]).
+    const devices = Array.isArray(res.devices) ? res.devices : [];
+    const sel = Array.isArray(res.selectable)
+      ? res.selectable
+      : devices.filter((d) => d && d.selectable);
+    const mountable = Array.isArray(res.mountable) ? res.mountable : [];
+    const blocked = Array.isArray(res.blocked_disks) ? res.blocked_disks : [];
+    const box = $("#drives");
+    if (!sel.length && !mountable.length && !blocked.length) {
+      box.innerHTML = '<div class="row"><small>No browsable mounts. Mount a clear host volume, or unlock encrypted disks in the host OS.</small></div>';
+      return;
+    }
+    let html = "";
+    for (const d of sel) {
+      const path = d.mount_path || d.path || "";
+      const free = d.free_gb != null
+        ? `${d.free_gb} GiB free`
+        : (d.avail ? `${d.avail} free` : "");
+      const warn = d.warn ? `<small class="muted">${esc(d.warn)}</small>` : "";
+      html += `<button class="drive" data-path="${esc(path)}" type="button">
+        <div class="dh"><b>${esc(d.label || path)}</b></div>
+        <small class="mono">${esc(path)}</small>
+        <small>${esc(free)} · ${esc(d.kind || d.fstype || d.fs || "")}</small>
+        ${warn}
+        <div><span class="pill ok">mounted</span></div></button>`;
+    }
+    for (const d of mountable) {
+      const dev = d.device || d.path || "";
+      const sz = d.size_gb != null ? `${d.size_gb} GiB · ` : "";
+      html += `<div class="drive">
+        <div class="dh"><b>${esc(d.label || dev)}</b></div>
+        <small class="mono">${esc(dev)}</small>
+        <small>${esc(sz)}${esc(d.fstype || "")} · never formats</small>
+        <div><button class="btn sm" data-mountdev="${esc(dev)}" type="button">Mount</button></div></div>`;
+    }
+    for (const d of blocked) {
+      const path = d.path || d.device || "";
+      const sz = d.size_gb != null ? `${d.size_gb} GiB · ` : "";
+      html += `<div class="drive blocked" aria-disabled="true">
+        <div class="dh"><b>${esc(d.model || path || "Disk")}</b></div>
+        <small class="mono">${esc(path)}</small>
+        <small>${esc(sz)}${esc(d.reason || "Not mountable")}</small>
+        <div><span class="pill">unavailable</span></div></div>`;
+    }
+    box.innerHTML = html;
+    $$("#drives [data-path]").forEach((el) => (el.onclick = () => {
+      vaultPickerMount = el.dataset.path;
+      vaultBrowsePath = el.dataset.path;
+      $("#vaultPath").value = el.dataset.path;
+      openLivePicker(el.dataset.path);
+    }));
+    $$("[data-mountdev]").forEach((b) => (b.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        toast("Mounting…");
+        const res = await control("vault_mount", {
+          device: b.dataset.mountdev,
+          confirm: "MOUNT-HOST",
+        });
+        if (res && res.ok === false) {
+          throw new Error(res.error || res.stderr || "Mount failed");
+        }
+        await refreshDrivesLive();
+        const mp = res.mount_path || "";
+        toast(res.already_mounted ? (`Already mounted${mp ? " at " + mp : ""}`) : (`Mounted${mp ? " at " + mp : ""}`));
+      } catch (err) { toast("Mount failed: " + (err.message || err)); }
+    }));
+  } catch (e) {
+    $("#drives").innerHTML = `<div class="row"><small>${esc(e.message)}</small></div>`;
+  }
+}
+async function openLivePicker(startPath) {
+  $("#picker").hidden = false;
+  $("#fpTitle").textContent = "Choose folder / vault";
+  $("#fpFileTools").hidden = true;
+  vaultBrowsePath = startPath;
+  await browseLive(startPath);
+}
+async function browseLive(path) {
+  try {
+    const res = await control("vault_list_dirs", { path });
+    vaultBrowsePath = res.path || path;
+    const parent = res.parent || "";
+    $("#fpUp").disabled = !parent;
+    $("#fpBackB").disabled = true; $("#fpFwd").disabled = true;
+    $("#fpCrumbs").innerHTML = `<button class="crumbBtn" type="button">${esc(vaultBrowsePath)}</button>`;
+    $("#fpSide").innerHTML = '<div class="fpSideLab">Current</div><div class="row"><small class="mono">' + esc(vaultBrowsePath) + "</small></div>";
+    const dirs = res.dirs || res.entries || [];
+    const files = res.files || [];
+    let rows = "";
+    for (const d of dirs) {
+      const name = typeof d === "string" ? d : d.name;
+      const p = typeof d === "string" ? (vaultBrowsePath.replace(/\/$/, "") + "/" + name) : (d.path || vaultBrowsePath + "/" + name);
+      rows += `<div class="fpRow" data-dir="${esc(p)}" role="option"><span class="fpName dir"><span class="nm">${esc(name)}</span></span><span class="muted">folder</span><span class="muted">—</span></div>`;
+    }
+    for (const f of files) {
+      const name = typeof f === "string" ? f : f.name;
+      const p = typeof f === "string" ? (vaultBrowsePath.replace(/\/$/, "") + "/" + name) : (f.path || vaultBrowsePath + "/" + name);
+      const isVault = /stickllm-vault\.img$/i.test(name);
+      const isModel = /\.gguf$/i.test(name);
+      if (!isVault && !isModel) continue;
+      rows += `<div class="fpRow" data-file="${esc(p)}" data-kind="${isVault ? "vault" : "model"}" role="option"><span class="fpName ${isVault ? "vault" : "model"}"><span class="nm">${esc(name)}</span>${isVault ? '<span class="pill acc">vault</span>' : '<span class="pill">model</span>'}</span><span class="muted">file</span><span class="muted">—</span></div>`;
+    }
+    $("#fpList").innerHTML = rows || '<div class="fpEmpty">Empty / no vault or model files here</div>';
+    $("#fpSel").textContent = vaultBrowsePath;
+    $("#fpOk").disabled = false; $("#fpOk").textContent = "Use this folder";
+    $$("#fpList [data-dir]").forEach((r) => {
+      r.ondblclick = () => browseLive(r.dataset.dir);
+      r.onclick = () => {
+        $$("#fpList .fpRow").forEach((x) => x.classList.remove("sel"));
+        r.classList.add("sel");
+        $("#fpSel").textContent = r.dataset.dir;
+        $("#fpOk").dataset.path = r.dataset.dir;
+        $("#fpOk").dataset.kind = "folder";
+      };
+    });
+    $$("#fpList [data-file]").forEach((r) => {
+      r.onclick = () => {
+        $$("#fpList .fpRow").forEach((x) => x.classList.remove("sel"));
+        r.classList.add("sel");
+        $("#fpSel").textContent = r.dataset.file;
+        $("#fpOk").dataset.path = r.dataset.file;
+        $("#fpOk").dataset.kind = r.dataset.kind;
+        $("#fpOk").textContent = r.dataset.kind === "vault" ? "Open vault" : "Use folder";
+      };
+      r.ondblclick = () => { r.click(); $("#fpOk").click(); };
+    });
+    $("#fpOk").dataset.path = vaultBrowsePath;
+    $("#fpOk").dataset.kind = "folder";
+    vaultBrowseBlobPath = (files || []).map((f) => typeof f === "string" ? f : f.name).some((n) => /stickllm-vault\.img$/i.test(n))
+      ? vaultBrowsePath.replace(/\/$/, "") + "/stickllm-vault.img" : "";
+  } catch (e) {
+    $("#fpList").innerHTML = `<div class="fpEmpty">${esc(e.message)}</div>`;
+  }
+}
+$("#fpUp").onclick = async () => {
+  try {
+    const cur = await control("vault_list_dirs", { path: vaultBrowsePath });
+    if (cur.parent) await browseLive(cur.parent);
+  } catch (e) { toast(e.message); }
+};
+$("#fpCancel").onclick = () => ($("#picker").hidden = true);
+$("#fpClose").onclick = () => ($("#picker").hidden = true);
+$("#picker").onclick = (e) => { if (e.target.id === "picker") $("#picker").hidden = true; };
+$("#fpOk").onclick = async () => {
+  const path = $("#fpOk").dataset.path || vaultBrowsePath;
+  const kind = $("#fpOk").dataset.kind || "folder";
+  $("#picker").hidden = true;
+  if (kind === "vault") {
+    try {
+      const folder = path.replace(/\/stickllm-vault\.img$/i, "");
+      const res = await control("vault_attach", { path: folder });
+      if (!res.ok) throw new Error(res.error || "attach failed");
+      $("#vcSub").textContent = res.blob || path;
+      $("#vaultPath").value = folder;
+      toast("Vault attached — enter passcode to unlock");
+      $("#vaultPass").focus();
+      await refreshStorage();
+    } catch (e) { toast(e.message); }
+  } else {
+    $("#vaultPath").value = path;
+    toast("Folder selected for vault create");
+  }
+};
+$("#fpNew").onclick = async () => {
+  const name = prompt("New folder name", "stickllm");
+  if (!name) return;
+  try {
+    const res = await control("vault_mkdir", { path: vaultBrowsePath, name: name.trim() });
+    if (!res.ok) throw new Error(res.error || "mkdir failed");
+    await browseLive(res.path || vaultBrowsePath);
+    toast("Folder created");
+  } catch (e) { toast(e.message); }
+};
+$("#fpBackB").onclick = null; $("#fpFwd").onclick = null;
+
+$("#refreshDrives").onclick = () => refreshDrivesLive().then(() => toast("Drives refreshed"));
+$("#actClaim").onclick = () => {
+  confirmBox({
+    title: "Use free space on the stick?",
+    text: "Creates a StickLLM data partition on this StickLLM USB stick only. Your own drives are never partitioned.",
+    word: "USE-STICK-SPACE", ok: "Use free space",
+    cb: async () => {
+      try { toast("Claiming…"); await control("usb_claim"); toast("Claim finished"); await refreshStorage(); }
+      catch (e) { toast(e.message); }
+    },
+  });
+};
+$("#actFindVault").onclick = async () => {
+  try {
+    toast("Searching…");
+    const res = await control("vault_find");
+    const box = $("#findHits"); box.hidden = false;
+    const hits = res.hits || res.found || (res.best ? [res.best] : []);
+    if (!hits.length && !res.blob && !res.path) {
+      box.innerHTML = `<div class="row"><small>${esc(res.note || "No stickllm-vault.img found")}</small></div>`;
+      return;
+    }
+    const best = res.best || hits[0] || { blob: res.blob || res.path };
+    const blob = best.blob || best.path || "";
+    box.innerHTML = `<div class="row"><div><b class="mono">${esc(blob)}</b><small>Found vault</small></div>
+      <button class="btn sm" id="hitOpenVault" type="button">Attach</button></div>`;
+    $("#hitOpenVault").onclick = async () => {
+      try {
+        const folder = String(blob).replace(/\/stickllm-vault\.img$/i, "");
+        await control("vault_attach", { path: folder });
+        $("#vcSub").textContent = blob; $("#vaultPath").value = folder;
+        toast("Attached — unlock with passcode"); $("#vaultPass").focus();
+      } catch (e) { toast(e.message); }
+    };
+  } catch (e) { toast(e.message); }
+};
+$("#actFindModels").onclick = async () => {
+  try {
+    const res = await control("vault_find_models");
+    const box = $("#findHits"); box.hidden = false;
+    const hits = res.models || res.hits || [];
+    if (!hits.length) {
+      box.innerHTML = '<div class="row"><small>No .gguf models found on scanned mounts.</small></div>';
+      return;
+    }
+    box.innerHTML = hits.slice(0, 12).map((m) =>
+      `<div class="row"><div><b>${esc(m.name || m.path)}</b><small class="mono">${esc(m.path || "")}</small></div></div>`
+    ).join("");
+    toast(`Found ${hits.length} model(s)`);
+  } catch (e) { toast(e.message); }
+};
+$("#pickVault").onclick = () => {
+  if (vaultBrowsePath || $("#vaultPath").value) openLivePicker($("#vaultPath").value || vaultBrowsePath || "/mnt");
+  else refreshDrivesLive().then(() => {
+    const first = $("#drives [data-path]");
+    if (first) openLivePicker(first.dataset.path);
+    else toast("Mount a drive first");
+  });
+};
+$("#pickCreate").onclick = () => $("#pickVault").click();
+
+$("#unlockForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const pass = $("#vaultPass").value || "";
+  if (!pass) return toast("Enter the vault passcode");
+  try {
+    const payload = { passcode: pass };
+    const bind = ($("#vaultPath").value || "").trim();
+    if (bind) payload.path = bind;
+    const res = await control("vault_unlock", payload);
+    $("#vaultPass").value = "";
+    if (!res.ok) throw new Error(res.error || res.stderr || "unlock failed");
+    setVaultChrome(true);
+    toast("Vault unlocked");
+    await setSessionMode("vault");
+    await refreshStorage();
+  } catch (err) { toast("Unlock failed: " + err.message); }
+};
+
+$("#createVault").onclick = () => {
+  const path = ($("#vaultPath").value || "").trim();
+  const size = String($("#vaultSize").value || "32");
+  const p1 = $("#np1").value, p2 = $("#np2").value;
+  if (!path) return toast("Choose a folder first");
+  if (p1.length < 8) return toast("Passcode must be at least 8 characters");
+  if (p1 !== p2) return toast("Passcodes don't match");
+  confirmBox({
+    title: "Create vault?",
+    text: `Creates a ${size} GiB encrypted file in ${path}. Never formats your drive.`,
+    word: "CREATE-VAULT", ok: "Create vault",
+    cb: async () => {
+      try {
+        const res = await control("vault_setup", {
+          path, size_gb: size, confirm: "CREATE-VAULT",
+          recovery_confirm: "SHOW-ONCE", passcode: p1, passcode2: p2, space_confirm: "SPACE-OK",
+        });
+        if (!res.ok) throw new Error(res.error || res.stderr || "setup failed");
+        const phrase = res.recovery_phrase || "(no phrase in response — check stick logs)";
+        confirmBox({
+          title: "Save your recovery phrase",
+          text: "This is the only time it's shown. Write it down.",
+          extra: phrase, word: "SAVED", ok: "Finish setup",
+          cb: async () => {
+            $("#np1").value = $("#np2").value = "";
+            setVaultChrome(true);
+            toast("Vault created");
+            await setSessionMode("vault");
+            await refreshStorage();
+          },
+        });
+      } catch (e) { toast(e.message); }
+    },
+  });
+};
+$("#growBtn").onclick = () => {
+  const gb = String($("#growGb").value || "8");
+  confirmBox({
+    title: "Grow vault?", text: `Expand blob by ${gb} GiB.`, word: "GROW-VAULT", ok: "Grow",
+    cb: async () => {
+      try {
+        const res = await control("vault_grow", { add_gb: gb, confirm: "GROW-VAULT" });
+        if (!res.ok) throw new Error(res.error || "grow failed");
+        toast("Vault grown"); await refreshStorage();
+      } catch (e) { toast(e.message); }
+    },
+  });
+};
+$("#wipeBtn").onclick = () => {
+  const n = String($("#wipeN").value || "0");
+  if (n === "0") {
+    control("vault_set_wipe", { n: "0", confirm: "OFF" }).then(() => toast("Wipe-after-N off")).catch((e) => toast(e.message));
+    return;
+  }
+  confirmBox({
+    title: "Enable auto-wipe?",
+    text: `After ${n} wrong passcodes the vault key header is destroyed.`,
+    word: "WIPE-OK", ok: "Enable",
+    cb: async () => {
+      try {
+        await control("vault_set_wipe", { n, confirm: "WIPE-OK" });
+        toast(`Wipe after ${n} tries enabled`);
+      } catch (e) { toast(e.message); }
+    },
+  });
+};
+async function refreshMovableLive() {
+  const box = $("#movable");
+  if (!state.vaultOpen) {
+    box.innerHTML = '<div class="row"><small>Unlock the vault to move models off the stick.</small></div>';
+    return;
+  }
+  try {
+    const res = await control("vault_list_movable");
+    const models = res.models || [];
+    if (!models.length) { box.innerHTML = '<div class="row"><small>No USB models to move.</small></div>'; return; }
+    box.innerHTML = models.map((m, i) =>
+      `<div class="row"><div><b>${esc(m.name)}</b><small>${fmtBytes(m.size)}${m.in_vault ? " · already in vault" : ""}</small></div>
+      ${m.in_vault ? "" : `<button class="btn sm" data-mv="${i}" type="button">Move to vault</button>`}</div>`
+    ).join("");
+    $$("[data-mv]").forEach((b) => (b.onclick = async () => {
+      const m = models[+b.dataset.mv];
+      confirmBox({
+        title: "Move model into vault?",
+        text: `${m.name} — source removed after SHA-256 verify.`,
+        word: "MOVE-MODEL", ok: "Move",
+        cb: async () => {
+          try {
+            await control("vault_move_model", { path: m.path, confirm: "MOVE-MODEL" });
+            toast("Moved"); await refreshMovableLive();
+          } catch (e) { toast(e.message); }
+        },
+      });
+    }));
+  } catch (e) { box.innerHTML = `<div class="row"><small>${esc(e.message)}</small></div>`; }
+}
+$("#refreshMovable").onclick = () => refreshMovableLive();
+
+async function loadVaultChats() {
+  const r = await fetch("/api/chats", { headers: authHeaders() });
+  const j = await r.json();
+  if (!r.ok || j.ok === false) throw new Error(j.error || "list failed");
+  state.chats = (j.chats || []).map((c) => ({ ...c, msgs: [] }));
+  renderConvs(); renderSaved();
+}
+async function openVaultChat(id) {
+  try {
+    const r = await fetch(`/api/chats/${encodeURIComponent(id)}`, { headers: authHeaders() });
+    const j = await r.json();
+    if (!r.ok || j.ok === false) throw new Error(j.error || "load failed");
+    activeChatId = j.id || id;
+    messages.length = 0;
+    const c = { id: activeChatId, title: j.title || id, msgs: [] };
+    for (const m of j.messages || []) {
+      if (m.role === "system") { messages.push(m); continue; }
+      messages.push(m);
+      c.msgs.push({ r: m.role === "assistant" ? "ai" : m.role, t: m.content });
+    }
+    if (!messages.some((x) => x.role === "system")) {
+      messages.unshift({ role: "system", content: "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful." });
+    }
+    state.current = c; renderThread(); renderConvs(); closeSettings();
+  } catch (e) { toast(e.message); }
+}
+async function saveCurrentChat(quiet) {
+  if (sessionMode !== "vault" || !state.vaultOpen) {
+    if (!quiet) toast("Switch to Vault mode to save");
+    return;
+  }
+  const title = (messages.find((m) => m.role === "user")?.content || "Chat").slice(0, 60);
+  const r = await fetch("/api/chats", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ id: activeChatId || undefined, title, messages }),
+  });
+  const j = await r.json();
+  if (!r.ok || j.ok === false) throw new Error(j.error || "save failed");
+  activeChatId = j.id;
+  if (state.current) { state.current.id = j.id; state.current.title = j.title || title; }
+  if (!quiet) toast("Saved to vault");
+  loadVaultChats().catch(() => {});
+}
+function renderSaved() {
+  const box = $("#savedChats");
+  if (!state.vaultOpen) {
+    box.innerHTML = '<div class="row"><small>Unlock the vault to see saved chats.</small></div>';
+    return;
+  }
+  if (!state.chats.length) {
+    box.innerHTML = '<div class="row"><small>No saved chats.</small></div>';
+    return;
+  }
+  box.innerHTML = state.chats.map((c) =>
+    `<div class="row"><div><b>${esc(c.title || c.id)}</b><small>${c.messages || 0} messages</small></div>
+    <div class="inline"><button class="btn sm" data-oc="${esc(c.id)}" type="button">Open</button>
+    <button class="btn sm danger ghost" data-dc="${esc(c.id)}" type="button">Delete</button></div></div>`
+  ).join("");
+  $$("[data-oc]").forEach((b) => (b.onclick = () => openVaultChat(b.dataset.oc)));
+  $$("[data-dc]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Delete this chat?")) return;
+    try {
+      const r = await fetch("/api/chats", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ delete: true, id: b.dataset.dc }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.ok === false) throw new Error(j.error || "delete failed");
+      await loadVaultChats(); toast("Deleted");
+    } catch (e) { toast(e.message); }
+  }));
+}
+$("#saveChat").onclick = () => saveCurrentChat(false).catch((e) => toast(e.message));
+
+function detectLocalHost() {
+  const h = String(location.hostname || "").toLowerCase();
+  return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+function pushSystemMsg(text) {
+  state.current = state.current || { id: Date.now(), title: "System", msgs: [] };
+  if (!state.ephemeral.includes(state.current) && !state.chats.includes(state.current))
+    state.ephemeral.unshift(state.current);
+  state.current.msgs.push({ r: "system", t: text });
+  renderThread();
+}
+function formatPairCode(code) {
+  const c = String(code || "").trim();
+  return c.length === 6 ? c.slice(0, 3) + " " + c.slice(3) : c;
+}
+function showPairCodeOnStick(code) {
+  const c = String(code || "").trim();
+  if (!/^\d{4,8}$/.test(c)) return;
+  if ($("#pairCodeShow")) $("#pairCodeShow").textContent = formatPairCode(c);
+  pushSystemMsg(
+    `New PAIR CODE: ${c} — open the LAN URL on phone/desktop and enter this code. Previous paired browsers were unpaired.`
+  );
+}
+/** Stick kiosk: pick up codes reminted from a LAN browser (never sent over the wire). */
+function announceRemintFromConnect(connect) {
+  if (!(isLocalMode || detectLocalHost())) return;
+  const c = connect || {};
+  const rid = String(c.remint_id || "").trim();
+  const code = String(c.pair_code || "").trim();
+  if (lastRemintId === null) {
+    lastRemintId = rid;
+    return;
+  }
+  if (!rid || rid === lastRemintId) return;
+  lastRemintId = rid;
+  if (!/^\d{4,8}$/.test(code)) return;
+  showPairCodeOnStick(code);
+  toast("New pair code — enter it on the LAN browser");
+}
+async function remintPairCode() {
+  const r = await fetch("/api/pair/remint", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: "{}", cache: "no-store",
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.message || j.error || `remint ${r.status}`);
+  return j;
+}
+async function issuePairHotkey() {
+  // Keyboard-first path for HDMI kiosk (no mouse): open Pairing + mint/show code.
+  openSettings("devices");
+  try {
+    clearPairSession();
     const j = await remintPairCode();
     const rid = String(j.remint_id || "").trim();
     if (rid) lastRemintId = rid;
     const code = String(j.pair_code || "").trim();
     if (code) {
-      addBubble(
-        "system",
-        `New PAIR CODE: ${code} — open the URL above on phone/desktop and enter this code. Previous paired browsers were unpaired.`
-      );
-      statusLine.textContent = `pair code ${code}`;
+      isLocalMode = true;
+      showPairCodeOnStick(code);
+      toast("PAIR CODE in chat — press F9 again for a new one");
     } else {
-      addBubble("system", "New pair code minted — see Pair banner above.");
-      statusLine.textContent = "pair code ready";
+      if ($("#pairCodeShow")) $("#pairCodeShow").textContent = "(see stick screen)";
+      pushSystemMsg("New pair code minted on the stick. Enter the PAIR CODE shown on the stick screen chat.");
+      toast("Look at the stick screen for the new PAIR CODE");
     }
     await refreshStatus();
-    return code;
-  }
-
-  async function issuePairFromLan() {
-    statusLine.textContent = "requesting new pair code…";
-    clearPairSession();
-    await remintPairCode();
-    statusLine.textContent = "enter PAIR CODE from stick chat";
-    addBubble(
-      "system",
-      "New pair code minted on the stick. Enter the PAIR CODE shown in the stick/kiosk chat."
-    );
-    await ensurePaired(true);
-  }
-
-  async function refreshStatus() {
-    try {
-      const r = await fetch(`/api/health`, { cache: "no-store" });
-      if (!r.ok && r.status !== 503) throw new Error(`health ${r.status}`);
-      const j = await r.json();
-      let sessionOk = false;
-      if (token && j.pair?.require_pair) {
-        sessionOk = await sessionStillValid();
-      } else if (!j.pair?.require_pair) {
-        sessionOk = true;
-      }
-      const online = j.online || j.web;
-      const modelName = j.connect?.model;
-      const backend = String(j.backend || j.connect?.backend || "").toUpperCase();
-      const backendBit = backend ? ` · ${backend}` : "";
-      const noModel =
-        !modelName ||
-        /^none\b/i.test(String(modelName)) ||
-        /^loading/i.test(String(modelName));
-      const modelBit = j.llama_ok
-        ? modelName && !noModel
-          ? `model ready · ${modelName}${backendBit}`
-          : `model ready${backendBit}`
-        : modelName && !noModel
-          ? `model loading · ${modelName}${backendBit}`
-          : `no model — Activate in Models`;
-      if (sessionOk) {
-        statusLine.textContent = online
-          ? `${modelBit} · online`
-          : `${modelBit} · no uplink`;
-      } else if (j.pair?.require_pair) {
-        statusLine.textContent = "needs pair code (see stick screen)";
-      } else {
-        statusLine.textContent = modelBit;
-      }
-      if (j.pair?.local) applyLocalChrome(true);
-      renderConnect(j);
-      if (j.session_mode) applySessionModeUi(j.session_mode);
-      try {
-        const m = await fetch("/stickllm.json", { cache: "no-store" });
-        if (m.ok) {
-          const meta = await m.json();
-          // stickllm.json "mode" is boot/kiosk profile (local/chat), not storage mode.
-          if (meta.version && sessionModeEl) {
-            sessionModeEl.title = `v${meta.version} · storage mode (Ephemeral = no SSD vault writes)`;
-          }
-          const bootMode = String(meta.mode || "").toLowerCase();
-          if (bootMode === "local" || bootMode === "chat") {
-            applyLocalChrome(true);
-          }
-        }
-      } catch (_) {}
-      announceRemintFromConnect(j.connect);
-    } catch (e) {
-      statusLine.textContent = "waiting for gateway…";
+  } catch (e) { toast(e.message); }
+}
+async function issueSshHotkey() {
+  // Show SSH password on stick (loopback). Never on LAN.
+  try {
+    const r = await fetch("/api/health", { cache: "no-store" });
+    const j = await r.json().catch(() => ({}));
+    const c = j.connect || {};
+    const pass = String(c.ssh_password || "").trim();
+    const enabled = !!c.ssh_enabled;
+    const user = c.ssh_user || "stickllm";
+    const host = c.ssh_host || c.ip || "127.0.0.1";
+    if (!(isLocalMode || detectLocalHost())) {
+      toast("SSH password only on the stick screen (press F10 there)");
+      pushSystemMsg("SSH password is only shown on the stick itself — press F10 on the Server/kiosk screen.");
+      return;
     }
-  }
-
-  async function control(action, params = {}) {
-    const r = await fetch("/api/control", {
+    if (enabled && pass) {
+      pushSystemMsg(`SSH: ${user}@${host}  password: ${pass}`);
+      toast("SSH password posted in chat");
+    } else if (enabled) {
+      pushSystemMsg("SSH is enabled but password is not in this response yet — check READY/Term, or reboot menu 3 Test - SSH Enabled.");
+      toast("SSH on — password not available here");
+    } else {
+      pushSystemMsg("SSH is off on this boot. Reboot → GRUB → 2 Terminal or 3 Test - SSH Enabled to get a password.");
+      toast("SSH disabled on this boot");
+    }
+  } catch (e) { toast(e.message); }
+}
+$("#remint").onclick = () => { issuePairHotkey(); };
+$("#pairForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const v = $("#pairIn").value.trim();
+  const err = $("#pairErr");
+  if (!/^\d{4,8}$/.test(v)) { err.hidden = false; err.textContent = "Enter the code from the stick screen"; return; }
+  try {
+    const r = await fetch("/api/pair", {
       method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ action, params }),
+      headers: { "Content-Type": "application/json", "X-StickLLM-Client": "ui" },
+      body: JSON.stringify({ code: v }),
     });
-    if (r.status === 401) {
-      clearPairSession();
-      statusLine.textContent = "needs pair code (see stick screen)";
-      await ensurePaired(true);
-      throw new Error("Pair required");
-    }
     const j = await r.json();
-    if (!r.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
-    return j;
-  }
+    if (!r.ok) throw new Error(j.message || j.error || "Pair failed");
+    token = j.token; localStorage.setItem(TOKEN_KEY, token);
+    err.hidden = true; $("#pairIn").value = "";
+    toast("Browser paired"); closeSettings();
+  } catch (ex) { err.hidden = false; err.textContent = ex.message; }
+};
 
-  function isStickUsbVaultPath(path) {
-    const p = String(path || "").trim().replace(/\/+$/, "");
-    if (!p) return false;
-    const bad = [
-      "/mnt/stickllm-data",
-      "/run/live",
-      "/usr/lib/live/mount/medium",
-      "/lib/live/mount/medium",
-    ];
-    return bad.some((b) => p === b || p.startsWith(`${b}/`));
-  }
+$("#copyUrl").onclick = () => {
+  const u = $("#lanUrl2")?.textContent?.trim() || location.origin + "/";
+  navigator.clipboard?.writeText(u).catch(() => {});
+  toast("Address copied");
+};
+$("#wifiBtn").onclick = async () => {
+  const ssid = ($("#ssid").value || "").trim();
+  const password = $("#wpass").value || "";
+  if (!ssid) return toast("Enter a network name");
+  try {
+    toast("Connecting to " + ssid + "…");
+    const res = await control("wifi_connect", { ssid, password });
+    toast(res.online ? "Online via WiFi" : "WiFi profile saved — waiting for uplink");
+    await refreshStatus();
+  } catch (e) { toast(e.message); }
+};
 
-  function setVaultSetupFeedback(msg, kind = "info") {
-    const hint = document.getElementById("vaultSetupHint");
-    if (!hint) return;
-    hint.textContent = msg || "";
-    hint.classList.remove("is-info", "is-ok", "is-err");
-    if (msg) {
-      hint.classList.add(
-        kind === "ok" ? "is-ok" : kind === "err" ? "is-err" : "is-info"
-      );
-      try {
-        hint.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      } catch (_) {}
-    }
-    const vaultStatus = document.getElementById("vaultStatus");
-    if (vaultStatus && msg && (kind === "ok" || kind === "err")) {
-      vaultStatus.textContent =
-        kind === "ok" ? `Vault: ${msg}` : `Vault create/unlock: ${msg}`;
-    }
-  }
-
-  function fmtBytes(n) {
-    if (!n || n < 0) return "—";
-    const gb = n / 1024 ** 3;
-    if (gb >= 1) return `${gb.toFixed(2)} GB`;
-    const mb = n / 1024 ** 2;
-    return `${mb.toFixed(0)} MB`;
-  }
-
-  function renderDownload(d) {
-    lastDownload = d || {};
-    if (!dlProgress) return false;
-    const state = d?.state || "idle";
-    if (state === "idle" || !state) {
-      dlProgress.hidden = true;
-      return false;
-    }
-    if (state === "done") {
-      dlProgress.hidden = false;
-      dlProgressLabel.textContent = `Downloaded: ${d.name || d.id || "model"}`;
-      dlProgressFill.style.width = "100%";
-      dlProgressBar.setAttribute("aria-valuenow", "100");
-      dlProgressMeta.textContent = "Complete — hash verified";
-      return true;
-    }
-    if (!["downloading", "verifying", "starting", "failed"].includes(state)) {
-      dlProgress.hidden = true;
-      return false;
-    }
-    dlProgress.hidden = false;
-    const pct = d.percent == null ? null : Number(d.percent);
-    const label =
-      state === "verifying"
-        ? `Verifying ${d.name || d.id || "model"}…`
-        : state === "failed"
-          ? `Download failed: ${d.name || d.id || "model"}`
-          : `Downloading ${d.name || d.id || "model"}…`;
-    dlProgressLabel.textContent = label;
-    if (pct == null) {
-      dlProgressFill.style.width = "15%";
-      dlProgressBar.setAttribute("aria-valuenow", "0");
-      dlProgressMeta.textContent = d.note || "in progress…";
+async function refreshStatus() {
+  try {
+    const r = await fetch("/api/health", { cache: "no-store" });
+    if (!r.ok && r.status !== 503) throw new Error("health " + r.status);
+    const j = await r.json();
+    if (j.pair?.local || detectLocalHost()) isLocalMode = true;
+    if (j.session_mode) applyModeUi(j.session_mode === "vault" ? "vault" : "ephemeral");
+    const rawName = String(j.connect?.model || "").trim();
+    const pathName = String(j.connect?.model_path || "").split(/[/\\]/).pop() || "";
+    const named = rawName && !/^none\b/i.test(rawName) && !/^loading/i.test(rawName) ? rawName : pathName;
+    const backend = String(j.backend || j.connect?.backend || "").toUpperCase() || "—";
+    const loading = !j.llama_ok && !!(named || rawName && !/^none\b/i.test(rawName));
+    if (j.llama_ok) {
+      stopLoadPoll();
+      const readyName = named || "ready";
+      $("#chipModel").textContent = readyName;
+      setChipLoad(false, 100, readyName);
+    } else if (loading) {
+      // Keep soft % if poll already owns the bar; otherwise show loading label.
+      if (!loadPollTimer) setChipLoad(true, 12, named || "model");
+      else if ($("#chipModel") && !String($("#chipModel").textContent || "").startsWith("loading"))
+        setChipLoad(true, 12, named || "model");
     } else {
-      dlProgressFill.style.width = `${Math.max(2, Math.min(100, pct))}%`;
-      dlProgressBar.setAttribute("aria-valuenow", String(Math.round(pct)));
-      const bits = [`${pct}%`, `${fmtBytes(d.bytes_done)} / ${fmtBytes(d.bytes_total)}`];
-      if (d.eta_secs != null) bits.push(`ETA ~${Math.ceil(d.eta_secs / 60)}m`);
-      if (d.note) bits.push(d.note);
-      dlProgressMeta.textContent = bits.join(" · ");
+      stopLoadPoll();
+      $("#chipModel").textContent = "none";
+      setChipLoad(false, 0, null);
     }
-    return true;
-  }
-
-  function stopDlPoll() {
-    if (dlPollTimer) {
-      clearInterval(dlPollTimer);
-      dlPollTimer = null;
+    $("#chipMeta").textContent = backend;
+    $("#statusChip .dot")?.classList.toggle("ok", !!j.llama_ok);
+    if ($("#popModel")) {
+      $("#popModel").textContent = j.llama_ok
+        ? (j.connect?.model_path || named || "ready")
+        : (loading ? `loading — ${j.connect?.model_path || named || "…"}` : "none — Activate in Models");
     }
-  }
-
-  function startDlPoll() {
-    stopDlPoll();
-    dlPollTimer = setInterval(async () => {
-      if (!modelsDialog?.open) {
-        stopDlPoll();
-        return;
-      }
-      try {
-        const st = await control("status");
-        renderModelsStatus(st);
-        renderDownload(st.download || {});
-        if (st.download?.state === "done") {
-          renderCatalog(st.catalog || []);
-        }
-      } catch (_) {}
-    }, 2000);
-  }
-
-  function renderModelsStatus(j) {
-    const p = j.probe || {};
-    const loaded = j.loaded || {};
-    const loadLine = loaded.running
-      ? `Running: ${loaded.name || loaded.id || loaded.path} (health ok)`
-      : loaded.path
-        ? `Loading: ${loaded.name || loaded.id || loaded.path} — ${loaded.health || "waiting /health"}`
-        : "Loaded: (none)";
-    const backend = String(j.backend || "cpu").toLowerCase();
-    const backendLabel =
-      backend === "cuda"
-        ? `Backend: CUDA · VRAM ~${j.vram_gb ?? p.vram_gb ?? "?"} GB`
-        : backend === "vulkan"
-          ? `Backend: Vulkan · VRAM ~${j.vram_gb ?? p.vram_gb ?? "?"} GB`
-          : `Backend: CPU · RAM ~${j.ram_gb ?? "?"} GB`;
-    const modelsPath =
-      j.download_dir ||
-      p.dest ||
-      (Array.isArray(j.models_dirs)
-        ? j.models_dirs.find((d) => d && !String(d).startsWith("/opt/"))
-        : "") ||
-      "";
-    const lines = [
-      backendLabel,
-      p.recommend_name
-        ? `Optimum: ${p.recommend_name} (~${p.recommend_size_gb} GB)`
-        : "Optimum: unknown",
-      loadLine,
-      modelsPath ? `Models: ${modelsPath}` : "",
-    ].filter(Boolean);
-    modelsBody.textContent = lines.join("\n");
-    renderDownload(j.download || {});
-  }
-
-  function renderSettingsStatus(j) {
-    const s = j.storage || {};
-    const v = j.vault || {};
-    const backend = String(j.backend || "cpu").toUpperCase();
-    const lines = [
-      `Backend: ${backend}`,
-      s.mounted
-        ? `USB DATA: mounted (${s.free_gb ?? "?"} GiB free)`
-        : `USB DATA: ${s.note || "not claimed"}`,
-      j.online ? "Uplink: online" : "Uplink: none (Ethernet or console WiFi first)",
-    ];
-    if (settingsBody) settingsBody.textContent = lines.join("\n");
-    const vaultStatus = document.getElementById("vaultStatus");
-    if (vaultStatus) {
-      const bits = [`Vault: ${v.status || "absent"}`];
-      if (v.root) bits.push(`root ${v.root}`);
-      if (v.mounted) bits.push("mounted at /var/lib/stickllm/vault");
-      const wipe = Number(v.wipe_after_failed_unlocks || 0);
-      bits.push(wipe > 0 ? `wipe-after-${wipe}` : "wipe-after-N off");
-      bits.push("file-blob only — never formats your drive");
-      vaultStatus.textContent = bits.join(" · ");
-      const wipeInput = document.getElementById("vaultWipeN");
-      if (wipeInput && document.activeElement !== wipeInput) {
-        wipeInput.value = String(wipe);
-      }
+    if ($("#popBackend")) $("#popBackend").textContent = backend;
+    if ($("#popUplink")) $("#popUplink").textContent = (j.online || j.web) ? "Online" : "No uplink";
+    if ($("#popCtx")) $("#popCtx").textContent = "—";
+    const url = j.connect?.url || (j.connect?.ip ? `http://${j.connect.ip}/` : location.origin + "/");
+    if ($("#lanUrl2")) $("#lanUrl2").textContent = url;
+    announceRemintFromConnect(j.connect);
+    const code = j.connect?.pair_code;
+    if (code && isLocalMode && $("#pairCodeShow")) {
+      const c = String(code);
+      // Only overwrite banner with a live numeric code (not the "(paired…)" placeholder).
+      if (/^\d{4,8}$/.test(c)) $("#pairCodeShow").textContent = formatPairCode(c);
+      else if (!/^\d{4,8}$/.test(String($("#pairCodeShow").textContent || "").replace(/\s/g, "")))
+        $("#pairCodeShow").textContent = c;
+    } else if (!isLocalMode && $("#pairCodeShow")) {
+      $("#pairCodeShow").textContent = "(see stick screen)";
     }
-    if (netStatus) {
-      const ssid = j.wifi?.ssid || "";
-      netStatus.textContent = j.online
-        ? `Online: yes${ssid ? ` · WiFi ${ssid}` : ""}`
-        : `Online: no uplink${ssid ? ` · WiFi profile ${ssid}` : " · connect Ethernet or console WiFi"}`;
-    }
-    const how = document.getElementById("howToConnect");
-    if (how) {
-      const url =
-        document.getElementById("connectUrl")?.textContent?.trim() ||
-        "http://<stick-lan-ip>/";
-      how.textContent =
-        `Open ${url} on the same LAN and enter the PAIR CODE from the stick screen (or Pair | URL | Model above). Loopback on the stick needs no pair. No LAN? Term console: stickllm-wifi-setup.`;
-    }
-  }
-
-  async function refreshSshCredentialsInSettings() {
     try {
-      const r = await fetch("/api/health", { cache: "no-store" });
-      if (!r.ok && r.status !== 503) return;
-      const j = await r.json();
-      renderSshCredentials(j.connect || {});
+      const m = await fetch("/stickllm.json", { cache: "no-store" });
+      if (m.ok) {
+        const meta = await m.json();
+        if (meta.version && $("#aboutVer")) $("#aboutVer").textContent = meta.version + " ";
+        const boot = String(meta.mode || "").toLowerCase();
+        if (boot === "local" || boot === "chat") isLocalMode = true;
+      }
     } catch (_) {}
+    // vault chrome from health if present
+    if (j.vault) {
+      const open = String(j.vault.status || "").toLowerCase() === "unlocked" || !!j.vault.mounted;
+      setVaultChrome(open);
+    }
+  } catch (_) {
+    $("#chipModel").textContent = "waiting…";
   }
+}
 
-  function applySessionModeUi(mode) {
-    const m = String(mode || "ephemeral").toLowerCase() === "vault" ? "vault" : "ephemeral";
-    sessionMode = m;
-    if (sessionModeEl && sessionModeEl.value !== m && !sessionModeBusy) {
-      sessionModeEl.value = m;
-    }
-    if (chatsBtn) chatsBtn.hidden = m !== "vault";
+window.addEventListener("keydown", (e) => {
+  const tag = (e.target && e.target.tagName || "").toLowerCase();
+  const typing = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+  const k = e.key.toLowerCase();
+  // F9 = new PAIR CODE (kiosk, no mouse). Not bare P.
+  if (e.key === "F9") {
+    e.preventDefault();
+    issuePairHotkey();
+    return;
   }
-
-  function resetChatMessages(keepSystem = true) {
-    const sys = keepSystem
-      ? messages.find((x) => x.role === "system") || {
-          role: "system",
-          content:
-            "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
-        }
-      : null;
-    messages.length = 0;
-    if (sys) messages.push(sys);
-    if (log) log.innerHTML = "";
+  // F10 = show SSH password on stick on stick
+  if (e.key === "F10") {
+    e.preventDefault();
+    issueSshHotkey();
+    return;
   }
-
-  async function setSessionMode(mode) {
-    const next = String(mode || "").toLowerCase() === "vault" ? "vault" : "ephemeral";
-    const prev = sessionMode;
-    sessionModeBusy = true;
-    try {
-      if (next === "vault") {
-        // Unlock (or setup) before committing Vault mode — never silently stay locked.
-        let vault = {};
-        try {
-          vault = await control("vault_status");
-        } catch (_) {}
-        const st = String(vault.status || "").toLowerCase();
-        if (st === "absent" || !st) {
-          applySessionModeUi(prev);
-          if (sessionModeEl) sessionModeEl.value = prev;
-          addBubble(
-            "system",
-            "No vault yet — create a blob on a mounted host SSD folder in Settings (not the StickLLM USB)."
-          );
-          if (settingsDialog && !settingsDialog.open) await openSettings();
-          document.getElementById("vaultSetupPath")?.focus();
-          return;
-        }
-        if (!(st === "unlocked" || vault.mounted)) {
-          const pass = window.prompt("Enter vault passcode to unlock:");
-          if (pass == null || pass === "") {
-            applySessionModeUi(prev);
-            if (sessionModeEl) sessionModeEl.value = prev;
-            addBubble("system", "Vault mode cancelled — passcode required to unlock.");
-            return;
-          }
-          const unlock = await control("vault_unlock", { passcode: pass });
-          if (!unlock.ok) {
-            applySessionModeUi(prev);
-            if (sessionModeEl) sessionModeEl.value = prev;
-            throw new Error(unlock.error || unlock.stderr || "unlock failed");
-          }
-        }
-      }
-
-      const r = await fetch("/api/session-mode", {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ mode: next }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || j.ok === false) {
-        throw new Error(j.error || j.message || `HTTP ${r.status}`);
-      }
-      applySessionModeUi(next);
-      if (next === "ephemeral") {
-        const lockNote = j.vault_locked === false
-          ? ` (vault lock: ${j.vault_lock_error || "failed"})`
-          : " — vault locked.";
-        addBubble(
-          "system",
-          `Ephemeral mode — no SSD vault writes${lockNote}`
-        );
-        return;
-      }
-      addBubble(
-        "system",
-        "Vault mode — models use your SSD models folder; chats/settings stay in the encrypted vault."
-      );
-    } catch (e) {
-      applySessionModeUi(prev);
-      if (sessionModeEl) sessionModeEl.value = prev;
-      addBubble("system", `Could not switch mode: ${e.message}`);
-    } finally {
-      sessionModeBusy = false;
-      applySessionModeUi(sessionMode);
-    }
+  if (e.ctrlKey && e.shiftKey && k === "l") { e.preventDefault(); lockVault(); }
+  else if (e.ctrlKey && e.shiftKey && k === "o") { e.preventDefault(); newChat(); }
+  else if (e.ctrlKey && k === "b") { e.preventDefault(); toggleNav(); }
+  else if (e.ctrlKey && k === ",") { e.preventDefault(); openSettings(); }
+  else if (e.key === "Escape") {
+    if (!$("#confirm").hidden) $("#confirm").hidden = true;
+    else if (!$("#picker").hidden) $("#picker").hidden = true;
+    else if (!$("#settings").hidden) closeSettings();
+    else if (!$("#statusPop").hidden) $("#statusPop").hidden = true;
+    else if (app.classList.contains("navOpen")) toggleNav(false);
   }
+});
 
-  async function lockVault() {
-    try {
-      const res = await control("vault_lock");
-      addBubble("system", res.ok !== false ? "Vault locked — model unloaded." : `Lock failed: ${res.error || res.stderr || "unknown"}`);
-      messages.length = 0;
-      if (sessionMode === "vault") {
-        await setSessionMode("ephemeral");
-      }
-      if (settingsDialog?.open) await openSettings();
-    } catch (e) {
-      addBubble("system", `Lock failed: ${e.message}`);
-    }
-  }
+// Disable greyed / coming-soon controls that still have handlers in markup
+["#offline", "#exportAll", "#deleteAll", "#revokeAll", "#checkUpd", "#pickModelDir"].forEach((sel) => {
+  const el = $(sel); if (!el) return;
+  el.onclick = (e) => { e.preventDefault(); toast("Coming soon"); };
+  if ("onchange" in el) el.onchange = (e) => { e.preventDefault(); el.checked = false; toast("Coming soon"); };
+});
+$$("#backendSeg button").forEach((b) => {
+  b.disabled = true;
+  b.onclick = (e) => { e.preventDefault(); toast("Coming soon — backend is auto-selected"); };
+});
+$$("#kvSeg button, #temp, #topp, #topk, #rep, #maxtok, #resetPreset").forEach((el) => {
+  if (!el) return;
+  el.disabled = true;
+  el.title = "Coming soon — visual only on stick";
+});
+$("#attachBtn").disabled = true; $("#micBtn").disabled = true;
 
-  function selectedCatalogModel() {
-    if (!selectedModelId) return null;
-    return lastCatalog.find((m) => m.id === selectedModelId) || null;
-  }
+applyModeUi("ephemeral");
+newChat();
+if (detectLocalHost()) isLocalMode = true;
+refreshStatus();
+// Stick kiosk polls faster so LAN Pair remints show in chat promptly.
+setInterval(() => { refreshStatus(); }, isLocalMode || detectLocalHost() ? 2000 : 3000);
+ensurePaired(false).then(async () => {
+  try {
+    const st = await pairStatus();
+    if (st.local || detectLocalHost()) isLocalMode = true;
+  } catch (_) {}
+});
 
-  function formatCtx(n) {
-    const v = Number(n) || 0;
-    return v >= 1024 ? `${Math.round(v / 1024)}k` : String(v);
-  }
-
-  function updateSelectionPanel() {
-    const ctxPanel = document.getElementById("ctxPanel");
-    const ctxSlider = document.getElementById("ctxSlider");
-    const ctxValue = document.getElementById("ctxValue");
-    const ctxMeta = document.getElementById("ctxMeta");
-    const actActivate = document.getElementById("actActivate");
-    const manage = document.getElementById("modelManage");
-    const manageHint = document.getElementById("modelManageHint");
-    const dlBtn = document.getElementById("actModelDownload");
-    const delBtn = document.getElementById("actModelDelete");
-    const m = selectedCatalogModel();
-
-    if (!m) {
-      if (ctxPanel) ctxPanel.hidden = true;
-      if (manage) manage.hidden = true;
-      return;
-    }
-
-    const canRun = !!m.runnable;
-    const canDl = !!(m.pinned && !m.installed);
-    const canDel = !!m.deletable;
-
-    if (manage) manage.hidden = false;
-    if (manageHint) {
-      const bits = [
-        !m.fits && m.installed
-          ? m.backend === "cpu"
-            ? "won't fit RAM"
-            : "won't fit VRAM"
-          : null,
-        m.source === "host_ssd" ? "host SSD (delete in host OS)" : null,
-        m.backend === "cpu" && m.installed ? "CPU" : null,
-        m.vision ? "vision" : null,
-      ].filter(Boolean);
-      manageHint.textContent = bits.length ? bits.join(" · ") : "";
-      manageHint.hidden = !bits.length;
-    }
-    if (dlBtn) {
-      dlBtn.hidden = !canDl;
-      dlBtn.disabled = false;
-      dlBtn.textContent = "Download this model";
-    }
-    if (delBtn) {
-      delBtn.hidden = !canDel;
-      delBtn.disabled = false;
-    }
-
-    if (canRun && ctxPanel && ctxSlider && ctxValue && ctxMeta && actActivate) {
-      ctxPanel.hidden = false;
-      const lo = Math.max(2048, Number(m.ctx_min) || 2048);
-      let hi = Math.max(lo, Number(m.ctx_max) || 8192);
-      const step = hi <= 8192 ? 1024 : 2048;
-      hi = Math.max(lo, Math.floor(hi / step) * step);
-      let suggested = Number(m.ctx_suggested) || Math.min(8192, hi);
-      suggested = Math.max(lo, Math.min(hi, suggested));
-      suggested = Math.round(suggested / step) * step;
-      const loadedCtx = Number(m.ctx_loaded) || 0;
-      ctxSlider.min = String(lo);
-      ctxSlider.max = String(hi);
-      ctxSlider.step = String(step);
-      // Keep prior slider for same model; on switch prefer loaded ctx when active.
-      let cur = Number(ctxSlider.value) || suggested;
-      if (ctxSlider.dataset.modelId !== m.id) {
-        cur =
-          (m.running || m.active) && loadedCtx >= lo && loadedCtx <= hi
-            ? loadedCtx
-            : suggested;
-      } else if (cur < lo || cur > hi) {
-        cur = suggested;
-      }
-      ctxSlider.value = String(cur);
-      ctxSlider.dataset.modelId = m.id;
-      ctxValue.textContent = String(cur);
-      const free = m.free_mem_after_gb != null ? `~${m.free_mem_after_gb} GB free after load` : "";
-      const modelMax = m.max_context ? `model max ${formatCtx(m.max_context)}` : "";
-      const loadedNote =
-        (m.running || m.active) && loadedCtx
-          ? `loaded ${formatCtx(loadedCtx)}`
-          : "";
-      ctxMeta.textContent = [
-        `Slider range ${formatCtx(lo)}–${formatCtx(hi)} tokens`,
-        loadedNote,
-        free,
-        modelMax,
-        m.architecture ? m.architecture : null,
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      // Disable only when already running at the slider's context; otherwise
-      // Activate reloads with the chosen ctx (same model or a different one).
-      const sameLoadedCtx = m.running && loadedCtx > 0 && Number(cur) === loadedCtx;
-      actActivate.disabled = sameLoadedCtx;
-      actActivate.textContent = sameLoadedCtx
-        ? "Running"
-        : m.running || m.active
-          ? "Reload with context"
-          : "Activate selected";
-    } else if (ctxPanel) {
-      ctxPanel.hidden = true;
-    }
-  }
-
-  function modelLocationLabel(m) {
-    if (m.source === "host_ssd") return "SSD";
-    const p = String(m.path || m.local_path || "").toLowerCase();
-    if (p.includes("stickllm-data") || p.startsWith("/opt/stickllm/models")) {
-      return "USB";
-    }
-    if (p.includes("/var/lib/stickllm/vault")) return "SSD";
-    if (/\bhdd\b|hard.?disk|rotational/.test(p)) return "HDD";
-    if (m.installed && (p.startsWith("/mnt/") || p.startsWith("/media/"))) {
-      return "SSD";
-    }
-    if (!m.installed) {
-      return sessionMode === "vault" ? "SSD" : "USB";
-    }
-    return "USB";
-  }
-
-  function modelStatusLabel(m) {
-    if (m.running) return "Running";
-    if (m.installed) return "Downloaded";
-    return "Not downloaded";
-  }
-
-  function renderCatalog(models) {
-    lastCatalog = Array.isArray(models) ? models : [];
-    catalogList.innerHTML = "";
-    if (!lastCatalog.length) {
-      catalogList.textContent = "No catalog entries.";
-      selectedModelId = null;
-      updateSelectionPanel();
-      return;
-    }
-
-    if (
-      selectedModelId &&
-      !lastCatalog.some((m) => m.id === selectedModelId)
-    ) {
-      selectedModelId = null;
-    }
-    if (!selectedModelId) {
-      const prefer =
-        lastCatalog.find((m) => m.running) ||
-        lastCatalog.find((m) => m.active) ||
-        lastCatalog.find((m) => m.runnable) ||
-        lastCatalog.find((m) => m.installed) ||
-        lastCatalog[0];
-      selectedModelId = prefer?.id || null;
-    }
-
-    for (const m of lastCatalog) {
-      const row = document.createElement("div");
-      row.className = "catalogRow";
-      if (m.id === selectedModelId) row.classList.add("is-selected");
-
-      const label = document.createElement("label");
-      label.className = "catalogSelect";
-
-      const radio = document.createElement("input");
-      radio.type = "radio";
-      radio.name = "catalogModel";
-      radio.className = "catalogRadio";
-      radio.value = m.id;
-      radio.checked = m.id === selectedModelId;
-      radio.addEventListener("change", () => {
-        if (!radio.checked) return;
-        selectedModelId = m.id;
-        renderCatalog(lastCatalog);
-      });
-
-      const meta = document.createElement("div");
-      meta.className = "catalogMeta";
-
-      const title = document.createElement("strong");
-      title.className = "catalogTitle";
-      title.textContent = m.name || m.id;
-
-      const detail = document.createElement("span");
-      detail.className = "muted catalogDetail";
-      const size =
-        m.approx_size_gb != null && m.approx_size_gb !== ""
-          ? `${m.approx_size_gb} GB`
-          : null;
-      const bits = [
-        size,
-        modelLocationLabel(m),
-        modelStatusLabel(m),
-      ].filter(Boolean);
-      detail.textContent = bits.join(" · ");
-
-      meta.appendChild(title);
-      meta.appendChild(detail);
-      label.appendChild(radio);
-      label.appendChild(meta);
-      row.appendChild(label);
-      catalogList.appendChild(row);
-    }
-    updateSelectionPanel();
-  }
-
-  async function activateSelectedModel() {
-    const m = selectedCatalogModel();
-    const actActivate = document.getElementById("actActivate");
-    const ctxSlider = document.getElementById("ctxSlider");
-    if (!m) {
-      modelsBody.textContent = "Select a model first.";
-      return;
-    }
-    if (!m.runnable) {
-      modelsBody.textContent = m.installed
-        ? "Selected model does not fit this host."
-        : "Selected model is not downloaded yet.";
-      return;
-    }
-    const ctx = Number(ctxSlider?.value) || Number(m.ctx_suggested) || 8192;
-    if (actActivate) {
-      actActivate.disabled = true;
-      actActivate.textContent = "Loading…";
-    }
-    try {
-      modelsBody.textContent = `Loading ${m.name || m.id} (ctx ${ctx})…`;
-      const res = await control("model_activate", { id: m.id, ctx_size: ctx });
-      if (!res.ok && res.error) throw new Error(res.error);
-      modelsBody.textContent = res.running
-        ? `Now running: ${res.name || m.id} · ctx ${res.ctx_size || ctx}`
-        : `Loading: ${res.name || m.id} · ctx ${res.ctx_size || ctx} — waiting for /health`;
-      await openModels();
-    } catch (e) {
-      modelsBody.textContent = `Error: ${e.message}`;
-      updateSelectionPanel();
-    }
-  }
-
-  async function downloadSelectedModel() {
-    const m = selectedCatalogModel();
-    const dlBtn = document.getElementById("actModelDownload");
-    if (!m) return;
-    if (dlBtn) {
-      dlBtn.disabled = true;
-      dlBtn.textContent = "Downloading…";
-    }
-    try {
-      modelsBody.textContent = `Starting download: ${m.id}…`;
-      const res = await control("model_download", { id: m.id });
-      renderDownload(res.download || { state: "starting", id: m.id, name: m.name });
-      startDlPoll();
-      await openModels();
-    } catch (e) {
-      modelsBody.textContent = `Error: ${e.message}`;
-      if (dlBtn) {
-        dlBtn.disabled = false;
-        dlBtn.textContent = "Download this model";
-      }
-    }
-  }
-
-  function openDeleteConfirm() {
-    const m = selectedCatalogModel();
-    const dlg = document.getElementById("deleteConfirmDialog");
-    const body = document.getElementById("deleteConfirmBody");
-    const input = document.getElementById("deleteConfirmInput");
-    const err = document.getElementById("deleteConfirmErr");
-    if (!m?.deletable) {
-      modelsBody.textContent = m
-        ? "This model cannot be deleted from StickLLM (baked-in or host SSD)."
-        : "Select a deletable model first.";
-      return;
-    }
-    if (!dlg) return;
-    if (body) {
-      body.innerHTML =
-        `Permanently delete downloaded files for <strong>${m.name || m.id}</strong>? ` +
-        `Type <strong>ARE YOU SURE</strong> to confirm.`;
-    }
-    if (input) input.value = "";
-    if (err) {
-      err.hidden = true;
-      err.textContent = "";
-    }
-    dlg.showModal();
-    input?.focus();
-  }
-
-  async function confirmDeleteSelected() {
-    const m = selectedCatalogModel();
-    const dlg = document.getElementById("deleteConfirmDialog");
-    const input = document.getElementById("deleteConfirmInput");
-    const err = document.getElementById("deleteConfirmErr");
-    const typed = String(input?.value || "").trim();
-    if (typed !== "ARE YOU SURE") {
-      if (err) {
-        err.hidden = false;
-        err.textContent = 'Type ARE YOU SURE exactly (all caps) to delete.';
-      }
-      return;
-    }
-    if (!m?.deletable) {
-      dlg?.close();
-      return;
-    }
-    try {
-      modelsBody.textContent = `Deleting ${m.id}…`;
-      const res = await control("model_delete", { id: m.id });
-      if (!res.ok && res.error) throw new Error(res.error);
-      modelsBody.textContent = `Deleted ${m.id}`;
-      selectedModelId = null;
-      dlg?.close();
-      await openModels();
-    } catch (e) {
-      if (err) {
-        err.hidden = false;
-        err.textContent = e.message;
-      } else {
-        modelsBody.textContent = `Error: ${e.message}`;
-      }
-    }
-  }
-
-  async function openModels() {
-    if (!(await ensurePaired())) return;
-    modelsBody.textContent = "Loading…";
-    catalogList.textContent = "";
-    refreshSessionHints();
-    modelsDialog.showModal();
-    try {
-      const st = await control("status");
-      renderModelsStatus(st);
-      renderCatalog(st.catalog || []);
-      const d = st.download || {};
-      if (["downloading", "starting", "verifying", "failed"].includes(d.state)) {
-        startDlPoll();
-      }
-    } catch (e) {
-      modelsBody.textContent = `Could not load: ${e.message}`;
-    }
-  }
-
-  async function openSettings() {
-    if (!(await ensurePaired())) return;
-    if (settingsBody) settingsBody.textContent = "Loading…";
-    refreshSessionHints();
-    settingsDialog.showModal();
-    try {
-      const st = await control("status");
-      renderSettingsStatus(st);
-      await refreshSshCredentialsInSettings();
-      await refreshVaultPicker({ quiet: true });
-    } catch (e) {
-      if (settingsBody) settingsBody.textContent = `Could not load: ${e.message}`;
-    }
-  }
-
-  async function findExistingVault() {
-    setVaultSetupFeedback("Searching USB DATA pointer + mounted host paths for stickllm-vault.img…", "info");
-    try {
-      const res = await control("vault_find");
-      if (!res.ok) throw new Error(res.error || "find-vault failed");
-      const best = res.best;
-      const hits = Array.isArray(res.candidates) ? res.candidates : [];
-      if (!best && !hits.length) {
-        setVaultSetupFeedback(
-          res.data_mounted
-            ? "No stickllm-vault.img found. Mount the Fanxiang SSD, then Find again — or browse to …/home/nink/models."
-            : "No vault found. Claim USB free space (STICKLLM-DATA) so a location pointer can survive reflash; Mount host SSD and browse to the models folder.",
-          "err"
-        );
-        return;
-      }
-      const path = best?.root || best?.blob || hits[0]?.root;
-      const input = document.getElementById("vaultSetupPath");
-      if (input && path) input.value = String(path).replace(/\/stickllm-vault\.img$/i, "");
-      if (best?.root) {
-        try {
-          await browseVaultDir(best.root);
-        } catch (_) {}
-      }
-      setVaultSetupFeedback(
-        `Found vault (${best?.source || "scan"}): ${best?.blob || path}. Attaching (config only)…`,
-        "ok"
-      );
-      await useExistingVault();
-    } catch (e) {
-      setVaultSetupFeedback(`Find existing vault failed: ${e.message}`, "err");
-    }
-  }
-
-  function setVaultUsbWarn(msg) {
-    const el = document.getElementById("vaultUsbWarn");
-    if (!el) return;
-    if (msg) {
-      el.hidden = false;
-      el.textContent = msg;
-    } else {
-      el.hidden = true;
-      el.textContent = "";
-    }
-  }
-
-  function kindLabel(kind) {
-    if (kind === "host_ssd") return "SSD";
-    if (kind === "usb_stick") return "Stick USB";
-    if (kind === "other_usb") return "USB";
-    if (kind === "blocked") return "Blocked";
-    return "Other";
-  }
-
-  async function refreshVaultPicker({ quiet = false } = {}) {
-    const list = document.getElementById("vaultDeviceList");
-    const diskList = document.getElementById("diskList");
-    if (list) list.textContent = "Loading devices…";
-    try {
-      const res = await control("vault_devices");
-      if (!res.ok) throw new Error(res.error || "device list failed");
-      if (list) list.innerHTML = "";
-      const devices = Array.isArray(res.devices) ? res.devices : [];
-      const mountable = Array.isArray(res.mountable) ? res.mountable : [];
-      const selectable = devices.filter((d) => d.selectable);
-      if (!selectable.length && !mountable.length) {
-        if (list) {
-          list.textContent =
-            "No browsable mounts. If a host SSD has a clear ext4/ntfs volume it should offer Mount; encrypted volumes stay locked.";
-        }
-        if (!quiet) {
-          setVaultSetupFeedback(
-            "No device available — Mount a clear host volume below, or unlock encrypted disks in the host OS.",
-            "err"
-          );
-        }
-      }
-      for (const d of devices) {
-        if (!list) break;
-        const row = document.createElement("div");
-        row.className =
-          "vaultPickRow" +
-          (d.selectable ? "" : " is-blocked") +
-          (vaultPickerDevice?.mount_path === d.mount_path ? " is-selected" : "");
-        const tag = document.createElement("span");
-        tag.className = `vaultKind ${d.kind || "other"}`;
-        tag.textContent = kindLabel(d.kind);
-        const text = document.createElement("span");
-        const free = d.avail ? ` · free ${d.avail}` : "";
-        text.textContent = `${d.label || d.mount_path}${free}`;
-        row.appendChild(tag);
-        row.appendChild(text);
-        if (d.selectable) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "actionBtn";
-          btn.textContent = "Open";
-          btn.addEventListener("click", () => selectVaultDevice(d));
-          row.appendChild(btn);
-        } else {
-          const why = document.createElement("span");
-          why.className = "muted";
-          why.textContent = d.warn || "don't touch";
-          row.appendChild(why);
-        }
-        list.appendChild(row);
-      }
-      for (const m of mountable) {
-        if (!list) break;
-        const row = document.createElement("div");
-        row.className = "vaultPickRow";
-        const tag = document.createElement("span");
-        tag.className = `vaultKind ${m.kind || "host_ssd"}`;
-        tag.textContent = kindLabel(m.kind) + " · unmounted";
-        const text = document.createElement("span");
-        text.textContent = `${m.label || m.device} · ${m.size_gb ?? "?"} GiB`;
-        row.appendChild(tag);
-        row.appendChild(text);
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "actionBtn";
-        btn.textContent = "Mount";
-        btn.title = m.warn || "Mount read-write under /mnt/stickllm-host/";
-        btn.addEventListener("click", () => mountHostVolume(m));
-        row.appendChild(btn);
-        list.appendChild(row);
-      }
-      if (diskList) {
-        const blocked = Array.isArray(res.blocked_disks) ? res.blocked_disks : [];
-        const lines = [];
-        lines.push("Storage devices (Stick USB + Host SSD):");
-        for (const d of devices) {
-          const kind = kindLabel(d.kind);
-          const free = d.avail ? ` · free ${d.avail}` : "";
-          const note = d.selectable ? " · Open" : d.warn ? ` — ${d.warn}` : "";
-          lines.push(
-            `${kind.padEnd(10)} ${d.mount_path || d.label || "?"}${free}${note}`
-          );
-        }
-        for (const m of mountable) {
-          lines.push(
-            `${kindLabel(m.kind).padEnd(10)} ${m.device} · ${m.size_gb ?? "?"} GiB · unmounted · Mount`
-          );
-        }
-        if (!devices.length && !mountable.length) {
-          lines.push("(none listed — use Refresh devices / List storage)");
-        }
-        if (blocked.length) {
-          lines.push("Not offered (encrypted / unclear):");
-          for (const b of blocked) {
-            lines.push(
-              `${b.path}  ${b.size_gb ?? "?"} GiB  ${b.model || ""} — ${b.reason || ""}`
-            );
-          }
-        }
-        diskList.textContent = lines.join("\n");
-      }
-      return res;
-    } catch (e) {
-      if (list) list.textContent = `Error: ${e.message}`;
-      if (!quiet) setVaultSetupFeedback(`Device list failed: ${e.message}`, "err");
-      throw e;
-    }
-  }
-
-  async function resolveVaultStartDir(mountPath, { kind } = {}) {
-    const root = (mountPath || "").trim();
-    if (!root) return root;
-    // Host volumes: land in /home, Users/, Documents — not bare mount root.
-    if (kind === "host_ssd" || kind === "other" || kind === "other_usb") {
-      try {
-        const res = await control("vault_browse_start", { path: root });
-        if (res.ok && res.start_dir) return res.start_dir;
-      } catch (_) {
-        /* fall through to mount root */
-      }
-    }
-    return root;
-  }
-
-  async function selectVaultDevice(device) {
-    vaultPickerDevice = device;
-    setVaultUsbWarn(
-      device.kind === "usb_stick" || device.kind === "other_usb"
-        ? device.warn ||
-            "USB selected — data on the stick leaves when removed. Prefer host SSD for the vault."
-        : ""
-    );
-    const start = await resolveVaultStartDir(device.mount_path, { kind: device.kind });
-    await browseVaultDir(start);
-    await refreshVaultPicker({ quiet: true });
-  }
-
-  async function mountHostVolume(vol) {
-    const device = vol?.device || vol?.id || "";
-    if (!device) {
-      setVaultSetupFeedback("No device to mount.", "err");
-      return;
-    }
-    const ok = window.confirm(
-      `Mount ${device} (${vol.fstype || "fs"}, ${vol.size_gb ?? "?"} GiB) read-write under ${vol.suggested_mount || "/mnt/stickllm-host/…"}?\n\nNever formats. Encrypted volumes are refused.`
-    );
-    if (!ok) {
-      setVaultSetupFeedback("Mount cancelled.", "info");
-      return;
-    }
-    setVaultSetupFeedback(`Mounting ${device}…`, "info");
-    try {
-      const res = await control("vault_mount", {
-        device,
-        confirm: "MOUNT-HOST",
-      });
-      if (!res.ok) throw new Error(res.error || res.stderr || "mount failed");
-      const mp = res.mount_path || vol.suggested_mount || "";
-      setVaultSetupFeedback(
-        res.already_mounted
-          ? `Already mounted at ${mp} — opening folder browser.`
-          : `Mounted ${device} at ${mp}. Browse to your models folder — Open existing vault if stickllm-vault.img is there, else CREATE-VAULT for a new blob.`,
-        "ok"
-      );
-      await refreshVaultPicker({ quiet: true });
-      if (mp) {
-        vaultPickerDevice = {
-          kind: vol.kind || "host_ssd",
-          mount_path: mp,
-          label: vol.label,
-        };
-        setVaultUsbWarn("");
-        const start = await resolveVaultStartDir(mp, { kind: vol.kind || "host_ssd" });
-        await browseVaultDir(start);
-      }
-    } catch (e) {
-      setVaultSetupFeedback(`Mount failed: ${e.message}`, "err");
-    }
-  }
-
-  function clearVaultModelHits() {
-    const hitsEl = document.getElementById("vaultModelHits");
-    if (hitsEl) {
-      hitsEl.hidden = true;
-      hitsEl.innerHTML = "";
-    }
-  }
-
-  function renderVaultModelHits(res) {
-    const hitsEl = document.getElementById("vaultModelHits");
-    if (!hitsEl) return;
-    const hits = Array.isArray(res.hits) ? res.hits : [];
-    hitsEl.innerHTML = "";
-    if (!hits.length) {
-      hitsEl.hidden = false;
-      hitsEl.textContent =
-        "No model folders found under common locations (GGUF dirs, models/, Ollama, LM Studio, HuggingFace). Browse manually from the start folder.";
-      return;
-    }
-    hitsEl.hidden = false;
-    const head = document.createElement("div");
-    head.className = "vaultModelHitMeta";
-    head.textContent = `Found ${hits.length} location(s) — open one or Use this folder after jumping.`;
-    hitsEl.appendChild(head);
-    for (const hit of hits.slice(0, 24)) {
-      const row = document.createElement("div");
-      row.className = "vaultPickRow";
-      const label = document.createElement("span");
-      const gguf = hit.gguf_count ? ` · ${hit.gguf_count} GGUF` : "";
-      const vaultTag = hit.has_vault_blob ? " · vault blob" : "";
-      label.textContent = `${hit.relative || hit.path}${gguf}${vaultTag} — ${hit.reason || hit.kind || ""}`;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "actionBtn";
-      btn.textContent = hit.has_vault_blob ? "Open + use vault" : "Open";
-      btn.addEventListener("click", async () => {
-        await browseVaultDir(hit.path);
-        useVaultBrowseFolder();
-        if (hit.has_vault_blob) await useExistingVault();
-      });
-      row.appendChild(label);
-      row.appendChild(btn);
-      hitsEl.appendChild(row);
-    }
-  }
-
-  async function findVaultModels() {
-    const base =
-      (vaultPickerDevice?.mount_path || "").trim() || (vaultBrowsePath || "").trim();
-    if (!base) {
-      setVaultSetupFeedback("Open a mounted device first, then Find existing models.", "err");
-      return;
-    }
-    const findBtn = document.getElementById("actVaultFindModels");
-    if (findBtn) findBtn.disabled = true;
-    setVaultSetupFeedback("Searching for existing model folders…", "info");
-    try {
-      const res = await control("vault_find_models", { path: base });
-      if (!res.ok) throw new Error(res.error || "find models failed");
-      renderVaultModelHits(res);
-      const jump = res.best?.path || res.jump_dir || res.start_dir;
-      if (jump) {
-        await browseVaultDir(jump);
-        if (res.best) {
-          useVaultBrowseFolder();
-          const blobNote = res.best.has_vault_blob
-            ? " Existing stickllm-vault.img found — Open existing vault, then Unlock."
-            : "";
-          setVaultSetupFeedback(
-            `Best match: ${res.best.relative || res.best.path} (${res.best.reason || "models"}).${blobNote}`,
-            "ok"
-          );
-          if (res.best.has_vault_blob) {
-            // Auto-attach meta only (never formats); user still enters passcode to Unlock.
-            await useExistingVault();
-          }
-        } else {
-          setVaultSetupFeedback(
-            `No strong model hits — started at ${res.start_dir || jump} (${res.start_reason || "default"}).`,
-            "info"
-          );
-        }
-      } else {
-        setVaultSetupFeedback("Search finished — no browsable start folder.", "err");
-      }
-    } catch (e) {
-      clearVaultModelHits();
-      setVaultSetupFeedback(`Find models failed: ${e.message}`, "err");
-    } finally {
-      if (findBtn) findBtn.disabled = !vaultPickerDevice;
-    }
-  }
-
-  function setVaultExistingBlobUi(hasBlob, blobPath, folderPath) {
-    vaultBrowseHasBlob = !!hasBlob;
-    vaultBrowseBlobPath = hasBlob ? String(blobPath || `${folderPath}/stickllm-vault.img`) : "";
-    const hint = document.getElementById("vaultExistingBlobHint");
-    const useExistingBtn = document.getElementById("actVaultUseExisting");
-    const createPanel = document.getElementById("vaultCreatePanel");
-    const setupBtn = document.getElementById("actVaultSetup");
-    if (useExistingBtn) useExistingBtn.disabled = !hasBlob;
-    if (hint) {
-      if (hasBlob) {
-        hint.hidden = false;
-        hint.textContent =
-          `Found existing vault blob: ${vaultBrowseBlobPath}. Click “Open existing vault”, then Unlock with your passcode — do not type CREATE-VAULT (Create refuses if the img exists and never attaches).`;
-        hint.classList.add("is-ok");
-        hint.classList.remove("is-err");
-      } else {
-        hint.hidden = true;
-        hint.textContent = "";
-      }
-    }
-    if (createPanel) {
-      createPanel.style.opacity = hasBlob ? "0.45" : "";
-      createPanel.style.pointerEvents = hasBlob ? "none" : "";
-    }
-    if (setupBtn) setupBtn.disabled = !!hasBlob;
-  }
-
-  async function browseVaultDir(path) {
-    const folderList = document.getElementById("vaultFolderList");
-    const pathEl = document.getElementById("vaultBrowsePath");
-    const upBtn = document.getElementById("actVaultBrowseUp");
-    const useBtn = document.getElementById("actVaultBrowseUse");
-    const newBtn = document.getElementById("actVaultBrowseNew");
-    const findBtn = document.getElementById("actVaultFindModels");
-    if (folderList) folderList.textContent = "Loading folders…";
-    try {
-      const res = await control("vault_list_dirs", { path });
-      if (!res.ok) throw new Error(res.error || "list dirs failed");
-      vaultBrowsePath = res.path || path;
-      if (pathEl) pathEl.textContent = vaultBrowsePath;
-      if (upBtn) upBtn.disabled = !res.parent;
-      if (useBtn) useBtn.disabled = false;
-      if (newBtn) newBtn.disabled = !res.can_mkdir;
-      if (findBtn) findBtn.disabled = !(vaultPickerDevice?.mount_path || vaultBrowsePath);
-      setVaultExistingBlobUi(
-        !!(res.has_vault_blob || res.existing_vault_blob),
-        res.existing_vault_blob,
-        vaultBrowsePath
-      );
-      if (res.is_stick_usb || res.warn) {
-        setVaultUsbWarn(
-          res.warn ||
-            "Browsing StickLLM USB — vault data leaves when the stick is removed."
-        );
-      } else if (vaultPickerDevice?.kind === "host_ssd") {
-        setVaultUsbWarn("");
-      }
-      if (folderList) {
-        folderList.innerHTML = "";
-        const entries = Array.isArray(res.entries) ? res.entries : [];
-        if (!entries.length) {
-          folderList.textContent = vaultBrowseHasBlob
-            ? "(no subfolders — Open existing vault, then Unlock)"
-            : "(no subfolders — you can Use this folder or New folder)";
-        }
-        for (const ent of entries) {
-          const row = document.createElement("div");
-          row.className = "vaultPickRow";
-          row.textContent = ent.name;
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "actionBtn";
-          btn.textContent = "Open";
-          btn.addEventListener("click", () => browseVaultDir(ent.path));
-          row.appendChild(document.createTextNode(" "));
-          row.appendChild(btn);
-          folderList.appendChild(row);
-        }
-        if (vaultBrowseHasBlob) {
-          const blobRow = document.createElement("div");
-          blobRow.className = "vaultPickRow";
-          blobRow.textContent = `stickllm-vault.img (existing encrypted vault)`;
-          const bindBtn = document.createElement("button");
-          bindBtn.type = "button";
-          bindBtn.className = "actionBtn";
-          bindBtn.textContent = "Open existing";
-          bindBtn.addEventListener("click", () => useExistingVault());
-          blobRow.appendChild(document.createTextNode(" "));
-          blobRow.appendChild(bindBtn);
-          folderList.prepend(blobRow);
-        }
-      }
-      return res;
-    } catch (e) {
-      if (folderList) folderList.textContent = `Error: ${e.message}`;
-      setVaultSetupFeedback(`Folder browse failed: ${e.message}`, "err");
-      setVaultExistingBlobUi(false, "", "");
-      throw e;
-    }
-  }
-
-  function useVaultBrowseFolder() {
-    const path = (vaultBrowsePath || "").trim();
-    const input = document.getElementById("vaultSetupPath");
-    if (!path) {
-      setVaultSetupFeedback("Choose a folder — open a device, then Use this folder.", "err");
-      return;
-    }
-    if (input) input.value = path;
-    const usb = isStickUsbVaultPath(path) || vaultPickerDevice?.kind === "usb_stick";
-    if (vaultBrowseHasBlob && !usb) {
-      setVaultSetupFeedback(
-        `Selected ${path} — existing stickllm-vault.img found. Click “Open existing vault”, then Unlock (do not Create).`,
-        "ok"
-      );
-      return;
-    }
-    setVaultSetupFeedback(
-      usb
-        ? `Selected USB folder ${path} — data leaves when stick is removed. Prefer host SSD.`
-        : `Selected folder ${path}`,
-      usb ? "err" : "ok"
-    );
-  }
-
-  async function useExistingVault() {
-    const path =
-      (document.getElementById("vaultSetupPath")?.value || "").trim() ||
-      (vaultBrowsePath || "").trim() ||
-      (vaultBrowseBlobPath || "").trim();
-    if (!path) {
-      setVaultSetupFeedback(
-        "Browse to the folder that contains stickllm-vault.img (e.g. …/home/nink/models), then Open existing vault.",
-        "err"
-      );
-      return;
-    }
-    if (path.startsWith("/dev/") || path.startsWith("\\\\.\\")) {
-      setVaultSetupFeedback("Refusing block device — pick the mounted folder with the blob.", "err");
-      return;
-    }
-    if (isStickUsbVaultPath(path)) {
-      setVaultSetupFeedback(
-        "Refusing StickLLM USB — attach the host SSD folder that holds stickllm-vault.img.",
-        "err"
-      );
-      return;
-    }
-    const input = document.getElementById("vaultSetupPath");
-    if (input && !input.value.trim()) input.value = path.replace(/\/stickllm-vault\.img$/i, "");
-    setVaultSetupFeedback("Attaching existing vault blob (config only — not formatting)…", "info");
-    try {
-      const res = await control("vault_attach", { path });
-      if (!res.ok) {
-        throw new Error(res.error || res.stderr || res.note || "attach existing failed");
-      }
-      const blob = res.blob || vaultBrowseBlobPath || `${path.replace(/\/$/, "")}/stickllm-vault.img`;
-      setVaultSetupFeedback(
-        `Existing vault attached: ${blob}. Enter your passcode below and Unlock — CREATE-VAULT is not needed.`,
-        "ok"
-      );
-      addBubble("system", `Existing vault attached at ${blob}. Unlock with your passcode.`);
-      document.getElementById("vaultPass")?.focus();
-      if (settingsDialog?.open) {
-        const st = await control("status");
-        renderSettingsStatus(st);
-      }
-    } catch (e) {
-      setVaultSetupFeedback(`Open existing failed: ${e.message}`, "err");
-      addBubble("system", `Open existing vault failed: ${e.message}`);
-    }
-  }
-
-  async function createVaultBrowseFolder() {
-    if (!vaultBrowsePath) {
-      setVaultSetupFeedback("Open a device/folder first.", "err");
-      return;
-    }
-    const name = window.prompt("New folder name (letters, digits, . _ -):", "StickLLM");
-    if (!name) return;
-    try {
-      const res = await control("vault_mkdir", { path: vaultBrowsePath, name: name.trim() });
-      if (!res.ok) throw new Error(res.error || "mkdir failed");
-      setVaultSetupFeedback(`Created folder ${res.path}`, "ok");
-      await browseVaultDir(res.path || vaultBrowsePath);
-      useVaultBrowseFolder();
-    } catch (e) {
-      setVaultSetupFeedback(`New folder failed: ${e.message}`, "err");
-    }
-  }
-
-  async function chat(userText) {
-    if (!(await ensurePaired())) return;
-    messages.push({ role: "user", content: userText });
-    addBubble("user", userText);
-    const assistantEl = addBubble("assistant", "…");
-    send.disabled = true;
-    const web = webToggle?.checked ? "on" : "off";
-
-    try {
-      const r = await fetch(`${API_BASE}/api/chat`, {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          model: "stickllm",
-          messages,
-          stream: false,
-          temperature: 0.7,
-          web,
-        }),
-      });
-      if (r.status === 401) {
-        clearPairSession();
-        statusLine.textContent = "needs pair code (see stick screen)";
-        assistantEl.lastChild.textContent =
-          "Pair required — enter the code from the stick screen.";
-        await ensurePaired(true);
-        return;
-      }
-      if (!r.ok) {
-        let msg = `HTTP ${r.status}`;
-        try {
-          const err = await r.json();
-          msg = err.message || err.error || msg;
-        } catch (_) {
-          msg = (await r.text()) || msg;
-        }
-        throw new Error(msg);
-      }
-      const data = await r.json();
-      let reply =
-        data?.choices?.[0]?.message?.content?.trim() || "(empty response)";
-      const webInfo = data?.stickllm_web;
-      if (webInfo?.used && webInfo.results?.length) {
-        const cites = webInfo.results
-          .slice(0, 3)
-          .map((x) => x.url)
-          .filter(Boolean);
-        if (cites.length) {
-          reply += "\n\nSources:\n" + cites.map((u) => `• ${u}`).join("\n");
-        }
-      }
-      messages.push({ role: "assistant", content: reply });
-      assistantEl.lastChild.textContent = reply;
-      if (sessionMode === "vault") {
-        // Persist only in Vault mode; never write chats in Ephemeral.
-        saveCurrentChat({ quiet: true }).catch(() => {});
-      }
-    } catch (err) {
-      assistantEl.classList.add("system");
-      assistantEl.lastChild.textContent = `Error: ${err.message}`;
-    } finally {
-      send.disabled = false;
-      input.focus();
-    }
-  }
-
-  form.addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    const text = input.value.trim();
-    if (!text || send.disabled) return;
-    input.value = "";
-    chat(text);
-  });
-
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && !ev.shiftKey) {
-      ev.preventDefault();
-      form.requestSubmit();
-    }
-  });
-
-  pairForm?.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    pairErr.hidden = true;
-    const code = pairCode.value.trim();
-    try {
-      const r = await fetch("/api/pair", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-StickLLM-Client": "ui",
-        },
-        body: JSON.stringify({ code }),
-      });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.message || j.error || "Pair failed");
-      token = j.token;
-      localStorage.setItem(TOKEN_KEY, token);
-      refreshSessionHints();
-      pairDialog.close();
-      statusLine.textContent = "paired";
-      addBubble("system", "Paired. Chat, Models, and Settings unlocked until reboot.");
-    } catch (e) {
-      pairErr.textContent = e.message;
-      pairErr.hidden = false;
-    }
-  });
-
-  async function openChats() {
-    if (!(await ensurePaired())) return;
-    if (sessionMode !== "vault") {
-      addBubble("system", "Switch Mode to Vault to use saved chats.");
-      return;
-    }
-    chatsDialog?.showModal();
-    if (chatsList) chatsList.textContent = "Loading…";
-    try {
-      const r = await fetch("/api/chats", { headers: authHeaders() });
-      const j = await r.json();
-      if (!r.ok || j.ok === false) {
-        if (chatsList) chatsList.textContent = j.error || "Could not list chats";
-        return;
-      }
-      renderChatsList(j.chats || []);
-    } catch (e) {
-      if (chatsList) chatsList.textContent = e.message;
-    }
-  }
-
-  function renderChatsList(chats) {
-    if (!chatsList) return;
-    chatsList.innerHTML = "";
-    if (!chats.length) {
-      chatsList.textContent = "No saved chats yet.";
-      return;
-    }
-    for (const c of chats) {
-      const row = document.createElement("div");
-      row.className = "catalogRow";
-      const meta = document.createElement("div");
-      meta.textContent = `${c.title || c.id} · ${c.messages || 0} msgs`;
-      const actions = document.createElement("div");
-      actions.className = "catalogActions";
-      const openBtn = document.createElement("button");
-      openBtn.type = "button";
-      openBtn.className = "actionBtn";
-      openBtn.textContent = "Open";
-      openBtn.addEventListener("click", async () => {
-        try {
-          const r = await fetch(`/api/chats/${encodeURIComponent(c.id)}`, {
-            headers: authHeaders(),
-          });
-          const j = await r.json();
-          if (!r.ok || j.ok === false) throw new Error(j.error || "load failed");
-          resetChatMessages(false);
-          activeChatId = j.id || c.id;
-          for (const m of j.messages || []) {
-            if (m.role === "system") {
-              messages.push(m);
-              continue;
-            }
-            messages.push(m);
-            addBubble(m.role, m.content);
-          }
-          if (!messages.some((x) => x.role === "system")) {
-            messages.unshift({
-              role: "system",
-              content:
-                "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
-            });
-          }
-          chatsDialog?.close();
-        } catch (e) {
-          addBubble("system", `Open chat failed: ${e.message}`);
-        }
-      });
-      const delBtn = document.createElement("button");
-      delBtn.type = "button";
-      delBtn.className = "actionBtn";
-      delBtn.textContent = "Delete";
-      delBtn.addEventListener("click", async () => {
-        if (!confirm(`Delete chat “${c.title || c.id}”?`)) return;
-        try {
-          const r = await fetch("/api/chats", {
-            method: "POST",
-            headers: authHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify({ delete: true, id: c.id }),
-          });
-          const j = await r.json();
-          if (!r.ok || j.ok === false) throw new Error(j.error || "delete failed");
-          if (activeChatId === c.id) activeChatId = null;
-          await openChats();
-        } catch (e) {
-          addBubble("system", `Delete failed: ${e.message}`);
-        }
-      });
-      actions.appendChild(openBtn);
-      actions.appendChild(delBtn);
-      row.appendChild(meta);
-      row.appendChild(actions);
-      chatsList.appendChild(row);
-    }
-  }
-
-  async function saveCurrentChat(opts = {}) {
-    const quiet = !!opts.quiet;
-    if (sessionMode !== "vault") {
-      if (!quiet) addBubble("system", "Switch Mode to Vault to save chats.");
-      return;
-    }
-    const title =
-      (messages.find((m) => m.role === "user")?.content || "Chat").slice(0, 60) || "Chat";
-    try {
-      const r = await fetch("/api/chats", {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          id: activeChatId || undefined,
-          title,
-          messages,
-        }),
-      });
-      const j = await r.json();
-      if (!r.ok || j.ok === false) throw new Error(j.error || "save failed");
-      activeChatId = j.id;
-      if (!quiet) addBubble("system", `Saved chat “${j.title || title}” in vault.`);
-    } catch (e) {
-      if (!quiet) addBubble("system", `Save failed: ${e.message}`);
-      throw e;
-    }
-  }
-
-  modelsBtn?.addEventListener("click", () => openModels());
-  chatsBtn?.addEventListener("click", () => openChats());
-  settingsBtn?.addEventListener("click", () => openSettings());
-  sessionModeEl?.addEventListener("change", () => {
-    setSessionMode(sessionModeEl.value);
-  });
-  document.getElementById("lockVaultBtn")?.addEventListener("click", () => lockVault());
-  document.getElementById("actChatNew")?.addEventListener("click", () => {
-    activeChatId = null;
-    resetChatMessages(true);
-    addBubble("system", "New chat (not saved until you Save).");
-    chatsDialog?.close();
-  });
-  document.getElementById("actChatSave")?.addEventListener("click", () => saveCurrentChat());
-  document.getElementById("chatsClose")?.addEventListener("click", () => chatsDialog?.close());
-  document.getElementById("actVaultSetup")?.addEventListener("click", async () => {
-    const path = (document.getElementById("vaultSetupPath")?.value || "").trim();
-    const size = String(document.getElementById("vaultSetupSize")?.value || "8");
-    const pass = document.getElementById("vaultSetupPass")?.value || "";
-    const pass2 = document.getElementById("vaultSetupPass2")?.value || "";
-    const confirm = (document.getElementById("vaultSetupConfirm")?.value || "").trim();
-    const recoveryEl = document.getElementById("vaultRecovery");
-    if (!path) {
-      setVaultSetupFeedback(
-        "Choose a folder — pick Device → open folders → Use this folder (path is blank).",
-        "err"
-      );
-      return;
-    }
-    if (path.startsWith("/dev/") || path.startsWith("\\\\.\\")) {
-      setVaultSetupFeedback("Refusing block device — pick a mounted host SSD folder.", "err");
-      return;
-    }
-    if (isStickUsbVaultPath(path)) {
-      setVaultSetupFeedback(
-        "Refusing StickLLM USB / STICKLLM-DATA — vault must be on a mounted host SSD folder.",
-        "err"
-      );
-      return;
-    }
-    if (confirm !== "CREATE-VAULT") {
-      setVaultSetupFeedback(
-        "Type CREATE-VAULT exactly to confirm (never formats your drive).",
-        "err"
-      );
-      return;
-    }
-    if (pass.length < 8 || pass !== pass2) {
-      setVaultSetupFeedback("Passcode must match and be at least 8 characters.", "err");
-      return;
-    }
-    setVaultSetupFeedback("Creating vault blob on host path (non-destructive)…", "info");
-    try {
-      const res = await control("vault_setup", {
-        path,
-        size_gb: size,
-        confirm: "CREATE-VAULT",
-        recovery_confirm: "SHOW-ONCE",
-        passcode: pass,
-        passcode2: pass2,
-        space_confirm: "SPACE-OK",
-      });
-      if (!res.ok) {
-        throw new Error(res.error || res.stderr || res.note || "setup failed");
-      }
-      if (String(res.status || "").toLowerCase() === "absent") {
-        throw new Error(
-          res.error ||
-            res.stderr ||
-            "API reported success but vault is still absent — refuse silent success"
-        );
-      }
-      if (document.getElementById("vaultSetupPass")) document.getElementById("vaultSetupPass").value = "";
-      if (document.getElementById("vaultSetupPass2")) document.getElementById("vaultSetupPass2").value = "";
-      if (document.getElementById("vaultSetupConfirm")) document.getElementById("vaultSetupConfirm").value = "";
-      const phrase = res.recovery_phrase || "";
-      if (recoveryEl) {
-        recoveryEl.style.display = "block";
-        recoveryEl.textContent = phrase
-          ? `RECOVERY PHRASE (shown once — write it down):\n${phrase}`
-          : "Vault created. (Recovery phrase missing from response — check stick logs.)";
-      }
-      const savedLabel = document.getElementById("vaultSavedLabel");
-      const finishBtn = document.getElementById("actVaultSetupFinish");
-      if (savedLabel) savedLabel.hidden = false;
-      if (finishBtn) finishBtn.hidden = false;
-      const blob = res.blob || `${path.replace(/\/$/, "")}/stickllm-vault.img`;
-      setVaultSetupFeedback(
-        `Success — vault created at ${blob} (folder ${path}). Write the recovery phrase, type SAVED, then Finish.`,
-        "ok"
-      );
-      addBubble(
-        "system",
-        `Vault created — full path ${blob}. Write down the recovery phrase in Settings.`
-      );
-      await setSessionMode("vault");
-      if (settingsDialog?.open) {
-        const st = await control("status");
-        renderSettingsStatus(st);
-      }
-    } catch (e) {
-      setVaultSetupFeedback(`Setup failed: ${e.message}`, "err");
-      addBubble("system", `Vault setup failed: ${e.message}`);
-    }
-  });
-  document.getElementById("actVaultSetupFinish")?.addEventListener("click", () => {
-    const saved = (document.getElementById("vaultSetupSaved")?.value || "").trim();
-    const recoveryEl = document.getElementById("vaultRecovery");
-    if (saved !== "SAVED") {
-      setVaultSetupFeedback("Type SAVED after writing the recovery phrase.", "err");
-      return;
-    }
-    if (recoveryEl) {
-      recoveryEl.textContent = "(recovery phrase cleared from this screen)";
-    }
-    const savedLabel = document.getElementById("vaultSavedLabel");
-    const finishBtn = document.getElementById("actVaultSetupFinish");
-    if (savedLabel) savedLabel.hidden = true;
-    if (finishBtn) finishBtn.hidden = true;
-    if (document.getElementById("vaultSetupSaved")) document.getElementById("vaultSetupSaved").value = "";
-    setVaultSetupFeedback("Recovery phrase acknowledged. Keep your written copy safe.", "ok");
-    addBubble("system", "Recovery phrase acknowledged.");
-  });
-  document.getElementById("actVaultGrow")?.addEventListener("click", async () => {
-    const gb = String(document.getElementById("vaultGrowGb")?.value || "8");
-    const typed = window.prompt(`Type GROW-VAULT to expand the blob by ${gb} GiB (free space checked):`, "");
-    if (typed !== "GROW-VAULT") {
-      addBubble("system", "Grow aborted.");
-      return;
-    }
-    try {
-      const res = await control("vault_grow", { add_gb: gb, confirm: "GROW-VAULT" });
-      if (!res.ok) throw new Error(res.error || res.stderr || "grow failed");
-      addBubble("system", `Vault grew by ${gb} GiB.`);
-      if (settingsDialog?.open) await openSettings();
-    } catch (e) {
-      addBubble("system", `Grow failed: ${e.message}`);
-    }
-  });
-  document.getElementById("actVaultWipe")?.addEventListener("click", async () => {
-    const n = String(document.getElementById("vaultWipeN")?.value || "0");
-    let confirm = "";
-    if (n !== "0") {
-      confirm = window.prompt(
-        `Type WIPE-OK to enable wipe after ${n} failed unlocks (destroys blob LUKS header only):`,
-        ""
-      );
-      if (confirm !== "WIPE-OK") {
-        addBubble("system", "Wipe setting aborted.");
-        return;
-      }
-    }
-    try {
-      const res = await control("vault_set_wipe", { n, confirm: confirm || "OFF" });
-      if (!res.ok) throw new Error(res.error || res.stderr || "failed");
-      addBubble("system", `Wipe-after-N set to ${n} (0 = off).`);
-      if (settingsDialog?.open) await openSettings();
-    } catch (e) {
-      addBubble("system", `Wipe setting failed: ${e.message}`);
-    }
-  });
-  document.getElementById("actVaultMovable")?.addEventListener("click", async () => {
-    const el = document.getElementById("movableList");
-    if (el) el.textContent = "Listing…";
-    try {
-      const res = await control("vault_list_movable");
-      const models = res.models || [];
-      if (!el) return;
-      el.innerHTML = "";
-      if (!models.length) {
-        el.textContent = "No USB models to move (or DATA not mounted).";
-        return;
-      }
-      for (const m of models) {
-        const line = document.createElement("div");
-        line.textContent = `${m.name}  ${Math.round((m.size || 0) / 1e9 * 10) / 10} GB${
-          m.in_vault ? " (already in vault)" : ""
-        }`;
-        if (!m.in_vault) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "actionBtn";
-          btn.textContent = "Move → vault";
-          btn.addEventListener("click", async () => {
-            if (!confirm(`Move ${m.name} into vault? Source removed after SHA-256 verify.`)) return;
-            btn.disabled = true;
-            try {
-              const r = await control("vault_move_model", {
-                path: m.path,
-                confirm: "MOVE-MODEL",
-              });
-              if (!r.ok) throw new Error(r.error || r.stderr || "move failed");
-              addBubble("system", `Moved ${m.name} into vault (SHA-256 OK).`);
-              document.getElementById("actVaultMovable")?.click();
-            } catch (e) {
-              addBubble("system", `Move failed: ${e.message}`);
-              btn.disabled = false;
-            }
-          });
-          line.appendChild(document.createTextNode(" "));
-          line.appendChild(btn);
-        }
-        el.appendChild(line);
-      }
-    } catch (e) {
-      if (el) el.textContent = e.message;
-    }
-  });
-  document.getElementById("actVaultDisks")?.addEventListener("click", async () => {
-    try {
-      await refreshVaultPicker({ quiet: false });
-    } catch (_) {}
-  });
-  document.getElementById("actVaultPickerRefresh")?.addEventListener("click", async () => {
-    try {
-      await refreshVaultPicker({ quiet: false });
-    } catch (_) {}
-  });
-  document.getElementById("actVaultBrowseUse")?.addEventListener("click", () => useVaultBrowseFolder());
-  document.getElementById("actVaultUseExisting")?.addEventListener("click", () => useExistingVault());
-  document.getElementById("actVaultBrowseNew")?.addEventListener("click", () => createVaultBrowseFolder());
-  document.getElementById("actVaultFindModels")?.addEventListener("click", () => findVaultModels());
-  document.getElementById("actVaultFindExisting")?.addEventListener("click", () => findExistingVault());
-  // Up is rebound per browseVaultDir response (once). Keep a stable handler too.
-  document.getElementById("actVaultBrowseUp")?.addEventListener("click", async () => {
-    if (!vaultBrowsePath || !vaultPickerDevice) return;
-    try {
-      const cur = await control("vault_list_dirs", { path: vaultBrowsePath });
-      if (cur.parent) await browseVaultDir(cur.parent);
-    } catch (e) {
-      setVaultSetupFeedback(`Up failed: ${e.message}`, "err");
-    }
-  });
-  document.getElementById("actVaultUnlock")?.addEventListener("click", async () => {
-    const pass = document.getElementById("vaultPass")?.value || "";
-    const vaultStatus = document.getElementById("vaultStatus");
-    const bindPath =
-      (document.getElementById("vaultSetupPath")?.value || "").trim() ||
-      (vaultBrowseHasBlob ? vaultBrowsePath || vaultBrowseBlobPath : "") ||
-      "";
-    if (vaultStatus) vaultStatus.textContent = "Unlocking…";
-    try {
-      // Control binds only when meta is missing (reflash). Pass folder if selected.
-      const payload = { passcode: pass };
-      if (bindPath && !bindPath.startsWith("/dev/")) {
-        payload.path = bindPath;
-      }
-      const res = await control("vault_unlock", payload);
-      if (document.getElementById("vaultPass")) document.getElementById("vaultPass").value = "";
-      if (res.ok) {
-        setVaultSetupFeedback("Vault unlocked.", "ok");
-        if (vaultStatus) vaultStatus.textContent = "Vault: unlocked";
-        if (sessionMode !== "vault") {
-          await setSessionMode("vault");
-        }
-      } else {
-        let msg = res.error || res.stderr || "bad passcode / no vault configured";
-        if (/no vault configured/i.test(String(msg))) {
-          msg +=
-            " — browse to the folder with stickllm-vault.img, click Open existing vault, then Unlock again.";
-        }
-        setVaultSetupFeedback(`Unlock failed: ${msg}`, "err");
-        if (vaultStatus) vaultStatus.textContent = `Unlock failed: ${msg}`;
-      }
-      const st = await control("status");
-      renderSettingsStatus(st);
-    } catch (e) {
-      setVaultSetupFeedback(`Unlock error: ${e.message}`, "err");
-      if (vaultStatus) vaultStatus.textContent = `Error: ${e.message}`;
-    }
-  });
-  document.getElementById("actVaultLock")?.addEventListener("click", () => lockVault());
-  window.addEventListener("keydown", (ev) => {
-    if (ev.ctrlKey && ev.shiftKey && (ev.key === "L" || ev.key === "l")) {
-      ev.preventDefault();
-      lockVault();
-    }
-  });
-  pairBtn?.addEventListener("click", async () => {
-    try {
-      if (isLocalMode) {
-        await issuePairFromStick();
-      } else {
-        await issuePairFromLan();
-      }
-    } catch (e) {
-      addBubble("system", `Pair remint failed: ${e.message}`);
-      statusLine.textContent = "pair remint failed";
-    }
-  });
-  document.getElementById("modelsClose")?.addEventListener("click", () => {
-    stopDlPoll();
-    modelsDialog.close();
-  });
-  document.getElementById("settingsClose")?.addEventListener("click", () => {
-    settingsDialog.close();
-  });
-  modelsDialog?.addEventListener("close", () => stopDlPoll());
-
-  wifiConnect?.addEventListener("click", async () => {
-    const ssid = (wifiSsid?.value || "").trim();
-    const password = wifiPass?.value || "";
-    if (!ssid) {
-      if (netStatus) netStatus.textContent = "Enter a WiFi SSID.";
-      return;
-    }
-    if (netStatus) netStatus.textContent = `Connecting to ${ssid}…`;
-    try {
-      const res = await control("wifi_connect", { ssid, password });
-      if (!res.ok && res.error) throw new Error(res.error);
-      if (netStatus) {
-        netStatus.textContent = res.online
-          ? `Online via WiFi ${ssid}`
-          : `WiFi profile saved for ${ssid} — waiting for uplink`;
-      }
-      await openSettings();
-    } catch (e) {
-      if (netStatus) netStatus.textContent = `WiFi error: ${e.message}`;
-    }
-  });
-
-  document.getElementById("actClaim")?.addEventListener("click", async () => {
-    if (settingsBody) settingsBody.textContent = "Claiming USB free space…";
-    try {
-      const res = await control("usb_claim");
-      if (settingsBody) {
-        settingsBody.textContent = (res.stdout || JSON.stringify(res, null, 2)).slice(-1500);
-      }
-      await openSettings();
-    } catch (e) {
-      if (settingsBody) settingsBody.textContent = `Error: ${e.message}`;
-    }
-  });
-  document.getElementById("actProbe")?.addEventListener("click", async () => {
-    modelsBody.textContent = "Probing…";
-    try {
-      await control("model_probe");
-      await openModels();
-    } catch (e) {
-      modelsBody.textContent = `Error: ${e.message}`;
-    }
-  });
-  document.getElementById("actDownload")?.addEventListener("click", async () => {
-    modelsBody.textContent = "Starting recommended download…";
-    try {
-      const st = await control("status");
-      const id = st.probe?.recommend_id;
-      const res = await control("model_download", id ? { id } : {});
-      renderDownload(res.download || { state: "starting", id: id || "" });
-      startDlPoll();
-      await openModels();
-    } catch (e) {
-      modelsBody.textContent = `Error: ${e.message}`;
-    }
-  });
-  document.getElementById("actRefresh")?.addEventListener("click", () => openModels());
-  document.getElementById("actActivate")?.addEventListener("click", () => activateSelectedModel());
-  document.getElementById("actModelDownload")?.addEventListener("click", () => downloadSelectedModel());
-  document.getElementById("actModelDelete")?.addEventListener("click", () => openDeleteConfirm());
-  document.getElementById("ctxSlider")?.addEventListener("input", (ev) => {
-    const ctxValue = document.getElementById("ctxValue");
-    if (ctxValue) ctxValue.textContent = String(ev.target.value);
-    // Re-enable Activate when slider leaves the loaded model's ctx.
-    updateSelectionPanel();
-  });
-  document.getElementById("deleteConfirmCancel")?.addEventListener("click", () => {
-    document.getElementById("deleteConfirmDialog")?.close();
-  });
-  document.getElementById("deleteConfirmOk")?.addEventListener("click", () => confirmDeleteSelected());
-  document.getElementById("deleteConfirmInput")?.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") {
-      ev.preventDefault();
-      confirmDeleteSelected();
-    }
-  });
-
-  addBubble(
-    "system",
-    "No model loads at boot. To chat: Models → radio select → context slider → Activate. Pair | URL above for LAN; Settings → System has How to connect. No LAN? Term: stickllm-wifi-setup."
-  );
-  refreshStatus();
-  // Stick kiosk polls faster so LAN Pair remints show in chat promptly.
-  setInterval(() => {
-    refreshStatus();
-  }, 2500);
-  ensurePaired(false).then(async () => {
-    try {
-      const st = await pairStatus();
-      if (st.local) applyLocalChrome(true);
-    } catch (_) {}
-  });
-  const focusChat = () => {
-    try {
-      if (pairDialog?.open) return;
-      if (modelsDialog?.open) return;
-      if (settingsDialog?.open) return;
-      input?.focus({ preventScroll: true });
-    } catch (_) {
-      input?.focus();
-    }
-  };
-  focusChat();
-  setTimeout(focusChat, 300);
-  setTimeout(focusChat, 1200);
-  window.addEventListener("focus", focusChat);
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) focusChat();
-  });
 })();

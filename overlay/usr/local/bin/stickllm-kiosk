@@ -856,18 +856,11 @@ else
   paint "  (no pair code)"
 fi
 paint ""
-# If an SSD vault blob is configured, offer unlock (skip → stay ephemeral).
-# Never formats disks; never unlocks host BitLocker/LUKS volumes.
+# Vault unlock is UI-only — never prompt on tty at boot (blocks headless Server/Local).
+# Default session Mode stays Ephemeral until the user unlocks in Settings.
 if [[ -x /usr/local/bin/stickllm-vault-boot ]]; then
   /usr/local/bin/stickllm-vault-boot || true
-  if findmnt -n /var/lib/stickllm/vault >/dev/null 2>&1; then
-    printf '%s\n' '{"mode":"vault","note":"unlocked at boot"}' >"$RUN/session-mode.json" 2>/dev/null || true
-    serial_note "STICKLLM_VAULT_BOOT unlocked → session_mode=vault"
-    paint "  Vault: unlocked (Mode → Vault)"
-  else
-    serial_note "STICKLLM_VAULT_BOOT skipped_or_absent"
-  fi
-  paint ""
+  serial_note "STICKLLM_VAULT_BOOT status=$(tr -d '[:space:]' <"$RUN/vault-boot.txt" 2>/dev/null || echo unknown) (no tty prompt)"
 fi
 paint "  Waiting for UI HTTP 200…"
 ui_ready=0

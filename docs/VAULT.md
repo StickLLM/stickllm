@@ -14,7 +14,7 @@ Shipping ISO: **v0.3.6** on Google Drive — see [RESTORE.md](RESTORE.md) / [REA
 
 Switching to Vault opens Settings unlock/setup if the vault is locked or absent. Switching back to Ephemeral stops new vault writes (does not auto-lock; use **Lock** / Ctrl+Shift+L to close LUKS).
 
-**Boot:** if a vault blob is already configured, Local/Chat kiosk runs `stickllm-vault-boot` (unlock or skip). Unlock → session Mode becomes Vault; skip → Ephemeral. Chats APIs refuse to write unless Mode is Vault **and** the vault is mounted.
+**Boot:** no vault password/skip prompt. Session Mode stays **Ephemeral**; the vault stays locked until the user unlocks (or creates/attaches) in the UI. Headless Server/Local must not wait on tty for vault input. Chats APIs refuse to write unless Mode is Vault **and** the vault is mounted.
 
 ## Safety (fail-closed)
 
@@ -87,7 +87,7 @@ from Settings → System (Test/Term, on-stick) for hot-deploy on older sticks.
 SSH-test on a running stick first when iterating. Do not touch older `out/v0.3.*/`
 dirs or rewrite published shipping tags/checksums.
 
-### Hot-deploy (running stick, menu 3/4)
+### Hot-deploy (running stick, menu 2/3)
 
 Password is **random per boot** (READY screen) — do not invent it.
 
@@ -95,10 +95,11 @@ Password is **random per boot** (READY screen) — do not invent it.
 # from feature/encrypted-ssd-vault worktree
 scp overlay/usr/local/bin/stickllm-vault \
     overlay/usr/local/bin/stickllm-vault-boot \
+    overlay/usr/local/bin/stickllm-kiosk \
     overlay/usr/local/bin/stickllm-control \
     stickllm@<ip>:/tmp/
 scp ui/app.js ui/index.html ui/style.css stickllm@<ip>:/tmp/stickllm-ui/
-ssh stickllm@<ip> 'sudo install -m 755 /tmp/stickllm-vault /tmp/stickllm-vault-boot /usr/local/bin/ && sudo install -m 755 /tmp/stickllm-control /usr/local/bin/ && sudo cp /tmp/stickllm-ui/* /opt/stickllm/ui/ && sudo systemctl restart stickllm-control stickllm-ui'
+ssh stickllm@<ip> 'sudo install -m 755 /tmp/stickllm-vault /tmp/stickllm-vault-boot /tmp/stickllm-kiosk /usr/local/bin/ && sudo install -m 755 /tmp/stickllm-control /usr/local/bin/ && sudo cp /tmp/stickllm-ui/* /opt/stickllm/ui/ && sudo systemctl restart stickllm-control stickllm-ui stickllm-kiosk'
 ssh stickllm@<ip> 'sudo stickllm-vault list-disks | tail -c 2000'
 # Only setup inside a throwaway *mounted* folder — never /dev/sdX:
 # sudo stickllm-vault setup /mnt/somewhere/StickLLM 4

@@ -1,6 +1,6 @@
 # Booting StickLLM
 
-Current ship: **v0.3.6** (Drive ISO + [`checksums/v0.3.6.sha256`](../checksums/v0.3.6.sha256)).
+Current ship: **v0.3.8** (Drive ISO + [`checksums/v0.3.8.sha256`](../checksums/v0.3.8.sha256)).
 Do **not** flash **v0.3.5** (truncated). Flash notes: [FLASH.md](FLASH.md). Vault after
 reflash: [VAULT.md](VAULT.md).
 
@@ -14,7 +14,7 @@ boot order does.
 3. Save & exit.
 
 Until USB is first, another OS’s bootloader may keep winning after reboot.
-Secure Boot: turn **off** (or enroll custom keys later — not required for v0.3.6).
+Secure Boot: turn **off** (or enroll custom keys later — not required for v0.3.8).
 
 Example lab host (AMD desktop / ROMED8-class board with Ubuntu on NVMe): same
 steps — USB above the NVMe entry. That hardware is an example, not a requirement.
@@ -24,21 +24,20 @@ steps — USB above the NVMe entry. That hardware is an example, not a requireme
 | # | Entry | What you get |
 |---|---|---|
 | **1** | **Server / Local** | On-stick browser when a display is present + LAN UI (`stickllm.chat`). Loopback needs no pair; phone/LAN uses pair code. |
-| **2** | **Secure Client** | Menu stub for now (`stickllm.client`) — dedicated client stick in a later release. |
-| **3** | **Terminal** | Console login or `ssh stickllm@<ip>` — `nvidia-smi`, `stickllm-status` (`stickllm.ssh`). |
-| **4** | **Test** | Same as Server / Local plus SSH (`stickllm.chat stickllm.ssh`). Random SSH password on READY before the browser takes the screen. |
+| **2** | **Terminal** | Console login or `ssh stickllm@<ip>` — `nvidia-smi`, `stickllm-status` (`stickllm.ssh`). |
+| **3** | **Test - SSH Enabled** | Same as Server / Local plus SSH (`stickllm.chat stickllm.ssh`). Random SSH password on READY before the browser takes the screen. |
 
-Menu timeout ~**20s**; default is **1 Server / Local**.
+Menu timeout ~**20s**; default is **1 Server / Local**. Secure Client returns when that path ships.
 
-### Terminal / Test SSH credentials (menu 3 / 4)
+### Terminal / Test - SSH Enabled credentials (menu 2 / 3)
 
 | | |
 |---|---|
 | User | `stickllm` |
-| Password | Random per boot (shown on console READY; Test also prints before kiosk handoff) |
+| Password | Random per boot (shown on console READY; Test - SSH Enabled also prints before kiosk handoff) |
 | Useful | `stickllm-status` · `nvidia-smi` · `curl -s localhost:8080/health` |
 
-SSH is **off** unless you pick menu **3** or **4**.
+SSH is **off** unless you pick menu **2** or **3**.
 
 ## NVIDIA / display (do / don’t)
 
@@ -51,9 +50,9 @@ SSH is **off** unless you pick menu **3** or **4**.
 ## Boot sequence (expected)
 
 1. Firmware boots the USB (or chainload from another bootloader).
-2. StickLLM menu → pick **1** (Server / Local), **2** (Secure Client stub), **3** (Terminal), or **4** (Test).
+2. StickLLM menu → pick **1** (Server / Local), **2** (Terminal), or **3** (Test - SSH Enabled).
 3. Console: UI loading (no model auto-load — Activate from Models when ready).
-4. **Server / Local / Terminal / Test:** READY with `http://<lan-ip>/` and pair code when the UI path is up. Test also shows the SSH password.
+4. **Server / Local / Terminal / Test - SSH Enabled:** READY with `http://<lan-ip>/` and pair code when the UI path is up. Test - SSH Enabled also shows the SSH password.
 5. **Local path:** cage + Chromium on the NVIDIA HDMI output when a display is present; keyboard works. Load a model: Models → radio select → context slider → Activate.
 
 ## First checks
@@ -79,7 +78,7 @@ Phone on the same LAN: open the Chat UI URL from the READY screen and enter the 
 |---|---|
 | Lands in another OS | Firmware boot order — USB not first |
 | Firmware ignores USB | Wrong port; try USB2; Secure Boot on |
-| Black screen, no status | GPU init hang — reboot; try Terminal (menu **3**) to diagnose |
+| Black screen, no status | GPU init hang — reboot; try Terminal (menu **2**) to diagnose |
 | Local blank / no browser | Wrong ISO; modeset mistake; no DRM |
 | Local no keyboard | `WLR_LIBINPUT_NO_DEVICES=1` or missing libinput backend |
 | UI up, empty replies | Model missing or still loading |
@@ -89,3 +88,4 @@ Phone on the same LAN: open the Chat UI URL from the READY screen and enter the 
 
 - Default: ephemeral (RAM; reboot wipes session).
 - **Persist config** is explicit only (`stickllm-persist`).
+- **Encrypted vault:** no unlock/skip prompt at boot. Unlock/create/attach only in the UI (Settings). Server/Local continue automatically with the vault locked.

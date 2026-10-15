@@ -9,37 +9,39 @@ to the USB or internal disks unless you explicitly approve a write.
 | | |
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
-| Current release | **[v0.3.6](https://github.com/StickLLM/stickllm/releases/tag/v0.3.6)** |
+| Current release | **[v0.3.8](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8)** |
 | Profile | AMD desktop CPU · 32 GB RAM · NVIDIA RTX 3090 (24 GB) |
 | X / Twitter | [@stickllm](https://x.com/stickllm) |
 | Web | [stickllm.org](https://stickllm.org) |
 
 ---
 
-## Get StickLLM (v0.3.6)
+## Get StickLLM (v0.3.8)
 
 ### 1. Download
 
-ISO (~7 GB) is on **Google Drive** (GitHub’s 2 GB asset limit):
+ISO (~8.7 GB) is on **Google Drive** (GitHub’s 2 GB asset limit):
 
 https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing
 
-File: `stickllm-amd-rtx3090-v0.3.6.hybrid.iso`
+File: `StickLLM-v0.3.8.iso`
 
 **Do not use v0.3.5** — that ISO is truncated/broken.
 
 ### 2. Verify checksum
 
-File in this repo: [`checksums/v0.3.6.sha256`](checksums/v0.3.6.sha256)
+**Hash of record is in this repo / GitHub Release** — verify the Drive download against it (do not rely on a hash stored only on Drive):
+
+[`checksums/v0.3.8.sha256`](checksums/v0.3.8.sha256)
 
 ```powershell
-(Get-FileHash .\stickllm-amd-rtx3090-v0.3.6.hybrid.iso -Algorithm SHA256).Hash
-# expect FB559D9F0CC5182406F0851F09C1E28C302F911C01B46CAC545EF4D920E1A43D
+(Get-FileHash .\StickLLM-v0.3.8.iso -Algorithm SHA256).Hash
+# expect 88F781545762A986BB3A1DCE9183601B7BBE173D0D56A20CA03BEF7A533201CB
 ```
 
 ```bash
-sha256sum stickllm-amd-rtx3090-v0.3.6.hybrid.iso
-# expect fb559d9f0cc5182406f0851f09c1e28c302f911c01b46cac545ef4d920e1a43d
+sha256sum StickLLM-v0.3.8.iso
+# expect 88f781545762a986bb3a1dce9183601b7bbe173d0d56a20ca03bef7a533201cb
 ```
 
 ### 3. Flash to USB
@@ -51,7 +53,7 @@ Flashing **erases** the stick. Pick the correct disk.
 **Linux:**
 
 ```bash
-sudo dd if=stickllm-amd-rtx3090-v0.3.6.hybrid.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=StickLLM-v0.3.8.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 After flash, Windows often shows **no drive letter** — that is normal for this
@@ -61,14 +63,18 @@ Full flash notes: [docs/FLASH.md](docs/FLASH.md). Then boot: [docs/BOOT.md](docs
 
 ---
 
-## What’s in v0.3.6
+## What’s in v0.3.8
 
-- Encrypted SSD vault (file blob only; Find/Open existing after reflash)
-- StickLLM chat UI on `:80` (pair code on LAN; loopback needs no pair)
-- llama on **127.0.0.1:8080** only; backends CUDA → Vulkan → CPU
+- Boot: **Local/Server**, **Terminal**, **Test - SSH Enabled**
+- Inference: **CUDA → Vulkan → CPU** fallback
+- Built-in model; downloadable Qwen models (hash-pinned catalog)
+- Kiosk chat UI on `:80`; LAN pair code (loopback needs no pair; **F9** remints PAIR CODE on kiosk)
+- Ephemeral by default; optional encrypted SSD vault unlock from the UI (file blob; Find/Open existing after reflash)
+- Mount host drives; claim stick free space for durable downloads
+- llama on **127.0.0.1:8080** only
 - **StickLLM UI only** — external OpenAI-style `/v1` clients get **410** (see [FEATURES.md](FEATURES.md))
 
-Release notes: [GitHub Release v0.3.6](https://github.com/StickLLM/stickllm/releases/tag/v0.3.6).
+Release notes: [GitHub Release v0.3.8](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8).
 
 ## Threat model (summary)
 
@@ -85,9 +91,8 @@ Set firmware to **boot the USB first** ([docs/BOOT.md](docs/BOOT.md)).
 | Entry | What you get |
 |---|---|
 | **1 Server / Local** | On-stick browser (when display present) + LAN UI. Loopback needs no pair; phone/LAN uses pair code. |
-| **2 Secure Client** | Coming later (menu stub). |
-| **3 Terminal** | Console or SSH — diagnose, `stickllm-wifi-setup`, `nvidia-smi`. SSH password is **random per boot**. |
-| **4 Test** | Server / Local UI + SSH. Same random SSH password on READY. |
+| **2 Terminal** | Console or SSH — diagnose, `stickllm-wifi-setup`, `nvidia-smi`. SSH password is **random per boot**. |
+| **3 Test - SSH Enabled** | Server / Local UI + SSH. Same random SSH password on READY. |
 
 | Endpoint | Purpose |
 |---|---|
@@ -113,7 +118,7 @@ cd stickllm
 ./scripts/download-model.sh
 ./scripts/build-llama-server.sh
 ./scripts/build.sh
-# → out/v0.3.7/StickLLM-v0.3.7.iso  (+ SHA256SUMS; integrity-checked in-build)
+# → out/v0.3.9/StickLLM-v0.3.9.iso  (+ SHA256SUMS; integrity-checked in-build)
 ```
 
 Windows (Git Bash):
@@ -129,8 +134,8 @@ Roadmap: [FEATURES.md](FEATURES.md). Vault: [docs/VAULT.md](docs/VAULT.md).
 
 | Artifact | Public? |
 |---|---|
-| **v0.3.6** ISO on Google Drive + [`checksums/v0.3.6.sha256`](checksums/v0.3.6.sha256) | Yes — current ship |
-| Git tags `v0.3.6`, `v0.3.0`, `v0.2.0` + checksum files in git | Yes |
+| **v0.3.8** ISO on Google Drive + [`checksums/v0.3.8.sha256`](checksums/v0.3.8.sha256) | Yes — current ship |
+| Git tags `v0.3.8`, `v0.3.6`, `v0.2.0` + checksum files in git | Yes |
 | **v0.2.0** GitHub Release (split `.7z` + Drive link) | Yes — older golden |
 | `out/v0.3.0/…` apiready ISO | **No** — local/maintainer restore only |
 | Maintainer Windows Python flasher, ISO-READY gates, lab hardware notes | [docs/MAINTAINER.md](docs/MAINTAINER.md) |

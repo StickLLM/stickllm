@@ -1068,8 +1068,29 @@ class Handler(SimpleHTTPRequestHandler):
                     timeout=timeout,
                 )
                 self._json(200, data)
+            except urllib.error.HTTPError as e:
+                # Forward control JSON (vault_mount, etc.) — never label as "Model error".
+                body = e.read()[:4000]
+                try:
+                    err = json.loads(body.decode() or "{}")
+                    if isinstance(err, dict):
+                        if not err.get("error"):
+                            err["error"] = (
+                                err.get("stderr")
+                                or err.get("message")
+                                or f"Control HTTP {e.code}"
+                            )
+                        err.setdefault("ok", False)
+                        self._json(e.code if e.code >= 400 else 502, err)
+                        return
+                except Exception:
+                    pass
+                self._json(
+                    e.code if e.code >= 400 else 502,
+                    {"ok": False, "error": f"Control error: HTTP {e.code}"},
+                )
             except Exception as e:
-                self._json(502, {"ok": False, "error": friendly_llama_error(e)})
+                self._json(502, {"ok": False, "error": f"Control error: {e}"})
             return
 
         # ISS-004: external OpenAI-compatible LAN API removed. StickLLM UI only.
