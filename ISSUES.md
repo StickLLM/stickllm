@@ -12,6 +12,16 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-023 — Complete offline / NINO network lockdown (“nothing in, nothing out”)
+| | |
+|---|---|
+| **ID** | ISS-023 |
+| **Mode** | Local / Server / Client stick (all) |
+| **Severity** | PRODUCT (P1 security posture) |
+| **Status** | Open — design only; **not implemented**; no firewall yet |
+| **Summary** | True air-gap mode: when the user wants it, **nothing in, nothing out** at the OS/network layer — not merely chat-level Web lookup off. Today the UI **Web** pill only gates chat live lookup; Terminal, HF downloads, and other processes still reach the internet when the NIC is up. Settings → Network **Offline mode** is “Coming soon” / not wired (`ui/index.html` `#offline`). |
+| **Notes** | **Goal:** NINO (nothing in, nothing out) air-gap posture the user can enable consciously. **Local / Server on same machine:** a “disable network” control that kills the NIC and/or firewalls all ingress/egress (simpler path). **Remote client stick:** still must talk to the StickLLM server over the **secure tunnel** only; allowlist that tunnel (paired server) and block all other ingress/egress. **Do not confuse with Web pill** — Web off ≠ OS offline. **HF / catalog downloads, updates, Tor, AP setup, etc. must be blocked or refused** while NINO is on. Open design questions: iptables vs nftables vs NetworkManager disconnect; WireGuard/SSH tunnel allowlist shape; LAN-pair-only vs internet-reachable server; how client stick discovers/keeps the tunnel without opening general egress; persistence across reboot; UX copy that distinguishes Web / Offline / NINO; interaction with Term SSH and BMC (out of StickLLM control). Track in FEATURES + THREAT-MODEL; implement later — **docs/issue only for this entry**. |
+
 ### ISS-022 — Companion apps catalog (USB DATA / vault); Whisper/Piper bake TBD
 | | |
 |---|---|

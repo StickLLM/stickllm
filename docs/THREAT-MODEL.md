@@ -142,7 +142,8 @@ pairing, or someone who can read the stick screen. TLS for the tunnel is next.
 | **No authentication** | Anyone who can open `http://<stick-ip>/` can chat and hit `:8080`. |
 | **WAN exposure** | If you port-forward or put the stick on the public internet, treat it as world-readable/world-usable. **Don’t.** |
 | **Browser leftovers** | Phone/PC browser history, cache, OS backups, and screenshots are outside StickLLM. |
-| **Web toggle** | With **Web** on, queries/snippets leave the stick to search/fetch. That path is intentional and visible — turn Web off for air‑gapped answers. |
+| **Web toggle** | With **Web** on, queries/snippets leave the stick to search/fetch. That path is intentional and visible — turn Web off for air‑gapped **chat answers**. **Web off is not OS offline:** Terminal, model downloads, and other processes can still use the NIC. True “nothing in, nothing out” lockdown is planned as **ISS-023** (not implemented). |
+| **OS offline / NINO (planned)** | Settings Offline / air-gap mode should firewall or disconnect the network so nothing enters or leaves except, on a remote **client stick**, the allowlisted secure tunnel to the paired server. Until ISS-023 ships, do not treat the stick as air-gapped merely because Web is off. |
 
 ### Physical & host
 
@@ -265,6 +266,7 @@ Users may run their own VPN outside StickLLM; we do not make that the product st
 - Bundled commercial VPN (rejected as default)  
 - Mesh networking  
 - Paired mobile client + encrypted tunnel  
+- OS-level NINO / air-gap firewall (ISS-023; Offline switch not wired)  
 - GrapheneOS client  
 - Auto-update of OS / drivers / models  
 - Mutual TLS, API keys, or multi-user auth  

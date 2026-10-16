@@ -80,6 +80,10 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [x] P0 Console WiFi bootstrap (no browser) — `stickllm-wifi-setup` on Term/tty2 (scan + password); same `stickllm-wifi-apply` profile (v0.3.1)
   - Server with no Ethernet: Ctrl+Alt+F2 → `user` / `stickllm` → `stickllm-wifi-setup`; or Local-first WiFi then reboot Server; or one-time Ethernet
   - Setup AP for first-time config: deferred (stub in Settings only)
+- [ ] P1 True air-gap / NINO (“nothing in, nothing out”) OS network lockdown — ISS-023
+  - Today: UI **Web** pill gates chat live lookup only; Settings **Offline mode** is Coming soon / not wired (does not firewall the OS)
+  - Local/Server same machine: disable-network button (kill NIC / block all ingress+egress)
+  - Remote client stick: allow only the secure tunnel to the paired server; block all other traffic
 - [ ] P0 Client USB stick (boots straight to browser)
 - [ ] P0 Pairing via QR / on-screen code with pinned TLS cert
 - [ ] P1 Trusted HTTPS with no browser warnings (Plex-style; StickLLM web clients only)
