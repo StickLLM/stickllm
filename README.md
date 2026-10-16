@@ -128,7 +128,8 @@ Windows (Git Bash):
 ```
 
 Full cold-start notes: [docs/BUILD.md](docs/BUILD.md). Dev loop: [docs/DEV-WORKFLOW.md](docs/DEV-WORKFLOW.md).  
-Roadmap: [FEATURES.md](FEATURES.md). Vault: [docs/VAULT.md](docs/VAULT.md).
+Roadmap: [FEATURES.md](FEATURES.md). Vault: [docs/VAULT.md](docs/VAULT.md).  
+Companion apps (planned catalog): [docs/APPS.md](docs/APPS.md).
 
 ## What’s public vs maintainer-only
 
