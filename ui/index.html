@@ -143,27 +143,69 @@
 <!-- MODELS -->
 <section class="sec" id="sec-models" data-title="Models" hidden>
   <div class="summary">
-    <div><small>Running</small><b>Qwen2.5-7B-Instruct Q5_K_M</b><span class="pill ok">healthy</span></div>
-    <div><small>Recommended for this GPU</small><b>Qwen2.5-7B Q5_K_M</b><button class="link" id="probeBtn">Re-check GPU</button></div>
-    <div><small>Models folder</small><b class="mono" id="modelDir">…</b><button class="link" id="pickModelDir" disabled title="Coming soon — models folder follows session mode">Change…</button></div>
+    <div><small>Running</small><b id="runName">none</b><span class="pill" id="runPill">not loaded</span></div>
+    <div><small>Recommended for this GPU</small><b id="recName">—</b><button class="link" id="probeBtn">Re-check GPU</button></div>
+    <div><small>Models folder</small><b class="mono" id="modelDir">…</b><button class="link" id="pickModelDir" type="button">Change…</button></div>
   </div>
   <div class="dl" id="dlBox" hidden>
     <div class="dlTop"><span id="dlName">Downloading</span><span id="dlPct">0%</span></div>
     <div class="bar"><i id="dlFill"></i></div>
     <small id="dlMeta" class="muted"></small>
   </div>
-  <div class="secTools">
-    <h3>Library</h3>
-    <span class="grow"></span>
-    <button class="btn sm" id="refreshCatalog">Refresh</button>
+  <div class="policyBanner" id="policyBanner" hidden></div>
+  <div class="tabs" role="tablist" aria-label="Model source">
+    <button role="tab" data-tab="browse" class="on" aria-selected="true" type="button"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>Browse catalog</button>
+    <button role="tab" data-tab="local" aria-selected="false" type="button"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 14h.01M11 14h6"/></svg>On this machine <span class="pill" id="localCount">0</span></button>
+    <span class="grow"></span><span class="muted small offlineNote">Pinned catalog · hash-verified downloads</span>
+    <button class="btn sm" id="refreshCatalog" type="button">Refresh</button>
   </div>
-  <div class="modelList" id="modelList" role="radiogroup" aria-label="Models"></div>
+  <div class="mb">
+    <aside class="mbSide" id="modelFilters" aria-label="Model filters">
+      <div class="fBlock">
+        <label class="fTitle" for="mfTarget">Target hardware</label>
+        <select id="mfTarget"><option value="this">This machine</option><option value="custom">Custom…</option></select>
+        <small class="hwLine" id="hwLine"></small>
+        <div class="customHw" id="customHw" hidden><label>VRAM <input type="number" id="cVram" value="16" min="0" max="512"> GB</label><label>RAM <input type="number" id="cRam" value="32" min="0" max="2048"> GB</label></div>
+        <label class="check1"><input type="checkbox" id="mfFits"> Fits this hardware</label>
+        <label class="fSub">Context for fit check<select id="mfCtx"><option value="8192">8k tokens</option><option value="32768">32k tokens</option><option value="131072">128k tokens</option></select></label>
+      </div>
+      <div class="fBlock"><div class="fTitle">Trust</div><div class="vchecks" id="mfTrust">
+        <label title="StickLLM checked the hash and tested this model"><input type="checkbox" data-t="verified" checked><i class="tdot ok"></i>Verified</label>
+        <label title="Official publisher repo, hash matches"><input type="checkbox" data-t="community" checked><i class="tdot acc"></i>Community verified</label>
+        <label title="Known source, hash not checked"><input type="checkbox" data-t="unverified" checked><i class="tdot warn"></i>Unverified</label>
+        <label title="Unknown source"><input type="checkbox" data-t="untrusted" checked><i class="tdot bad"></i>Untrusted</label>
+        <label title="Hash mismatch"><input type="checkbox" data-t="blocked" checked><i class="tdot blk"></i>Blocked</label></div></div>
+      <div class="fBlock"><div class="fTitle">Abliterated / uncensored</div><div class="seg full" id="mfAbl"><button type="button" data-v="include" class="on">Include</button><button type="button" data-v="only">Only</button><button type="button" data-v="exclude">Exclude</button></div></div>
+      <div class="fBlock"><label class="fTitle" for="mfQuant">Quant</label><select id="mfQuant"><option value="any">Any</option><option>Q2_K</option><option>Q3_K_M</option><option>Q4_K_M</option><option>Q5_K_M</option><option>Q6_K</option><option>Q8_0</option><option>F16</option></select></div>
+      <div class="fBlock"><div class="fTitle">Licence</div><div class="seg full" id="mfLic"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="commercial">Commercial</button><button type="button" data-v="noncommercial">Non-comm.</button></div></div>
+      <div class="fBlock"><div class="fTitle">Format</div><div class="seg full" id="mfFmt"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="GGUF">GGUF</button><button type="button" data-v="safetensors">safetensors</button></div>
+        <p class="muted small fNote">Pickle <span class="mono">.bin</span>/<span class="mono">.pt</span> checkpoints are never offered because they can run code when loaded.</p></div>
+      <button class="link" id="mfReset" type="button">Reset filters</button>
+    </aside>
+    <div class="mbMain">
+      <div class="hfToken" id="hfTokenBox" hidden>
+        <div class="hfRow"><label for="hfToken"><b>Hugging Face token</b></label>
+          <input type="password" id="hfToken" class="mono" placeholder="hf_…" autocomplete="off" spellcheck="false" aria-describedby="hfHint">
+          <button class="iconBtn sm" id="hfShow" type="button" aria-label="Show token" title="Show/hide"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          <button class="btn sm" id="hfTest" type="button">Test</button>
+          <span class="hfState" id="hfState"></span></div>
+        <small class="muted" id="hfHint">Optional for future gated HF downloads. Use a <b>read-only, fine-grained</b> token. <span id="hfWhere">Session only until vault save ships.</span></small>
+      </div>
+      <div class="mbTools">
+        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mfSearch" placeholder="Search models" aria-label="Search models"></div>
+        <label class="sortSel">Sort <select id="mfSort"><option value="fit">Best fit</option><option value="size">Size</option><option value="name">Name</option></select></label>
+      </div>
+      <div class="mbCount"><span id="modelCount"></span><span id="policyHidden"></span></div>
+      <div class="cards" id="modelList" role="list" aria-label="Models"></div>
+    </div>
+  </div>
 
+  <div id="localTune" hidden>
   <h3>Preset</h3>
   <div class="presets" id="presets" role="radiogroup">
-    <button data-preset="fast"><b>Fast</b><small>4k ctx · q8 KV · temp 0.7</small></button>
-    <button data-preset="balanced" class="on"><b>Balanced</b><small>8k ctx · f16 KV · temp 0.7</small></button>
-    <button data-preset="long"><b>Long context</b><small>32k ctx · q4 KV · temp 0.6</small></button>
+    <button type="button" data-preset="fast"><b>Fast</b><small>4k ctx · q8 KV · temp 0.7</small></button>
+    <button type="button" data-preset="balanced" class="on"><b>Balanced</b><small>8k ctx · f16 KV · temp 0.7</small></button>
+    <button type="button" data-preset="long"><b>Long context</b><small>32k ctx · q4 KV · temp 0.6</small></button>
   </div>
 
   <details class="adv" id="advanced">
@@ -173,29 +215,29 @@
         <input type="range" id="ctx" min="2048" max="32768" step="1024" value="8192"></label>
       <div class="vram">
         <div class="vramBar" aria-label="VRAM usage"><i class="w" id="vW"></i><i class="kv" id="vKV"></i><i class="free" id="vFree"></i></div>
-        <div class="legend"><span><i class="w"></i>Weights <b id="lW"></b></span><span><i class="kv"></i>KV cache <b id="lKV"></b></span><span><i class="free"></i>Free <b id="lFree"></b></span><span class="muted">of 24 GB</span></div>
+        <div class="legend"><span><i class="w"></i>Weights <b id="lW"></b></span><span><i class="kv"></i>KV cache <b id="lKV"></b></span><span><i class="free"></i>Free <b id="lFree"></b></span><span class="muted" id="vramTotal">of — GB</span></div>
         <p class="warn" id="vramWarn" hidden>Doesn't fit in VRAM. Lower the context or use a smaller KV cache type.</p>
       </div>
-      <p class="muted small comingSoonNote">Advanced sampling / KV type below are visual-only in TEST MODE � F9 or P = new PAIR CODE � Ctrl+Shift+P same � greyed = not wired</p>
-      <div class="row2 comingSoonBlock">
+      <div class="row2">
         <div class="field"><span>KV cache type</span>
-          <div class="seg" id="kvSeg"><button data-kv="f16" class="on">f16</button><button data-kv="q8">q8_0</button><button data-kv="q4">q4_0</button></div></div>
+          <div class="seg" id="kvSeg"><button type="button" data-kv="f16" class="on">f16</button><button type="button" data-kv="q8">q8_0</button><button type="button" data-kv="q4">q4_0</button></div></div>
         <label class="field"><span>Temperature <b id="tempVal">0.7</b></span><input type="range" id="temp" min="0" max="2" step="0.05" value="0.7"></label>
         <label class="field"><span>Top-p <b id="toppVal">0.9</b></span><input type="range" id="topp" min="0" max="1" step="0.01" value="0.9"></label>
         <label class="field"><span>Top-k</span><input type="number" id="topk" value="40" min="0" max="200"></label>
         <label class="field"><span>Repeat penalty</span><input type="number" id="rep" value="1.1" step="0.05" min="1" max="2"></label>
         <label class="field"><span>Max reply tokens</span><input type="number" id="maxtok" value="1024" min="64" max="8192" step="64"></label>
       </div>
-      <button class="link" id="resetPreset">Reset to preset</button>
+      <button class="link" id="resetPreset" type="button">Reset to preset</button>
     </div>
   </details>
 
   <div class="actions sticky">
-    <span class="muted" id="selHint">Selected: Qwen2.5-7B Q5_K_M</span>
+    <span class="muted" id="selHint">Select a model</span>
     <span class="grow"></span>
-    <button class="btn danger ghost" id="delModel">Delete…</button>
-    <button class="btn" id="dlModel" hidden>Download</button>
-    <button class="btn primary" id="activate">Reload with these settings</button>
+    <button class="btn danger ghost" id="delModel" type="button">Delete…</button>
+    <button class="btn" id="dlModel" type="button" hidden>Download</button>
+    <button class="btn primary" id="activate" type="button">Load model</button>
+  </div>
   </div>
 </section>
 
@@ -209,15 +251,12 @@
   </div>
 
   <div class="secTools"><h3>Drives</h3><span class="grow"></span>
-    <button class="btn sm" id="actClaim" title="Create a data partition on the StickLLM USB stick only">Use free space on the stick</button>
-    <button class="btn sm" id="actFindVault" title="Scan for vault files">Find existing vault</button>
-    <button class="btn sm" id="actFindModels" title="Scan for .gguf models">Find existing models</button>
-    <button class="btn sm" id="refreshDrives">Refresh</button>
+    <button class="btn sm" id="refreshDrives" type="button">Refresh</button>
   </div>
   <div class="drives" id="drives"></div>
   <div class="group" id="findHits" hidden></div>
   <p class="note calm"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>StickLLM never partitions or formats your own drives. To prepare one, use your computer's disk tools.</p>
-  <p class="muted small">Pick an existing drive or partition, then a folder. The vault is created as a file inside it. Encrypted host volumes (BitLocker, LUKS) are never opened — unlock them in the host OS first. “Use free space on the stick” creates a data partition <b>only on the StickLLM USB stick</b> (the flashed image), never on your own disks.</p>
+  <p class="muted small">Pick an existing drive or partition, then a folder. The vault is created as a file inside it. Encrypted host volumes (BitLocker, LUKS) are never opened — unlock them in the host OS first. Vault and model files are detected automatically in the folder picker.</p>
 
   <div class="secTools"><h3>Vault location</h3></div>
   <div class="row card"><div><b>Open an existing vault</b><small>Browse to a <span class="mono">stickllm-vault.img</span>. Vault files are detected automatically.</small></div><button class="btn sm primary" id="pickVault">Choose…</button></div>
@@ -244,7 +283,10 @@
     </div>
   </details>
 
-  <div class="secTools"><h3>Move models into vault</h3><span class="grow"></span><button class="btn sm" id="refreshMovable">Refresh</button></div>
+  <div class="secTools"><h3>StickLLM stick</h3></div>
+  <div class="row card"><div><b>Use free space on the stick</b><small>Turns unused space on the StickLLM USB stick into a DATA area. This only affects the StickLLM stick, never your computer's drives.</small></div><button class="btn sm" id="actClaim" type="button" title="Create a data partition on the StickLLM USB stick only">Set up…</button></div>
+
+  <div class="secTools"><h3>Move models into vault</h3><span class="grow"></span><button class="btn sm" id="refreshMovable" type="button">Refresh</button></div>
   <div class="group" id="movable"></div>
 </section>
 
@@ -367,6 +409,18 @@
         <button class="btn" id="fpCancel">Cancel</button>
         <button class="btn primary" id="fpOk">Select folder</button>
       </footer>
+    </div>
+  </div>
+
+  <!-- Uncensored acknowledgement (one-time) -->
+  <div class="modalWrap top2" id="ablAck" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="ablTitle">
+      <div class="cfBody">
+        <h2 id="ablTitle"><span class="pill abl">uncensored</span> Before you continue</h2>
+        <p>Uncensored models have had safety training removed. They may follow harmful requests and are not security-reviewed by StickLLM. Use at your own risk.</p>
+        <label class="check1"><input type="checkbox" id="ablChk"> I understand</label>
+        <div class="actions"><span class="grow"></span><button class="btn" id="ablCancel" type="button">Cancel</button><button class="btn primary" id="ablOk" type="button" disabled>Continue</button></div>
+      </div>
     </div>
   </div>
 

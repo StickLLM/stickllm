@@ -17,13 +17,26 @@ let dlPollTimer = null;
 let vaultBrowsePath = "";
 let vaultPickerMount = "";
 let vaultBrowseBlobPath = "";
+let pickerPurpose = "vault"; // vault | models_dir | folder
+let hwInfo = { vram: 24, ram: 64, gpu: "", name: "This machine" };
 const messages = [{
   role: "system",
   content: "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
 }];
+const TRUST = {
+  verified: { l: "Verified", c: "t-ok", d: "StickLLM hash + tested" },
+  community: { l: "Community verified", c: "t-acc", d: "Official publisher, hash matches" },
+  unverified: { l: "Unverified", c: "t-warn", d: "Known source, not hash-checked" },
+  untrusted: { l: "Untrusted", c: "t-bad", d: "Unknown source" },
+  blocked: { l: "Blocked", c: "t-blk", d: "Hash mismatch" },
+};
+const ALL_TRUST = () => new Set(Object.keys(TRUST));
 const state = {
   mode: "ephemeral", vaultOpen: false, web: true, theme: "dark",
   chats: [], ephemeral: [], current: null, attach: [],
+  mtab: "browse", ablAck: false, kv: "f16",
+  mf: { target: "this", fits: false, ctx: 8192, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", fmt: "any", q: "", sort: "fit" },
+  policy: { verifiedOnly: false, hideUnc: false },
 };
 
 function authHeaders(extra = {}) {
@@ -405,8 +418,15 @@ function showSec(sec, open = true) {
 }
 function closeSettings() { $("#settings").hidden = true; lastFocus?.focus?.(); }
 $$("[data-open]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openSettings(b.dataset.open); }));
-$$(".setNav [data-sec]").forEach((b) => (b.onclick = () => showSec(b.dataset.sec)));
-$$("[data-sec-go]").forEach((b) => (b.onclick = () => showSec(b.dataset.secGo)));
+$$(".setNav [data-sec]").forEach((b) => (b.onclick = () => {
+  showSec(b.dataset.sec);
+  if (b.dataset.sec === "models") refreshModels().catch((e) => toast(e.message));
+  if (b.dataset.sec === "storage") refreshStorage().catch(() => {});
+}));
+$$("[data-sec-go]").forEach((b) => (b.onclick = () => {
+  showSec(b.dataset.secGo);
+  if (b.dataset.secGo === "models") refreshModels().catch((e) => toast(e.message));
+}));
 $("#setClose").onclick = closeSettings;
 $("#setBack").onclick = () => $(".modal:not(.small):not(.fp)")?.classList.remove("secOpen");
 $("#settings").onclick = (e) => { if (e.target.id === "settings") closeSettings(); };
@@ -430,79 +450,226 @@ function fmtBytes(n) {
   return `${(n / 1024 ** 2).toFixed(0)} MB`;
 }
 
+function modelTrust(m) {
+  const t = String(m.trust || m.trust_level || "").toLowerCase();
+  if (TRUST[t]) return t;
+  if (m.hash_ok === false || m.blocked) return "blocked";
+  if (m.source === "host_ssd" || m.source === "local") return "unverified";
+  if (m.sha256 || m.pinned) return "verified";
+  return "community";
+}
+function modelGb(m) {
+  const gbRaw = m.approx_size_gb ?? m.size_gb ?? (m.bytes != null ? m.bytes / 1e9 : null);
+  return gbRaw != null && gbRaw !== "" ? Number(gbRaw) : 0;
+}
+function modelQuant(m) {
+  return String(m.quant || m.q || "Q4_K_M");
+}
+function fitOf(m) {
+  const hw = state.mf.target === "custom"
+    ? { vram: +$("#cVram")?.value || 0, ram: +$("#cRam")?.value || 0 }
+    : hwInfo;
+  const gb = modelGb(m) || Number(m.min_vram_gb || 0) || 4;
+  const kvMul = { f16: 1, q8: 0.53, q4: 0.28 }[state.kv] || 1;
+  const kv = Math.max(0.5, (gb / 8) * (state.mf.ctx / 8192) * kvMul);
+  const need = gb + kv + 1;
+  if (need <= hw.vram) return { k: "gpu", need, kv, label: "Fits on GPU", cls: "fit-ok" };
+  if (need <= hw.vram + hw.ram - 8) return { k: "offload", need, kv, label: "Fits with CPU offload", cls: "fit-warn" };
+  return { k: "no", need, kv, label: "Won't fit", cls: "fit-no" };
+}
+function modelVisible(m) {
+  const f = state.mf;
+  const trust = modelTrust(m);
+  if (state.mtab === "local" ? !m.installed : false) return false;
+  if (state.policy.verifiedOnly && trust !== "verified") return false;
+  if (state.policy.hideUnc && m.abliterated) return false;
+  if (!f.trust.has(trust)) return false;
+  if (f.abl === "only" && !m.abliterated) return false;
+  if (f.abl === "exclude" && m.abliterated) return false;
+  if (f.quant !== "any" && modelQuant(m).toUpperCase() !== f.quant.toUpperCase()) return false;
+  if (f.fmt === "GGUF" && String(m.format || "GGUF").toUpperCase() !== "GGUF") return false;
+  if (f.fmt === "safetensors" && String(m.format || "").toLowerCase() !== "safetensors") return false;
+  if (f.lic === "commercial" && m.license_noncommercial) return false;
+  if (f.lic === "noncommercial" && !m.license_noncommercial) return false;
+  if (f.q && !(String(m.name || "") + " " + String(m.id || "")).toLowerCase().includes(f.q.toLowerCase())) return false;
+  if (f.fits && fitOf(m).k === "no") return false;
+  return true;
+}
+function updateVramBar(m) {
+  const gb = modelGb(m) || 0;
+  const fit = fitOf(m || {});
+  const total = Math.max(1, hwInfo.vram || 24);
+  const wPct = Math.min(100, (gb / total) * 100);
+  const kvPct = Math.min(100 - wPct, (fit.kv / total) * 100);
+  const freePct = Math.max(0, 100 - wPct - kvPct);
+  if ($("#vW")) $("#vW").style.width = wPct + "%";
+  if ($("#vKV")) $("#vKV").style.width = kvPct + "%";
+  if ($("#vFree")) $("#vFree").style.width = freePct + "%";
+  if ($("#lW")) $("#lW").textContent = gb ? gb.toFixed(1) + " GB" : "—";
+  if ($("#lKV")) $("#lKV").textContent = fit.kv.toFixed(1) + " GB";
+  if ($("#lFree")) $("#lFree").textContent = Math.max(0, total - gb - fit.kv).toFixed(1) + " GB";
+  if ($("#vramTotal")) $("#vramTotal").textContent = `of ${total} GB`;
+  if ($("#vramWarn")) $("#vramWarn").hidden = fit.k !== "no";
+}
 function renderModelsList() {
   const list = $("#modelList");
+  if (!list) return;
+  $$(".tabs [data-tab]").forEach((b) => {
+    const on = b.dataset.tab === state.mtab;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on);
+  });
+  const localN = lastCatalog.filter((m) => m.installed).length;
+  if ($("#localCount")) $("#localCount").textContent = String(localN);
+  if ($("#localTune")) $("#localTune").hidden = state.mtab !== "local";
+  if ($("#hfTokenBox")) $("#hfTokenBox").hidden = state.mtab !== "browse";
+  if ($("#mfTarget")) $("#mfTarget").value = state.mf.target;
+  if ($("#customHw")) $("#customHw").hidden = state.mf.target !== "custom";
+  if ($("#hwLine")) {
+    $("#hwLine").textContent = state.mf.target === "custom"
+      ? "Enter VRAM and RAM"
+      : `Detected: ${hwInfo.gpu ? hwInfo.gpu + " " : ""}${hwInfo.vram} GB VRAM · RAM ${hwInfo.ram} GB`;
+  }
+  if ($("#mfFits")) $("#mfFits").checked = state.mf.fits;
+  if ($("#mfCtx")) $("#mfCtx").value = String(state.mf.ctx);
+  if ($("#mfQuant")) $("#mfQuant").value = state.mf.quant;
+  if ($("#mfSort")) $("#mfSort").value = state.mf.sort;
+  $$("#mfTrust input").forEach((i) => { i.checked = state.mf.trust.has(i.dataset.t); });
+  $$("#mfAbl button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.mf.abl));
+  $$("#mfLic button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.mf.lic));
+  $$("#mfFmt button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.mf.fmt));
+  const rules = [
+    state.policy.verifiedOnly && "only Verified models",
+    state.policy.hideUnc && "uncensored models hidden",
+  ].filter(Boolean);
+  if ($("#policyBanner")) {
+    $("#policyBanner").hidden = !rules.length;
+    if (rules.length) {
+      $("#policyBanner").innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg><span><b>Machine policy:</b> ${rules.join(" · ")}.</span>`;
+    }
+  }
   if (!lastCatalog.length) {
-    list.innerHTML = '<div class="row"><small>No catalog entries. Refresh after pairing.</small></div>';
+    list.innerHTML = '<div class="emptyCards">No catalog entries. Pair this browser, then Refresh.</div>';
+    syncModelActions();
     return;
   }
-  list.innerHTML = lastCatalog.map((m) => {
+  let rows = lastCatalog.filter(modelVisible);
+  const order = { gpu: 0, offload: 1, no: 2 };
+  rows.sort((a, b) => {
+    if (state.mf.sort === "size") return modelGb(b) - modelGb(a);
+    if (state.mf.sort === "name") return String(a.name || a.id).localeCompare(String(b.name || b.id));
+    return (order[fitOf(a).k] - order[fitOf(b).k]) || (Number(!!b.recommended) - Number(!!a.recommended));
+  });
+  if ($("#modelCount")) {
+    $("#modelCount").textContent = `${rows.length} model${rows.length === 1 ? "" : "s"}${state.mtab === "browse" ? " in catalog" : " on this stick"} · fit at ${state.mf.ctx / 1024}k context`;
+  }
+  list.innerHTML = rows.map((m) => {
     const id = m.id;
     const name = m.name || id;
-    const q = m.quant || m.q || "";
-    const gbRaw = m.approx_size_gb ?? m.size_gb ?? (m.bytes != null ? m.bytes / 1e9 : null);
-    const gb = gbRaw != null && gbRaw !== "" ? Number(gbRaw).toFixed(Number(gbRaw) >= 10 ? 1 : 2) : "?";
+    const q = modelQuant(m);
+    const gb = modelGb(m);
+    const gbTxt = gb ? (gb >= 10 ? gb.toFixed(1) : gb.toFixed(2)) + " GB" : "?";
     const have = !!m.installed;
-    const active = !!m.active;
     const run = !!m.running;
-    const loading = active && !run;
+    const loading = !!m.active && !run;
     const rec = !!m.recommended;
     const sel = id === selectedModelId;
-    const sizeBit = have ? `${gb} GB on disk` : `~${gb} GB`;
-    return `<label class="model ${sel ? "sel" : ""}">
-      <input type="radio" name="model" value="${esc(id)}" ${sel ? "checked" : ""}>
-      <div class="mi"><b>${esc(name)}</b> <span class="muted small">${esc(q)}</span>
-      <small>${sizeBit}${have ? "" : " · not downloaded"}${m.runnable === false && have ? " · won't fit" : ""}</small></div>
-      ${run ? '<span class="pill ok">running</span>' : ""}${loading ? '<span class="pill warn">loading</span>' : ""}${rec ? '<span class="pill acc">recommended</span>' : ""}${!have ? '<span class="pill">download</span>' : ""}
-    </label>`;
-  }).join("");
-  $$("#modelList input").forEach((i) => (i.onchange = () => {
-    selectedModelId = i.value; renderModelsList(); syncModelActions();
-  }));
+    const trust = modelTrust(m);
+    const t = TRUST[trust];
+    const fit = fitOf(m);
+    const where = String(m.path || m.location || "").includes("vault") || sessionMode === "vault" ? "vault/SSD" : "stick";
+    let actions = "";
+    if (trust === "blocked") {
+      actions = m.deletable ? `<button class="btn sm danger ghost" data-delf="${esc(id)}" type="button">Delete file</button>` : "";
+    } else if (have) {
+      actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : "Load"}</button>`;
+    } else {
+      actions = `<button class="btn sm ${fit.k === "no" ? "" : "primary"}" data-dl="${esc(id)}" type="button">Download</button>`;
+    }
+    return `<article class="mcard ${trust === "blocked" ? "blocked" : ""} ${sel ? "sel" : ""}" data-id="${esc(id)}" tabindex="0">
+      <div class="mcTop">
+        <div class="mcName"><b>${esc(name)}</b><small>${esc(q)} · ${have ? gbTxt + " on disk" : "~" + gbTxt}${have ? " · on " + where : ""}${rec ? " · recommended" : ""}</small></div>
+        ${run ? '<span class="pill ok">running</span>' : ""}${loading ? '<span class="pill warn">loading</span>' : ""}${rec ? '<span class="pill acc">recommended</span>' : ""}
+      </div>
+      <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${m.abliterated ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">GGUF</span></div>
+      <div class="mcFoot">
+        <span class="fit ${fit.cls}" title="Needs ~${fit.need.toFixed(1)} GB">${fit.label}</span>
+        <span class="grow"></span>${actions}
+      </div>
+    </article>`;
+  }).join("") || '<div class="emptyCards">No models match these filters. <button class="link" id="mfReset2" type="button">Reset filters</button></div>';
+  $("#mfReset2") && ($("#mfReset2").onclick = resetModelFilters);
+  $$("#modelList .mcard").forEach((c) => {
+    const pick = (e) => {
+      if (e.target.closest("button")) return;
+      selectedModelId = c.dataset.id;
+      renderModelsList();
+    };
+    c.onclick = pick;
+    c.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e); } };
+  });
+  $$("#modelList [data-dl]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.dl; $("#dlModel").click(); }));
+  $$("#modelList [data-load]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.load; $("#activate").click(); }));
+  $$("#modelList [data-delf]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.delf; $("#delModel").click(); }));
   syncModelActions();
 }
 function syncModelActions() {
   const m = lastCatalog.find((x) => x.id === selectedModelId);
-  if (!m) { $("#selHint").textContent = "Select a model"; return; }
-  $("#selHint").textContent = `Selected: ${m.name || m.id}`;
-  $("#dlModel").hidden = !!m.installed;
-  $("#activate").hidden = !m.installed || m.runnable === false;
-  $("#delModel").hidden = !m.deletable;
-  $("#activate").textContent = m.running ? "Reload with these settings" : (m.active ? "Still loading… (tap to retry)" : "Load model");
+  if (!m) {
+    if ($("#selHint")) $("#selHint").textContent = "Select a model";
+    updateVramBar({});
+    return;
+  }
+  if ($("#selHint")) $("#selHint").textContent = `Selected: ${m.name || m.id}`;
+  if ($("#dlModel")) $("#dlModel").hidden = !!m.installed;
+  if ($("#activate")) {
+    $("#activate").hidden = !m.installed || (m.runnable === false && !m.running && !m.active);
+    $("#activate").textContent = m.running ? "Reload with these settings" : (m.active ? "Still loading… (tap to retry)" : "Load model");
+  }
+  if ($("#delModel")) $("#delModel").hidden = !m.deletable;
   const max = Number(m.ctx_max || m.ctxMax || 32768);
-  $("#ctx").max = max;
-  if (+$("#ctx").value > max) $("#ctx").value = max;
-  $("#ctxVal").textContent = (+$("#ctx").value).toLocaleString();
+  if ($("#ctx")) {
+    $("#ctx").max = max;
+    if (+$("#ctx").value > max) $("#ctx").value = max;
+    if ($("#ctxVal")) $("#ctxVal").textContent = (+$("#ctx").value).toLocaleString();
+  }
+  updateVramBar(m);
+}
+function resetModelFilters() {
+  state.mf = { ...state.mf, fits: false, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", fmt: "any", q: "", sort: "fit" };
+  if ($("#mfSearch")) $("#mfSearch").value = "";
+  renderModelsList();
 }
 async function refreshModels() {
   if (!(await ensurePaired())) return;
   const st = await control("status");
   lastCatalog = st.catalog || [];
   const probe = st.probe || {};
+  hwInfo = {
+    vram: Number(st.vram_gb || probe.vram_gb || hwInfo.vram) || 24,
+    ram: Number(st.ram_gb || hwInfo.ram) || 64,
+    gpu: String(probe.gpu || st.gpu || hwInfo.gpu || ""),
+    name: "This machine",
+  };
   const run = lastCatalog.find((m) => m.running || m.active) || lastCatalog.find((m) => m.installed);
   if (!selectedModelId && run) selectedModelId = run.id;
   if (!selectedModelId && lastCatalog[0]) selectedModelId = lastCatalog[0].id;
-  const sum = $("#sec-models .summary");
-  if (sum) {
-    const name = st.connect?.model || run?.name || "none";
-    const rec = probe.recommend_id || probe.recommend || "—";
-    $$("#sec-models .summary b")[0] && ($$("#sec-models .summary b")[0].textContent = name);
-    const pill = $("#sec-models .summary .pill");
-    if (pill) {
-      const activeLoading = lastCatalog.some((m) => m.active && !m.running);
-      if (st.llama_ok || st.llama?.status === "ok") {
-        pill.textContent = "running";
-        pill.className = "pill ok";
-      } else if (activeLoading) {
-        pill.textContent = "loading";
-        pill.className = "pill warn";
-      } else {
-        pill.textContent = "not loaded";
-        pill.className = "pill";
-      }
+  const name = st.loaded?.name || run?.name || "none";
+  if ($("#runName")) $("#runName").textContent = name;
+  if ($("#recName")) $("#recName").textContent = String(probe.recommend_id || probe.recommend || "—");
+  const pill = $("#runPill");
+  if (pill) {
+    const activeLoading = lastCatalog.some((m) => m.active && !m.running);
+    if (st.llama_ok || st.llama?.status === "ok" || run?.running) {
+      pill.textContent = "running"; pill.className = "pill ok";
+    } else if (activeLoading) {
+      pill.textContent = "loading"; pill.className = "pill warn";
+    } else {
+      pill.textContent = "not loaded"; pill.className = "pill";
     }
-    if ($$("#sec-models .summary b")[1]) $$("#sec-models .summary b")[1].textContent = String(rec);
-    if ($("#modelDir")) $("#modelDir").textContent = st.download_dir || st.models_dir || "…";
+  }
+  if ($("#modelDir")) {
+    $("#modelDir").textContent = st.models_dir_preferred || st.download_dir || (st.models_dirs && st.models_dirs[0]) || "…";
   }
   renderDownload(st.download || {});
   renderModelsList();
@@ -625,11 +792,47 @@ $("#activate").onclick = async () => {
 $("#dlModel").onclick = async () => {
   const m = lastCatalog.find((x) => x.id === selectedModelId);
   if (!m) return;
+  if (m.abliterated && !state.ablAck) {
+    askAblAck(() => $("#dlModel").click());
+    return;
+  }
+  if (modelTrust(m) === "untrusted") {
+    confirmBox({
+      title: "Download an untrusted model?",
+      text: "This model comes from an unknown source and its hash may not be checkable.",
+      word: "DOWNLOAD", ok: "Download",
+      cb: () => doModelDownload(m),
+    });
+    return;
+  }
+  await doModelDownload(m);
+};
+async function doModelDownload(m) {
   try {
-    const res = await control("model_download", { id: m.id });
+    const dest = ($("#modelDir")?.textContent || "").trim();
+    const params = { id: m.id };
+    if (dest && dest !== "…" && dest.startsWith("/")) params.dest = dest;
+    const res = await control("model_download", params);
+    if (res.download_dir && $("#modelDir")) $("#modelDir").textContent = res.download_dir;
     renderDownload(res.download || { state: "starting", id: m.id, name: m.name });
-    startDlPoll(); toast("Download started");
+    startDlPoll();
+    toast(res.download_dir ? `Downloading to ${res.download_dir}` : "Download started");
   } catch (e) { toast(e.message); }
+}
+let ablCb = null;
+function askAblAck(cb) {
+  ablCb = cb;
+  if ($("#ablChk")) $("#ablChk").checked = false;
+  if ($("#ablOk")) $("#ablOk").disabled = true;
+  if ($("#ablAck")) $("#ablAck").hidden = false;
+  setTimeout(() => $("#ablChk")?.focus(), 20);
+}
+if ($("#ablChk")) $("#ablChk").onchange = (e) => { if ($("#ablOk")) $("#ablOk").disabled = !e.target.checked; };
+if ($("#ablCancel")) $("#ablCancel").onclick = () => { if ($("#ablAck")) $("#ablAck").hidden = true; };
+if ($("#ablOk")) $("#ablOk").onclick = () => {
+  state.ablAck = true;
+  if ($("#ablAck")) $("#ablAck").hidden = true;
+  ablCb?.();
 };
 $("#delModel").onclick = () => {
   const m = lastCatalog.find((x) => x.id === selectedModelId);
@@ -811,7 +1014,19 @@ $("#picker").onclick = (e) => { if (e.target.id === "picker") $("#picker").hidde
 $("#fpOk").onclick = async () => {
   const path = $("#fpOk").dataset.path || vaultBrowsePath;
   const kind = $("#fpOk").dataset.kind || "folder";
+  const purpose = pickerPurpose;
   $("#picker").hidden = true;
+  if (purpose === "models_dir" && kind !== "vault") {
+    try {
+      const res = await control("set_models_dir", { path });
+      if (!res.ok) throw new Error(res.error || "set models folder failed");
+      if ($("#modelDir")) $("#modelDir").textContent = res.path || path;
+      toast("Models will download to " + (res.path || path));
+      await refreshModels().catch(() => {});
+    } catch (e) { toast(e.message); }
+    pickerPurpose = "vault";
+    return;
+  }
   if (kind === "vault") {
     try {
       const folder = path.replace(/\/stickllm-vault\.img$/i, "");
@@ -827,6 +1042,7 @@ $("#fpOk").onclick = async () => {
     $("#vaultPath").value = path;
     toast("Folder selected for vault create");
   }
+  pickerPurpose = "vault";
 };
 $("#fpNew").onclick = async () => {
   const name = prompt("New folder name", "stickllm");
@@ -852,7 +1068,7 @@ $("#actClaim").onclick = () => {
     },
   });
 };
-$("#actFindVault").onclick = async () => {
+if ($("#actFindVault")) $("#actFindVault").onclick = async () => {
   try {
     toast("Searching…");
     const res = await control("vault_find");
@@ -876,7 +1092,7 @@ $("#actFindVault").onclick = async () => {
     };
   } catch (e) { toast(e.message); }
 };
-$("#actFindModels").onclick = async () => {
+if ($("#actFindModels")) $("#actFindModels").onclick = async () => {
   try {
     const res = await control("vault_find_models");
     const box = $("#findHits"); box.hidden = false;
@@ -891,15 +1107,28 @@ $("#actFindModels").onclick = async () => {
     toast(`Found ${hits.length} model(s)`);
   } catch (e) { toast(e.message); }
 };
-$("#pickVault").onclick = () => {
-  if (vaultBrowsePath || $("#vaultPath").value) openLivePicker($("#vaultPath").value || vaultBrowsePath || "/mnt");
-  else refreshDrivesLive().then(() => {
-    const first = $("#drives [data-path]");
-    if (first) openLivePicker(first.dataset.path);
-    else toast("Mount a drive first");
-  });
-};
-$("#pickCreate").onclick = () => $("#pickVault").click();
+async function openFolderPicker(purpose, title) {
+  pickerPurpose = purpose || "vault";
+  if ($("#fpTitle")) $("#fpTitle").textContent = title || "Choose folder";
+  const start = ($("#modelDir")?.textContent || "").trim();
+  const fallback = ($("#vaultPath").value || vaultBrowsePath || "").trim();
+  const path = (purpose === "models_dir" && start.startsWith("/")) ? start : (fallback || start);
+  if (path && path.startsWith("/") && path !== "…") {
+    await openLivePicker(path);
+    return;
+  }
+  await refreshDrivesLive();
+  const first = $("#drives [data-path]");
+  if (first) await openLivePicker(first.dataset.path);
+  else toast("Mount a drive or claim stick DATA first");
+}
+$("#pickVault").onclick = () => openFolderPicker("vault", "Choose folder / vault");
+$("#pickCreate").onclick = () => openFolderPicker("vault", "Choose folder for new vault");
+if ($("#pickModelDir")) {
+  $("#pickModelDir").disabled = false;
+  $("#pickModelDir").removeAttribute("title");
+  $("#pickModelDir").onclick = () => openFolderPicker("models_dir", "Choose models folder");
+}
 
 $("#unlockForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -1317,7 +1546,8 @@ window.addEventListener("keydown", (e) => {
   else if (e.ctrlKey && k === "b") { e.preventDefault(); toggleNav(); }
   else if (e.ctrlKey && k === ",") { e.preventDefault(); openSettings(); }
   else if (e.key === "Escape") {
-    if (!$("#confirm").hidden) $("#confirm").hidden = true;
+    if ($("#ablAck") && !$("#ablAck").hidden) $("#ablAck").hidden = true;
+    else if (!$("#confirm").hidden) $("#confirm").hidden = true;
     else if (!$("#picker").hidden) $("#picker").hidden = true;
     else if (!$("#settings").hidden) closeSettings();
     else if (!$("#statusPop").hidden) $("#statusPop").hidden = true;
@@ -1325,9 +1555,8 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-// Disable greyed / coming-soon controls that still have handlers in markup
-// TODO(post-v0.3.8 / ISS-021): wire Advanced model knobs + download filter UX (Verified / VRAM / Untrusted).
-["#offline", "#exportAll", "#deleteAll", "#revokeAll", "#checkUpd", "#pickModelDir"].forEach((sel) => {
+// Coming-soon stubs (MAP: Tor / offline / revoke / export / attach / mic / HF live search)
+["#offline", "#exportAll", "#deleteAll", "#revokeAll", "#checkUpd"].forEach((sel) => {
   const el = $(sel); if (!el) return;
   el.onclick = (e) => { e.preventDefault(); toast("Coming soon"); };
   if ("onchange" in el) el.onchange = (e) => { e.preventDefault(); el.checked = false; toast("Coming soon"); };
@@ -1336,12 +1565,48 @@ $$("#backendSeg button").forEach((b) => {
   b.disabled = true;
   b.onclick = (e) => { e.preventDefault(); toast("Coming soon — backend is auto-selected"); };
 });
-$$("#kvSeg button, #temp, #topp, #topk, #rep, #maxtok, #resetPreset").forEach((el) => {
-  if (!el) return;
-  el.disabled = true;
-  el.title = "Coming soon — visual only on stick";
+// Advanced sampling: UI active for presets/context; KV/sampling stored locally until llama wire-up
+$$("#kvSeg button").forEach((b) => (b.onclick = () => {
+  state.kv = b.dataset.kv || "f16";
+  $$("#kvSeg button").forEach((x) => x.classList.toggle("on", x === b));
+  renderModelsList();
+}));
+["#temp", "#topp"].forEach((sel) => {
+  const el = $(sel); if (!el) return;
+  el.addEventListener("input", () => {
+    const lab = sel === "#temp" ? $("#tempVal") : $("#toppVal");
+    if (lab) lab.textContent = el.value;
+  });
 });
-$("#attachBtn").disabled = true; $("#micBtn").disabled = true;
+if ($("#resetPreset")) {
+  $("#resetPreset").onclick = () => {
+    const on = $("#presets button.on");
+    if (on) on.click();
+    toast("Reset to preset");
+  };
+}
+if ($("#attachBtn")) { $("#attachBtn").disabled = true; $("#attachBtn").title = "Attach files — coming later"; }
+if ($("#micBtn")) { $("#micBtn").disabled = true; $("#micBtn").title = "Voice input — coming later"; }
+
+// Models browser filters (MAP › Models)
+$$(".tabs [data-tab]").forEach((b) => (b.onclick = () => { state.mtab = b.dataset.tab; renderModelsList(); }));
+if ($("#mfTarget")) $("#mfTarget").onchange = (e) => { state.mf.target = e.target.value; renderModelsList(); };
+["cVram", "cRam"].forEach((id) => $(`#${id}`)?.addEventListener("input", () => renderModelsList()));
+if ($("#mfFits")) $("#mfFits").onchange = (e) => { state.mf.fits = e.target.checked; renderModelsList(); };
+if ($("#mfCtx")) $("#mfCtx").onchange = (e) => { state.mf.ctx = +e.target.value; renderModelsList(); };
+$$("#mfTrust input").forEach((i) => (i.onchange = () => {
+  if (i.checked) state.mf.trust.add(i.dataset.t); else state.mf.trust.delete(i.dataset.t);
+  renderModelsList();
+}));
+$$("#mfAbl button").forEach((b) => (b.onclick = () => { state.mf.abl = b.dataset.v; renderModelsList(); }));
+$$("#mfLic button").forEach((b) => (b.onclick = () => { state.mf.lic = b.dataset.v; renderModelsList(); }));
+$$("#mfFmt button").forEach((b) => (b.onclick = () => { state.mf.fmt = b.dataset.v; renderModelsList(); }));
+if ($("#mfQuant")) $("#mfQuant").onchange = (e) => { state.mf.quant = e.target.value; renderModelsList(); };
+if ($("#mfSort")) $("#mfSort").onchange = (e) => { state.mf.sort = e.target.value; renderModelsList(); };
+if ($("#mfSearch")) $("#mfSearch").addEventListener("input", (e) => { state.mf.q = e.target.value; renderModelsList(); });
+if ($("#mfReset")) $("#mfReset").onclick = resetModelFilters;
+if ($("#hfShow")) $("#hfShow").onclick = () => { const i = $("#hfToken"); if (i) i.type = i.type === "password" ? "text" : "password"; };
+if ($("#hfTest")) $("#hfTest").onclick = () => toast("HF token test — live gated downloads come later; catalog downloads need no token");
 
 applyModeUi("ephemeral");
 newChat();

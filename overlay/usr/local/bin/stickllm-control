@@ -95,8 +95,55 @@ def vault_clear_models_dirs() -> list[Path]:
     return dirs
 
 
+MODELS_DIR_PATH = RUN / "models-dir.json"
+
+
+def _safe_models_dir(path: str) -> Path | None:
+    """Accept only directories under /mnt or /var/lib/stickllm (never /dev)."""
+    raw = str(path or "").strip()
+    if not raw or raw.startswith("/dev/") or ".." in Path(raw).parts:
+        return None
+    p = Path(raw)
+    try:
+        p = p.resolve(strict=False)
+    except Exception:
+        return None
+    ps = str(p)
+    if not (ps.startswith("/mnt/") or ps.startswith("/var/lib/stickllm/")):
+        return None
+    return p
+
+
+def get_preferred_models_dir() -> Path | None:
+    """User-selected models folder (Models › Change…), if still valid."""
+    doc = read_json(MODELS_DIR_PATH)
+    p = _safe_models_dir(str(doc.get("path") or ""))
+    if p is not None and p.is_dir():
+        return p
+    return None
+
+
+def set_preferred_models_dir(path: str) -> dict:
+    p = _safe_models_dir(path)
+    if p is None:
+        return {"ok": False, "error": "invalid models folder path"}
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "error": f"cannot create folder: {e}"}
+    if not p.is_dir():
+        return {"ok": False, "error": "path is not a directory"}
+    RUN.mkdir(parents=True, exist_ok=True)
+    doc = {"ok": True, "path": str(p), "updated": int(time.time())}
+    MODELS_DIR_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, "path": str(p), "download_dir": str(p)}
+
+
 def vault_download_models_dir() -> Path | None:
-    """Where Vault-mode catalog downloads land (clear SSD models folder)."""
+    """Where catalog downloads land (user pick → vault SSD → USB DATA)."""
+    preferred = get_preferred_models_dir()
+    if preferred is not None:
+        return preferred
     root = vault_host_root()
     if not root:
         return None
@@ -144,12 +191,16 @@ def merge_vault_run(r: dict) -> dict:
 
 def model_dirs() -> list[Path]:
     dirs: list[Path] = []
+    preferred = get_preferred_models_dir()
+    if preferred is not None and preferred not in dirs:
+        dirs.append(preferred)
     # Vault / SSD models only when user consciously selected Vault mode.
     if session_mode() == "vault":
         vault_mnt = Path("/var/lib/stickllm/vault")
         vault_models = vault_mnt / "models"
         if vault_models.is_dir() and os.path.ismount(str(vault_mnt)):
-            dirs.append(vault_models)
+            if vault_models not in dirs:
+                dirs.append(vault_models)
         for d in vault_clear_models_dirs():
             if d not in dirs:
                 dirs.append(d)
@@ -1082,6 +1133,10 @@ def handle(action: str, params: dict) -> dict:
             pass
         vault = vault_action("status", {})
         dl_dir = vault_download_models_dir()
+        if session_mode() != "vault" and dl_dir is None:
+            data_models = MNT / "models"
+            dl_dir = data_models if data_models.is_dir() or MNT.is_dir() else None
+        preferred = get_preferred_models_dir()
         return {
             "ok": True,
             "session_mode": session_mode(),
@@ -1102,7 +1157,8 @@ def handle(action: str, params: dict) -> dict:
             "download": download_progress(),
             "watchdog": watchdog,
             "models_dirs": [str(p) for p in model_dirs()],
-            "download_dir": str(dl_dir) if dl_dir else "",
+            "download_dir": str(dl_dir) if dl_dir else (str(preferred) if preferred else ""),
+            "models_dir_preferred": str(preferred) if preferred else "",
             "vault_host_root": vault_host_root(),
         }
     if action == "usb_claim":
@@ -1118,6 +1174,8 @@ def handle(action: str, params: dict) -> dict:
         return {"ok": True, "mode": session_mode(), "modes": sorted(SESSION_MODES)}
     if action == "set_session_mode":
         return set_session_mode(str(params.get("mode") or ""))
+    if action == "set_models_dir":
+        return set_preferred_models_dir(str(params.get("path") or ""))
     if action == "model_download":
         mid = str(params.get("id") or "").strip()
         if download_running():
@@ -1128,12 +1186,23 @@ def handle(action: str, params: dict) -> dict:
                 "download": download_progress(),
                 "catalog": enrich_models(),
             }
+        # Optional explicit dest; else user pick; else session-mode default.
+        dest_param = str(params.get("dest") or params.get("path") or "").strip()
+        if dest_param:
+            set_r = set_preferred_models_dir(dest_param)
+            if not set_r.get("ok"):
+                return set_r
+        dest = get_preferred_models_dir() or vault_download_models_dir()
         cmd = ["/usr/local/bin/stickllm-download-model", "--i-understand"]
         if mid:
             cmd += ["--id", mid]
+        if dest is not None:
+            cmd += ["--dest", str(dest)]
         # Pass session mode so downloader never writes vault paths in ephemeral.
         env = os.environ.copy()
         env["STICKLLM_SESSION_MODE"] = session_mode()
+        if dest is not None:
+            env["STICKLLM_MODELS_DIR"] = str(dest)
         RUN.mkdir(parents=True, exist_ok=True)
         logf = open(RUN / "download.log", "a", encoding="utf-8")
         subprocess.Popen(
@@ -1144,6 +1213,7 @@ def handle(action: str, params: dict) -> dict:
             "ok": True,
             "started": True,
             "session_mode": session_mode(),
+            "download_dir": str(dest) if dest else "",
             "download": download_progress(),
             "catalog": enrich_models(),
         }
