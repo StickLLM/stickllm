@@ -916,10 +916,11 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
             is_active = True
         # "Running" only when this model is active AND llama /health is ok.
         running = bool(is_active and healthy)
-        deletable = (
+        # Baked /opt models stay protected; host SSD / vault / stick installs may be deleted.
+        deletable = bool(
             installed
+            and first
             and not str(first).startswith("/opt/stickllm/models/")
-            and m.get("source") != "host_ssd"
         )
         backend = "cuda" if gpu else "cpu"
         dims: dict = {}
@@ -1045,12 +1046,28 @@ def delete_model(model_id: str) -> dict:
     if not m.get("installed"):
         return {"ok": False, "error": "model not installed"}
     files = m.get("hf_files") or []
-    removed: list[str] = []
-    blocked: list[str] = []
+    # Prefer known absolute paths (local host SSD entries) before basename search.
+    targets: list[Path] = []
+    seen: set[str] = set()
+    for key in ("local_path", "path"):
+        raw = m.get(key)
+        if not raw:
+            continue
+        try:
+            p = Path(str(raw))
+            if p.is_file() and str(p) not in seen:
+                targets.append(p)
+                seen.add(str(p))
+        except Exception:
+            pass
     for f in files:
         p = find_file(f)
-        if not p:
-            continue
+        if p and str(p) not in seen:
+            targets.append(p)
+            seen.add(str(p))
+    removed: list[str] = []
+    blocked: list[str] = []
+    for p in targets:
         if str(p).startswith("/opt/stickllm/models/"):
             blocked.append(str(p))
             continue
@@ -1068,6 +1085,8 @@ def delete_model(model_id: str) -> dict:
             pass
     if blocked and not removed:
         return {"ok": False, "error": "baked-in models cannot be deleted", "blocked": blocked}
+    if not removed and not blocked:
+        return {"ok": False, "error": "no model files found to delete"}
     # If we deleted the active model, unload — do not auto-load another.
     active = active_model_path()
     if active and any(active == r or active.endswith(os.path.basename(r)) for r in removed):

@@ -314,19 +314,19 @@ input[type=range]{accent-color:var(--accent);width:100%}
 .fpDrive.on{background:var(--accent-soft);color:var(--ink)}.fpDrive.on svg{color:var(--accent)}
 .fpDrive[aria-disabled=true]{opacity:.45;cursor:not-allowed}
 .fpListWrap{flex:1;min-width:0;display:flex;flex-direction:column}
-.fpCols,.fpRow{display:grid;grid-template-columns:1fr 130px 90px;gap:12px;align-items:center;padding:0 16px}
+.fpCols,.fpRow{display:grid;grid-template-columns:minmax(0,1fr) 130px 90px;gap:12px;align-items:center;padding:0 16px}
 .fpCols{font-size:12px;color:var(--muted);height:32px;border-bottom:1px solid var(--line2)}
-.fpCols span:last-child,.fpRow span:last-child{text-align:right}
-.fpList{flex:1;overflow:auto;padding:4px 6px;outline:none}
-.fpRow{height:36px;border-radius:7px;font-size:13.5px;cursor:default;user-select:none;padding:0 10px}
+.fpCols span:last-child,.fpRow > .fpMeta:last-child,.fpRow > .fpSize:last-child,.fpRow > span:last-child{text-align:right}
+.fpList{flex:1;overflow:auto;padding:4px 6px;outline:none;min-width:0}
+.fpRow{min-height:36px;height:36px;border-radius:7px;font-size:13.5px;cursor:default;user-select:none;padding:0 10px;overflow:hidden}
 .fpRow:hover{background:var(--panel2)}
 .fpRow.sel{background:var(--accent-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 50%,transparent)}
 .fpList:focus-visible .fpRow.sel{box-shadow:inset 0 0 0 2px var(--accent)}
 .fpRow.dim{opacity:.55}
 .fpRow .muted{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .fpRow.fpHit{height:auto;min-height:44px;padding-top:7px;padding-bottom:7px;align-items:center}
-.fpRow .fpMeta,.fpRow .fpSize{font-size:12px}
-.fpName{display:flex;align-items:center;gap:10px;min-width:0}
+.fpRow .fpMeta,.fpRow .fpSize{font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fpName{display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden}
 .fpName svg{width:18px;height:18px;color:var(--muted)}
 .fpName.dir svg{color:#d9b25c}
 .fpName.vault svg{color:var(--accent)}
