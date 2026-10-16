@@ -26,8 +26,6 @@ https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sha
 
 File: `StickLLM-v0.3.8.iso`
 
-**Do not use v0.3.5** — that ISO is truncated/broken.
-
 ### 2. Verify checksum
 
 **Hash of record is in this repo / GitHub Release** — verify the Drive download against it (do not rely on a hash stored only on Drive):
