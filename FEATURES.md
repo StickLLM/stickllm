@@ -100,12 +100,15 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P1 QR pairing via phone camera
 - [ ] P1 Chats in memory or vault only, never on phone
 - [ ] P2 Native apps: iOS, Android (Play, F-Droid / direct APK, no Google services)
-- [ ] P2 Voice input + TTS
 
 ## Updates
 - [ ] P1 A/B system slots (squashfs) with automatic rollback via GRUB
 - [ ] P1 Signed updates; never touch data partition or models
 - [ ] P1 Model updates via signed catalog
+
+## Companion apps (planned)
+- [ ] P2 Optional companion apps downloadable to USB DATA / vault — first-pass catalog in [docs/APPS.md](docs/APPS.md) (ISS-022); not shipping yet
+- [ ] P2 Voice input + TTS (whisper.cpp / Piper candidates; may become baked standard — undecided; see APPS.md)
 
 ## UI and extras
 - [ ] P1 Status/health page (GPU temp, VRAM, tok/s, loaded model); doubles as Server/Term screen

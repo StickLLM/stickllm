@@ -12,6 +12,16 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-022 — Companion apps catalog (USB DATA / vault); Whisper/Piper bake TBD
+| | |
+|---|---|
+| **ID** | ISS-022 |
+| **Mode** | all / product |
+| **Severity** | PRODUCT (P2 plan) |
+| **Status** | Open — first-pass catalog only; **not shipping**; list may change |
+| **Summary** | Potential companion apps (docs, mail, calendar, notes, tasks, search, chat, creative tools, agent operator) for humans via browser/UI and agents via each app’s API/tool layer. Install target: StickLLM USB DATA and/or encrypted SSD vault. Catalog: [docs/APPS.md](docs/APPS.md). |
+| **Notes** | whisper.cpp + Piper are TTS/STT candidates and **may become baked standard** on the stick — decision pending. n8n is fair-code (not OSI); Node-RED (Apache) is the OSI-friendly alternative under consideration. Do **not** bake or ship apps in v0.3.8; no ISO rebuild for this doc. |
+
 ### ISS-020 — Next ISO: drop baked Qwen2.5-7B Q5_K_M (keep ~2 GB 3B)
 | | |
 |---|---|
