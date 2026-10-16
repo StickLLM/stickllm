@@ -13,6 +13,8 @@ let activeChatId = null;
 let lastRemintId = null;
 let lastCatalog = [];
 let selectedModelId = null;
+/** Optimistic card badge while llama loads (cleared on running / failure). */
+let loadingModelId = null;
 let dlPollTimer = null;
 let vaultBrowsePath = "";
 let vaultPickerMount = "";
@@ -570,7 +572,8 @@ function renderModelsList() {
     const gbTxt = gb ? (gb >= 10 ? gb.toFixed(1) : gb.toFixed(2)) + " GB" : "?";
     const have = !!m.installed;
     const run = !!m.running;
-    const loading = !!m.active && !run;
+    // Optimistic id → Loading on click; only that card (never leave others stuck).
+    const loading = !run && (loadingModelId === id || (!loadingModelId && !!m.active));
     const rec = !!m.recommended;
     const sel = id === selectedModelId;
     const trust = modelTrust(m);
@@ -611,7 +614,15 @@ function renderModelsList() {
     c.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e); } };
   });
   $$("#modelList [data-dl]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.dl; $("#dlModel").click(); }));
-  $$("#modelList [data-load]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.load; $("#activate").click(); }));
+  $$("#modelList [data-load]").forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation();
+    const id = b.dataset.load;
+    const m = lastCatalog.find((x) => x.id === id);
+    // Paint Loading on this card immediately (before activate network call).
+    beginModelLoadUi(id, m?.name || id);
+    // Yield a frame so the badge/status line paint before the long activate await.
+    paintSoon().then(() => $("#activate").click());
+  }));
   $$("#modelList [data-delf]").forEach((b) => (b.onclick = (e) => {
     e.stopPropagation();
     selectedModelId = b.dataset.delf;
@@ -646,6 +657,16 @@ function resetModelFilters() {
   if ($("#mfSearch")) $("#mfSearch").value = "";
   renderModelsList();
 }
+function friendlyModelLabel(raw, pathHint) {
+  let s = String(raw || "").trim();
+  if (!s || /^none\b/i.test(s) || /^loading/i.test(s)) {
+    s = String(pathHint || "").split(/[/\\]/).pop() || "";
+  }
+  s = s.replace(/\.gguf$/i, "");
+  if (!s) return "";
+  // Keep quant tokens readable; turn other separators into spaces for the chip/popover.
+  return s.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+}
 async function refreshModels() {
   if (!(await ensurePaired())) return;
   const st = await control("status");
@@ -658,6 +679,10 @@ async function refreshModels() {
     name: "This machine",
   };
   const run = lastCatalog.find((m) => m.running || m.active) || lastCatalog.find((m) => m.installed);
+  if (loadingModelId) {
+    const lm = lastCatalog.find((m) => m.id === loadingModelId);
+    if (lm?.running || st.llama_ok) loadingModelId = null;
+  }
   if (!selectedModelId && run) selectedModelId = run.id;
   if (!selectedModelId && lastCatalog[0]) selectedModelId = lastCatalog[0].id;
   const name = st.loaded?.name || run?.name || "none";
@@ -665,7 +690,7 @@ async function refreshModels() {
   if ($("#recName")) $("#recName").textContent = String(probe.recommend_id || probe.recommend || "—");
   const pill = $("#runPill");
   if (pill) {
-    const activeLoading = lastCatalog.some((m) => m.active && !m.running);
+    const activeLoading = !!loadingModelId || lastCatalog.some((m) => m.active && !m.running);
     if (st.llama_ok || st.llama?.status === "ok" || run?.running) {
       pill.textContent = "running"; pill.className = "pill ok";
     } else if (activeLoading) {
@@ -736,25 +761,61 @@ function startLoadPoll(expectName) {
     try {
       await refreshStatus();
       await refreshModels().catch(() => {});
+      const running = lastCatalog.find((x) => x.running);
+      if (running && (!loadingModelId || running.id === loadingModelId)) {
+        loadingModelId = null;
+        stopLoadPoll();
+        setChipLoad(false, 100, expectName || running.name);
+        renderModelsList();
+        toast("Model ready" + (expectName ? `: ${expectName}` : ""));
+        await refreshStatus();
+        return;
+      }
       const r = await fetch("/api/health", { cache: "no-store" });
       const j = await r.json().catch(() => ({}));
       if (j.llama_ok) {
+        loadingModelId = null;
         stopLoadPoll();
+        setChipLoad(false, 100, expectName);
+        renderModelsList();
         toast("Model ready" + (expectName ? `: ${expectName}` : ""));
         await refreshStatus();
         return;
       }
       // Soft progress while llama is still coming up (weights load has no exact %).
       const soft = Math.min(92, 8 + ticks * 3);
-      setChipLoad(true, soft, expectName);
-      if (ticks > 120) { stopLoadPoll(); toast("Still loading — check Models"); }
+      const phase = ticks < 3 ? "Starting llama" : ticks < 12 ? "Loading weights into GPU/RAM" : "Almost ready";
+      setChipLoad(true, soft, expectName, phase);
+      if (ticks > 120) {
+        stopLoadPoll();
+        loadingModelId = null;
+        setChipLoad(false, 0, null);
+        renderModelsList();
+        toast("Still loading — check Models");
+      }
     } catch (_) {}
   }, 2000);
 }
-function setChipLoad(loading, pct, name) {
+function setLoadStatusLine(loading, pct, name, phase) {
+  const box = $("#loadStatus");
+  if (!box) return;
+  if (!loading) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const label = name && name !== "none" ? name : "model";
+  const phaseText = phase || "Loading into GPU/RAM";
+  if ($("#loadStatusText")) $("#loadStatusText").textContent = `${phaseText} — ${label}`;
+  const n = Math.max(2, Math.min(100, Number(pct) || 5));
+  if ($("#loadStatusFill")) $("#loadStatusFill").style.width = n + "%";
+  if ($("#loadStatusPct")) $("#loadStatusPct").textContent = Math.round(n) + "%";
+}
+function setChipLoad(loading, pct, name, phase) {
   const chip = $("#statusChip");
   const bar = $("#chipLoad");
   const fill = $("#chipLoadFill");
+  setLoadStatusLine(loading, pct, name, phase);
   if (!chip) return;
   chip.classList.toggle("loading", !!loading);
   chip.classList.toggle("ready", !loading && !!name && name !== "none");
@@ -770,28 +831,45 @@ function setChipLoad(loading, pct, name) {
   $("#statusChip .dot")?.classList.toggle("ok", !loading);
   $("#statusChip .dot")?.classList.toggle("busy", !!loading);
 }
+/** Paint Loading UI before any network await (card badge + chip + under-composer line). */
+function beginModelLoadUi(id, name) {
+  loadingModelId = id;
+  selectedModelId = id;
+  renderModelsList();
+  setChipLoad(true, 5, name, "Starting load");
+  toast("Loading " + name + "…");
+}
+function paintSoon() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
 
 $("#activate").onclick = async () => {
   const m = lastCatalog.find((x) => x.id === selectedModelId);
   if (!m) return toast("Select a model");
+  const name = m.name || m.id;
   try {
-    const name = m.name || m.id;
-    setChipLoad(true, 5, name);
-    toast("Loading " + name + "…");
+    // Synchronous UI first — do not wait for activate round-trip.
+    beginModelLoadUi(m.id, name);
+    startLoadPoll(name);
+    await paintSoon();
     const res = await control("model_activate", { id: m.id, ctx_size: +$("#ctx").value });
     if (!res.ok && res.error) throw new Error(res.error);
     if (res.running || res.load_state === "running") {
       stopLoadPoll();
+      loadingModelId = null;
       setChipLoad(false, 100, name);
       toast("Model running: " + name);
     } else {
-      toast("Model loading into GPU/RAM…");
-      startLoadPoll(name);
+      setChipLoad(true, 12, name, "Loading into GPU/RAM");
     }
     await refreshModels(); await refreshStatus();
   } catch (e) {
     stopLoadPoll();
+    loadingModelId = null;
     setChipLoad(false, 0, null);
+    renderModelsList();
     toast(e.message);
   }
 };
@@ -1057,6 +1135,8 @@ function modelKindLabel(kind) {
     case "huggingface": return "HF cache";
     case "lm_studio": return "LM Studio";
     case "gpt4all": return "GPT4All";
+    case "comfyui": return "ComfyUI";
+    case "webui": return "WebUI";
     default: return "folder";
   }
 }
@@ -1178,8 +1258,11 @@ async function searchForModels({ inPicker = false } = {}) {
     toast("Searching…");
     const res = await control("vault_find_models", { path: base });
     if (res.ok === false) throw new Error(res.error || "find models failed");
-    const hits = res.models || res.hits || [];
+    const hits = res.models || res.hits || res.roots || [];
     const jump = res.best?.path || res.jump_dir || res.start_dir || "";
+    const mode = String(res.collapse_mode || "");
+    // Remembered for Load; Change… remains the download write target.
+    refreshModels().catch(() => {});
     if (inPicker) {
       if (!hits.length) {
         // No list to show — jump into best folder if we have one.
@@ -1201,18 +1284,22 @@ async function searchForModels({ inPicker = false } = {}) {
         const pathHint = m.relative || folder || p;
         const n = Number(m.gguf_count);
         const size = Number.isFinite(n) && n > 0 ? `${n} GGUF` : "—";
+        const pill = mode === "multi_root" ? "library" : "models";
         rows += fpHitRowHtml({
           name,
           pathHint,
           kindClass: "model",
-          pill: "model",
+          pill,
           mid: modelKindLabel(m.kind),
           size,
           attrs: `data-dir="${esc(folder || p)}" title="${esc(folder || p)}"`,
         });
       }
       $("#fpList").innerHTML = rows;
-      $("#fpCrumbs").innerHTML = '<button class="crumbBtn" type="button">Search results — models</button>';
+      const crumb = mode === "multi_root"
+        ? "Model libraries (load from any · Change… sets download)"
+        : "Models library (collapsed · Change… sets download)";
+      $("#fpCrumbs").innerHTML = `<button class="crumbBtn" type="button">${esc(crumb)}</button>`;
       $$("#fpList [data-dir]").forEach((r) => {
         r.ondblclick = () => browseLive(r.dataset.dir);
         r.onclick = () => {
@@ -1221,11 +1308,11 @@ async function searchForModels({ inPicker = false } = {}) {
           $("#fpSel").textContent = r.dataset.dir;
           $("#fpOk").dataset.path = r.dataset.dir;
           $("#fpOk").dataset.kind = "folder";
-          $("#fpOk").textContent = "Use this folder";
+          $("#fpOk").textContent = pickerPurpose === "models_dir" ? "Use as download folder" : "Use this folder";
           $("#fpOk").disabled = false;
         };
       });
-      toast(`Found ${hits.length} model location(s)`);
+      toast(res.note || `Found ${hits.length} model library(ies) — remembered for Load`);
       return;
     }
     const box = $("#findHits");
@@ -1236,11 +1323,11 @@ async function searchForModels({ inPicker = false } = {}) {
       } else {
         box.innerHTML = hits.slice(0, 12).map((m) =>
           `<div class="row"><div><b>${esc(m.name || m.path)}</b><small class="mono">${esc(m.path || m.dir || "")}</small></div></div>`
-        ).join("");
+        ).join("") + '<div class="row"><small class="muted">Remembered for Load. Downloads use Models › Change… only.</small></div>';
       }
     }
     if (jump && $("#picker") && !$("#picker").hidden) await browseLive(jump).catch(() => {});
-    toast(hits.length ? `Found ${hits.length} model(s)` : (res.note || "No models found"));
+    toast(hits.length ? (res.note || `Found ${hits.length} library(ies)`) : (res.note || "No models found"));
   } catch (e) { toast(e.message); }
 }
 $("#fpUp").onclick = async () => {
@@ -1674,13 +1761,13 @@ async function refreshStatus() {
     const j = await r.json();
     if (j.pair?.local || detectLocalHost()) isLocalMode = true;
     if (j.session_mode) applyModeUi(j.session_mode === "vault" ? "vault" : "ephemeral");
-    const rawName = String(j.connect?.model || "").trim();
-    const pathName = String(j.connect?.model_path || "").split(/[/\\]/).pop() || "";
-    const named = rawName && !/^none\b/i.test(rawName) && !/^loading/i.test(rawName) ? rawName : pathName;
+    const modelPath = String(j.connect?.model_path || "").trim();
+    const named = friendlyModelLabel(j.connect?.model, modelPath);
     const backend = String(j.backend || j.connect?.backend || "").toUpperCase() || "—";
-    const loading = !j.llama_ok && !!(named || rawName && !/^none\b/i.test(rawName));
+    const loading = !j.llama_ok && !!(named || loadingModelId);
     if (j.llama_ok) {
       stopLoadPoll();
+      loadingModelId = null;
       const readyName = named || "ready";
       $("#chipModel").textContent = readyName;
       setChipLoad(false, 100, readyName);
@@ -1691,19 +1778,31 @@ async function refreshStatus() {
         setChipLoad(true, 12, named || "model");
     } else {
       stopLoadPoll();
+      loadingModelId = null;
       $("#chipModel").textContent = "none";
       setChipLoad(false, 0, null);
     }
     $("#chipMeta").textContent = backend;
     $("#statusChip .dot")?.classList.toggle("ok", !!j.llama_ok);
     if ($("#popModel")) {
-      $("#popModel").textContent = j.llama_ok
-        ? (j.connect?.model_path || named || "ready")
-        : (loading ? `loading — ${j.connect?.model_path || named || "…"}` : "none — Activate in Models");
+      const pop = $("#popModel");
+      if (j.llama_ok) {
+        pop.textContent = named || "ready";
+        pop.title = modelPath || named || "";
+      } else if (loading) {
+        pop.textContent = named ? `loading — ${named}` : "loading…";
+        pop.title = modelPath || "";
+      } else {
+        pop.textContent = "none — Activate in Models";
+        pop.removeAttribute("title");
+      }
     }
     if ($("#popBackend")) $("#popBackend").textContent = backend;
     if ($("#popUplink")) $("#popUplink").textContent = (j.online || j.web) ? "Online" : "No uplink";
-    if ($("#popCtx")) $("#popCtx").textContent = "—";
+    if ($("#popCtx")) {
+      const ctx = Number(j.connect?.ctx_size || j.ctx_size || j.loaded?.ctx_size || 0);
+      $("#popCtx").textContent = ctx > 0 ? `${ctx.toLocaleString()} tokens` : "—";
+    }
     const url = j.connect?.url || (j.connect?.ip ? `http://${j.connect.ip}/` : location.origin + "/");
     if ($("#lanUrl2")) $("#lanUrl2").textContent = url;
     announceRemintFromConnect(j.connect);
