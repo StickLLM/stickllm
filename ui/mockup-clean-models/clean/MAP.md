@@ -111,7 +111,7 @@ Abbreviations: **S** = Settings modal (left nav). **SB** = conversation sidebar.
   - Verified Qwen3-32B Q4_K_M (19.8 GB) fits on the GPU and is the default/running model.
   - Others: gpt-oss-20b, Mixtral-8x22B (gated), gemma-3-27b (gated, safetensors, non-commercial), Qwen2.5-Coder, Qwen2.5-VL, nomic-embed, Llama-3.1-8B (+ a Verified abliterated build), an untrusted uncensored model, and a blocked hash-mismatch file.
 - **Model trust levels (5):** Verified (StickLLM hash + tested), Community verified (official publisher repo, hash matches, not tested by us), Unverified, Untrusted (unknown source; download needs a typed DOWNLOAD confirm), Blocked (hash mismatch: shown greyed, radio disabled, reason in red, can't load; also left out of "Move models into vault"). **Abliterated** is a separate tag, so a Verified model can also be abliterated.
-- **Library filters:** Trust (multi-toggle), Licence (Any / Commercial OK / Non-commercial), Format (Any / GGUF / safetensors), Can do (Tool calling, Vision, Long context, Reasoning; must have all selected), plus Reset filters and an "N of M" count. A note says pickle `.bin`/`.pt` checkpoints are never offered because they can run code on load.
+- **Library filters:** Trust (multi-toggle), Licence (Any / Commercial OK / Non-commercial), Can do (Tool calling, Vision, Long context, Reasoning; must have all selected), plus Reset filters and an "N of M" count. **GGUF only** (llama.cpp) — no safetensors format chooser. A note says pickle `.bin`/`.pt` checkpoints are never offered because they can run code on load.
 - **Estimated tok/s** on each model row (fake estimate for the target GPU from memory bandwidth ÷ model size).
 - Presets Fast / Balanced / Long context; KV cache type f16/q8_0/q4_0; temperature, top-p, top-k, repeat penalty, max tokens; Reset to preset; a "modified" marker on the preset.
 - VRAM budget bar that turns red with a warning when the selection won't fit.
@@ -126,7 +126,7 @@ Abbreviations: **S** = Settings modal (left nav). **SB** = conversation sidebar.
 Common to all modes: a drive sidebar, Back/Forward/Up, breadcrumb with an editable path, a list (name/modified/size) with single-click select and double-click open, arrow keys/Home/End/Enter/Backspace/Alt+arrows, auto-badges for vault files and models, a new-folder icon, and a footer with the selected path plus Cancel and Select folder / Open vault. It only browses and creates folders, never partitions or formats the user's drives.
 
 ## Dropped or merged
-- "Find existing vault" / "Find existing models" buttons: replaced by automatic detection in the picker.
+- "Find existing vault" / "Find existing models" on Storage: restored in the file picker as **Search for vault** / **Search for models** (toolbar + sidebar), wired to `vault_find` / `vault_find_models`.
 - Whole-partition vault creation (an earlier draft of this mockup) and its ERASE-PARTITION confirm: removed for the same reason.
 - #37, #39, #40: three refresh/list actions merged into one Drives › Refresh (the list renders automatically).
 - #21 "Download recommended": no separate button. The recommended model is tagged in the list and downloaded with the normal Download action.
