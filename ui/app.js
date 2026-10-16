@@ -915,6 +915,8 @@ async function refreshDrivesLive() {
       vaultPickerMount = el.dataset.path;
       vaultBrowsePath = el.dataset.path;
       $("#vaultPath").value = el.dataset.path;
+      pickerPurpose = "vault";
+      if ($("#fpTitle")) $("#fpTitle").textContent = "Choose folder / vault";
       openLivePicker(el.dataset.path);
     }));
     $$("[data-mountdev]").forEach((b) => (b.onclick = async (e) => {
