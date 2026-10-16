@@ -30,9 +30,45 @@ serial_note() {
   printf '%s\n' "$*" >/dev/ttyS0 2>/dev/null || true
 }
 
+# weston repeats "Basic output test failed for HDMI-A-*" for the life of the
+# session. /run is tmpfs — cap the log and drop duplicate HDMI lines.
+FAIL_LOG_MAX_BYTES=262144
+FAIL_LOG_KEEP_LINES=200
+
+kiosk_fail_rotate() {
+  local sz=0
+  sz="$(stat -c%s "$FAIL_LOG" 2>/dev/null || echo 0)"
+  if [[ "${sz:-0}" -gt "$FAIL_LOG_MAX_BYTES" ]]; then
+    tail -n "$FAIL_LOG_KEEP_LINES" "$FAIL_LOG" >"$FAIL_LOG.trim" 2>/dev/null || true
+    mv -f "$FAIL_LOG.trim" "$FAIL_LOG" 2>/dev/null || true
+  fi
+}
+
 fail_note() {
   printf '%s\n' "$*" >>"$FAIL_LOG" 2>/dev/null || true
+  kiosk_fail_rotate
   serial_note "$*"
+}
+
+# stdin → fail log, suppressing back-to-back duplicates and HDMI test spam.
+kiosk_fail_filter() {
+  local last="" line hdmi_seen=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$last" ]]; then
+      continue
+    fi
+    if [[ "$line" == *"Basic output test failed for HDMI-"* ]]; then
+      if [[ "$hdmi_seen" -eq 1 ]]; then
+        last="$line"
+        continue
+      fi
+      hdmi_seen=1
+      line="[once] Basic output test failed for HDMI (further copies suppressed)"
+    fi
+    last="$line"
+    printf '%s\n' "$line" >>"$FAIL_LOG" 2>/dev/null || true
+    kiosk_fail_rotate
+  done
 }
 
 paint() {
@@ -653,9 +689,9 @@ try_launch() {
       } >>"$FAIL_LOG" 2>&1 || true
       # cage refuses uid 0 → drop_root=1. Bookworm cage also needs Xwayland installed.
       if [[ "$browser" == "cog" ]]; then
-        # stderr must land in kiosk-fail.log for Term-boot diagnosis
-        _run 1 cage -s -- cog -P --enable-mediasource "$URL" >>"$FAIL_LOG" 2>&1
-        rc=$?
+        # stderr must land in kiosk-fail.log for Term-boot diagnosis (deduped, capped)
+        _run 1 cage -s -- cog -P --enable-mediasource "$URL" 2>&1 | kiosk_fail_filter
+        rc=${PIPESTATUS[0]}
       else
         # shellcheck disable=SC2086
         _run 1 cage -s -- $browser \
@@ -669,8 +705,8 @@ try_launch() {
           --check-for-update-interval=31536000 \
           --user-data-dir="$PROFILE" \
           --disk-cache-dir="$PROFILE/cache" \
-          "$URL" >>"$FAIL_LOG" 2>&1
-        rc=$?
+          "$URL" 2>&1 | kiosk_fail_filter
+        rc=${PIPESTATUS[0]}
       fi
       # On fail: retry once with WLR_RENDERER=pixman (explicit product contract).
       if [[ "$rc" -ne 0 && "$renderer" != "pixman" ]]; then
@@ -678,8 +714,8 @@ try_launch() {
         serial_note "STICKLLM_KIOSK_PIXMAN_RETRY label=$label"
         export WLR_RENDERER=pixman
         if [[ "$browser" == "cog" ]]; then
-          _run 1 cage -s -- cog -P --enable-mediasource "$URL" >>"$FAIL_LOG" 2>&1
-          rc=$?
+          _run 1 cage -s -- cog -P --enable-mediasource "$URL" 2>&1 | kiosk_fail_filter
+          rc=${PIPESTATUS[0]}
         else
           # shellcheck disable=SC2086
           _run 1 cage -s -- $browser \
@@ -693,8 +729,8 @@ try_launch() {
             --check-for-update-interval=31536000 \
             --user-data-dir="$PROFILE" \
             --disk-cache-dir="$PROFILE/cache" \
-            "$URL" >>"$FAIL_LOG" 2>&1
-          rc=$?
+            "$URL" 2>&1 | kiosk_fail_filter
+          rc=${PIPESTATUS[0]}
         fi
         label="${label}+pixman-retry"
       fi
@@ -723,8 +759,8 @@ try_launch() {
         cat "$WESTON_INI" 2>/dev/null || true
       } >>"$FAIL_LOG" 2>&1 || true
       # weston drm-backend as non-root needs logind; stay root (drop_root=0).
-      _run 0 weston "${_wargs[@]}" >>"$FAIL_LOG" 2>&1
-      rc=$?
+      _run 0 weston "${_wargs[@]}" 2>&1 | kiosk_fail_filter
+      rc=${PIPESTATUS[0]}
       ;;
     *)
       rc=127

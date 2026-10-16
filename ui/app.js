@@ -83,6 +83,11 @@ function setTheme(t) {
 $("#themeBtn").onclick = () => setTheme(state.theme === "dark" ? "light" : "dark");
 $$("#themeSeg button").forEach((b) => (b.onclick = () => setTheme(b.dataset.theme)));
 
+function heroModeLine(m) {
+  return m === "vault"
+    ? "Everything runs on this stick. Chats are saved encrypted in your vault."
+    : "Everything runs on this stick. Ephemeral — lost at reboot.";
+}
 function applyModeUi(m) {
   state.mode = m; sessionMode = m;
   $$("[data-mode]").forEach((b) => {
@@ -98,6 +103,9 @@ function applyModeUi(m) {
   $("#composerNote").textContent = m === "vault"
     ? "Vault session · runs locally"
     : "Ephemeral · runs locally";
+  // Keep empty-state hero in sync when mode toggles without a new chat.
+  const heroP = $("#thread .empty p");
+  if (heroP) heroP.textContent = heroModeLine(m);
 }
 
 async function setSessionMode(m) {
@@ -200,7 +208,7 @@ function renderThread() {
   $("#chatTitle").textContent = c ? c.title : "New chat";
   if (!c || !c.msgs.length) {
     th.innerHTML = `<div class="empty"><span class="logo lg"></span><h2>What can I help with?</h2>
-      <p>Everything runs on this stick. ${state.mode === "vault" ? "Vault mode." : "Ephemeral — lost at reboot."}</p>
+      <p>${esc(heroModeLine(state.mode))}</p>
       <div class="sugg"><button>Summarize a long article I paste in</button><button>Write a bash script to rename photos by date</button>
       <button>Explain how LUKS encryption works</button><button>Draft a polite follow-up email</button></div></div>`;
     $$(".sugg button", th).forEach((b) => (b.onclick = () => { $("#input").value = b.textContent; send(); }));
@@ -637,11 +645,15 @@ function syncModelActions() {
     updateVramBar({});
     return;
   }
-  if ($("#selHint")) $("#selHint").textContent = `Selected: ${m.name || m.id}`;
+  if ($("#selHint")) {
+    const speed = m.offload_caption ? ` — ${m.offload_caption}` : "";
+    $("#selHint").textContent = `Selected: ${m.name || m.id}${speed}`;
+  }
   if ($("#dlModel")) $("#dlModel").hidden = !!m.installed;
   if ($("#activate")) {
     $("#activate").hidden = !m.installed || (m.runnable === false && !m.running && !m.active);
-    $("#activate").textContent = m.running ? "Reload with these settings" : (m.active ? "Still loading… (tap to retry)" : "Load model");
+    const failed = lastLlama && (lastLlama.stopped || Number(lastLlama.n_restarts || 0) >= 2);
+    $("#activate").textContent = m.running ? "Reload with these settings" : (failed ? "Load model" : (m.active ? "Loading…" : "Load model"));
   }
   if ($("#delModel")) $("#delModel").hidden = !m.deletable;
   const max = Number(m.ctx_max || m.ctxMax || 32768);
@@ -670,6 +682,8 @@ function friendlyModelLabel(raw, pathHint) {
 async function refreshModels() {
   if (!(await ensurePaired())) return;
   const st = await control("status");
+  if (st.llama_service) lastLlama = st.llama_service;
+  if (st.offload && st.offload.caption && lastLlama && !lastLlama.caption) lastLlama.caption = st.offload.caption;
   lastCatalog = st.catalog || [];
   const probe = st.probe || {};
   hwInfo = {
@@ -752,6 +766,9 @@ $("#probeBtn").onclick = async () => {
 };
 $("#refreshCatalog").onclick = () => refreshModels().then(() => toast("Catalog refreshed")).catch((e) => toast(e.message));
 let loadPollTimer = null;
+let loadStartedAt = 0;
+let loadSizeGb = 8;
+let lastLlama = null;
 function stopLoadPoll() { if (loadPollTimer) { clearInterval(loadPollTimer); loadPollTimer = null; } }
 function loadBackendHint() {
   const b = String($("#chipMeta")?.textContent || "").toUpperCase();
@@ -760,26 +777,48 @@ function loadBackendHint() {
   if (b.includes("CPU")) return "ram";
   return "auto";
 }
-/** Soft % that never freezes at ~92; after ~24s → indeterminate pulse. */
-function estimateLoadProgress(ticks) {
-  // ticks every 2s. Climb toward ~65 only, then pulse — llama has no true byte %.
-  if (ticks <= 12) {
-    return { pct: Math.min(65, Math.round(6 + 59 * (1 - Math.exp(-ticks / 4.5)))), indeterminate: false };
-  }
-  return { pct: null, indeterminate: true };
+function modelSizeGb(m) {
+  const gb = m?.approx_size_gb ?? m?.size_gb ?? (m?.bytes != null ? Number(m.bytes) / 1e9 : null);
+  const n = Number(gb);
+  if (n > 0.2) return n;
+  return guessSizeGb(m?.name || m?.id);
 }
-function loadPhaseText(ticks, indeterminate) {
-  const dest = loadBackendHint();
-  if (ticks < 2) return "Starting llama…";
-  if (ticks < 6) {
-    if (dest === "gpu") return "Loading weights into GPU…";
-    if (dest === "ram") return "Loading weights into RAM…";
-    return "Loading weights into GPU/RAM…";
+function guessSizeGb(name) {
+  const s = String(name || "");
+  const b = s.match(/(\d+(?:\.\d+)?)\s*B\b/i);
+  if (!b) return 8;
+  const p = Number(b[1]);
+  if (p >= 60) return 40;
+  if (p >= 30) return 20;
+  if (p >= 12) return 10;
+  if (p >= 6) return 5;
+  return 2.5;
+}
+function llamaView(health) {
+  const svc = lastLlama || {};
+  const load = (health && health.llama_load) || {};
+  const restarts = Number(svc.n_restarts || 0);
+  const fails = Number(svc.fail_count || load.fail_count || 0);
+  const alive = !!svc.process_alive;
+  const stopped = !!(svc.stopped || svc.result === "start-limit-hit");
+  const crashed = !alive && (restarts >= 1 || fails >= 1 || !!svc.error || !!load.error);
+  const giveUp = !alive && (stopped || restarts >= 2 || fails >= 2);
+  const caption = svc.caption || load.caption || "";
+  const error = (svc.error || load.error || "").trim();
+  let pct = 0;
+  if (!crashed && alive && Number.isFinite(Number(svc.progress_pct))) {
+    pct = Math.max(1, Math.min(90, Number(svc.progress_pct) || 1));
   }
-  if (indeterminate || ticks >= 12) return "Waiting for model ready…";
-  if (dest === "gpu") return "Still loading into GPU…";
-  if (dest === "ram") return "Still loading into RAM…";
-  return "Still loading weights…";
+  return { crashed, giveUp, alive, caption, error, pct, restarts, fails };
+}
+function loadPhaseText(view) {
+  if (view.crashed || view.giveUp) {
+    const err = view.error || "GPU load failed";
+    return view.giveUp ? err : err;
+  }
+  if (view.caption) return view.caption;
+  if (!view.alive) return "Starting llama…";
+  return "Loading weights…";
 }
 function startLoadPoll(expectName) {
   stopLoadPoll();
@@ -810,11 +849,20 @@ function startLoadPoll(expectName) {
         await refreshStatus();
         return;
       }
-      const est = estimateLoadProgress(ticks);
-      const phase = loadPhaseText(ticks, est.indeterminate);
-      setChipLoad(true, est.pct, expectName, phase, { indeterminate: est.indeterminate });
-      // Large RAM mmap loads can take many minutes — keep polling with pulse UI.
-      if (ticks > 450) {
+      const view = llamaView(j);
+      if (view.crashed || view.giveUp) {
+        setChipLoad(true, 0, expectName, loadPhaseText(view), true);
+        showFewerLayers(view.giveUp);
+        if (view.giveUp && ticks > 2) {
+          // Stay on the error. Do not keep a percent climbing while llama is stopped.
+        }
+      } else {
+        showFewerLayers(false);
+        const pct = view.alive ? view.pct : 1;
+        setChipLoad(true, pct, expectName, loadPhaseText(view), false);
+      }
+      // Large RAM mmap loads can take many minutes — keep polling, but not a fake 95%.
+      if (!view.crashed && ticks > 450) {
         stopLoadPoll();
         loadingModelId = null;
         setChipLoad(false, 0, null);
@@ -824,50 +872,56 @@ function startLoadPoll(expectName) {
     } catch (_) {}
   }, 2000);
 }
-function setLoadStatusLine(loading, pct, name, phase, opts) {
+function showFewerLayers(on) {
+  const show = !!on;
+  for (const id of ["fewerLayers", "fewerLayersBar"]) {
+    const b = $("#" + id);
+    if (!b) continue;
+    b.hidden = !show;
+    if (show) b.removeAttribute("hidden");
+    else b.setAttribute("hidden", "");
+  }
+}
+function setLoadStatusLine(loading, pct, name, phase, failed) {
   const box = $("#loadStatus");
   if (!box) return;
   if (!loading) {
     box.hidden = true;
-    box.classList.remove("indeterminate");
+    box.setAttribute("hidden", "");
+    box.classList.remove("failed");
+    showFewerLayers(false);
     return;
   }
   box.hidden = false;
-  const indeterminate = !!(opts && opts.indeterminate);
-  box.classList.toggle("indeterminate", indeterminate);
+  box.removeAttribute("hidden");
+  box.classList.toggle("failed", !!failed);
   const label = name && name !== "none" ? name : "model";
-  const phaseText = phase || "Loading into GPU/RAM…";
+  const phaseText = phase || "Loading weights…";
   if ($("#loadStatusText")) $("#loadStatusText").textContent = `${phaseText} — ${label}`;
-  if (indeterminate) {
-    if ($("#loadStatusFill")) $("#loadStatusFill").style.width = "";
-    if ($("#loadStatusPct")) $("#loadStatusPct").textContent = "…";
-    return;
-  }
-  const n = Math.max(2, Math.min(99, Number(pct) || 5));
+  const n = failed ? 0 : Math.max(0, Math.min(90, Number(pct) || 0));
   if ($("#loadStatusFill")) $("#loadStatusFill").style.width = n + "%";
-  if ($("#loadStatusPct")) $("#loadStatusPct").textContent = Math.round(n) + "%";
+  if ($("#loadStatusPct")) $("#loadStatusPct").textContent = failed ? "" : (Math.round(n) + "%");
 }
-function setChipLoad(loading, pct, name, phase, opts) {
+function setChipLoad(loading, pct, name, phase, failed) {
   const chip = $("#statusChip");
   const bar = $("#chipLoad");
   const fill = $("#chipLoadFill");
-  const indeterminate = !!(opts && opts.indeterminate);
-  setLoadStatusLine(loading, pct, name, phase, opts);
+  setLoadStatusLine(loading, pct, name, phase, failed);
   if (!chip) return;
-  chip.classList.toggle("loading", !!loading);
-  chip.classList.toggle("indeterminate", !!(loading && indeterminate));
+  chip.classList.toggle("loading", !!loading && !failed);
+  chip.classList.toggle("failed", !!failed);
+  chip.classList.remove("indeterminate");
   chip.classList.toggle("ready", !loading && !!name && name !== "none");
-  if (bar) bar.hidden = !loading;
-  if (fill && loading && !indeterminate) fill.style.width = Math.max(4, Math.min(99, Number(pct) || 10)) + "%";
-  if (fill && loading && indeterminate) fill.style.width = "";
+  if (!loading) loadStartedAt = 0;
+  if (bar) bar.hidden = !loading || !!failed;
+  if (fill && loading && !failed) fill.style.width = Math.max(0, Math.min(90, Number(pct) || 0)) + "%";
   if ($("#chipModel")) {
-    if (loading) {
+    if (failed) {
+      $("#chipModel").textContent = "GPU load failed";
+    } else if (loading) {
       const label = name && name !== "none" ? name : "model";
-      if (indeterminate) $("#chipModel").textContent = `loading ${label}…`;
-      else {
-        const p = pct != null ? ` ${Math.round(pct)}%` : "";
-        $("#chipModel").textContent = `loading ${label}${p}`;
-      }
+      const n = Math.max(0, Math.min(90, Math.round(Number(pct) || 0)));
+      $("#chipModel").textContent = `loading ${label} ${n}%`;
     }
   }
   $("#statusChip .dot")?.classList.toggle("ok", !loading);
@@ -877,8 +931,11 @@ function setChipLoad(loading, pct, name, phase, opts) {
 function beginModelLoadUi(id, name) {
   loadingModelId = id;
   selectedModelId = id;
+  const m = lastCatalog.find((x) => x.id === id);
+  loadSizeGb = modelSizeGb(m);
+  loadStartedAt = Date.now();
   renderModelsList();
-  setChipLoad(true, 5, name, "Starting load");
+  setChipLoad(true, 1, name, "Starting llama…");
   toast("Loading " + name + "…");
 }
 function paintSoon() {
@@ -904,11 +961,9 @@ $("#activate").onclick = async () => {
       setChipLoad(false, 100, name);
       toast("Model running: " + name);
     } else {
-      const dest = loadBackendHint();
-      const phase = dest === "ram" ? "Loading weights into RAM…"
-        : dest === "gpu" ? "Loading weights into GPU…"
-        : "Loading weights into GPU/RAM…";
-      setChipLoad(true, 14, name, phase);
+      const view = llamaView(null);
+      setChipLoad(true, view.pct || 1, name, loadPhaseText(view), view.crashed);
+      showFewerLayers(view.giveUp);
     }
     await refreshModels(); await refreshStatus();
   } catch (e) {
@@ -919,6 +974,22 @@ $("#activate").onclick = async () => {
     toast(e.message);
   }
 };
+
+async function retryFewerLayers() {
+  try {
+    const res = await control("llama_fewer_layers", {});
+    const n = res.n_gpu_layers || "?";
+    toast("Retrying with " + n + " GPU layers");
+    const m = lastCatalog.find((x) => x.id === selectedModelId) || lastCatalog.find((x) => x.active);
+    beginModelLoadUi(m?.id || selectedModelId || "", m?.name || "model");
+    startLoadPoll(m?.name || "model");
+  } catch (e) {
+    toast(e.message);
+  }
+}
+if ($("#fewerLayers")) $("#fewerLayers").onclick = () => retryFewerLayers();
+if ($("#fewerLayersBar")) $("#fewerLayersBar").onclick = () => retryFewerLayers();
+
 $("#dlModel").onclick = async () => {
   const m = lastCatalog.find((x) => x.id === selectedModelId);
   if (!m) return;
@@ -1818,10 +1889,17 @@ async function refreshStatus() {
       $("#chipModel").textContent = readyName;
       setChipLoad(false, 100, readyName);
     } else if (loading) {
-      // Keep soft % if poll already owns the bar; otherwise show loading label.
-      if (!loadPollTimer) setChipLoad(true, 12, named || "model");
-      else if ($("#chipModel") && !String($("#chipModel").textContent || "").startsWith("loading"))
-        setChipLoad(true, 12, named || "model");
+      if (!loadStartedAt) {
+        loadStartedAt = Date.now();
+        const m = lastCatalog.find((x) => x.id === loadingModelId) || lastCatalog.find((x) => x.name === named);
+        loadSizeGb = m ? modelSizeGb(m) : guessSizeGb(named);
+      }
+      if (!loadPollTimer) {
+        const view = llamaView(j);
+        setChipLoad(true, view.crashed ? 0 : (view.pct || 1), named || "model", loadPhaseText(view), view.crashed || view.giveUp);
+        showFewerLayers(view.giveUp);
+        startLoadPoll(named || "model");
+      }
     } else {
       stopLoadPoll();
       loadingModelId = null;

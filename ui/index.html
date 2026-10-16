@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
-<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="style.css?v=gpufit1" />
 </head>
 <body>
 <div class="app" id="app">
@@ -235,6 +235,7 @@
     <span class="grow"></span>
     <button class="btn danger ghost" id="delModel" type="button">Delete…</button>
     <button class="btn" id="dlModel" type="button" hidden>Download</button>
+    <button class="btn" id="fewerLayers" type="button" hidden>Try with fewer GPU layers</button>
     <button class="btn primary" id="activate" type="button">Load model</button>
   </div>
   </div>
@@ -445,10 +446,11 @@
     <span class="loadStatusText" id="loadStatusText">Loading model…</span>
     <span class="loadStatusTrack" aria-hidden="true"><span class="loadStatusFill" id="loadStatusFill"></span></span>
     <span class="loadStatusPct" id="loadStatusPct"></span>
+    <button class="btn sm" id="fewerLayersBar" type="button" hidden>Try with fewer GPU layers</button>
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js"></script>
+<script src="app.js?v=gpufit1"></script>
 </body>
 </html>

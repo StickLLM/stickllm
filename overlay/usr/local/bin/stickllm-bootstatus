@@ -17,6 +17,11 @@ LOG="$RUN/bootstatus.log"
 
 mkdir -p "$RUN"
 : >>"$LOG"
+# Older builds appended the SSH password to this tmpfs log. Drop those lines.
+if [[ -f "$LOG" ]] && grep -Eqi 'password:|STICKLLM_SSH_PASS' "$LOG" 2>/dev/null; then
+  grep -Eiv 'password:|STICKLLM_SSH_PASS' "$LOG" >"$LOG.redacted" 2>/dev/null || true
+  mv -f "$LOG.redacted" "$LOG" 2>/dev/null || true
+fi
 
 # Headless/QEMU: tty1 may be unusable - fall back to serial/console.
 if [[ ! -c "$TTY" ]] || ! ( : >>"$TTY" ) 2>/dev/null; then
@@ -105,6 +110,12 @@ grep -qw 'stickllm.client' /proc/cmdline 2>/dev/null && {
   mode_label="Secure Client (coming soon)"
 }
 
+say_screen() {
+  # tty1 only. say() also appends to /run/stickllm/bootstatus.log — never put the
+  # SSH password on that path or on the serial line.
+  printf '%s\n' "$*" >>"$TTY" 2>/dev/null || true
+}
+
 ssh_password_line() {
   # Print SSH credentials when menu enabled SSH (Terminal or Test).
   # Kept visually loud — READY can hand off to the browser quickly.
@@ -116,11 +127,10 @@ ssh_password_line() {
     say "  SSH (copy now — also in Settings → System on this screen)"
     say "  user: stickllm"
     say "  host: ${ip:-<lan-ip>}   (or 127.0.0.1 from the stick)"
-    say "  password: ${pass}"
+    say_screen "  password: ${pass}"
     say "  ----------------------------------------"
-    serial_only "STICKLLM_SSH_PASS stickllm@${ip:-<lan-ip>} ${pass}"
   else
-    say "  SSH: stickllm@${ip:-<lan-ip>}  (password on boot /run/stickllm/ssh-password.txt)"
+    say "  SSH: stickllm@${ip:-<lan-ip>}  (password is on this screen when the file is readable)"
   fi
 }
 

@@ -135,6 +135,45 @@ def resolve_model() -> tuple[str, str]:
     return model_name, model_path
 
 
+def llama_load_info() -> dict:
+    """Fit caption + last CUDA error written under /run/stickllm. No secrets."""
+    plan = _parse_env_kv(read_text_safe(RUN_DIR / "llama-plan.env"))
+    fail = ""
+    try:
+        raw = (RUN_DIR / "llama-fail.txt").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        raw = ""
+    for line in raw.splitlines():
+        if re.search(r"password|STICKLLM_SSH_PASS", line, re.I):
+            continue
+        if line.strip():
+            fail = line.strip()[:220]
+    n_fail = 0
+    try:
+        n_fail = int(read_text_safe(RUN_DIR / "llama-fail-count") or "0")
+    except ValueError:
+        n_fail = 0
+    gpu_count = 0
+    ngl = 0
+    try:
+        gpu_count = int(plan.get("STICKLLM_PLAN_GPU_COUNT") or 0)
+    except ValueError:
+        gpu_count = 0
+    try:
+        ngl = int(plan.get("STICKLLM_PLAN_NGL") or 0)
+    except ValueError:
+        ngl = 0
+    return {
+        "caption": plan.get("STICKLLM_PLAN_CAPTION") or "",
+        "fit": plan.get("STICKLLM_PLAN_FIT") or "",
+        "gpu_count": gpu_count,
+        "n_gpu_layers": ngl,
+        "devices": plan.get("STICKLLM_PLAN_DEVICES") or "",
+        "error": fail,
+        "fail_count": n_fail,
+    }
+
+
 def detect_backend() -> str:
     for name in ("llama-runtime.env", "cuda.env"):
         text = read_text_safe(RUN_DIR / name)
@@ -845,6 +884,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "external_api": False,
                 "session_mode": session_mode,
                 "connect": connect_info(self._is_loopback(), llama_ok=llama_ok),
+                "llama_load": llama_load_info(),
             }
             if path == "/api/health":
                 self._json(200, data)

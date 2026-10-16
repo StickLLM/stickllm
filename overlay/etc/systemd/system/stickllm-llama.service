@@ -7,6 +7,10 @@ ConditionPathExists=/opt/stickllm/bin/llama-server
 # No default model at boot — unit stays enabled but skips until Activate writes model.env.
 # (Must be under [Unit]; systemd ignores ConditionPathExists in [Service].)
 ConditionPathExists=/run/stickllm/model.env
+# Two failed starts, then stop. RestartSec=5 used to miss the default burst
+# window and hammer CUDA OOM forever.
+StartLimitIntervalSec=600
+StartLimitBurst=2
 
 [Service]
 Type=simple
@@ -17,6 +21,8 @@ EnvironmentFile=-/etc/stickllm/runtime.env
 EnvironmentFile=-/run/stickllm/cuda.env
 # Only written by Models → Activate (or explicit download activate). Never auto-copied at boot.
 EnvironmentFile=-/run/stickllm/model.env
+# Optional cap from "Try with fewer GPU layers" (stickllm-control).
+EnvironmentFile=-/run/stickllm/ngl.env
 Environment=LD_LIBRARY_PATH=/opt/stickllm/lib
 Environment=STICKLLM_LLAMA_HOST=127.0.0.1
 Environment=STICKLLM_LLAMA_PORT=8080
@@ -24,9 +30,13 @@ Environment=STICKLLM_LLAMA_PORT=8080
 ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true'
 # Prep needs root (modprobe); + ignores User=. Soft-fail — never block CPU.
 ExecStartPre=+/bin/bash -c '/usr/local/bin/stickllm-nvidia-prep || true'
+# Drop a baked CUDA_VISIBLE_DEVICES=0 pin so pick-gpus (cuda.env) is the only list.
+ExecStartPre=+/bin/sed -i '/^CUDA_VISIBLE_DEVICES=/d' /etc/stickllm/runtime.env
 # Leading - : failure never blocks start (also always exits 0 by contract).
 ExecStartPre=-/usr/local/bin/stickllm-pick-gpus
 ExecStart=/usr/local/bin/stickllm-llama-start
+# Root, so the CUDA line can be copied out of the journal for the UI.
+ExecStopPost=+/usr/local/bin/stickllm-llama-start --capture-fail
 Restart=on-failure
 RestartSec=5
 # Do not DeviceAllow-pin NVIDIA nodes — missing devices + sandbox can break CPU start.
