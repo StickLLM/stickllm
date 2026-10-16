@@ -449,41 +449,6 @@ function fmtBytes(n) {
   if (gb >= 1) return `${gb.toFixed(2)} GB`;
   return `${(n / 1024 ** 2).toFixed(0)} MB`;
 }
-function fpMetaModified(item) {
-  const raw = item?.modified ?? item?.mtime ?? item?.mtime_ms ?? item?.updated_at ?? null;
-  if (raw == null || raw === "") return "—";
-  if (typeof raw === "number") {
-    const ms = raw < 1e12 ? raw * 1000 : raw;
-    const d = new Date(ms);
-    return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
-  }
-  const s = String(raw).trim();
-  if (!s || s.startsWith("/")) return "—";
-  return s.length > 18 ? s.slice(0, 16) + "…" : s;
-}
-function fpMetaSize(item) {
-  const n = item?.size ?? item?.bytes ?? item?.size_bytes;
-  if (n == null || n === "" || Number(n) <= 0) return "—";
-  return fmtBytes(Number(n));
-}
-/** Search-hit row: name + path subtitle; Modified/Size only when real metadata exists. */
-function fpSearchHitRow({ path, name, kind, pill, folder, item }) {
-  const p = path || folder || "";
-  const label = name || (p.split("/").filter(Boolean).pop() || p);
-  const sub = p || folder || "";
-  const mod = fpMetaModified(item);
-  const size = fpMetaSize(item);
-  const kindClass = kind === "vault" ? "vault" : kind === "model" ? "model" : "dir";
-  const pillHtml = pill ? `<span class="pill${kind === "vault" ? " acc" : ""}">${esc(pill)}</span>` : "";
-  const dataAttr = kind === "vault"
-    ? `data-file="${esc(p)}" data-kind="vault" data-folder="${esc(folder || p.replace(/\/stickllm-vault\.img$/i, ""))}"`
-    : `data-dir="${esc(folder || p)}"`;
-  return `<div class="fpRow fpHit" ${dataAttr} title="${esc(sub)}" role="option">` +
-    `<span class="fpName ${kindClass}"><span class="fpText"><span class="nm">${esc(label)}</span>` +
-    (sub ? `<span class="fpSub muted mono">${esc(sub)}</span>` : "") +
-    `</span>${pillHtml}</span>` +
-    `<span class="fpMeta muted">${esc(mod)}</span><span class="fpMeta muted">${esc(size)}</span></div>`;
-}
 
 function modelTrust(m) {
   const t = String(m.trust || m.trust_level || "").toLowerCase();
@@ -613,10 +578,13 @@ function renderModelsList() {
     const fit = fitOf(m);
     const where = String(m.path || m.location || "").includes("vault") || sessionMode === "vault" ? "vault/SSD" : "stick";
     let actions = "";
+    const delBtn = m.deletable
+      ? `<button class="btn sm danger ghost" data-delf="${esc(id)}" type="button" title="Permanently delete model files">Delete</button>`
+      : "";
     if (trust === "blocked") {
-      actions = m.deletable ? `<button class="btn sm danger ghost" data-delf="${esc(id)}" type="button">Delete file</button>` : "";
+      actions = delBtn;
     } else if (have) {
-      actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : "Load"}</button>`;
+      actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : "Load"}</button>${delBtn}`;
     } else {
       actions = `<button class="btn sm ${fit.k === "no" ? "" : "primary"}" data-dl="${esc(id)}" type="button">Download</button>`;
     }
@@ -644,7 +612,11 @@ function renderModelsList() {
   });
   $$("#modelList [data-dl]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.dl; $("#dlModel").click(); }));
   $$("#modelList [data-load]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.load; $("#activate").click(); }));
-  $$("#modelList [data-delf]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.delf; $("#delModel").click(); }));
+  $$("#modelList [data-delf]").forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation();
+    selectedModelId = b.dataset.delf;
+    askDeleteModel(lastCatalog.find((x) => x.id === b.dataset.delf));
+  }));
   syncModelActions();
 }
 function syncModelActions() {
@@ -868,20 +840,29 @@ if ($("#ablOk")) $("#ablOk").onclick = () => {
   if ($("#ablAck")) $("#ablAck").hidden = true;
   ablCb?.();
 };
-$("#delModel").onclick = () => {
-  const m = lastCatalog.find((x) => x.id === selectedModelId);
-  if (!m?.deletable) return toast("This model cannot be deleted");
+function askDeleteModel(m) {
+  if (!m?.deletable) return toast("This model cannot be deleted (baked-in or protected)");
+  const label = m.name || m.id;
+  const where = m.path || m.local_path || "";
+  const whereLine = where ? ` Files under ${where} will be removed.` : "";
   confirmBox({
     title: "Delete model files?",
-    text: `Permanently delete ${m.name || m.id}?`,
-    word: "ARE YOU SURE", ok: "Delete files",
+    text: `Permanently delete “${label}” from this machine?${whereLine} This cannot be undone.`,
+    word: "ARE YOU SURE",
+    ok: "Delete files",
     cb: async () => {
       try {
-        await control("model_delete", { id: m.id, confirm: "ARE YOU SURE" });
-        toast("Deleted"); await refreshModels();
+        const res = await control("model_delete", { id: m.id, confirm: "ARE YOU SURE" });
+        if (res?.ok === false) throw new Error(res.error || "delete failed");
+        if (selectedModelId === m.id) selectedModelId = null;
+        toast(`Deleted ${label}`);
+        await refreshModels();
       } catch (e) { toast(e.message); }
     },
   });
+}
+$("#delModel").onclick = () => {
+  askDeleteModel(lastCatalog.find((x) => x.id === selectedModelId));
 };
 
 async function refreshStorage() {
