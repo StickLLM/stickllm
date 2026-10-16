@@ -614,7 +614,15 @@ function renderModelsList() {
     c.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e); } };
   });
   $$("#modelList [data-dl]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.dl; $("#dlModel").click(); }));
-  $$("#modelList [data-load]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.load; $("#activate").click(); }));
+  $$("#modelList [data-load]").forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation();
+    const id = b.dataset.load;
+    const m = lastCatalog.find((x) => x.id === id);
+    // Paint Loading on this card immediately (before activate network call).
+    beginModelLoadUi(id, m?.name || id);
+    // Yield a frame so the badge/status line paint before the long activate await.
+    paintSoon().then(() => $("#activate").click());
+  }));
   $$("#modelList [data-delf]").forEach((b) => (b.onclick = (e) => {
     e.stopPropagation();
     selectedModelId = b.dataset.delf;
@@ -776,20 +784,38 @@ function startLoadPoll(expectName) {
       }
       // Soft progress while llama is still coming up (weights load has no exact %).
       const soft = Math.min(92, 8 + ticks * 3);
-      setChipLoad(true, soft, expectName);
+      const phase = ticks < 3 ? "Starting llama" : ticks < 12 ? "Loading weights into GPU/RAM" : "Almost ready";
+      setChipLoad(true, soft, expectName, phase);
       if (ticks > 120) {
         stopLoadPoll();
         loadingModelId = null;
+        setChipLoad(false, 0, null);
         renderModelsList();
         toast("Still loading — check Models");
       }
     } catch (_) {}
   }, 2000);
 }
-function setChipLoad(loading, pct, name) {
+function setLoadStatusLine(loading, pct, name, phase) {
+  const box = $("#loadStatus");
+  if (!box) return;
+  if (!loading) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const label = name && name !== "none" ? name : "model";
+  const phaseText = phase || "Loading into GPU/RAM";
+  if ($("#loadStatusText")) $("#loadStatusText").textContent = `${phaseText} — ${label}`;
+  const n = Math.max(2, Math.min(100, Number(pct) || 5));
+  if ($("#loadStatusFill")) $("#loadStatusFill").style.width = n + "%";
+  if ($("#loadStatusPct")) $("#loadStatusPct").textContent = Math.round(n) + "%";
+}
+function setChipLoad(loading, pct, name, phase) {
   const chip = $("#statusChip");
   const bar = $("#chipLoad");
   const fill = $("#chipLoadFill");
+  setLoadStatusLine(loading, pct, name, phase);
   if (!chip) return;
   chip.classList.toggle("loading", !!loading);
   chip.classList.toggle("ready", !loading && !!name && name !== "none");
@@ -805,16 +831,29 @@ function setChipLoad(loading, pct, name) {
   $("#statusChip .dot")?.classList.toggle("ok", !loading);
   $("#statusChip .dot")?.classList.toggle("busy", !!loading);
 }
+/** Paint Loading UI before any network await (card badge + chip + under-composer line). */
+function beginModelLoadUi(id, name) {
+  loadingModelId = id;
+  selectedModelId = id;
+  renderModelsList();
+  setChipLoad(true, 5, name, "Starting load");
+  toast("Loading " + name + "…");
+}
+function paintSoon() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
 
 $("#activate").onclick = async () => {
   const m = lastCatalog.find((x) => x.id === selectedModelId);
   if (!m) return toast("Select a model");
+  const name = m.name || m.id;
   try {
-    const name = m.name || m.id;
-    loadingModelId = m.id;
-    renderModelsList();
-    setChipLoad(true, 5, name);
-    toast("Loading " + name + "…");
+    // Synchronous UI first — do not wait for activate round-trip.
+    beginModelLoadUi(m.id, name);
+    startLoadPoll(name);
+    await paintSoon();
     const res = await control("model_activate", { id: m.id, ctx_size: +$("#ctx").value });
     if (!res.ok && res.error) throw new Error(res.error);
     if (res.running || res.load_state === "running") {
@@ -823,8 +862,7 @@ $("#activate").onclick = async () => {
       setChipLoad(false, 100, name);
       toast("Model running: " + name);
     } else {
-      toast("Model loading into GPU/RAM…");
-      startLoadPoll(name);
+      setChipLoad(true, 12, name, "Loading into GPU/RAM");
     }
     await refreshModels(); await refreshStatus();
   } catch (e) {

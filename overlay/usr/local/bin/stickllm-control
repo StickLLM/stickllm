@@ -1076,11 +1076,12 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
     sh(["systemctl", "reset-failed", "stickllm-llama.service"], timeout=30)
     # model.env now exists → ConditionPathExists passes; start/restart loads on demand.
     r = sh(["systemctl", "restart", "stickllm-llama.service"], timeout=60)
-    # Wait briefly for /health so UI can show Loading vs Running.
+    # Brief health peek only — large GGUFs take minutes; UI polls Loading → Running.
+    # (Previously waited ~20s and blocked the Activate response / Loading paint.)
     healthy = False
     health_msg = "starting"
-    for _ in range(40):
-        time.sleep(0.5)
+    for _ in range(4):
+        time.sleep(0.35)
         healthy, health_msg = llama_health_ok()
         if healthy:
             break
