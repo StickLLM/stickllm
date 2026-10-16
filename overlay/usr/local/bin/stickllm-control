@@ -168,6 +168,26 @@ def sh(cmd: list[str], timeout: int = 600) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def parse_vault_json(cmd: list[str], timeout: int = 60, *, parse_error: str) -> dict:
+    """Run a stickllm-vault JSON subcommand with full stdout (sh() truncates at 8k)."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    full_out = p.stdout or ""
+    try:
+        lines = [ln for ln in full_out.strip().splitlines() if ln.strip()]
+        return json.loads(lines[-1] if lines else "{}")
+    except Exception:
+        return {
+            "ok": False,
+            "code": p.returncode,
+            "error": parse_error,
+            "stdout": full_out[-8000:],
+            "stderr": (p.stderr or "")[-4000:],
+        }
+
+
 def read_json(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -1310,66 +1330,60 @@ def vault_action(cmd: str, params: dict) -> dict:
         return r
     if cmd == "list-disks":
         # Read-only probe only (mounted folders + informational disk list).
-        r = sh([script, "list-disks"], timeout=30)
-        try:
-            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
-            data = json.loads(lines[-1] if lines else "{}")
-            data["ok"] = True
-            data.setdefault(
-                "safety",
-                "Creates a file in a folder you choose. Never formats your drive.",
-            )
+        data = parse_vault_json(
+            [script, "list-disks"], timeout=30, parse_error="list-disks parse failed"
+        )
+        if data.get("ok") is False and data.get("error") == "list-disks parse failed":
             return data
-        except Exception:
-            return {**r, "ok": False, "error": "list-disks parse failed"}
+        data["ok"] = True
+        data.setdefault(
+            "safety",
+            "Creates a file in a folder you choose. Never formats your drive.",
+        )
+        return data
     if cmd == "list-devices":
-        r = sh([script, "list-devices"], timeout=30)
-        try:
-            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
-            data = json.loads(lines[-1] if lines else "{}")
-            data["ok"] = bool(data.get("ok", True))
+        data = parse_vault_json(
+            [script, "list-devices"], timeout=30, parse_error="list-devices parse failed"
+        )
+        if data.get("ok") is False and data.get("error") == "list-devices parse failed":
             return data
-        except Exception:
-            return {**r, "ok": False, "error": "list-devices parse failed"}
+        data["ok"] = bool(data.get("ok", True))
+        return data
     if cmd == "list-dirs":
         path = str(params.get("path") or "").strip()
         if not path:
             return {"ok": False, "error": "path required"}
         if _looks_like_block_device(path):
             return {"ok": False, "error": "refusing block device path"}
-        r = sh([script, "list-dirs", path], timeout=30)
-        try:
-            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
-            data = json.loads(lines[-1] if lines else "{}")
-            return data
-        except Exception:
-            return {**r, "ok": False, "error": "list-dirs parse failed"}
+        return parse_vault_json(
+            [script, "list-dirs", path], timeout=30, parse_error="list-dirs parse failed"
+        )
     if cmd == "browse-start":
         path = str(params.get("path") or "").strip()
         if not path:
             return {"ok": False, "error": "path required"}
         if _looks_like_block_device(path):
             return {"ok": False, "error": "refusing block device path"}
-        r = sh([script, "browse-start", path], timeout=30)
-        try:
-            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
-            data = json.loads(lines[-1] if lines else "{}")
-            return data
-        except Exception:
-            return {**r, "ok": False, "error": "browse-start parse failed"}
+        return parse_vault_json(
+            [script, "browse-start", path],
+            timeout=30,
+            parse_error="browse-start parse failed",
+        )
     if cmd == "find-models":
         path = str(params.get("path") or "").strip()
         if not path:
             return {"ok": False, "error": "path required"}
         if _looks_like_block_device(path):
             return {"ok": False, "error": "refusing block device path"}
-        r = sh([script, "find-models", path], timeout=45)
-        try:
-            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
-            data = json.loads(lines[-1] if lines else "{}")
-            return data
-        except Exception:
-            return {**r, "ok": False, "error": "find-models parse failed"}
+        data = parse_vault_json(
+            [script, "find-models", path],
+            timeout=45,
+            parse_error="find-models parse failed",
+        )
+        # UI accepts models || hits; vault emits hits.
+        if isinstance(data, dict) and "hits" in data and "models" not in data:
+            data["models"] = data["hits"]
+        return data
     if cmd == "mkdir":
         parent = str(params.get("path") or params.get("parent") or "").strip()
         name = str(params.get("name") or "").strip()
@@ -1377,14 +1391,13 @@ def vault_action(cmd: str, params: dict) -> dict:
             return {"ok": False, "error": "path and name required"}
         if _looks_like_block_device(parent):
             return {"ok": False, "error": "refusing block device path"}
-        r = sh([script, "mkdir", parent, name], timeout=30)
-        try:
-            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
-            data = json.loads(lines[-1] if lines else "{}")
-            return data
-        except Exception:
-            err = (r.get("stderr") or r.get("error") or "mkdir failed").strip()
-            return {**r, "ok": False, "error": err}
+        data = parse_vault_json(
+            [script, "mkdir", parent, name], timeout=30, parse_error="mkdir failed"
+        )
+        if data.get("ok") is False and data.get("error") == "mkdir failed":
+            err = (data.get("stderr") or data.get("error") or "mkdir failed").strip()
+            data["error"] = err
+        return data
     if cmd == "mount-host":
         device = str(params.get("device") or params.get("path") or "").strip()
         confirm = str(params.get("confirm") or "")
@@ -1426,14 +1439,13 @@ def vault_action(cmd: str, params: dict) -> dict:
         r = sh([script, "lock"], timeout=120)
         return merge_vault_run(r)
     if cmd == "find-vault":
-        r = sh([script, "find-vault"], timeout=45)
-        try:
-            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
-            data = json.loads(lines[-1] if lines else "{}")
-            data["ok"] = bool(data.get("ok", True))
+        data = parse_vault_json(
+            [script, "find-vault"], timeout=45, parse_error="find-vault parse failed"
+        )
+        if data.get("ok") is False and data.get("error") == "find-vault parse failed":
             return data
-        except Exception:
-            return {**r, "ok": False, "error": "find-vault parse failed"}
+        data["ok"] = bool(data.get("ok", True))
+        return data
     if cmd == "use":
         # Bind meta to an existing stickllm-vault.img — never CREATE / luksFormat.
         path = str(params.get("path") or params.get("dir") or "").strip()
@@ -1638,14 +1650,13 @@ def vault_action(cmd: str, params: dict) -> dict:
             r = {"ok": False, "error": str(e)}
         return merge_vault_run(r)
     if cmd == "list-movable":
-        r = sh([script, "list-movable"], timeout=30)
-        try:
-            lines = [ln for ln in (r.get("stdout") or "").strip().splitlines() if ln.strip()]
-            data = json.loads(lines[-1] if lines else "{}")
-            data["ok"] = True
+        data = parse_vault_json(
+            [script, "list-movable"], timeout=30, parse_error="list-movable parse failed"
+        )
+        if data.get("ok") is False and data.get("error") == "list-movable parse failed":
             return data
-        except Exception:
-            return {**r, "ok": False, "error": "list-movable parse failed"}
+        data["ok"] = True
+        return data
     if cmd == "set-wipe-after":
         n = str(params.get("n") or params.get("wipe_after") or "0").strip()
         confirm = str(params.get("confirm") or "")
