@@ -91,11 +91,6 @@
         </div>
       </div>
       <p class="composerNote"><span id="composerNote">Ephemeral · runs locally</span><span class="composerPerf" id="composerPerf" hidden></span></p>
-      <p class="loadStatus" id="loadStatus" hidden role="status" aria-live="polite">
-        <span class="loadStatusText" id="loadStatusText">Loading model…</span>
-        <span class="loadStatusTrack" aria-hidden="true"><span class="loadStatusFill" id="loadStatusFill"></span></span>
-        <span class="loadStatusPct" id="loadStatusPct"></span>
-      </p>
     </form>
   </div>
 
@@ -443,6 +438,13 @@
         <div class="actions"><span class="grow"></span><button class="btn" id="cfCancel">Cancel</button><button class="btn danger" id="cfOk" disabled>Delete</button></div>
       </div>
     </div>
+  </div>
+
+  <!-- Fixed bottom load bar: must sit above Settings modal (z-index) so Activate progress stays visible -->
+  <div class="loadStatus" id="loadStatus" hidden role="status" aria-live="polite">
+    <span class="loadStatusText" id="loadStatusText">Loading model…</span>
+    <span class="loadStatusTrack" aria-hidden="true"><span class="loadStatusFill" id="loadStatusFill"></span></span>
+    <span class="loadStatusPct" id="loadStatusPct"></span>
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>

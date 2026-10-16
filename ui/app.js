@@ -753,6 +753,34 @@ $("#probeBtn").onclick = async () => {
 $("#refreshCatalog").onclick = () => refreshModels().then(() => toast("Catalog refreshed")).catch((e) => toast(e.message));
 let loadPollTimer = null;
 function stopLoadPoll() { if (loadPollTimer) { clearInterval(loadPollTimer); loadPollTimer = null; } }
+function loadBackendHint() {
+  const b = String($("#chipMeta")?.textContent || "").toUpperCase();
+  if (b.includes("CUDA") || b.includes("GPU")) return "gpu";
+  if (b.includes("VULKAN")) return "gpu";
+  if (b.includes("CPU")) return "ram";
+  return "auto";
+}
+/** Soft % that never freezes at ~92; after ~24s → indeterminate pulse. */
+function estimateLoadProgress(ticks) {
+  // ticks every 2s. Climb toward ~65 only, then pulse — llama has no true byte %.
+  if (ticks <= 12) {
+    return { pct: Math.min(65, Math.round(6 + 59 * (1 - Math.exp(-ticks / 4.5)))), indeterminate: false };
+  }
+  return { pct: null, indeterminate: true };
+}
+function loadPhaseText(ticks, indeterminate) {
+  const dest = loadBackendHint();
+  if (ticks < 2) return "Starting llama…";
+  if (ticks < 6) {
+    if (dest === "gpu") return "Loading weights into GPU…";
+    if (dest === "ram") return "Loading weights into RAM…";
+    return "Loading weights into GPU/RAM…";
+  }
+  if (indeterminate || ticks >= 12) return "Waiting for model ready…";
+  if (dest === "gpu") return "Still loading into GPU…";
+  if (dest === "ram") return "Still loading into RAM…";
+  return "Still loading weights…";
+}
 function startLoadPoll(expectName) {
   stopLoadPoll();
   let ticks = 0;
@@ -782,11 +810,11 @@ function startLoadPoll(expectName) {
         await refreshStatus();
         return;
       }
-      // Soft progress while llama is still coming up (weights load has no exact %).
-      const soft = Math.min(92, 8 + ticks * 3);
-      const phase = ticks < 3 ? "Starting llama" : ticks < 12 ? "Loading weights into GPU/RAM" : "Almost ready";
-      setChipLoad(true, soft, expectName, phase);
-      if (ticks > 120) {
+      const est = estimateLoadProgress(ticks);
+      const phase = loadPhaseText(ticks, est.indeterminate);
+      setChipLoad(true, est.pct, expectName, phase, { indeterminate: est.indeterminate });
+      // Large RAM mmap loads can take many minutes — keep polling with pulse UI.
+      if (ticks > 450) {
         stopLoadPoll();
         loadingModelId = null;
         setChipLoad(false, 0, null);
@@ -796,36 +824,50 @@ function startLoadPoll(expectName) {
     } catch (_) {}
   }, 2000);
 }
-function setLoadStatusLine(loading, pct, name, phase) {
+function setLoadStatusLine(loading, pct, name, phase, opts) {
   const box = $("#loadStatus");
   if (!box) return;
   if (!loading) {
     box.hidden = true;
+    box.classList.remove("indeterminate");
     return;
   }
   box.hidden = false;
+  const indeterminate = !!(opts && opts.indeterminate);
+  box.classList.toggle("indeterminate", indeterminate);
   const label = name && name !== "none" ? name : "model";
-  const phaseText = phase || "Loading into GPU/RAM";
+  const phaseText = phase || "Loading into GPU/RAM…";
   if ($("#loadStatusText")) $("#loadStatusText").textContent = `${phaseText} — ${label}`;
-  const n = Math.max(2, Math.min(100, Number(pct) || 5));
+  if (indeterminate) {
+    if ($("#loadStatusFill")) $("#loadStatusFill").style.width = "";
+    if ($("#loadStatusPct")) $("#loadStatusPct").textContent = "…";
+    return;
+  }
+  const n = Math.max(2, Math.min(99, Number(pct) || 5));
   if ($("#loadStatusFill")) $("#loadStatusFill").style.width = n + "%";
   if ($("#loadStatusPct")) $("#loadStatusPct").textContent = Math.round(n) + "%";
 }
-function setChipLoad(loading, pct, name, phase) {
+function setChipLoad(loading, pct, name, phase, opts) {
   const chip = $("#statusChip");
   const bar = $("#chipLoad");
   const fill = $("#chipLoadFill");
-  setLoadStatusLine(loading, pct, name, phase);
+  const indeterminate = !!(opts && opts.indeterminate);
+  setLoadStatusLine(loading, pct, name, phase, opts);
   if (!chip) return;
   chip.classList.toggle("loading", !!loading);
+  chip.classList.toggle("indeterminate", !!(loading && indeterminate));
   chip.classList.toggle("ready", !loading && !!name && name !== "none");
   if (bar) bar.hidden = !loading;
-  if (fill && loading) fill.style.width = Math.max(4, Math.min(100, Number(pct) || 10)) + "%";
+  if (fill && loading && !indeterminate) fill.style.width = Math.max(4, Math.min(99, Number(pct) || 10)) + "%";
+  if (fill && loading && indeterminate) fill.style.width = "";
   if ($("#chipModel")) {
     if (loading) {
       const label = name && name !== "none" ? name : "model";
-      const p = pct != null ? ` ${Math.round(pct)}%` : "";
-      $("#chipModel").textContent = `loading ${label}${p}`;
+      if (indeterminate) $("#chipModel").textContent = `loading ${label}…`;
+      else {
+        const p = pct != null ? ` ${Math.round(pct)}%` : "";
+        $("#chipModel").textContent = `loading ${label}${p}`;
+      }
     }
   }
   $("#statusChip .dot")?.classList.toggle("ok", !loading);
@@ -862,7 +904,11 @@ $("#activate").onclick = async () => {
       setChipLoad(false, 100, name);
       toast("Model running: " + name);
     } else {
-      setChipLoad(true, 12, name, "Loading into GPU/RAM");
+      const dest = loadBackendHint();
+      const phase = dest === "ram" ? "Loading weights into RAM…"
+        : dest === "gpu" ? "Loading weights into GPU…"
+        : "Loading weights into GPU/RAM…";
+      setChipLoad(true, 14, name, phase);
     }
     await refreshModels(); await refreshStatus();
   } catch (e) {

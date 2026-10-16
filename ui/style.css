@@ -125,12 +125,21 @@ svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke
 .sendBtn{width:36px;height:36px;border-radius:10px;border:0;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;cursor:pointer;margin-left:4px}
 .sendBtn:disabled{opacity:.4}
 .composerNote{max-width:760px;margin:6px auto 0;text-align:center;font-size:12px;color:var(--muted)}
-.loadStatus{max-width:760px;margin:8px auto 0;padding:8px 12px;display:flex;align-items:center;gap:10px;border:1px solid color-mix(in srgb,var(--warn) 35%,var(--line));border-radius:10px;background:color-mix(in srgb,var(--warn) 8%,var(--panel));font-size:12.5px;color:var(--ink2)}
+/* Fixed above Settings (z40) / picker (z60); below toast (z80) so Activate stays visible */
+.loadStatus{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);width:min(720px,calc(100vw - 32px));z-index:70;margin:0;padding:10px 14px;display:flex;align-items:center;gap:12px;border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--panel) 92%,var(--warn));box-shadow:0 10px 32px rgba(0,0,0,.45);font-size:13px;color:var(--ink2);pointer-events:none}
 .loadStatus[hidden]{display:none!important}
-.loadStatusText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:560}
-.loadStatusTrack{flex:0 0 88px;height:6px;border-radius:99px;background:var(--panel2);overflow:hidden}
-.loadStatusFill{display:block;height:100%;width:8%;border-radius:99px;background:var(--warn);transition:width .35s ease}
-.loadStatusPct{flex:none;font-variant-numeric:tabular-nums;color:var(--warn);font-weight:650;min-width:2.5em;text-align:right}
+.loadStatusText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.loadStatusTrack{flex:0 0 140px;height:8px;border-radius:99px;background:var(--panel2);overflow:hidden;position:relative}
+.loadStatusFill{display:block;height:100%;width:8%;border-radius:99px;background:var(--warn);transition:width .4s ease}
+.loadStatus.indeterminate .loadStatusFill{width:36%!important;animation:loadPulse 1.2s ease-in-out infinite}
+@keyframes loadPulse{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
+.loadStatusPct{flex:none;font-variant-numeric:tabular-nums;color:var(--warn);font-weight:650;min-width:2.8em;text-align:right}
+.chip.loading{border-color:color-mix(in srgb,var(--warn) 45%,var(--line));color:var(--warn)}
+.chipLoad{display:inline-block;width:36px;height:4px;border-radius:99px;background:var(--panel2);overflow:hidden;margin-left:2px}
+.chipLoad[hidden]{display:none!important}
+.chipLoadFill{display:block;height:100%;width:10%;background:var(--warn);transition:width .35s ease}
+.chip.loading.indeterminate .chipLoadFill{width:40%!important;animation:loadPulse 1.2s ease-in-out infinite}
+.dot.busy{background:var(--warn);animation:b 1s infinite}
 
 /* Settings modal */
 .modalWrap{position:fixed;inset:0;background:rgba(5,8,9,.6);display:grid;place-items:center;z-index:40;padding:24px}
