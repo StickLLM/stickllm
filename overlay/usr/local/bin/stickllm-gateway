@@ -208,6 +208,19 @@ def ssh_password_for_loopback() -> dict:
     return out
 
 
+def active_ctx_size() -> int | None:
+    envf = RUN_DIR / "model.env"
+    if not envf.is_file():
+        return None
+    kv = _parse_env_kv(read_text_safe(envf))
+    raw = kv.get("STICKLLM_CTX_SIZE") or ""
+    try:
+        n = int(raw)
+        return n if n > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
     """IP / model / URL (+ pair code / SSH password on loopback only)."""
     ip = discover_lan_ip()
@@ -217,13 +230,20 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         model_name = "ready" if llama_ok else "none"
     elif model_name.lower().startswith("loading") and llama_ok:
         model_name = Path(model_path).name if model_path else "ready"
+    # Prefer a short display label (never dump the full path into UI chrome).
+    display = model_name
+    if display and ("/" in display or "\\" in display):
+        display = Path(display).name
+    if display.lower().endswith(".gguf"):
+        display = display[: -len(".gguf")]
     scheme = "https" if (RUN_DIR / "tls.enabled").is_file() else "http"
     url = f"{scheme}://{ip}/" if ip else f"{scheme}://<lan-ip>/"
     local_url = "http://127.0.0.1/"
     out: dict = {
         "ip": ip or "",
-        "model": model_name,
+        "model": display,
         "model_path": model_path,
+        "ctx_size": active_ctx_size(),
         "url": url,
         "local_url": local_url,
         "backend": detect_backend(),

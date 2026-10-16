@@ -96,6 +96,7 @@ def vault_clear_models_dirs() -> list[Path]:
 
 
 MODELS_DIR_PATH = RUN / "models-dir.json"
+DISCOVERED_MODELS_PATH = RUN / "discovered-models.json"
 
 
 def _safe_models_dir(path: str) -> Path | None:
@@ -124,6 +125,7 @@ def get_preferred_models_dir() -> Path | None:
 
 
 def set_preferred_models_dir(path: str) -> dict:
+    """Set download/write target only — does not replace discovered load roots."""
     p = _safe_models_dir(path)
     if p is None:
         return {"ok": False, "error": "invalid models folder path"}
@@ -139,8 +141,44 @@ def set_preferred_models_dir(path: str) -> dict:
     return {"ok": True, "path": str(p), "download_dir": str(p)}
 
 
+def get_discovered_model_dirs() -> list[Path]:
+    """Session-remembered library roots from Search for models (load only)."""
+    doc = read_json(DISCOVERED_MODELS_PATH)
+    out: list[Path] = []
+    for raw in doc.get("dirs") or []:
+        p = _safe_models_dir(str(raw))
+        if p is not None and p.is_dir() and p not in out:
+            out.append(p)
+    return out
+
+
+def remember_discovered_models(hits: list) -> list[str]:
+    """Merge find-models roots into session store for catalog load/list."""
+    existing = {str(p): p for p in get_discovered_model_dirs()}
+    for h in hits or []:
+        if not isinstance(h, dict):
+            continue
+        raw = str(h.get("path") or h.get("dir") or "").strip()
+        p = _safe_models_dir(raw)
+        if p is None or not p.is_dir():
+            continue
+        existing[str(p)] = p
+    dirs = sorted(existing.values(), key=lambda p: str(p))
+    RUN.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ok": True,
+        "updated": int(time.time()),
+        "dirs": [str(p) for p in dirs],
+    }
+    DISCOVERED_MODELS_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return [str(p) for p in dirs]
+
+
 def vault_download_models_dir() -> Path | None:
-    """Where catalog downloads land (user pick → vault SSD → USB DATA)."""
+    """Where catalog downloads land (user pick only → vault SSD → USB DATA).
+
+    Discovered Search-for-models roots are never used as download destinations.
+    """
     preferred = get_preferred_models_dir()
     if preferred is not None:
         return preferred
@@ -210,10 +248,15 @@ def merge_vault_run(r: dict) -> dict:
 
 
 def model_dirs() -> list[Path]:
+    """Directories scanned for Load / installed list (not download targets)."""
     dirs: list[Path] = []
     preferred = get_preferred_models_dir()
     if preferred is not None and preferred not in dirs:
         dirs.append(preferred)
+    # Search-for-models roots: load/list only; downloads never use these alone.
+    for d in get_discovered_model_dirs():
+        if d not in dirs:
+            dirs.append(d)
     # Vault / SSD models only when user consciously selected Vault mode.
     if session_mode() == "vault":
         vault_mnt = Path("/var/lib/stickllm/vault")
@@ -263,9 +306,11 @@ def find_file(name: str) -> Path | None:
 
 
 def discover_local_ggufs() -> list[dict]:
-    """Surface on-disk GGUFs not already represented by catalog filenames."""
-    if session_mode() != "vault":
-        return []
+    """Surface on-disk GGUFs not already represented by catalog filenames.
+
+    Scans preferred + Search-for-models discovered roots (any session mode),
+    plus vault/host clear dirs when in Vault mode (via model_dirs()).
+    """
     catalog_files: set[str] = set()
     for m in parse_catalog():
         for f in m.get("hf_files") or []:
@@ -274,10 +319,23 @@ def discover_local_ggufs() -> list[dict]:
     catalog_files.add(BAKED_3B.name.lower())
     catalog_files.add(BAKED_7B.name.lower())
 
+    roots = [d for d in _gguf_search_roots() if not str(d).startswith("/opt/stickllm/models")]
+    # Ephemeral: only preferred + discovered (skip baking USB DATA noise unless preferred).
+    if session_mode() != "vault":
+        allow = set()
+        pref = get_preferred_models_dir()
+        if pref is not None:
+            allow.add(pref)
+        allow.update(get_discovered_model_dirs())
+        data = MNT / "models"
+        if data.is_dir():
+            allow.add(data)
+        roots = [d for d in roots if d in allow]
+        if not roots:
+            return []
+
     found: dict[str, Path] = {}
-    for d in _gguf_search_roots():
-        if str(d).startswith("/opt/stickllm/models"):
-            continue
+    for d in roots:
         try:
             for p in d.rglob("*.gguf"):
                 if not p.is_file():
@@ -329,7 +387,7 @@ def discover_local_ggufs() -> list[dict]:
                 "pinned": False,
                 "hf_repo": "",
                 "hf_files": [path.name],
-                "notes": f"On SSD: {path}",
+                "notes": f"On disk: {path}",
                 "local_path": str(path),
                 "source": "host_ssd",
             }
@@ -1198,6 +1256,7 @@ def handle(action: str, params: dict) -> dict:
             "models_dirs": [str(p) for p in model_dirs()],
             "download_dir": str(dl_dir) if dl_dir else (str(preferred) if preferred else ""),
             "models_dir_preferred": str(preferred) if preferred else "",
+            "discovered_models_dirs": [str(p) for p in get_discovered_model_dirs()],
             "vault_host_root": vault_host_root(),
         }
     if action == "usb_claim":
@@ -1399,9 +1458,18 @@ def vault_action(cmd: str, params: dict) -> dict:
             timeout=45,
             parse_error="find-models parse failed",
         )
-        # UI accepts models || hits; vault emits hits.
-        if isinstance(data, dict) and "hits" in data and "models" not in data:
-            data["models"] = data["hits"]
+        # UI accepts models || hits; vault emits hits (collapsed roots).
+        if isinstance(data, dict):
+            hits = data.get("hits") or data.get("roots") or data.get("models") or []
+            if "hits" in data and "models" not in data:
+                data["models"] = data["hits"]
+            if data.get("ok") and isinstance(hits, list):
+                remembered = remember_discovered_models(hits)
+                data["discovered_dirs"] = remembered
+                data["note_load"] = (
+                    "Discovered roots remembered for Load. "
+                    "Downloads use Models › Change… only."
+                )
         return data
     if cmd == "mkdir":
         parent = str(params.get("path") or params.get("parent") or "").strip()

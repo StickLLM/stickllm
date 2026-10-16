@@ -1143,6 +1143,14 @@ SEED_REL = [
     "Users/*/AppData/Local/lm-studio",
     "Users/*/AppData/Local/LM-Studio",
     "Users/*/AppData/Roaming/LM Studio",
+    "Users/*/Documents/ComfyUI/models",
+    "Users/*/Documents/ComfyUI/models/checkpoints",
+    "Users/*/Documents/ComfyUI/models/llm",
+    "Users/*/Documents/ComfyUI/models/diffusion_models",
+    "home/*/ComfyUI/models",
+    "Users/*/stable-diffusion-webui/models",
+    "Users/*/stable-diffusion-webui/models/Stable-diffusion",
+    "Users/*/text-generation-webui/models",
 ]
 
 def expand_globs(rel_pat: str):
@@ -1204,6 +1212,18 @@ def score_dir(p: Path, gguf_count: int, hint: str = "") -> tuple:
         score += 35
         kind = "gpt4all"
         reason = (reason + "; " if reason else "") + "GPT4All"
+    joined = "/".join(parts)
+    if any(x in joined for x in ("comfyui", "comfy_ui", "/comfy/")):
+        score += 45
+        kind = "comfyui"
+        reason = (reason + "; " if reason else "") + "ComfyUI"
+    if any(x in joined for x in (
+        "stable-diffusion-webui", "sd-webui", "automatic1111",
+        "text-generation-webui", "oobabooga",
+    )) or (name in ("webui", "forge") and "models" in parts):
+        score += 45
+        kind = "webui"
+        reason = (reason + "; " if reason else "") + "WebUI"
     if "documents" in parts and name == "models":
         score += 15
     if hint:
@@ -1346,9 +1366,226 @@ for key, h in list(hits.items()):
         h["has_vault_blob"] = False
 
 ranked = sorted(hits.values(), key=lambda h: (-h["score"], -h["gguf_count"], h["path"]))
-best = ranked[0] if ranked else None
-# If we found models, prefer jumping start to best's parent-friendly path
+
+# --- Collapse nested packaging folders into main library roots ---
+# Single models tree (GGUF + quant subfolders) → one root.
+# Multiple sibling apps (Comfy / webui / LM Studio / …) → one row per app root.
+APP_MARKERS = (
+    "comfyui", "comfy_ui", "stable-diffusion-webui", "sd-webui", "automatic1111",
+    "text-generation-webui", "oobabooga", "forge", "lmstudio", "lm-studio",
+    "lm studio", ".ollama", "ollama", "huggingface", "gpt4all", "koboldcpp",
+    "sillytavern",
+)
+TOO_SHALLOW = {
+    "", ".", "home", "users", "documents", "downloads", "desktop",
+    "appdata", "local", "roaming", "var", "lib", "mnt", "media",
+}
+
+def _is_under(child: str, parent: str) -> bool:
+    c = child.rstrip("/")
+    p = parent.rstrip("/")
+    return c == p or c.startswith(p + "/")
+
+def identify_library_root(p: Path) -> Path:
+    """Walk up to the models/ or known-app folder that owns this hit."""
+    cur = p
+    best = p
+    try:
+        cur.relative_to(mount)
+    except ValueError:
+        return p
+    while True:
+        try:
+            cur.relative_to(mount)
+        except ValueError:
+            break
+        if cur == mount:
+            break
+        low = cur.name.lower()
+        if low in TOO_SHALLOW:
+            break
+        parts_low = [x.lower() for x in cur.parts]
+        if low == "models":
+            # models/ is the library root (quant/packaging folders live under it).
+            return cur
+        if any(m == low or m in low for m in APP_MARKERS):
+            # App folder: prefer nested models/ if present
+            models = cur / "models"
+            if is_real_dir(models):
+                return models
+            return cur
+        if count_gguf(cur) > 0:
+            best = cur
+        try:
+            if cur.parent == cur:
+                break
+            cur = cur.parent
+        except Exception:
+            break
+    return best
+
+def collapse_hits(raw_hits: list) -> tuple[list, str]:
+    """Return (collapsed_roots, mode) where mode is single_root|multi_root|empty."""
+    useful = [
+        h for h in raw_hits
+        if int(h.get("gguf_count") or 0) > 0
+        or h.get("kind") in {
+            "models_dir", "gguf_dir", "ollama", "huggingface",
+            "lm_studio", "gpt4all", "comfyui", "webui",
+        }
+        or str(h.get("name") or "").lower() == "models"
+    ]
+    if not useful:
+        return [], "empty"
+
+    # Map each hit → library root path
+    groups: dict[str, dict] = {}
+    for h in useful:
+        try:
+            root_p = identify_library_root(Path(h["path"]))
+            key = str(root_p.resolve(strict=False))
+        except Exception:
+            key = h["path"]
+            root_p = Path(key)
+        g = groups.get(key)
+        if g is None:
+            score, kind, reason = score_dir(root_p, int(h.get("gguf_count") or 0))
+            g = {
+                "path": key,
+                "name": root_p.name,
+                "kind": kind if kind != "folder" else (h.get("kind") or kind),
+                "score": max(int(h.get("score") or 0), score),
+                "gguf_count": int(h.get("gguf_count") or 0),
+                "reason": reason or h.get("reason") or "",
+                "relative": str(root_p.relative_to(mount)).replace("\\", "/")
+                if mount in root_p.parents or root_p == mount else key,
+                "has_vault_blob": bool(h.get("has_vault_blob")),
+                "child_hits": 1,
+            }
+            if h.get("vault_blob"):
+                g["vault_blob"] = h["vault_blob"]
+            groups[key] = g
+        else:
+            g["gguf_count"] = int(g.get("gguf_count") or 0) + int(h.get("gguf_count") or 0)
+            g["score"] = max(int(g.get("score") or 0), int(h.get("score") or 0))
+            g["child_hits"] = int(g.get("child_hits") or 0) + 1
+            if h.get("has_vault_blob"):
+                g["has_vault_blob"] = True
+                if h.get("vault_blob"):
+                    g["vault_blob"] = h["vault_blob"]
+
+    roots = list(groups.values())
+
+    # Drop roots nested under another chosen root (quant / packaging spam).
+    roots.sort(key=lambda r: (r["path"].count("/"), -int(r.get("score") or 0)))
+    kept: list[dict] = []
+    for r in roots:
+        if any(_is_under(r["path"], k["path"]) and r["path"] != k["path"] for k in kept):
+            # Fold counts into parent
+            for k in kept:
+                if _is_under(r["path"], k["path"]) and r["path"] != k["path"]:
+                    k["gguf_count"] = int(k.get("gguf_count") or 0) + int(r.get("gguf_count") or 0)
+                    k["child_hits"] = int(k.get("child_hits") or 0) + int(r.get("child_hits") or 1)
+                    break
+            continue
+        # If a deeper kept root is under this one, replace it
+        kept = [k for k in kept if not (_is_under(k["path"], r["path"]) and k["path"] != r["path"])]
+        kept.append(r)
+
+    if not kept:
+        return [], "empty"
+
+    def _as_single(root_p: Path, members: list) -> dict:
+        gguf = sum(int(m.get("gguf_count") or 0) for m in members)
+        score, kind, reason = score_dir(root_p, gguf)
+        try:
+            rel = str(root_p.relative_to(mount)).replace("\\", "/")
+        except Exception:
+            rel = str(root_p)
+        return {
+            "path": str(root_p),
+            "name": root_p.name,
+            "kind": kind if kind != "folder" else "gguf_dir",
+            "score": max([int(m.get("score") or 0) for m in members] + [score]),
+            "gguf_count": gguf,
+            "reason": reason or "models library",
+            "relative": rel,
+            "has_vault_blob": any(m.get("has_vault_blob") for m in members),
+            "child_hits": sum(int(m.get("child_hits") or 1) for m in members),
+            "collapsed": True,
+            "collapse_mode": "single_root",
+        }
+
+    def _has_app_marker(path_str: str) -> bool:
+        low = path_str.lower().replace("\\", "/")
+        return any(m in low for m in APP_MARKERS)
+
+    # Sibling packaging folders under one parent → one library root.
+    if len(kept) > 1:
+        parent_map: dict[str, list] = {}
+        for r in kept:
+            parent_map.setdefault(str(Path(r["path"]).parent), []).append(r)
+        if len(parent_map) == 1:
+            parent_s, members = next(iter(parent_map.items()))
+            parent_p = Path(parent_s)
+            try:
+                parent_p.relative_to(mount)
+                shallow_ok = parent_p != mount and parent_p.name.lower() not in TOO_SHALLOW
+            except Exception:
+                shallow_ok = False
+            # Only collapse siblings when they are packaging (no distinct app roots).
+            distinct_apps = sum(1 for m in members if _has_app_marker(m["path"]))
+            if shallow_ok and distinct_apps <= 1:
+                return [_as_single(parent_p, members)], "single_root"
+
+        # Common ancestor that is models/ or a non-shallow folder owning all hits.
+        try:
+            common = Path(os.path.commonpath([r["path"] for r in kept]))
+            common.relative_to(mount)
+        except Exception:
+            common = None
+        if common is not None and common != mount and common.name.lower() not in TOO_SHALLOW:
+            # Don't collapse distinct app trees that merely share Users/Documents.
+            app_roots = set()
+            for r in kept:
+                try:
+                    app_roots.add(str(identify_library_root(Path(r["path"]))))
+                except Exception:
+                    app_roots.add(r["path"])
+            if len(app_roots) == 1 or common.name.lower() == "models":
+                return [_as_single(common, kept)], "single_root"
+
+    # If everything sits under one library root, emit a single row.
+    if len(kept) == 1:
+        only = kept[0]
+        only["collapsed"] = True
+        only["collapse_mode"] = "single_root"
+        return [only], "single_root"
+
+    # Distinct app / sibling roots (Comfy + webui / LM Studio, …)
+    for r in kept:
+        r["collapsed"] = True
+        r["collapse_mode"] = "multi_root"
+    kept.sort(key=lambda h: (-int(h.get("score") or 0), -int(h.get("gguf_count") or 0), h["path"]))
+    return kept[:MAX_HITS], "multi_root"
+
+collapsed, collapse_mode = collapse_hits(ranked)
+# Prefer collapsed roots for UI; keep raw_hits for debugging/advanced clients.
+display = collapsed if collapsed else ranked[:MAX_HITS]
+best = display[0] if display else (ranked[0] if ranked else None)
 jump = best["path"] if best else str(start)
+
+note = "Read-only search under this mount only. Encrypted/unknown FS refused."
+if collapse_mode == "single_root":
+    note = (
+        "One models library found — nested quant/packaging folders collapsed. "
+        "Use Models › Change… to set the download folder; search results are for loading."
+    )
+elif collapse_mode == "multi_root":
+    note = (
+        f"Found {len(display)} model libraries (Comfy / webui / LM Studio / …). "
+        "Pick one as download target via Change…; all are remembered for loading."
+    )
 
 print(json.dumps({
     "ok": True,
@@ -1358,12 +1595,15 @@ print(json.dumps({
     "start_reason": start_reason,
     "best": best,
     "jump_dir": jump,
-    "hits": ranked[:MAX_HITS],
+    "hits": display,
+    "raw_hits": ranked[:MAX_HITS],
+    "collapse_mode": collapse_mode,
+    "roots": display,
     "vault_blob_hits": vault_blob_hits[:MAX_HITS],
     "scanned_dirs": visited,
     "elapsed_ms": int((time.monotonic() - t0) * 1000),
     "fstype": fst,
-    "note": "Read-only search under this mount only. Encrypted/unknown FS refused.",
+    "note": note,
 }))
 PY
 }
