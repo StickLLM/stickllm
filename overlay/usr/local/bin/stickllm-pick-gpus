@@ -12,12 +12,22 @@ CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
 VULKAN_BIN="${STICKLLM_LLAMA_VULKAN:-/opt/stickllm/bin/llama-server-vulkan}"
 REGISTER_SO="${STICKLLM_CUDA_REGISTER:-$LIB/stickllm-cuda-register.so}"
 
+# Filled by the CUDA picker: all suitable GPUs, split by free VRAM.
+STICKLLM_TENSOR_SPLIT=""
+STICKLLM_GPU_COUNT=0
+STICKLLM_VRAM_FREE_MIB=0
+
 write_env() {
   # $1 = CUDA_VISIBLE_DEVICES; $2 = STICKLLM_BACKEND; optional $3 = reason
   {
     printf 'CUDA_DEVICE_ORDER=PCI_BUS_ID\n'
     printf 'CUDA_VISIBLE_DEVICES=%s\n' "$1"
     printf 'STICKLLM_BACKEND=%s\n' "$2"
+    printf 'STICKLLM_GPU_COUNT=%s\n' "${STICKLLM_GPU_COUNT:-0}"
+    printf 'STICKLLM_VRAM_FREE_MIB=%s\n' "${STICKLLM_VRAM_FREE_MIB:-0}"
+    if [[ -n "${STICKLLM_TENSOR_SPLIT:-}" ]]; then
+      printf 'STICKLLM_TENSOR_SPLIT=%s\n' "$STICKLLM_TENSOR_SPLIT"
+    fi
     if [[ "$2" == "vulkan" ]]; then
       printf 'GGML_BACKEND_DIR=%s\n' "$LIB_VK"
       printf 'LD_PRELOAD=\n'
@@ -122,20 +132,39 @@ if ! nvidia-smi -L >/dev/null 2>&1; then
   try_vulkan "nvidia-smi failed (no GPU / blacklisted)"
 fi
 
-mapfile -t LARGE < <(
-  nvidia-smi --query-gpu=index,memory.total --format=csv,noheader,nounits 2>/dev/null \
-    | awk -F',' '{gsub(/ /,"",$1); gsub(/ /,"",$2); if ($2+0 >= 16000) print $1}' \
-    || true
-) || true
+# Every GPU with >= 16 GiB. An 8GB display card is skipped; two 24GB 3090s
+# are both selected. tensor-split proportions follow free VRAM (total if free is 0).
+declare -a LARGE_IDS=() LARGE_SHARES=()
+STICKLLM_VRAM_FREE_MIB=0
+while IFS=',' read -r idx total free; do
+  idx="${idx// /}"
+  total="${total// /}"
+  free="${free// /}"
+  [[ "$idx" =~ ^[0-9]+$ ]] || continue
+  [[ "$total" =~ ^[0-9]+$ ]] || continue
+  [[ "$free" =~ ^[0-9]+$ ]] || free=0
+  if (( total >= 16000 )); then
+    LARGE_IDS+=("$idx")
+    share="$free"
+    if (( share < 1 )); then
+      share="$total"
+    fi
+    LARGE_SHARES+=("$share")
+    STICKLLM_VRAM_FREE_MIB=$((STICKLLM_VRAM_FREE_MIB + share))
+  fi
+done < <(nvidia-smi --query-gpu=index,memory.total,memory.free --format=csv,noheader,nounits 2>/dev/null || true)
 
 ids=""
-if [[ "${STICKLLM_MULTI_GPU:-0}" == "1" && ${#LARGE[@]} -gt 1 ]]; then
-  ids="$(IFS=,; echo "${LARGE[*]}")"
-elif [[ ${#LARGE[@]} -ge 1 ]]; then
-  # Default: first big GPU only (stable on ROMED8 2×3090 + odd third card)
-  ids="${LARGE[0]}"
+STICKLLM_GPU_COUNT=${#LARGE_IDS[@]}
+if (( STICKLLM_GPU_COUNT >= 1 )); then
+  ids="$(IFS=,; echo "${LARGE_IDS[*]}")"
+  if (( STICKLLM_GPU_COUNT > 1 )); then
+    STICKLLM_TENSOR_SPLIT="$(IFS=,; echo "${LARGE_SHARES[*]}")"
+  fi
 else
   ids="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | head -1 || true)"
+  STICKLLM_GPU_COUNT=0
+  [[ -n "$ids" ]] && STICKLLM_GPU_COUNT=1
 fi
 
 if [[ -z "${ids}" ]]; then
@@ -146,12 +175,17 @@ fi
 if ! list_devices_has_cuda "$ids"; then
   # Retry with all GPUs visible in case index remap confuses enumeration.
   if list_devices_has_cuda ""; then
-    ids="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | paste -sd, - || true)"
+    # Keep the suitable-GPU set. Falling back to every index would pull in an 8GB card.
+    if (( ${#LARGE_IDS[@]} >= 1 )); then
+      ids="$(IFS=,; echo "${LARGE_IDS[*]}")"
+    else
+      ids="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | paste -sd, - || true)"
+    fi
   else
     try_vulkan "llama-server --list-devices shows no CUDA (backend not registered / libs broken)"
   fi
 fi
 
 write_env "$ids" cuda
-echo "stickllm-pick-gpus: STICKLLM_BACKEND=cuda CUDA_VISIBLE_DEVICES=${ids} (list-devices OK)" >&2
+echo "stickllm-pick-gpus: STICKLLM_BACKEND=cuda CUDA_VISIBLE_DEVICES=${ids} gpus=${STICKLLM_GPU_COUNT} split=${STICKLLM_TENSOR_SPLIT:-none} (list-devices OK)" >&2
 exit 0

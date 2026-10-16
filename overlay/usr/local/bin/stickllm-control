@@ -540,6 +540,570 @@ def gguf_arch_dims(meta: dict) -> dict:
     }
 
 
+# GPUs smaller than this are display/auxiliary (the 8GB card next to a pair of
+# 3090s). Both 24GB 3090s are included.
+GPU_SUITABLE_MIB = 16000
+# CUDA context + compute buffers held back before layer weights.
+GPU_BUFFER_BYTES = int(1.5 * (1024**3))
+_MOE_ARCH = frozenset(
+    {"mixtral", "qwen2moe", "qwen3moe", "deepseek2", "phi3moe", "grok", "olmoe"}
+)
+_SECRET_LINE = re.compile(r"password|STICKLLM_SSH_PASS", re.I)
+_CUDA_ERR_LINE = re.compile(
+    r"cuda|cublas|out of memory|outofmemory|ggml_cuda|failed to allocate|"
+    r"unable to allocate|allocation failed|ggml_backend",
+    re.I,
+)
+
+
+def nvidia_gpu_rows() -> list[dict]:
+    """nvidia-smi rows. Empty when the driver is missing (CPU/Vulkan hosts)."""
+    try:
+        p = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total,memory.free,memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if p.returncode != 0:
+        return []
+    rows: list[dict] = []
+    for line in (p.stdout or "").splitlines():
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) < 5:
+            continue
+        try:
+            idx = int(parts[0])
+            total = int(float(parts[2]))
+            free = int(float(parts[3]))
+            used = int(float(parts[4]))
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "index": idx,
+                "name": parts[1],
+                "total_mib": total,
+                "free_mib": max(0, free),
+                "used_mib": max(0, used),
+            }
+        )
+    return rows
+
+
+def suitable_gpus(rows: list[dict] | None = None) -> list[dict]:
+    """Every GPU large enough to hold weights. Skips tiny/display cards."""
+    rows = nvidia_gpu_rows() if rows is None else rows
+    return [g for g in rows if int(g.get("total_mib") or 0) >= GPU_SUITABLE_MIB]
+
+
+def estimate_n_layer(dims: dict, file_bytes: int) -> tuple[int, str]:
+    """Layer count from GGUF, else a documented size bucket.
+
+    Llama-3.3-70B-Instruct-Q4 (~40 GiB) is 80 transformer blocks when the
+    header does not yield block_count. Smaller buckets are conservative.
+    """
+    n = int(dims.get("n_layer") or 0)
+    if n > 0:
+        return n, "gguf"
+    gib = file_bytes / (1024**3)
+    if gib >= 30:
+        return 80, "estimate:>=30GiB→80 (70B-class)"
+    if gib >= 16:
+        return 64, "estimate:16-30GiB→64"
+    if gib >= 8:
+        return 40, "estimate:8-16GiB→40"
+    if gib >= 4:
+        return 32, "estimate:4-8GiB→32"
+    return 24, "estimate:<4GiB→24"
+
+
+def moe_expert_count(meta: dict, dims: dict) -> int:
+    arch = str(dims.get("architecture") or "")
+    for key in (f"{arch}.expert_count", f"{arch}.expert_used_count"):
+        v = meta.get(key)
+        if isinstance(v, (int, float)) and int(v) > 1:
+            return int(v)
+    for k, v in meta.items():
+        if str(k).endswith(".expert_count") and isinstance(v, (int, float)) and int(v) > 1:
+            return int(v)
+    if arch in _MOE_ARCH:
+        return 8
+    return 0
+
+
+def kv_bytes_per_token(dims: dict, n_layer: int, file_bytes: int) -> int:
+    """K+V f16 bytes per token. Uses GGUF dims, else a 70B GQA ballpark."""
+    n_kv = int(dims.get("n_kv_head") or 0)
+    head = int(dims.get("head_dim") or 0)
+    if n_layer > 0 and n_kv > 0 and head > 0:
+        return 2 * n_layer * n_kv * head * 2
+    gib = file_bytes / (1024**3)
+    if gib >= 30:
+        # Llama-3 70B: 80 layers * 8 kv heads * 128 * 2 bytes * K and V.
+        return 320 * 1024
+    return max(8192, int(56000 * (max(gib, 0.1) / 5.1)))
+
+
+def estimate_tok_s(file_bytes: int, gpu_count: int, offload_fraction: float) -> int:
+    """UI ballpark only. Anchored near 28 tok/s for ~40GB on 2×3090, full offload."""
+    gb = max(1.0, file_bytes / 1e9)
+    frac = min(1.0, max(0.05, float(offload_fraction)))
+    gpus = max(1, int(gpu_count))
+    return max(1, int(round(28.0 * (40.0 / gb) * (gpus / 2.0) * frac)))
+
+
+def _shell_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
+def read_ngl_override() -> int | None:
+    envf = RUN / "ngl.env"
+    if not envf.is_file():
+        return None
+    try:
+        for line in envf.read_text(encoding="utf-8").splitlines():
+            if line.startswith("STICKLLM_N_GPU_LAYERS="):
+                n = int(line.split("=", 1)[1].strip())
+                return n if n > 0 else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def plan_gpu_fit(
+    *,
+    file_bytes: int,
+    ctx: int,
+    meta: dict | None = None,
+    gpus: list[dict] | None = None,
+    ngl_override: int | None = None,
+) -> dict:
+    """Choose -ngl / tensor-split for the GPUs we will actually use.
+
+    Preference:
+      1. Every suitable GPU (total >= 16 GiB). CUDA_VISIBLE_DEVICES lists them all.
+      2. --tensor-split proportional to free VRAM so every card is used.
+      3. Dense -ngl = floor( (free VRAM - KV(ctx) - 1.5 GiB buffers) / per-layer weight ).
+         Cap at n_layer+1 when that is a full offload. Never the sentinel 99.
+         The same formula is used for one GPU with the rest of the weights in RAM.
+         mmap stays at the llama.cpp default (callers must not pass --no-mmap).
+      4. MoE: when spilling experts with --n-cpu-moe keeps attention on GPU and
+         that fits better than dropping whole layers, use -ngl 99 and --n-cpu-moe.
+         Still across every suitable GPU.
+    """
+    meta = meta or {}
+    dims = gguf_arch_dims(meta)
+    n_layer, layer_src = estimate_n_layer(dims, file_bytes)
+    ctx = max(256, int(ctx or 8192))
+    kv_bpt = kv_bytes_per_token(dims, n_layer, file_bytes)
+    kv = kv_bpt * ctx
+    weights = max(1, int(file_bytes))
+    cards = suitable_gpus(gpus)
+    gpu_count = len(cards)
+    devices = ",".join(str(g["index"]) for g in cards)
+    # Proportions follow free VRAM. A card reporting 0 free still gets its total
+    # so tensor-split does not drop it.
+    shares = []
+    free_sum = 0
+    for g in cards:
+        share = int(g.get("free_mib") or 0) or int(g.get("total_mib") or 0)
+        share = max(1, share)
+        shares.append(share)
+        free_sum += int(g.get("free_mib") or 0) or int(g.get("total_mib") or 0)
+    tensor_split = ",".join(str(s) for s in shares) if gpu_count > 1 else ""
+    budget = free_sum * 1024 * 1024
+    need = weights + kv + GPU_BUFFER_BYTES
+    # Per-layer size is the weight share. KV and the 1.5 GiB buffer are subtracted
+    # once from free VRAM, not folded into the per-layer divisor.
+    weight_per_layer = weights / n_layer
+
+    def layers_that_fit(budget_bytes: int) -> int:
+        usable = budget_bytes - kv - GPU_BUFFER_BYTES
+        if usable <= 0 or weight_per_layer <= 0:
+            return 0
+        return max(0, int(usable // weight_per_layer))
+
+    n_exp = moe_expert_count(meta, dims)
+    is_moe = n_exp > 1
+    n_cpu_moe = 0
+    # llama.cpp treats one extra slot as the output layer. 99 stays MoE-only.
+    full_ngl = n_layer + 1
+    if gpu_count == 0:
+        ngl = 0
+        fit = "cpu"
+        offload_frac = 0.0
+    elif not is_moe and need <= budget:
+        ngl = full_ngl
+        fit = "full"
+        offload_frac = 1.0
+    elif is_moe and need <= budget:
+        ngl = full_ngl
+        fit = "full"
+        offload_frac = 1.0
+    elif is_moe:
+        # Expert tensors dominate. ~15% dense/attention is the documented
+        # stand-in when the tensor table is not parsed. Keeping those on GPU
+        # with -ngl 99 and moving expert blocks via --n-cpu-moe beats dropping
+        # whole layers, when the dense slice itself fits.
+        non_expert = int(weights * 0.15)
+        expert_bytes = max(1, weights - non_expert)
+        per_expert = expert_bytes / n_layer
+        left = budget - GPU_BUFFER_BYTES - kv - non_expert
+        if left >= 0:
+            on_gpu = int(left // per_expert) if per_expert else n_layer
+            on_gpu = max(0, min(n_layer, on_gpu))
+            n_cpu_moe = n_layer - on_gpu
+            ngl = 99
+            fit = "moe"
+            offload_frac = min(1.0, 0.15 + 0.85 * (on_gpu / n_layer))
+        else:
+            ngl = min(layers_that_fit(budget), n_layer)
+            n_cpu_moe = 0
+            fit = "partial" if ngl < n_layer else "full"
+            offload_frac = ngl / full_ngl
+    else:
+        # Cap at the transformer blocks. Output stays in RAM unless the whole
+        # file fit (handled above). Never emit 99 for a dense model.
+        ngl = min(layers_that_fit(budget), n_layer)
+        fit = "partial"
+        offload_frac = min(1.0, ngl / full_ngl)
+
+    if ngl_override is not None and gpu_count > 0:
+        ngl = max(1, min(int(ngl), int(ngl_override)))
+        n_cpu_moe = 0
+        fit = "full" if ngl >= full_ngl else "partial"
+        offload_frac = min(1.0, ngl / full_ngl)
+
+    tok_s = estimate_tok_s(weights, max(1, gpu_count), offload_frac if gpu_count else 0.05)
+    if gpu_count == 0:
+        caption = "CPU"
+    elif fit == "full":
+        caption = (
+            f"{gpu_count} GPUs, full offload, about {tok_s} tok/s"
+            if gpu_count > 1
+            else f"1 GPU, full offload, about {tok_s} tok/s"
+        )
+    elif fit == "moe":
+        caption = (
+            f"{gpu_count} GPUs, MoE offload, about {tok_s} tok/s"
+            if gpu_count > 1
+            else f"1 GPU, MoE offload, about {tok_s} tok/s"
+        )
+    else:
+        caption = (
+            f"{gpu_count} GPUs, partial offload, about {tok_s} tok/s"
+            if gpu_count > 1
+            else f"1 GPU, partial offload, about {tok_s} tok/s"
+        )
+    gpu_bytes = 0
+    if gpu_count and ngl > 0 and fit != "cpu":
+        if fit == "full":
+            gpu_bytes = weights + kv
+        elif fit == "moe":
+            gpu_bytes = int(weights * offload_frac) + kv
+        else:
+            gpu_bytes = int(weight_per_layer * min(ngl, n_layer)) + kv
+    return {
+        "ok": True,
+        "n_gpu_layers": int(ngl),
+        "n_layer": n_layer,
+        "layer_source": layer_src,
+        "n_cpu_moe": int(n_cpu_moe),
+        "fit": fit,
+        "moe": is_moe,
+        "gpu_count": gpu_count,
+        "devices": devices,
+        "tensor_split": tensor_split,
+        "caption": caption,
+        "tok_s": tok_s,
+        "ctx": ctx,
+        "vram_free_mib": int(free_sum),
+        "need_mib": int(need / (1024 * 1024)),
+        "budget_mib": int(budget / (1024 * 1024)),
+        "expected_gpu_mib": int(gpu_bytes / (1024 * 1024)),
+        "kv_bytes_per_token": kv_bpt,
+    }
+
+
+def _model_ctx_and_path() -> tuple[str, int]:
+    path = ""
+    ctx = 8192
+    envf = RUN / "model.env"
+    if envf.is_file():
+        try:
+            for line in envf.read_text(encoding="utf-8").splitlines():
+                if line.startswith("STICKLLM_MODEL="):
+                    path = line.split("=", 1)[1].strip()
+                elif line.startswith("STICKLLM_CTX_SIZE="):
+                    ctx = int(line.split("=", 1)[1].strip())
+        except (OSError, ValueError):
+            pass
+    if not path:
+        path = os.environ.get("STICKLLM_MODEL", "")
+    if os.environ.get("STICKLLM_CTX_SIZE"):
+        try:
+            ctx = int(os.environ["STICKLLM_CTX_SIZE"])
+        except ValueError:
+            pass
+    return path, ctx
+
+
+def build_offload_plan(*, honor_override: bool = True) -> dict:
+    path, ctx = _model_ctx_and_path()
+    if not path or not Path(path).is_file():
+        return {"ok": False, "error": "model file missing", "n_gpu_layers": 0, "gpu_count": 0}
+    try:
+        file_bytes = Path(path).stat().st_size
+    except OSError as e:
+        return {"ok": False, "error": str(e), "n_gpu_layers": 0, "gpu_count": 0}
+    meta = read_gguf_meta(path, max_keys=800)
+    override = read_ngl_override() if honor_override else None
+    plan = plan_gpu_fit(
+        file_bytes=file_bytes,
+        ctx=ctx,
+        meta=meta,
+        ngl_override=override,
+    )
+    plan["model"] = path
+    return plan
+
+
+def write_offload_plan(plan: dict) -> dict:
+    """Persist the plan for llama-start, the UI, and a shell `eval`."""
+    try:
+        RUN.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    ngl = int(plan.get("n_gpu_layers") or 0)
+    lines = [
+        f"STICKLLM_PLAN_NGL={ngl}",
+        f"STICKLLM_PLAN_N_LAYER={int(plan.get('n_layer') or 0)}",
+        f"STICKLLM_PLAN_N_CPU_MOE={int(plan.get('n_cpu_moe') or 0)}",
+        f"STICKLLM_PLAN_FIT={plan.get('fit') or 'cpu'}",
+        f"STICKLLM_PLAN_GPU_COUNT={int(plan.get('gpu_count') or 0)}",
+        f"STICKLLM_PLAN_DEVICES={plan.get('devices') or ''}",
+        f"STICKLLM_PLAN_TENSOR_SPLIT={plan.get('tensor_split') or ''}",
+        "STICKLLM_PLAN_CAPTION=" + _shell_quote(str(plan.get("caption") or "")),
+        f"STICKLLM_PLAN_TOK_S={int(plan.get('tok_s') or 0)}",
+        f"STICKLLM_PLAN_EXPECTED_GPU_MIB={int(plan.get('expected_gpu_mib') or 0)}",
+    ]
+    text = "\n".join(lines) + "\n"
+    for dest in (RUN / "llama-plan.env",):
+        try:
+            dest.write_text(text, encoding="utf-8")
+            os.chmod(dest, 0o644)
+        except OSError:
+            pass
+    try:
+        (RUN / "llama-fit.json").write_text(json.dumps(plan) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    plan["shell"] = text
+    return plan
+
+
+def emit_offload_plan() -> int:
+    plan = write_offload_plan(build_offload_plan())
+    sys.stdout.write(plan.get("shell") or "")
+    if not plan.get("ok", True) and plan.get("error"):
+        print(f"stickllm-plan: {plan['error']}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def llama_journal_error() -> str:
+    """Short CUDA/llama error from the unit journal. Never a password line."""
+    try:
+        p = subprocess.run(
+            ["journalctl", "-u", "stickllm-llama", "-n", "160", "--no-pager", "-o", "cat"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    picked: list[str] = []
+    for line in (p.stdout or "").splitlines():
+        s = line.strip()
+        if not s or _SECRET_LINE.search(s):
+            continue
+        if _CUDA_ERR_LINE.search(s) or "stickllm-llama-start:" in s:
+            picked.append(s)
+    if not picked:
+        return ""
+    for s in reversed(picked):
+        if _CUDA_ERR_LINE.search(s):
+            return s[:220]
+    return picked[-1][:220]
+
+
+def llama_service_snapshot(*, stop_loop: bool = True) -> dict:
+    """systemd start count, exit code, VRAM progress, and the last CUDA line."""
+    snap = {
+        "n_restarts": 0,
+        "active_state": "",
+        "sub_state": "",
+        "result": "",
+        "exec_main_status": 0,
+        "exec_main_code": 0,
+        "started_at": "",
+        "error": "",
+        "stopped": False,
+        "progress_pct": 0,
+        "process_alive": False,
+        "fail_count": 0,
+    }
+    try:
+        snap["fail_count"] = int((RUN / "llama-fail-count").read_text(encoding="utf-8").strip() or "0")
+    except (OSError, ValueError):
+        snap["fail_count"] = 0
+    try:
+        p = subprocess.run(
+            [
+                "systemctl",
+                "show",
+                "stickllm-llama.service",
+                "-p",
+                "NRestarts",
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "-p",
+                "Result",
+                "-p",
+                "ExecMainStatus",
+                "-p",
+                "ExecMainCode",
+                "-p",
+                "ExecMainStartTimestamp",
+                "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        vals = {}
+        for line in (p.stdout or "").splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                vals[k] = v.strip()
+        snap["n_restarts"] = int(vals.get("NRestarts") or 0)
+        snap["active_state"] = vals.get("ActiveState") or ""
+        snap["sub_state"] = vals.get("SubState") or ""
+        snap["result"] = vals.get("Result") or ""
+        snap["exec_main_status"] = int(vals.get("ExecMainStatus") or 0)
+        snap["exec_main_code"] = int(vals.get("ExecMainCode") or 0)
+        snap["started_at"] = vals.get("ExecMainStartTimestamp") or ""
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    alive = snap["active_state"] == "active" and snap["sub_state"] == "running"
+    snap["process_alive"] = alive
+    err = ""
+    fail_path = RUN / "llama-fail.txt"
+    if fail_path.is_file():
+        try:
+            err = fail_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-1][:220]
+        except OSError:
+            err = ""
+    if _SECRET_LINE.search(err):
+        err = ""
+    if not alive and (snap["n_restarts"] or snap["result"] not in ("", "success")):
+        journal = llama_journal_error()
+        if journal:
+            err = journal
+            try:
+                RUN.mkdir(parents=True, exist_ok=True)
+                fail_path.write_text(err + "\n", encoding="utf-8")
+            except OSError:
+                pass
+    snap["error"] = err
+    fit = read_json(RUN / "llama-fit.json")
+    if fit:
+        snap["fit"] = fit.get("fit") or ""
+        snap["caption"] = fit.get("caption") or ""
+        snap["n_gpu_layers"] = fit.get("n_gpu_layers")
+        snap["gpu_count"] = fit.get("gpu_count")
+        snap["tok_s"] = fit.get("tok_s")
+        snap["devices"] = fit.get("devices") or ""
+    expected = int(fit.get("expected_gpu_mib") or 0) if fit else 0
+    if alive and expected > 0:
+        devices = set()
+        raw_dev = str((fit or {}).get("devices") or "")
+        for part in raw_dev.split(","):
+            part = part.strip()
+            if part.isdigit():
+                devices.add(int(part))
+        used = 0
+        for g in nvidia_gpu_rows():
+            if not devices or g["index"] in devices:
+                used += int(g.get("used_mib") or 0)
+        # Driver baseline is a few hundred MiB; don't treat that as weights loaded.
+        used = max(0, used - 400 * max(1, len(devices) or 1))
+        snap["progress_pct"] = int(max(0, min(90, round(100 * used / expected))))
+    else:
+        snap["progress_pct"] = 0
+    # Two failed starts and the process is not the one actually loading: stop
+    # Restart=on-failure from hammering. A live running PID is left alone so a
+    # large GGUF can finish loading.
+    if (
+        stop_loop
+        and not alive
+        and (snap["n_restarts"] >= 2 or snap["result"] == "start-limit-hit")
+        and snap["active_state"] in ("activating", "active")
+    ):
+        sh(["systemctl", "stop", "stickllm-llama.service"], timeout=30)
+        snap["stopped"] = True
+        snap["active_state"] = "inactive"
+        snap["sub_state"] = "dead"
+    elif snap["result"] == "start-limit-hit" or (
+        not alive and snap["n_restarts"] >= 2 and snap["active_state"] in ("failed", "inactive")
+    ):
+        snap["stopped"] = True
+    return snap
+
+
+def llama_fewer_layers() -> dict:
+    """Relaunch with about half the current -ngl. Clears the crash-loop limit."""
+    plan = build_offload_plan(honor_override=True)
+    current = int(plan.get("n_gpu_layers") or 0)
+    if current <= 1:
+        base = build_offload_plan(honor_override=False)
+        current = int(base.get("n_gpu_layers") or 1)
+    nxt = max(1, current // 2)
+    try:
+        RUN.mkdir(parents=True, exist_ok=True)
+        (RUN / "ngl.env").write_text(f"STICKLLM_N_GPU_LAYERS={nxt}\n", encoding="utf-8")
+        os.chmod(RUN / "ngl.env", 0o644)
+    except OSError as e:
+        return {"ok": False, "error": f"cannot write ngl override: {e}"}
+    try:
+        (RUN / "llama-fail-count").write_text("0\n", encoding="utf-8")
+    except OSError:
+        pass
+    sh(["systemctl", "reset-failed", "stickllm-llama.service"], timeout=30)
+    r = sh(["systemctl", "restart", "stickllm-llama.service"], timeout=60)
+    r["ok"] = r.get("code", 1) == 0
+    r["n_gpu_layers"] = nxt
+    r["previous_n_gpu_layers"] = current
+    fresh = build_offload_plan(honor_override=True)
+    write_offload_plan(fresh)
+    r["caption"] = fresh.get("caption") or ""
+    r["fit"] = fresh.get("fit") or ""
+    r["llama_service"] = llama_service_snapshot(stop_loop=False)
+    return r
+
+
 def estimate_context_budget(
     *,
     vram_gb: float,
@@ -929,6 +1493,7 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
     healthy, _ = llama_health_ok()
     loaded_ctx = active_ctx_size()
     models = parse_catalog() + discover_local_ggufs()
+    gpu_rows = nvidia_gpu_rows() if gpu else []
     for m in models:
         files = m.get("hf_files") or []
         local = str(m.get("local_path") or "").strip()
@@ -983,6 +1548,7 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
         backend = "cuda" if gpu else "cpu"
         dims: dict = {}
         model_max_ctx = 0
+        meta: dict = {}
         if first and Path(first).is_file():
             meta = read_gguf_meta(first)
             dims = gguf_arch_dims(meta)
@@ -995,6 +1561,24 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
             model_max_ctx=model_max_ctx,
             dims=dims,
         )
+        offload_caption = ""
+        offload_ngl = None
+        offload_fit = ""
+        if first and Path(first).is_file():
+            try:
+                nbytes = Path(first).stat().st_size
+            except OSError:
+                nbytes = int(max(size_gb, 0.1) * 1e9)
+            preview_ctx = int(budget.get("ctx_suggested") or 8192)
+            preview = plan_gpu_fit(
+                file_bytes=nbytes,
+                ctx=preview_ctx,
+                meta=meta if first else {},
+                gpus=gpu_rows,
+            )
+            offload_caption = str(preview.get("caption") or "")
+            offload_ngl = preview.get("n_gpu_layers")
+            offload_fit = str(preview.get("fit") or "")
         entry = {
             "installed": installed,
             "runnable": runnable,
@@ -1014,6 +1598,9 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
             "ctx_suggested": budget["ctx_suggested"],
             "free_mem_after_gb": budget["free_mem_after_gb"],
             "architecture": dims.get("architecture") or "",
+            "offload_caption": offload_caption,
+            "offload_ngl": offload_ngl,
+            "offload_fit": offload_fit,
         }
         if is_active and loaded_ctx is not None:
             entry["ctx_loaded"] = loaded_ctx
@@ -1055,6 +1642,11 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
             return {"ok": False, "error": "ctx_size must be an integer"}
     ctx = max(ctx_lo, min(ctx_hi, ctx))
     RUN.mkdir(parents=True, exist_ok=True)
+    # A normal Load uses the VRAM fit. "Fewer GPU layers" is a separate override.
+    try:
+        (RUN / "ngl.env").unlink(missing_ok=True)
+    except Exception:
+        pass
     (RUN / "model.env").write_text(
         f"STICKLLM_MODEL={path}\n"
         f"STICKLLM_MODEL_ID={model_id}\n"
@@ -1093,6 +1685,8 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
     r["running"] = healthy
     r["health"] = health_msg
     r["load_state"] = "running" if healthy else "loading"
+    r["offload"] = write_offload_plan(build_offload_plan())
+    r["llama_service"] = llama_service_snapshot(stop_loop=False)
     r["models"] = enrich_models()
     return r
 
@@ -1254,6 +1848,8 @@ def handle(action: str, params: dict) -> dict:
             "catalog": models,
             "download": download_progress(),
             "watchdog": watchdog,
+            "llama_service": llama_service_snapshot(),
+            "offload": read_json(RUN / "llama-fit.json"),
             "models_dirs": [str(p) for p in model_dirs()],
             "download_dir": str(dl_dir) if dl_dir else (str(preferred) if preferred else ""),
             "models_dir_preferred": str(preferred) if preferred else "",
@@ -1328,6 +1924,8 @@ def handle(action: str, params: dict) -> dict:
             except (TypeError, ValueError):
                 return {"ok": False, "error": "ctx_size must be an integer"}
         return activate_model(mid, ctx_arg)
+    if action == "llama_fewer_layers":
+        return llama_fewer_layers()
     if action == "model_delete":
         mid = str(params.get("id") or "").strip()
         if not mid:
@@ -1843,6 +2441,8 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--plan-offload":
+        return emit_offload_plan()
     RUN.mkdir(parents=True, exist_ok=True)
     httpd = ThreadedHTTPServer((HOST, PORT), Handler)
     print(f"stickllm-control on http://{HOST}:{PORT}", flush=True)

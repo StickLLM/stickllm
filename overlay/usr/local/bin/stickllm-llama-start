@@ -1,7 +1,40 @@
 #!/bin/bash
 # Launch llama-server: localhost-only.
 # Backend preference: CUDA (verified) → Vulkan → CPU last resort.
+# -ngl comes from VRAM fit (stickllm-control --plan-offload). Never a hardcoded 99
+# except the MoE --n-cpu-moe path, which the planner emits itself.
 set -euo pipefail
+
+if [[ "${1:-}" == "--capture-fail" ]]; then
+  # ExecStopPost (+ = root). Keep a short CUDA line for the UI. No passwords.
+  RUN_CAP="${STICKLLM_RUN:-/run/stickllm}"
+  mkdir -p "$RUN_CAP" 2>/dev/null || true
+  if [[ "${SERVICE_RESULT:-}" == "success" ]]; then
+    printf '0\n' >"$RUN_CAP/llama-fail-count" 2>/dev/null || true
+    rm -f "$RUN_CAP/llama-fail.txt" 2>/dev/null || true
+    exit 0
+  fi
+  n=0
+  if [[ -f "$RUN_CAP/llama-fail-count" ]]; then
+    n="$(tr -cd '0-9' <"$RUN_CAP/llama-fail-count" 2>/dev/null || true)"
+  fi
+  [[ -n "${n:-}" ]] || n=0
+  n=$((n + 1))
+  printf '%s\n' "$n" >"$RUN_CAP/llama-fail-count" 2>/dev/null || true
+  err="$(
+    journalctl -u stickllm-llama -n 80 --no-pager -o cat 2>/dev/null \
+      | grep -Ei 'cuda|cublas|out of memory|ggml_cuda|failed to allocate|unable to allocate' \
+      | grep -Eiv 'password|STICKLLM_SSH_PASS' \
+      | tail -n 1 \
+      || true
+  )"
+  if [[ -n "${err:-}" ]]; then
+    printf '%s\n' "$err" >"$RUN_CAP/llama-fail.txt" 2>/dev/null || true
+    chmod 644 "$RUN_CAP/llama-fail.txt" 2>/dev/null || true
+  fi
+  # StartLimitBurst is the real stop. This file tells the UI how many crashes landed.
+  exit 0
+fi
 
 # Require explicit Activate (model.env). No baked default — avoids long wrong-model boots.
 MODEL="${STICKLLM_MODEL:-}"
@@ -24,6 +57,14 @@ if [[ -f "$RUN/cuda.env" ]]; then
   set +u
   # shellcheck source=/dev/null
   . "$RUN/cuda.env"
+  set -u
+fi
+# Activate writes model.env. Source it so --print-fit works outside systemd.
+if [[ -z "${STICKLLM_MODEL:-}" && -f "$RUN/model.env" ]]; then
+  # shellcheck disable=SC1090
+  set +u
+  # shellcheck source=/dev/null
+  . "$RUN/model.env"
   set -u
 fi
 
@@ -91,21 +132,62 @@ if [[ ! -r "$MODEL" ]]; then
   exit 1
 fi
 
+# Fit plan: all suitable GPUs, tensor-split by free VRAM, -ngl only for what fits.
+# stdout is shell assignments (quoted caption). mmap stays at the llama.cpp default.
+PLAN_SH="$(python3 /usr/local/bin/stickllm-control --plan-offload 2>/dev/null || true)"
+if [[ -n "$PLAN_SH" ]]; then
+  # shellcheck disable=SC1090
+  eval "$PLAN_SH"
+fi
+NGL="${STICKLLM_PLAN_NGL:-}"
+if [[ ! "${NGL:-}" =~ ^[0-9]+$ ]]; then
+  # Planner missing: partial offload, not the old "put everything on one GPU" 99.
+  NGL=32
+  echo "stickllm-llama-start: offload planner failed; using -ngl 32" >&2
+fi
+N_CPU_MOE="${STICKLLM_PLAN_N_CPU_MOE:-0}"
+TENSOR_SPLIT="${STICKLLM_PLAN_TENSOR_SPLIT:-${STICKLLM_TENSOR_SPLIT:-}}"
+GPU_COUNT="${STICKLLM_PLAN_GPU_COUNT:-${STICKLLM_GPU_COUNT:-0}}"
+PLAN_FIT="${STICKLLM_PLAN_FIT:-}"
+PLAN_CAP="${STICKLLM_PLAN_CAPTION:-}"
+
+if [[ "${1:-}" == "--print-fit" ]]; then
+  printf 'cuda_visible_devices=%s\n' "${CUDA_VISIBLE_DEVICES:-}"
+  printf 'devices=%s\n' "${STICKLLM_PLAN_DEVICES:-}"
+  printf 'n_gpu_layers=%s\n' "$NGL"
+  printf 'n_cpu_moe=%s\n' "${N_CPU_MOE:-0}"
+  printf 'tensor_split=%s\n' "$TENSOR_SPLIT"
+  printf 'gpu_count=%s\n' "$GPU_COUNT"
+  printf 'fit=%s\n' "$PLAN_FIT"
+  printf 'caption=%s\n' "$PLAN_CAP"
+  printf 'ctx=%s\n' "$CTX"
+  exit 0
+fi
+
+gpu_extra=()
+if [[ "$GPU_COUNT" =~ ^[0-9]+$ ]] && (( GPU_COUNT > 1 )) && [[ -n "$TENSOR_SPLIT" ]]; then
+  gpu_extra+=(--tensor-split "$TENSOR_SPLIT")
+fi
+if [[ "${N_CPU_MOE:-0}" =~ ^[0-9]+$ ]] && (( N_CPU_MOE > 0 )); then
+  gpu_extra+=(--n-cpu-moe "$N_CPU_MOE")
+fi
+
 # 1) CUDA — only if pick-gpus said so AND list-devices still sees CUDA.
 if [[ "$BACKEND" == "cuda" ]] && [[ -x "$CUDA_BIN" ]]; then
   if [[ -f "$REGISTER_SO" ]]; then
     export LD_PRELOAD="$REGISTER_SO${LD_PRELOAD:+:$LD_PRELOAD}"
   fi
   if cuda_devices_ok; then
-    echo "stickllm-llama-start: STICKLLM_BACKEND=cuda (-ngl 99) threads=$THREADS host=$HOST:$PORT model=$MODEL" >&2
+    echo "stickllm-llama-start: STICKLLM_BACKEND=cuda (-ngl $NGL fit=${PLAN_FIT:-?} gpus=${GPU_COUNT:-?} split=${TENSOR_SPLIT:-none}) threads=$THREADS host=$HOST:$PORT ${PLAN_CAP}" >&2
     write_runtime_env cuda
     exec "$CUDA_BIN" \
       --model "$MODEL" \
       --host "$HOST" \
       --port "$PORT" \
       --ctx-size "$CTX" \
-      --n-gpu-layers "${STICKLLM_N_GPU_LAYERS:-99}" \
+      --n-gpu-layers "$NGL" \
       --threads "$THREADS" \
+      "${gpu_extra[@]}" \
       --metrics
   fi
   echo "stickllm-llama-start: CUDA claimed but list-devices has no CUDA — not starting fake-cuda" >&2
@@ -120,15 +202,16 @@ if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "fallback" ]]; then
       export LD_LIBRARY_PATH="${LIB_VK}:${LD_LIBRARY_PATH}"
       export GGML_BACKEND_DIR="${LIB_VK}"
     fi
-    echo "stickllm-llama-start: STICKLLM_BACKEND=vulkan (-ngl 99) threads=$THREADS host=$HOST:$PORT model=$MODEL" >&2
+    echo "stickllm-llama-start: STICKLLM_BACKEND=vulkan (-ngl $NGL) threads=$THREADS host=$HOST:$PORT model=$MODEL" >&2
     write_runtime_env vulkan
     exec "$VULKAN_BIN" \
       --model "$MODEL" \
       --host "$HOST" \
       --port "$PORT" \
       --ctx-size "$CTX" \
-      --n-gpu-layers "${STICKLLM_N_GPU_LAYERS:-99}" \
+      --n-gpu-layers "$NGL" \
       --threads "$THREADS" \
+      "${gpu_extra[@]}" \
       --metrics
   fi
   if [[ "$BACKEND" == "vulkan" ]]; then
