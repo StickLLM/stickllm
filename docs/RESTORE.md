@@ -7,17 +7,18 @@ Be honest about what a stranger can download vs what only maintainers have local
 
 | Slot | Tag | What strangers can get | Checksum |
 |------|-----|------------------------|----------|
-| **N** (current) | `v0.3.8` | Google Drive ISO + [GitHub Release](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8) notes | `checksums/v0.3.8.sha256` → `88f78154…` |
+| **N** (current) | `v0.3.9` | Google Drive ISO + [GitHub Release](https://github.com/StickLLM/stickllm/releases/tag/v0.3.9) notes | `checksums/v0.3.9.sha256` → `32a37a66…` |
+| **N-1** | `v0.3.8` | Google Drive ISO + [GitHub Release](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8) notes | `checksums/v0.3.8.sha256` → `88f78154…` |
 | Golden | `v0.2.0` | [GitHub Release v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) (split `.7z` and/or Drive link in release notes) | `checksums/v0.2.sha256` → `4914087d…` |
 
 Drive folder (ISOs over GitHub’s 2 GB limit):  
 https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing  
 
-**Public current ship on that folder: `StickLLM-v0.3.8.iso`.** Do not assume older filenames are still listed there.
+**Public current ship on that folder: `StickLLM-v0.3.9.iso`.** Do not assume older filenames are still listed there.
 
-**Do not flash `v0.3.5`** — truncated/broken. Prefer **v0.3.8** (or **v0.3.6** as N-1).
+**Do not flash `v0.3.5`** — truncated/broken. Prefer **v0.3.9** (or **v0.3.8** as N-1).
 
-**Hash of record is on GitHub** (`checksums/v0.3.8.sha256` + Release notes). After Drive upload, verify the ISO against that digest — do not treat a hash only on Drive as authoritative.
+**Hash of record is on GitHub** (`checksums/v0.3.9.sha256` + Release notes). After Drive upload, verify the ISO against that digest — do not treat a hash only on Drive as authoritative.
 
 ## Maintainer / local-only
 
@@ -41,10 +42,22 @@ Older tags (`v0.2.1-local-nvidia-kbd`, `v0.3.1`–`v0.3.4`, `v0.3.7`, …) and t
 - When cutting the next ship: keep **N** and **N-1** tags and local `out/` ISO dirs; do not delete or overwrite them.
 - Drive / Release **v0.2.0** is outside the rolling window — never retag, rewrite checksum, or replace under the same name.
 - Prior **v0.3.6** on Drive — never overwrite under the same name with a different digest.
-- Current **v0.3.8** on Drive — never overwrite under the same name with a different digest.
+- Current **v0.3.9** on Drive — never overwrite under the same name with a different digest.
+- Prior **v0.3.8** on Drive — never overwrite under the same name with a different digest.
 - New ships get new tag names, new `out/<version>/` dirs, new `StickLLM-vX.Y.Z.iso` filenames, and new `checksums/<version>.sha256` files.
 
-## Restore N (v0.3.8) — public
+## Restore N (v0.3.9) — public
+
+```text
+git checkout v0.3.9
+ISO:      Google Drive StickLLM-v0.3.9.iso
+Checksum: checksums/v0.3.9.sha256
+Expect:   32A37A66110EA2D2BC113D7C3B940647597252986799B007FA1FC217399A9585
+```
+
+Flash with Rufus DD or `dd` — [FLASH.md](FLASH.md).
+
+## Restore N-1 (v0.3.8) — public
 
 ```text
 git checkout v0.3.8
@@ -53,9 +66,7 @@ Checksum: checksums/v0.3.8.sha256
 Expect:   88F781545762A986BB3A1DCE9183601B7BBE173D0D56A20CA03BEF7A533201CB
 ```
 
-Flash with Rufus DD or `dd` — [FLASH.md](FLASH.md).
-
-## Restore N-1 (v0.3.6) — public
+## Restore v0.3.6 — still published
 
 ```text
 git checkout v0.3.6

@@ -14,18 +14,19 @@ Keep the **last two** recoverable ships (**N** and **N-1**) plus Drive golden fo
 Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship):
 
 - **Golden (forever):** `v0.2.0` / Drive ISO / `checksums/v0.2.sha256`
-- **N-1:** `v0.3.6` / Drive + `out/v0.3.6/` / `checksums/v0.3.6.sha256` (`fb559d9f…`)
-- **N:** `v0.3.8` / Drive + `out/v0.3.8/` / `checksums/v0.3.8.sha256` (`88f78154…`)
+- **N-1:** `v0.3.8` / Drive + `out/v0.3.8/` / `checksums/v0.3.8.sha256` (`88f78154…`)
+- **N:** `v0.3.9` / Drive + `out/v0.3.9/` / `checksums/v0.3.9.sha256` (`32a37a66…`)
 
-**Do not flash `v0.3.5`** (truncated ISO). Prefer **v0.3.8**.
+**Do not flash `v0.3.5`** (truncated ISO). Prefer **v0.3.9**. `v0.3.6` stays published; do not delete or overwrite it.
 
 ## Never overwrite
 
-- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.2.1-local-nvidia-kbd`, `v0.3.0`, `v0.3.6`, `v0.3.8`, or any published shipping tag.
+- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.2.1-local-nvidia-kbd`, `v0.3.0`, `v0.3.6`, `v0.3.8`, `v0.3.9`, or any published shipping tag.
 - Do **not** change or replace published checksum files once shipped.
 - Do **not** overwrite the Drive / StickLLM-releases **v0.2** ISO artifact (hash `4914087d…`).
 - Do **not** overwrite the Drive **v0.3.6** ISO under the same name if contents differ (hash `fb559d9f…`).
 - Do **not** overwrite the Drive **v0.3.8** ISO under the same name if contents differ (hash `88f78154…`).
+- Do **not** overwrite the Drive **v0.3.9** ISO under the same name if contents differ (hash `32a37a66…`).
 - Do **not** flash or publish a later build under an existing release name if contents differ.
 - When cutting **v0.4+**, do **not** delete N/N-1 tags or their `out/<version>/` ISO directories.
 
@@ -46,6 +47,7 @@ Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship)
 ❌ BAD: rename stickllm-amd-rtx3090-v0.3.6.hybrid.iso to StickLLM-v0.3.6.iso
 
 ✅ GOOD: out/v0.3.6/stickllm-amd-rtx3090-v0.3.6.hybrid.iso + checksums/v0.3.6.sha256 (N-1; leave as-is)
-✅ GOOD: out/v0.3.8/StickLLM-v0.3.8.iso + checksums/v0.3.8.sha256 + tag v0.3.8
+✅ GOOD: out/v0.3.8/StickLLM-v0.3.8.iso + checksums/v0.3.8.sha256 + tag v0.3.8 (N-1; leave as-is)
+✅ GOOD: out/v0.3.9/StickLLM-v0.3.9.iso + checksums/v0.3.9.sha256 + tag v0.3.9
 ✅ GOOD: out/v0.4.0/StickLLM-v0.4.0.iso + checksums/v0.4.0.sha256 + tag v0.4.0 (keep prior N/N-1)
 ```

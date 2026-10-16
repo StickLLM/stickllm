@@ -20,9 +20,6 @@ VERSION_DIR="v${VERSION}"
 ISO_NAME="StickLLM-v${VERSION}.iso"
 CHECKSUM_FILE="checksums/v${VERSION}.sha256"
 MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
-# TODO(post-v0.3.8 / ISS-020): stop requiring/baking 7B shards; keep 3B only on ISO.
-MODEL_SHARD1="qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
-MODEL_SHARD2="qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf"
 VOL_WORK="stickllm-lb-work"
 
 case "$VERSION_DIR" in
@@ -35,8 +32,8 @@ esac
 echo "=== StickLLM build (${ISO_NAME}) ==="
 ./scripts/verify-host.sh
 
-if [[ ! -f "models/${MODEL_3B}" || ! -f "models/${MODEL_SHARD1}" || ! -f "models/${MODEL_SHARD2}" ]]; then
-  echo "Model GGUFs missing — fetching (3B default + 7B)…"
+if [[ ! -f "models/${MODEL_3B}" ]]; then
+  echo "3B GGUF missing — fetching the baked base model…"
   ./scripts/download-model.sh
 fi
 

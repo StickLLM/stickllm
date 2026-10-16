@@ -9,37 +9,39 @@ to the USB or internal disks unless you explicitly approve a write.
 | | |
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
-| Current release | **[v0.3.8](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8)** |
+| Current release | **[v0.3.9](https://github.com/StickLLM/stickllm/releases/tag/v0.3.9)** |
 | Profile | AMD desktop CPU · 32 GB RAM · NVIDIA RTX 3090 (24 GB) |
 | X / Twitter | [@stickllm](https://x.com/stickllm) |
 | Web | [stickllm.org](https://stickllm.org) |
 
 ---
 
-## Get StickLLM (v0.3.8)
+## Get StickLLM (v0.3.9)
 
 ### 1. Download
 
-ISO (~8.7 GB) is on **Google Drive** (GitHub’s 2 GB asset limit):
+ISO (~3.7 GB) is on **Google Drive** (GitHub’s 2 GB asset limit):
 
 https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing
 
-File: `StickLLM-v0.3.8.iso`
+File: `StickLLM-v0.3.9.iso`
+
+Previous ship stays available as `StickLLM-v0.3.8.iso` (hash `88f78154…`).
 
 ### 2. Verify checksum
 
 **Hash of record is in this repo / GitHub Release** — verify the Drive download against it (do not rely on a hash stored only on Drive):
 
-[`checksums/v0.3.8.sha256`](checksums/v0.3.8.sha256)
+[`checksums/v0.3.9.sha256`](checksums/v0.3.9.sha256)
 
 ```powershell
-(Get-FileHash .\StickLLM-v0.3.8.iso -Algorithm SHA256).Hash
-# expect 88F781545762A986BB3A1DCE9183601B7BBE173D0D56A20CA03BEF7A533201CB
+(Get-FileHash .\StickLLM-v0.3.9.iso -Algorithm SHA256).Hash
+# expect 32A37A66110EA2D2BC113D7C3B940647597252986799B007FA1FC217399A9585
 ```
 
 ```bash
-sha256sum StickLLM-v0.3.8.iso
-# expect 88f781545762a986bb3a1dce9183601b7bbe173d0d56a20ca03bef7a533201cb
+sha256sum StickLLM-v0.3.9.iso
+# expect 32a37a66110ea2d2bc113d7c3b940647597252986799b007fa1fc217399a9585
 ```
 
 ### 3. Flash to USB
@@ -51,7 +53,7 @@ Flashing **erases** the stick. Pick the correct disk.
 **Linux:**
 
 ```bash
-sudo dd if=StickLLM-v0.3.8.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=StickLLM-v0.3.9.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 After flash, Windows often shows **no drive letter** — that is normal for this
@@ -61,18 +63,25 @@ Full flash notes: [docs/FLASH.md](docs/FLASH.md). Then boot: [docs/BOOT.md](docs
 
 ---
 
-## What’s in v0.3.8
+## What’s in v0.3.9
 
+- Built-in model is **Qwen2.5 3B** only. **Qwen2.5 7B** is download-only (it is not in the ISO).
+- Hugging Face search, including uncensored/abliterated, and a one-at-a-time download queue with stop, start, and delete. The queue is saved in the models folder and resumes after reboot.
+- Fit labels use the combined VRAM of the suitable GPUs.
+- Chat footer shows speed and how much of the loaded context the reply used.
 - Boot: **Local/Server**, **Terminal**, **Test - SSH Enabled**
 - Inference: **CUDA → Vulkan → CPU** fallback
-- Built-in model; downloadable Qwen models (hash-pinned catalog)
 - Kiosk chat UI on `:80`; LAN pair code (loopback needs no pair; **F9** remints PAIR CODE on kiosk)
 - Ephemeral by default; optional encrypted SSD vault unlock from the UI (file blob; Find/Open existing after reflash)
 - Mount host drives; claim stick free space for durable downloads
 - llama on **127.0.0.1:8080** only
 - **StickLLM UI only** — external OpenAI-style `/v1` clients get **410** (see [FEATURES.md](FEATURES.md))
 
-Release notes: [GitHub Release v0.3.8](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8).
+Release notes: [GitHub Release v0.3.9](https://github.com/StickLLM/stickllm/releases/tag/v0.3.9).
+
+## What’s in v0.3.8
+
+Previous ship (~8.7 GB), still recoverable. It baked both the 3B and the 7B. Notes: [GitHub Release v0.3.8](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8).
 
 ## Threat model (summary)
 
@@ -133,8 +142,9 @@ Companion apps (planned catalog): [docs/APPS.md](docs/APPS.md).
 
 | Artifact | Public? |
 |---|---|
-| **v0.3.8** ISO on Google Drive + [`checksums/v0.3.8.sha256`](checksums/v0.3.8.sha256) | Yes — current ship |
-| Git tags `v0.3.8`, `v0.3.6`, `v0.2.0` + checksum files in git | Yes |
+| **v0.3.9** ISO on Google Drive + [`checksums/v0.3.9.sha256`](checksums/v0.3.9.sha256) | Yes — current ship |
+| **v0.3.8** ISO on Google Drive + [`checksums/v0.3.8.sha256`](checksums/v0.3.8.sha256) | Yes — previous ship |
+| Git tags `v0.3.9`, `v0.3.8`, `v0.3.6`, `v0.2.0` + checksum files in git | Yes |
 | **v0.2.0** GitHub Release (split `.7z` + Drive link) | Yes — older golden |
 | `out/v0.3.0/…` apiready ISO | **No** — local/maintainer restore only |
 | Maintainer Windows Python flasher, ISO-READY gates, lab hardware notes | [docs/MAINTAINER.md](docs/MAINTAINER.md) |

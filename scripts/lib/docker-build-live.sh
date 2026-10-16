@@ -4,9 +4,7 @@
 set -euo pipefail
 
 MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
-# TODO(post-v0.3.8 / ISS-020): stop copying 7B shards into the live image; 3B bake only.
-MODEL_SHARD1="qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
-MODEL_SHARD2="qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf"
+# ISO bake is the 3B only. The 7B Q5 stays a catalog download (ISS-020).
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -88,8 +86,6 @@ rsync -a /stickllm/ui/ config/includes.chroot/opt/stickllm/ui/
 
 mkdir -p config/includes.chroot/opt/stickllm/models
 cp "/stickllm/models/${MODEL_3B}" config/includes.chroot/opt/stickllm/models/
-cp "/stickllm/models/${MODEL_SHARD1}" config/includes.chroot/opt/stickllm/models/
-cp "/stickllm/models/${MODEL_SHARD2}" config/includes.chroot/opt/stickllm/models/
 
 mkdir -p config/includes.chroot/etc/stickllm config/includes.chroot/etc/stickllm/models
 cp /stickllm/config/profiles/amd-rtx3090.toml config/includes.chroot/etc/stickllm/profile.toml
@@ -99,8 +95,10 @@ test -x config/includes.chroot/opt/stickllm/bin/llama-server
 test -x config/includes.chroot/opt/stickllm/bin/llama-server-cpu
 test -f config/includes.chroot/opt/stickllm/lib/libllama-server-impl.so
 test -f "config/includes.chroot/opt/stickllm/models/${MODEL_3B}"
-test -f "config/includes.chroot/opt/stickllm/models/${MODEL_SHARD1}"
-test -f "config/includes.chroot/opt/stickllm/models/${MODEL_SHARD2}"
+if compgen -G "config/includes.chroot/opt/stickllm/models/*7b*" >/dev/null; then
+  echo "ERROR: 7B GGUF must not be baked into the ISO" >&2
+  exit 1
+fi
 test -x config/includes.chroot/usr/local/bin/stickllm-kiosk
 test -f config/includes.chroot/etc/systemd/system/stickllm-kiosk.service
 grep -q 'base_model_id = "qwen25-3b-q4km"' config/includes.chroot/etc/stickllm/models/catalog.toml

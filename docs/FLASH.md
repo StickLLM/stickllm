@@ -7,22 +7,22 @@ node / disk number before writing.
 
 | Image | Where | Checksum |
 |---|---|---|
-| **Current ship v0.3.8** | [Google Drive](https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing) — `StickLLM-v0.3.8.iso` | [`checksums/v0.3.8.sha256`](../checksums/v0.3.8.sha256) → `88f78154…` |
+| **Current ship v0.3.9** | [Google Drive](https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing) — `StickLLM-v0.3.9.iso` | [`checksums/v0.3.9.sha256`](../checksums/v0.3.9.sha256) → `32a37a66…` |
 
-**Hash of record is on GitHub** (`checksums/v0.3.8.sha256` + [Release notes](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8)). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative.
+**Hash of record is on GitHub** (`checksums/v0.3.9.sha256` + [Release notes](https://github.com/StickLLM/stickllm/releases/tag/v0.3.9)). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous ship: `StickLLM-v0.3.8.iso` (`88f78154…`).
 
 N-1 restore: `stickllm-amd-rtx3090-v0.3.6.hybrid.iso` + [`checksums/v0.3.6.sha256`](../checksums/v0.3.6.sha256) — see [RESTORE.md](RESTORE.md).
 
 ## Verify SHA-256
 
 ```powershell
-(Get-FileHash .\StickLLM-v0.3.8.iso -Algorithm SHA256).Hash
-# expect 88F781545762A986BB3A1DCE9183601B7BBE173D0D56A20CA03BEF7A533201CB
+(Get-FileHash .\StickLLM-v0.3.9.iso -Algorithm SHA256).Hash
+# expect 32A37A66110EA2D2BC113D7C3B940647597252986799B007FA1FC217399A9585
 ```
 
 ```bash
-sha256sum StickLLM-v0.3.8.iso
-# expect 88f781545762a986bb3a1dce9183601b7bbe173d0d56a20ca03bef7a533201cb
+sha256sum StickLLM-v0.3.9.iso
+# expect 32a37a66110ea2d2bc113d7c3b940647597252986799b007fa1fc217399a9585
 ```
 
 ## Windows
@@ -43,7 +43,7 @@ Avoid naive PowerShell `FileStream` raw write (Access Denied even when elevated)
 lsblk -d -o NAME,SIZE,MODEL,TRAN
 # REPLACE sdX with your USB device
 sudo wipefs -a /dev/sdX
-sudo dd if=StickLLM-v0.3.8.iso \
+sudo dd if=StickLLM-v0.3.9.iso \
   of=/dev/sdX bs=4M status=progress oflag=sync
 sudo eject /dev/sdX
 ```
@@ -51,14 +51,14 @@ sudo eject /dev/sdX
 Optional helper (same `dd` path):
 
 ```bash
-ISO=StickLLM-v0.3.8.iso ./scripts/flash-linux.sh /dev/sdX
+ISO=StickLLM-v0.3.9.iso ./scripts/flash-linux.sh /dev/sdX
 ```
 
 ## macOS
 
 ```bash
 diskutil list
-ISO=StickLLM-v0.3.8.iso ./scripts/flash-macos.sh /dev/diskN
+ISO=StickLLM-v0.3.9.iso ./scripts/flash-macos.sh /dev/diskN
 ```
 
 ## After flash
