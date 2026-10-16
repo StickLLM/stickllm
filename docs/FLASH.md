@@ -9,8 +9,6 @@ node / disk number before writing.
 |---|---|---|
 | **Current ship v0.3.8** | [Google Drive](https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing) — `StickLLM-v0.3.8.iso` | [`checksums/v0.3.8.sha256`](../checksums/v0.3.8.sha256) → `88f78154…` |
 
-**Do not flash `v0.3.5`** — truncated/broken. Use **v0.3.8**.
-
 **Hash of record is on GitHub** (`checksums/v0.3.8.sha256` + [Release notes](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8)). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative.
 
 N-1 restore: `stickllm-amd-rtx3090-v0.3.6.hybrid.iso` + [`checksums/v0.3.6.sha256`](../checksums/v0.3.6.sha256) — see [RESTORE.md](RESTORE.md).
