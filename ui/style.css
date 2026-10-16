@@ -233,6 +233,9 @@ input[type=range]{accent-color:var(--accent);width:100%}
 .actions.sticky{position:sticky;bottom:-26px;background:var(--panel);padding:14px 0 14px;margin-bottom:-14px;border-top:1px solid var(--line2)}
 .dl{border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin-top:12px;background:var(--bg2)}
 .dlTop{display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px}
+.dlQueue{margin-top:8px;display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--ink2)}
+.qActions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.dlQueue .bad{color:var(--danger)}
 .bar{height:6px;background:var(--line);border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
 
 .vaultCard{display:flex;align-items:center;gap:14px;border:1px solid var(--line);border-radius:var(--r2);padding:14px 16px;background:var(--bg2);flex-wrap:wrap}

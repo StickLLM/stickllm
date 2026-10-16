@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
-<link rel="stylesheet" href="style.css?v=gpufit1" />
+<link rel="stylesheet" href="style.css?v=queueui1" />
 </head>
 <body>
 <div class="app" id="app">
@@ -90,7 +90,7 @@
           </button>
         </div>
       </div>
-      <p class="composerNote"><span id="composerNote">Ephemeral · runs locally</span><span class="composerPerf" id="composerPerf" hidden></span></p>
+      <p class="composerNote"><span id="composerNote"></span><span class="composerPerf" id="composerPerf" hidden></span></p>
     </form>
   </div>
 
@@ -101,6 +101,7 @@
         <div class="setNavHead" id="setTitle">Settings</div>
         <button data-sec="general">General</button>
         <button data-sec="models">Models</button>
+        <button data-sec="downloads">Downloads</button>
         <button data-sec="storage">Storage &amp; Vault</button>
         <button data-sec="chats">Chats</button>
         <button data-sec="devices">Devices &amp; Pairing</button>
@@ -144,19 +145,20 @@
 <section class="sec" id="sec-models" data-title="Models" hidden>
   <div class="summary">
     <div><small>Running</small><b id="runName">none</b><span class="pill" id="runPill">not loaded</span></div>
-    <div><small>Recommended for this GPU</small><b id="recName">—</b><button class="link" id="probeBtn">Re-check GPU</button></div>
+    <div><small id="recGpuLabel">Recommended for this GPU</small><b id="recName">—</b><button class="link" id="probeBtn">Re-check GPU</button></div>
     <div><small>Models folder</small><b class="mono" id="modelDir">…</b><button class="link" id="pickModelDir" type="button">Change…</button></div>
   </div>
   <div class="dl" id="dlBox" hidden>
     <div class="dlTop"><span id="dlName">Downloading</span><span id="dlPct">0%</span></div>
     <div class="bar"><i id="dlFill"></i></div>
     <small id="dlMeta" class="muted"></small>
+    <div id="dlQueue" class="dlQueue"></div>
   </div>
   <div class="policyBanner" id="policyBanner" hidden></div>
   <div class="tabs" role="tablist" aria-label="Model source">
     <button role="tab" data-tab="browse" class="on" aria-selected="true" type="button"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>Browse catalog</button>
     <button role="tab" data-tab="local" aria-selected="false" type="button"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 14h.01M11 14h6"/></svg>On this machine <span class="pill" id="localCount">0</span></button>
-    <span class="grow"></span><span class="muted small offlineNote">Pinned catalog · hash-verified downloads</span>
+    <span class="grow"></span><span class="muted small offlineNote" id="browseNote">Pinned catalog · type to search Hugging Face</span>
     <button class="btn sm" id="refreshCatalog" type="button">Refresh</button>
   </div>
   <div class="mb">
@@ -188,10 +190,10 @@
           <button class="iconBtn sm" id="hfShow" type="button" aria-label="Show token" title="Show/hide"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
           <button class="btn sm" id="hfTest" type="button">Test</button>
           <span class="hfState" id="hfState"></span></div>
-        <small class="muted" id="hfHint">Optional for future gated HF downloads. Use a <b>read-only, fine-grained</b> token. <span id="hfWhere">Session only until vault save ships.</span></small>
+        <small class="muted" id="hfHint">Optional, for gated models. Use a <b>read-only</b> token. <span id="hfWhere">Unlock the vault to keep this token across a reboot.</span></small>
       </div>
       <div class="mbTools">
-        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mfSearch" placeholder="Search models" aria-label="Search models"></div>
+        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mfSearch" placeholder="Search Hugging Face (GGUF)" aria-label="Search Hugging Face GGUF models"></div>
         <label class="sortSel">Sort <select id="mfSort"><option value="fit">Best fit</option><option value="size">Size</option><option value="name">Name</option></select></label>
       </div>
       <div class="mbCount"><span id="modelCount"></span><span id="policyHidden"></span></div>
@@ -239,6 +241,12 @@
     <button class="btn primary" id="activate" type="button">Load model</button>
   </div>
   </div>
+</section>
+
+<!-- DOWNLOADS -->
+<section class="sec" id="sec-downloads" data-title="Downloads" hidden>
+  <p class="muted">One model downloads at a time. Stop keeps the partial file so Start can resume it. Delete only removes it from this queue.</p>
+  <div class="group" id="queueList"></div>
 </section>
 
 <!-- STORAGE -->
@@ -364,7 +372,7 @@
     <div class="group">
       <div class="row"><span>Version</span><span class="mono" id="aboutVer">hotfix</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono">b4521</span></div>
-      <div class="row"><span>UI</span><span class="mono">v0.3.8</span></div>
+      <div class="row"><span>UI</span><span class="mono">v0.3.9</span></div>
       <div class="row"><span>License</span><span>MIT</span></div>
       <div class="row"><span>Website</span><a href="https://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
     </div>
@@ -451,6 +459,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=gpufit1"></script>
+<script src="app.js?v=ctx1"></script>
 </body>
 </html>

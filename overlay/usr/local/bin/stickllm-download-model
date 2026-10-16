@@ -11,6 +11,12 @@ LOCK="$RUN/download.lock"
 ID=""
 CONFIRM=0
 DEST_OVERRIDE=""
+HF_REPO=""
+HF_FILE=""
+HF_SHA=""
+HF_BYTES=0
+HF_NAME=""
+ALLOW_UNPINNED=0
 
 usage() {
   echo "Usage: sudo stickllm-download-model --i-understand [--id MODEL_ID] [--dest DIR]"
@@ -25,6 +31,12 @@ while [[ $# -gt 0 ]]; do
     --id=*) ID="${1#--id=}"; shift ;;
     --dest) DEST_OVERRIDE="${2:-}"; shift 2 ;;
     --dest=*) DEST_OVERRIDE="${1#--dest=}"; shift ;;
+    --repo) HF_REPO="${2:-}"; shift 2 ;;
+    --file) HF_FILE="${2:-}"; shift 2 ;;
+    --sha256) HF_SHA="${2:-}"; shift 2 ;;
+    --bytes) HF_BYTES="${2:-}"; shift 2 ;;
+    --name) HF_NAME="${2:-}"; shift 2 ;;
+    --allow-unpinned) ALLOW_UNPINNED=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown: $1"; usage; exit 2 ;;
   esac
@@ -47,6 +59,8 @@ if ! flock -n 9; then
   echo "Another stickllm-download-model is already running."
   exit 0
 fi
+echo $$ >"$RUN/download.pid"
+trap 'rm -f "$RUN/download.pid"' EXIT
 
 # Session mode (header dropdown): ephemeral = no vault/SSD writes; vault = prefer vault.
 SESSION_MODE="${STICKLLM_SESSION_MODE:-}"
@@ -129,6 +143,41 @@ if [[ -z "$DEST_DIR" ]]; then
 fi
 mkdir -p "$DEST_DIR"
 
+if [[ -n "$HF_REPO" || -n "$HF_FILE" ]]; then
+  case "$HF_FILE" in
+    *.gguf) ;;
+    *) echo "Refusing non-GGUF file: $HF_FILE"; exit 2 ;;
+  esac
+  case "$HF_FILE" in
+    *..*|/*) echo "Refusing unsafe file path"; exit 2 ;;
+  esac
+  case "$HF_REPO" in
+    */*) ;;
+    *) echo "Refusing repo (need org/name): $HF_REPO"; exit 2 ;;
+  esac
+  MAP="$(
+    HF_REPO="$HF_REPO" HF_FILE="$HF_FILE" HF_SHA="$HF_SHA" HF_BYTES="$HF_BYTES" HF_NAME="$HF_NAME" HF_ID="${ID:-hf}" \
+    python3 - <<'PY'
+import json, os
+repo = os.environ["HF_REPO"]
+file = os.environ["HF_FILE"]
+sha = os.environ.get("HF_SHA", "").strip().lower()
+try:
+    nbytes = int(os.environ.get("HF_BYTES") or 0)
+except ValueError:
+    nbytes = 0
+name = os.environ.get("HF_NAME") or file
+print(json.dumps({
+    "id": os.environ.get("HF_ID") or "hf",
+    "name": name,
+    "hf_repo": repo,
+    "hf_files": [file],
+    "sha256": [sha] if len(sha) == 64 else [],
+    "approx_size_gb": round(nbytes / (1024 ** 3), 3) if nbytes else 0,
+}))
+PY
+  )"
+else
 # Resolve model from catalog via python
 MAP="$(python3 - "$CATALOG" "$ID" <<'PY'
 import json, re, sys
@@ -171,6 +220,7 @@ else:
 print(json.dumps(pick))
 PY
 )"
+fi
 
 if echo "$MAP" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(1 if d.get("error") else 0)'; then
   :
@@ -247,10 +297,11 @@ i=0
 BYTES_BEFORE=0
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  DEST="${DEST_DIR}/${f}"
-  URL="https://huggingface.co/${REPO}/resolve/main/${f}"
+  DEST="${DEST_DIR}/$(basename -- "$f")"
+  ENC="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$f")"
+  URL="https://huggingface.co/${REPO}/resolve/main/${ENC}"
   expect="$(echo "$HASHES" | sed -n "$((i+1))p" | tr '[:upper:]' '[:lower:]')"
-  if [[ -z "$expect" ]]; then
+  if [[ -z "$expect" && "$ALLOW_UNPINNED" != "1" ]]; then
     echo "FATAL: no sha256 in catalog for $f — refusing unverified model"
     write_progress "failed" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "missing sha256"
     exit 5
@@ -259,7 +310,7 @@ while IFS= read -r f; do
     echo "Already present: $DEST — verifying sha256"
     write_progress "verifying" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "hash check"
     got="$(sha256sum "$DEST" | awk '{print tolower($1)}')"
-    if [[ "$got" != "$expect" ]]; then
+    if [[ -n "$expect" && "$got" != "$expect" ]]; then
       echo "HASH MISMATCH: $f"
       echo "  expected $expect"
       echo "  got      $got"
@@ -272,6 +323,29 @@ while IFS= read -r f; do
     echo "OK sha256 $f"
   else
     TMP="${DEST}.partial"
+    STICKLLM_SC_DEST="$DEST" STICKLLM_SC_ID="$ID" STICKLLM_SC_NAME="$NAME" \
+      STICKLLM_SC_REPO="$REPO" STICKLLM_SC_FILE="$f" STICKLLM_SC_SHA="$expect" \
+      STICKLLM_SC_BYTES="$TOTAL_BYTES" STICKLLM_SC_DIR="$DEST_DIR" \
+      python3 - <<'PY'
+import json, os
+from pathlib import Path
+dest = os.environ.get("STICKLLM_SC_DEST") or ""
+if dest:
+    try:
+        nbytes = int(os.environ.get("STICKLLM_SC_BYTES") or 0)
+    except ValueError:
+        nbytes = 0
+    doc = {
+        "id": os.environ.get("STICKLLM_SC_ID") or "",
+        "name": os.environ.get("STICKLLM_SC_NAME") or "",
+        "repo": os.environ.get("STICKLLM_SC_REPO") or "",
+        "file": os.environ.get("STICKLLM_SC_FILE") or "",
+        "sha256": os.environ.get("STICKLLM_SC_SHA") or "",
+        "bytes": nbytes,
+        "dest": os.environ.get("STICKLLM_SC_DIR") or "",
+    }
+    Path(dest + ".stickllm.json").write_text(json.dumps(doc) + "\n", encoding="utf-8")
+PY
     echo "Fetching $f …"
     write_progress "downloading" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "fetching"
     if command -v curl >/dev/null; then
@@ -283,6 +357,10 @@ while IFS= read -r f; do
         ATTEMPT=$((ATTEMPT + 1))
         write_progress "downloading" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "fetching (try ${ATTEMPT}/${MAX_ATTEMPTS})"
         set +e
+        HDR=()
+        if [[ -n "${STICKLLM_HF_TOKEN:-}" ]]; then
+          HDR=(-H "Authorization: Bearer ${STICKLLM_HF_TOKEN}")
+        fi
         curl -L --fail --progress-bar \
           -C - \
           --retry 8 \
@@ -291,6 +369,7 @@ while IFS= read -r f; do
           --connect-timeout 30 \
           --speed-time 60 \
           --speed-limit 1000 \
+          "${HDR[@]}" \
           -o "$TMP" "$URL" &
         CURLPID=$!
         STALL_TICKS=0
@@ -340,13 +419,16 @@ while IFS= read -r f; do
     write_progress "verifying" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "hash check"
     # ISS-011: verify .partial before mv into final path.
     got="$(sha256sum "$TMP" | awk '{print tolower($1)}')"
-    if [[ "$got" != "$expect" ]]; then
+    if [[ -n "$expect" && "$got" != "$expect" ]]; then
       echo "HASH MISMATCH: $f"
       echo "  expected $expect"
       echo "  got      $got"
       rm -f "$TMP"
       write_progress "failed" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "hash mismatch"
       exit 5
+    fi
+    if [[ -z "$expect" ]]; then
+      echo "No catalog hash for $f — saved sha256 $got"
     fi
     mv "$TMP" "$DEST"
     chmod 644 "$DEST"

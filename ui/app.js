@@ -8,10 +8,16 @@ const TOKEN_KEY = "stickllm_pair_token";
 let token = localStorage.getItem(TOKEN_KEY) || "";
 let isLocalMode = false;
 let sessionMode = "ephemeral";
+let loadedCtx = 0;
+let lastPerf = null;
 let sessionModeBusy = false;
 let activeChatId = null;
 let lastRemintId = null;
 let lastCatalog = [];
+let hfHits = [];
+let hfBusy = false;
+let hfErr = "";
+let hfTimer = null;
 let selectedModelId = null;
 /** Optimistic card badge while llama loads (cleared on running / failure). */
 let loadingModelId = null;
@@ -20,7 +26,7 @@ let vaultBrowsePath = "";
 let vaultPickerMount = "";
 let vaultBrowseBlobPath = "";
 let pickerPurpose = "vault"; // vault | models_dir | folder
-let hwInfo = { vram: 24, ram: 64, gpu: "", name: "This machine" };
+let hwInfo = { vram: 24, vramEach: 24, gpuCount: 1, ram: 64, gpu: "", name: "This machine" };
 const messages = [{
   role: "system",
   content: "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
@@ -100,9 +106,7 @@ function applyModeUi(m) {
   $("#chatWhere").textContent = m === "vault"
     ? "Vault: saved encrypted on the host SSD."
     : "Ephemeral: in memory only, gone at reboot.";
-  $("#composerNote").textContent = m === "vault"
-    ? "Vault session · runs locally"
-    : "Ephemeral · runs locally";
+  $("#composerNote").textContent = "";
   // Keep empty-state hero in sync when mode toggles without a new chat.
   const heroP = $("#thread .empty p");
   if (heroP) heroP.textContent = heroModeLine(m);
@@ -271,6 +275,30 @@ async function ensurePaired(force = false) {
   } catch (_) { return true; }
 }
 
+function formatCtxK(n) {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v) || v <= 0) return "";
+  if (v % 1024 === 0) return `${v / 1024}K`;
+  if (v > 1024) return `${Math.round((v / 1024) * 10) / 10}K`;
+  return String(v);
+}
+function contextUsedTokens(data, promptTok, genTok) {
+  const usage = data?.usage || {};
+  const total = Number(usage.total_tokens);
+  if (Number.isFinite(total) && total > 0) return total;
+  const promptAll = Number(usage.prompt_tokens);
+  const completion = Number(usage.completion_tokens);
+  if ((Number.isFinite(promptAll) && promptAll > 0) || (Number.isFinite(completion) && completion > 0)) {
+    return (Number.isFinite(promptAll) && promptAll > 0 ? promptAll : 0)
+      + (Number.isFinite(completion) && completion > 0 ? completion : 0);
+  }
+  const t = data?.timings || data?.llama_timings || {};
+  const cacheN = Number(t.cache_n);
+  const used = (Number.isFinite(cacheN) && cacheN > 0 ? cacheN : 0)
+    + (Number.isFinite(promptTok) && promptTok > 0 ? promptTok : 0)
+    + (Number.isFinite(genTok) && genTok > 0 ? genTok : 0);
+  return used > 0 ? used : null;
+}
 function formatPerfBits(stats) {
   if (!stats) return "";
   const bits = [];
@@ -279,20 +307,32 @@ function formatPerfBits(stats) {
   if (stats.genTok != null) bits.push(`${stats.genTok} tok`);
   if (stats.ms != null) bits.push(`${(stats.ms / 1000).toFixed(1)}s`);
   if (stats.est) bits.push("~est");
+  const ctx = loadedCtx > 0 ? loadedCtx : Number(stats.ctx);
+  const label = formatCtxK(ctx);
+  if (label) {
+    const used = Number(stats.usedTok);
+    if (Number.isFinite(used) && used > 0 && ctx > 0) {
+      const pct = Math.max(0, Math.min(100, Math.round((100 * used) / ctx)));
+      bits.push(`ctx ${label} · ${pct}%`);
+    } else {
+      bits.push(`ctx ${label}`);
+    }
+  }
   return bits.join(" · ");
 }
 function updatePerfStrip(stats) {
+  lastPerf = stats || null;
   const text = formatPerfBits(stats);
-  // Bottom line under composer (under the composer) — primary place.
+  // Bottom line under composer — primary place.
   const bottom = $("#composerPerf");
   if (bottom) {
-    bottom.textContent = text ? " · " + text : "";
+    bottom.textContent = text;
     bottom.hidden = !text;
   }
   // Keep a copy on the yellow TEST banner too.
   const top = $("#testPerf");
   if (top) {
-    top.textContent = text ? " · " + text : "";
+    top.textContent = text;
     top.hidden = !text;
   }
 }
@@ -309,6 +349,8 @@ function perfFromChatResponse(data, wallMs, replyText) {
       promptTps: Number.isFinite(promptTps) && promptTps > 0 ? promptTps : null,
       genTok: Number.isFinite(genTok) ? genTok : null,
       promptTok: Number.isFinite(promptTok) ? promptTok : null,
+      usedTok: contextUsedTokens(data, promptTok, genTok),
+      ctx: loadedCtx,
       ms: Number.isFinite(predMs) ? predMs : wallMs,
       est: false,
     };
@@ -321,6 +363,8 @@ function perfFromChatResponse(data, wallMs, replyText) {
     promptTps: null,
     genTok: Number.isFinite(genTok) ? genTok : approxTok,
     promptTok: Number.isFinite(promptTok) ? promptTok : null,
+    usedTok: contextUsedTokens(data, promptTok, genTok),
+    ctx: loadedCtx,
     ms: wallMs,
     est: true,
   };
@@ -410,7 +454,7 @@ function openSettings(sec = "general") {
   lastFocus = document.activeElement; $("#settings").hidden = false; $("#statusPop").hidden = true;
   if (mobile()) toggleNav(false);
   showSec(sec, !mobile() || sec !== "__nav");
-  if (sec === "models") refreshModels().catch((e) => toast(e.message));
+  if (sec === "models" || sec === "downloads") refreshModels().catch((e) => toast(e.message));
   if (sec === "storage") refreshStorage().catch((e) => toast(e.message));
   if (sec === "devices" || sec === "network" || sec === "system" || sec === "about")
     refreshStatus().catch(() => {});
@@ -430,7 +474,7 @@ function closeSettings() { $("#settings").hidden = true; lastFocus?.focus?.(); }
 $$("[data-open]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openSettings(b.dataset.open); }));
 $$(".setNav [data-sec]").forEach((b) => (b.onclick = () => {
   showSec(b.dataset.sec);
-  if (b.dataset.sec === "models") refreshModels().catch((e) => toast(e.message));
+  if (b.dataset.sec === "models" || b.dataset.sec === "downloads") refreshModels().catch((e) => toast(e.message));
   if (b.dataset.sec === "storage") refreshStorage().catch(() => {});
 }));
 $$("[data-sec-go]").forEach((b) => (b.onclick = () => {
@@ -460,6 +504,11 @@ function fmtBytes(n) {
   return `${(n / 1024 ** 2).toFixed(0)} MB`;
 }
 
+function isAbliterated(m) {
+  if (m.abliterated || m.abl) return true;
+  const blob = `${m.name || ""} ${m.repo || ""} ${m.file || ""} ${m.id || ""}`.toLowerCase();
+  return /abliterat|uncensor|jailbreak/.test(blob);
+}
 function modelTrust(m) {
   const t = String(m.trust || m.trust_level || "").toLowerCase();
   if (TRUST[t]) return t;
@@ -475,33 +524,58 @@ function modelGb(m) {
 function modelQuant(m) {
   return String(m.quant || m.q || "Q4_K_M");
 }
+function fitGb(n) {
+  const v = Number(n) || 0;
+  return (v >= 10 ? v.toFixed(0) : v.toFixed(1)) + " GB";
+}
+function hardwareDetectedLine() {
+  const n = Math.max(0, Number(hwInfo.gpuCount) || 0);
+  const name = hwInfo.gpu ? hwInfo.gpu : "GPU";
+  const ram = `${Number(hwInfo.ram).toFixed(1)} GB`;
+  if (n > 1) {
+    const each = Number(hwInfo.vramEach) || 0;
+    const split = each ? ` (${n}× ${fitGb(each)})` : "";
+    return `Detected: ${n}× ${name} · ${fitGb(hwInfo.vram)} VRAM${split} · RAM ${ram}`;
+  }
+  return `Detected: ${hwInfo.gpu ? hwInfo.gpu + " " : ""}${fitGb(hwInfo.vram)} VRAM · RAM ${ram}`;
+}
+function hardwarePool() {
+  if (state.mf.target === "custom") {
+    const vram = +$("#cVram")?.value || 0;
+    return { vram, vramEach: vram, gpuCount: 1, ram: +$("#cRam")?.value || 0, gpu: "" };
+  }
+  return hwInfo;
+}
 function fitOf(m) {
-  const hw = state.mf.target === "custom"
-    ? { vram: +$("#cVram")?.value || 0, ram: +$("#cRam")?.value || 0 }
-    : hwInfo;
+  const hw = hardwarePool();
   const gb = modelGb(m) || Number(m.min_vram_gb || 0) || 4;
   const kvMul = { f16: 1, q8: 0.53, q4: 0.28 }[state.kv] || 1;
   const kv = Math.max(0.5, (gb / 8) * (state.mf.ctx / 8192) * kvMul);
   const need = gb + kv + 1;
-  if (need <= hw.vram) return { k: "gpu", need, kv, label: "Fits on GPU", cls: "fit-ok" };
-  if (need <= hw.vram + hw.ram - 8) return { k: "offload", need, kv, label: "Fits with CPU offload", cls: "fit-warn" };
-  return { k: "no", need, kv, label: "Won't fit", cls: "fit-no" };
+  const pool = Number(hw.vram) || 0;
+  const each = Number(hw.vramEach) || pool;
+  const cards = Math.max(1, Number(hw.gpuCount) || 1);
+  const size = fitGb(need);
+  if (cards > 1 && each > 0 && need <= each) return { k: "gpu", need, kv, label: `Fits on 1 GPU · ${size}`, cls: "fit-ok" };
+  if (need <= pool) return { k: "gpu", need, kv, label: cards > 1 ? `Fits on ${cards} GPUs · ${size}` : `Fits in VRAM · ${size}`, cls: "fit-ok" };
+  if (need <= pool + (Number(hw.ram) || 0) - 8) return { k: "offload", need, kv, label: `Partial · ${fitGb(pool)} in VRAM`, cls: "fit-warn" };
+  return { k: "no", need, kv, label: `Won't fit · needs ${size}`, cls: "fit-no" };
 }
 function modelVisible(m) {
   const f = state.mf;
   const trust = modelTrust(m);
   if (state.mtab === "local" ? !m.installed : false) return false;
   if (state.policy.verifiedOnly && trust !== "verified") return false;
-  if (state.policy.hideUnc && m.abliterated) return false;
+  if (state.policy.hideUnc && isAbliterated(m)) return false;
   if (!f.trust.has(trust)) return false;
-  if (f.abl === "only" && !m.abliterated) return false;
-  if (f.abl === "exclude" && m.abliterated) return false;
+  if (f.abl === "only" && !isAbliterated(m)) return false;
+  if (f.abl === "exclude" && isAbliterated(m)) return false;
   if (f.quant !== "any" && modelQuant(m).toUpperCase() !== f.quant.toUpperCase()) return false;
   // GGUF only — llama.cpp does not run safetensors
   if (String(m.format || "GGUF").toLowerCase() === "safetensors") return false;
   if (f.lic === "commercial" && m.license_noncommercial) return false;
   if (f.lic === "noncommercial" && !m.license_noncommercial) return false;
-  if (f.q && !(String(m.name || "") + " " + String(m.id || "")).toLowerCase().includes(f.q.toLowerCase())) return false;
+  if (f.q && !m.hf && !(String(m.name || "") + " " + String(m.id || "")).toLowerCase().includes(f.q.toLowerCase())) return false;
   if (f.fits && fitOf(m).k === "no") return false;
   return true;
 }
@@ -521,6 +595,11 @@ function updateVramBar(m) {
   if ($("#vramTotal")) $("#vramTotal").textContent = `of ${total} GB`;
   if ($("#vramWarn")) $("#vramWarn").hidden = fit.k !== "no";
 }
+function browseSource() {
+  const q = (state.mf.q || "").trim();
+  if (state.mtab === "browse" && q.length >= 2) return hfHits;
+  return lastCatalog;
+}
 function renderModelsList() {
   const list = $("#modelList");
   if (!list) return;
@@ -538,7 +617,7 @@ function renderModelsList() {
   if ($("#hwLine")) {
     $("#hwLine").textContent = state.mf.target === "custom"
       ? "Enter VRAM and RAM"
-      : `Detected: ${hwInfo.gpu ? hwInfo.gpu + " " : ""}${hwInfo.vram} GB VRAM · RAM ${hwInfo.ram} GB`;
+      : hardwareDetectedLine();
   }
   if ($("#mfFits")) $("#mfFits").checked = state.mf.fits;
   if ($("#mfCtx")) $("#mfCtx").value = String(state.mf.ctx);
@@ -557,12 +636,29 @@ function renderModelsList() {
       $("#policyBanner").innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg><span><b>Machine policy:</b> ${rules.join(" · ")}.</span>`;
     }
   }
-  if (!lastCatalog.length) {
+  const source = browseSource();
+  const searching = state.mtab === "browse" && (state.mf.q || "").trim().length >= 2;
+  if ($("#browseNote")) {
+    $("#browseNote").textContent = searching
+      ? (hfBusy ? "Searching Hugging Face…" : "Hugging Face · GGUF only")
+      : "Pinned catalog · type to search Hugging Face";
+  }
+  if (searching && hfBusy && !hfHits.length) {
+    list.innerHTML = '<div class="emptyCards">Searching Hugging Face…</div>';
+    syncModelActions();
+    return;
+  }
+  if (searching && hfErr && !hfHits.length) {
+    list.innerHTML = `<div class="emptyCards">${esc(hfErr)}</div>`;
+    syncModelActions();
+    return;
+  }
+  if (!source.length && !searching) {
     list.innerHTML = '<div class="emptyCards">No catalog entries. Pair this browser, then Refresh.</div>';
     syncModelActions();
     return;
   }
-  let rows = lastCatalog.filter(modelVisible);
+  let rows = source.filter(modelVisible);
   const order = { gpu: 0, offload: 1, no: 2 };
   rows.sort((a, b) => {
     if (state.mf.sort === "size") return modelGb(b) - modelGb(a);
@@ -570,7 +666,7 @@ function renderModelsList() {
     return (order[fitOf(a).k] - order[fitOf(b).k]) || (Number(!!b.recommended) - Number(!!a.recommended));
   });
   if ($("#modelCount")) {
-    $("#modelCount").textContent = `${rows.length} model${rows.length === 1 ? "" : "s"}${state.mtab === "browse" ? " in catalog" : " on this stick"} · fit at ${state.mf.ctx / 1024}k context`;
+    $("#modelCount").textContent = `${rows.length} model${rows.length === 1 ? "" : "s"}${searching ? " from Hugging Face" : state.mtab === "browse" ? " in catalog" : " on this stick"} · fit at ${state.mf.ctx / 1024}k context`;
   }
   list.innerHTML = rows.map((m) => {
     const id = m.id;
@@ -596,6 +692,14 @@ function renderModelsList() {
       actions = delBtn;
     } else if (have) {
       actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : "Load"}</button>${delBtn}`;
+    } else if (queueState(id) === "active" || dlActiveId === id) {
+      actions = `<span class="pill warn">downloading</span>`;
+    } else if (queueState(id) === "pending") {
+      actions = `<span class="pill">queued</span>`;
+    } else if (queueState(id) === "paused") {
+      actions = `<span class="pill">paused</span>`;
+    } else if (queueState(id) === "failed") {
+      actions = `<button class="btn sm" data-dl="${esc(id)}" type="button">Retry</button>`;
     } else {
       actions = `<button class="btn sm ${fit.k === "no" ? "" : "primary"}" data-dl="${esc(id)}" type="button">Download</button>`;
     }
@@ -604,7 +708,7 @@ function renderModelsList() {
         <div class="mcName"><b>${esc(name)}</b><small>${esc(q)} · ${have ? gbTxt + " on disk" : "~" + gbTxt}${have ? " · on " + where : ""}${rec ? " · recommended" : ""}</small></div>
         ${run ? '<span class="pill ok">running</span>' : ""}${loading ? '<span class="pill warn">loading</span>' : ""}${rec ? '<span class="pill acc">recommended</span>' : ""}
       </div>
-      <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${m.abliterated ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">GGUF</span></div>
+      <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">GGUF</span></div>
       <div class="mcFoot">
         <span class="fit ${fit.cls}" title="Needs ~${fit.need.toFixed(1)} GB">${fit.label}</span>
         <span class="grow"></span>${actions}
@@ -625,7 +729,7 @@ function renderModelsList() {
   $$("#modelList [data-load]").forEach((b) => (b.onclick = (e) => {
     e.stopPropagation();
     const id = b.dataset.load;
-    const m = lastCatalog.find((x) => x.id === id);
+    const m = findModel(id);
     // Paint Loading on this card immediately (before activate network call).
     beginModelLoadUi(id, m?.name || id);
     // Yield a frame so the badge/status line paint before the long activate await.
@@ -634,12 +738,12 @@ function renderModelsList() {
   $$("#modelList [data-delf]").forEach((b) => (b.onclick = (e) => {
     e.stopPropagation();
     selectedModelId = b.dataset.delf;
-    askDeleteModel(lastCatalog.find((x) => x.id === b.dataset.delf));
+    askDeleteModel(findModel(b.dataset.delf));
   }));
   syncModelActions();
 }
 function syncModelActions() {
-  const m = lastCatalog.find((x) => x.id === selectedModelId);
+  const m = findModel(selectedModelId);
   if (!m) {
     if ($("#selHint")) $("#selHint").textContent = "Select a model";
     updateVramBar({});
@@ -664,9 +768,14 @@ function syncModelActions() {
   }
   updateVramBar(m);
 }
+function findModel(id) {
+  return hfHits.find((x) => x.id === id) || lastCatalog.find((x) => x.id === id);
+}
 function resetModelFilters() {
   state.mf = { ...state.mf, fits: false, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", q: "", sort: "fit" };
   if ($("#mfSearch")) $("#mfSearch").value = "";
+  hfHits = [];
+  hfErr = "";
   renderModelsList();
 }
 function friendlyModelLabel(raw, pathHint) {
@@ -686,12 +795,19 @@ async function refreshModels() {
   if (st.offload && st.offload.caption && lastLlama && !lastLlama.caption) lastLlama.caption = st.offload.caption;
   lastCatalog = st.catalog || [];
   const probe = st.probe || {};
+  const gpuCount = Number(st.gpu_count || (Array.isArray(st.gpus) ? st.gpus.length : 0) || hwInfo.gpuCount) || 1;
+  const vram = Number(st.vram_gb || probe.vram_gb || hwInfo.vram) || 24;
   hwInfo = {
-    vram: Number(st.vram_gb || probe.vram_gb || hwInfo.vram) || 24,
+    vram,
+    vramEach: Number(st.vram_each_gb) || (gpuCount > 1 ? vram / gpuCount : vram),
+    gpuCount,
     ram: Number(st.ram_gb || hwInfo.ram) || 64,
-    gpu: String(probe.gpu || st.gpu || hwInfo.gpu || ""),
+    gpu: String(st.gpu || probe.gpu || hwInfo.gpu || ""),
     name: "This machine",
   };
+  if ($("#recGpuLabel")) {
+    $("#recGpuLabel").textContent = gpuCount > 1 ? `Recommended for these ${gpuCount} GPUs` : "Recommended for this GPU";
+  }
   const run = lastCatalog.find((m) => m.running || m.active) || lastCatalog.find((m) => m.installed);
   if (loadingModelId) {
     const lm = lastCatalog.find((m) => m.id === loadingModelId);
@@ -716,32 +832,122 @@ async function refreshModels() {
   if ($("#modelDir")) {
     $("#modelDir").textContent = st.models_dir_preferred || st.download_dir || (st.models_dirs && st.models_dirs[0]) || "…";
   }
-  renderDownload(st.download || {});
+  const tok = $("#hfToken");
+  if (tok && !hfDirty && document.activeElement !== tok && typeof st.hf_token === "string") {
+    tok.value = st.hf_token;
+  }
+  hfHint(st);
+  applyDownloadView(st);
   renderModelsList();
+  if (downloadStillGoing(st) && !dlPollTimer) startDlPoll();
+}
+let dlQueue = [];
+let dlActiveId = "";
+function queueState(id) {
+  const hit = dlQueue.find((q) => q.id === id);
+  return hit ? hit.state : "";
+}
+function applyDownloadView(st) {
+  if (Array.isArray(st?.download_queue)) dlQueue = st.download_queue;
+  const d = st?.download || {};
+  const live = ["downloading", "verifying", "starting"].includes(d.state);
+  dlActiveId = live ? (d.id || "") : "";
+  renderDownload(d);
+  renderQueuePanel();
+}
+function queueStatusLine(q) {
+  const labels = { active: "Downloading", pending: "Queued", paused: "Paused", failed: "Failed" };
+  const label = labels[q.state] || q.state || "Queued";
+  const pct = q.percent == null ? "" : ` · ${Math.round(Number(q.percent))}%`;
+  const size = q.bytes ? ` · ${fmtBytes(q.bytes_done)} / ${fmtBytes(q.bytes)}` : "";
+  const err = q.error ? ` — ${q.error}` : "";
+  return `${label}${pct}${size}${err}`;
+}
+function renderQueuePanel() {
+  const box = $("#queueList");
+  if (!box) return;
+  if (!dlQueue.length) {
+    box.innerHTML = '<div class="row"><div><b>Queue empty</b><small>Downloads you start from Models show up here.</small></div></div>';
+    return;
+  }
+  box.innerHTML = dlQueue.map((q) => {
+    const id = esc(q.id);
+    const start = q.state === "active" ? "" : `<button class="btn sm primary" data-qact="start" data-qid="${id}" type="button">Start</button>`;
+    const stop = q.state === "active" || q.state === "pending" ? `<button class="btn sm" data-qact="stop" data-qid="${id}" type="button">Stop</button>` : "";
+    const del = `<button class="btn sm danger ghost" data-qact="remove" data-qid="${id}" type="button">Delete</button>`;
+    return `<div class="row"><div><b>${esc(q.name || q.file || q.id)}</b><small>${esc(queueStatusLine(q))}</small></div><div class="qActions">${stop}${start}${del}</div></div>`;
+  }).join("");
+  $$("#queueList [data-qact]").forEach((b) => {
+    b.onclick = () => onQueueAction(b.dataset.qact, b.dataset.qid);
+  });
+}
+async function sendQueue(action, id) {
+  try {
+    const res = await control(action, { id });
+    applyDownloadView(res);
+    renderModelsList();
+    if (!dlPollTimer) startDlPoll();
+    toast(res.note || "Updated");
+  } catch (e) { toast(e.message); }
+}
+function onQueueAction(act, id) {
+  const q = dlQueue.find((item) => item.id === id);
+  const name = q?.name || "this model";
+  if (act === "remove") {
+    confirmBox({
+      title: "Remove from the download queue?",
+      text: `${name} stops if it is downloading. The partial file stays on disk.`,
+      word: "REMOVE",
+      ok: "Remove",
+      cb: () => sendQueue("queue_remove", id),
+    });
+    return;
+  }
+  sendQueue(act === "stop" ? "queue_stop" : "queue_start", id);
 }
 function renderDownload(d) {
   const box = $("#dlBox");
   const state_ = d?.state || "idle";
-  if (!["downloading", "verifying", "starting", "failed", "done"].includes(state_)) {
-    box.hidden = true; return;
+  const waiting = dlQueue.filter((q) => q.state === "pending" || q.state === "failed" || q.state === "paused");
+  const active = ["downloading", "verifying", "starting", "failed", "done"].includes(state_);
+  if (!active && !waiting.length) {
+    box.hidden = true;
+    return;
   }
   box.hidden = false;
-  $("#dlName").textContent = (state_ === "done" ? "Downloaded " : "Downloading ") + (d.name || d.id || "model");
-  const pct = d.percent == null ? (state_ === "done" ? 100 : 10) : Number(d.percent);
-  $("#dlFill").style.width = Math.max(2, Math.min(100, pct)) + "%";
-  $("#dlPct").textContent = Math.round(pct) + "%";
-  $("#dlMeta").textContent = d.note || `${fmtBytes(d.bytes_done)} / ${fmtBytes(d.bytes_total)}`;
+  const label = state_ === "done" ? "Downloaded " : state_ === "failed" ? "Failed " : "Downloading ";
+  $("#dlName").textContent = active ? label + (d.name || d.id || "model") : "Download queue";
+  const pct = d.percent == null ? (state_ === "done" ? 100 : active ? 2 : 0) : Number(d.percent);
+  $("#dlFill").style.width = Math.max(active ? 2 : 0, Math.min(100, pct)) + "%";
+  $("#dlPct").textContent = active ? Math.round(pct) + "%" : "";
+  $("#dlMeta").textContent = active ? (d.note || `${fmtBytes(d.bytes_done)} / ${fmtBytes(d.bytes_total)}`) : "";
+  const qEl = $("#dlQueue");
+  if (qEl) {
+    qEl.innerHTML = waiting.map((q) => {
+      const tag = q.state === "failed" ? "failed" : q.state === "paused" ? "paused" : "up next";
+      const size = q.bytes ? ` · ${fmtBytes(q.bytes)}` : "";
+      const err = q.error ? ` — ${q.error}` : "";
+      return `<div class="${q.state === "failed" ? "bad" : ""}">${tag}: ${esc(q.name || q.file || q.id)}${size}${esc(err)}</div>`;
+    }).join("");
+  }
+}
+function downloadStillGoing(st) {
+  const s = st?.download?.state;
+  const queued = (st?.download_queue || dlQueue).some((q) => q.state === "pending" || q.state === "active");
+  return queued || ["downloading", "verifying", "starting"].includes(s);
 }
 function startDlPoll() {
   stopDlPoll();
   dlPollTimer = setInterval(async () => {
     try {
       const st = await control("status");
-      renderDownload(st.download || {});
-      const s = st.download?.state;
-      if (!s || s === "idle" || s === "done" || s === "failed") {
+      applyDownloadView(st);
+      if (!downloadStillGoing(st)) {
         stopDlPoll();
         lastCatalog = st.catalog || lastCatalog;
+        renderModelsList();
+      } else if (st.catalog) {
+        lastCatalog = st.catalog;
         renderModelsList();
       }
     } catch (_) {}
@@ -945,7 +1151,7 @@ function paintSoon() {
 }
 
 $("#activate").onclick = async () => {
-  const m = lastCatalog.find((x) => x.id === selectedModelId);
+  const m = findModel(selectedModelId);
   if (!m) return toast("Select a model");
   const name = m.name || m.id;
   try {
@@ -991,9 +1197,9 @@ if ($("#fewerLayers")) $("#fewerLayers").onclick = () => retryFewerLayers();
 if ($("#fewerLayersBar")) $("#fewerLayersBar").onclick = () => retryFewerLayers();
 
 $("#dlModel").onclick = async () => {
-  const m = lastCatalog.find((x) => x.id === selectedModelId);
+  const m = findModel(selectedModelId);
   if (!m) return;
-  if (m.abliterated && !state.ablAck) {
+  if (isAbliterated(m) && !state.ablAck) {
     askAblAck(() => $("#dlModel").click());
     return;
   }
@@ -1012,12 +1218,20 @@ async function doModelDownload(m) {
   try {
     const dest = ($("#modelDir")?.textContent || "").trim();
     const params = { id: m.id };
+    if (m.repo && m.file) {
+      params.repo = m.repo;
+      params.file = m.file;
+      if (m.sha256) params.sha256 = m.sha256;
+      if (m.bytes) params.bytes = m.bytes;
+      if (m.name) params.name = m.name;
+    }
     if (dest && dest !== "…" && dest.startsWith("/")) params.dest = dest;
     const res = await control("model_download", params);
     if (res.download_dir && $("#modelDir")) $("#modelDir").textContent = res.download_dir;
-    renderDownload(res.download || { state: "starting", id: m.id, name: m.name });
+    applyDownloadView(res);
+    renderModelsList();
     startDlPoll();
-    toast(res.download_dir ? `Downloading to ${res.download_dir}` : "Download started");
+    toast(res.note || (res.started ? "Download started" : "Added to the download queue"));
   } catch (e) { toast(e.message); }
 }
 let ablCb = null;
@@ -1925,7 +2139,9 @@ async function refreshStatus() {
     if ($("#popUplink")) $("#popUplink").textContent = (j.online || j.web) ? "Online" : "No uplink";
     if ($("#popCtx")) {
       const ctx = Number(j.connect?.ctx_size || j.ctx_size || j.loaded?.ctx_size || 0);
-      $("#popCtx").textContent = ctx > 0 ? `${ctx.toLocaleString()} tokens` : "—";
+      if (ctx > 0) loadedCtx = ctx;
+      $("#popCtx").textContent = loadedCtx > 0 ? `${loadedCtx.toLocaleString()} tokens` : "—";
+      if (lastPerf) updatePerfStrip(lastPerf);
     }
     const url = j.connect?.url || (j.connect?.ip ? `http://${j.connect.ip}/` : location.origin + "/");
     if ($("#lanUrl2")) $("#lanUrl2").textContent = url;
@@ -2032,12 +2248,81 @@ $$("#mfTrust input").forEach((i) => (i.onchange = () => {
   if (i.checked) state.mf.trust.add(i.dataset.t); else state.mf.trust.delete(i.dataset.t);
   renderModelsList();
 }));
-$$("#mfAbl button").forEach((b) => (b.onclick = () => { state.mf.abl = b.dataset.v; renderModelsList(); }));
+$$("#mfAbl button").forEach((b) => (b.onclick = () => {
+  state.mf.abl = b.dataset.v;
+  const q = (state.mf.q || "").trim();
+  if (state.mtab === "browse" && q.length >= 2) {
+    hfBusy = true;
+    hfErr = "";
+    renderModelsList();
+    clearTimeout(hfTimer);
+    hfTimer = setTimeout(() => runHfSearch(q), 200);
+  } else {
+    renderModelsList();
+  }
+}));
 $$("#mfLic button").forEach((b) => (b.onclick = () => { state.mf.lic = b.dataset.v; renderModelsList(); }));
 if ($("#mfQuant")) $("#mfQuant").onchange = (e) => { state.mf.quant = e.target.value; renderModelsList(); };
 if ($("#mfSort")) $("#mfSort").onchange = (e) => { state.mf.sort = e.target.value; renderModelsList(); };
-if ($("#mfSearch")) $("#mfSearch").addEventListener("input", (e) => { state.mf.q = e.target.value; renderModelsList(); });
+if ($("#mfSearch")) $("#mfSearch").addEventListener("input", (e) => {
+  state.mf.q = e.target.value;
+  clearTimeout(hfTimer);
+  const q = state.mf.q.trim();
+  if (state.mtab !== "browse" || q.length < 2) {
+    hfHits = [];
+    hfErr = "";
+    hfBusy = false;
+    renderModelsList();
+    return;
+  }
+  hfBusy = true;
+  hfErr = "";
+  renderModelsList();
+  hfTimer = setTimeout(() => runHfSearch(q), 450);
+});
+async function runHfSearch(q) {
+  try {
+    const res = await control("hf_search", { q, abl: state.mf.abl || "include" });
+    if ((state.mf.q || "").trim() !== q) return;
+    if (!res.ok) {
+      hfHits = [];
+      hfErr = res.error || "Search failed";
+    } else {
+      hfHits = res.models || [];
+      hfErr = hfHits.length ? "" : (state.mf.abl === "only" ? "No abliterated GGUF files for that search" : "No GGUF files for that search");
+    }
+  } catch (e) {
+    if ((state.mf.q || "").trim() !== q) return;
+    hfHits = [];
+    hfErr = e.message || "Search failed";
+  }
+  hfBusy = false;
+  renderModelsList();
+}
 if ($("#mfReset")) $("#mfReset").onclick = resetModelFilters;
+let hfDirty = false;
+let hfSaveTimer = null;
+function hfHint(st) {
+  const el = $("#hfWhere");
+  if (!el) return;
+  if (st?.error) { el.textContent = st.error; return; }
+  if (st?.saved || st?.hf_token_saved) { el.textContent = "Saved in the vault."; return; }
+  if (st?.vault_unlocked) el.textContent = "Saved in the vault when you enter a token. Not kept in the models folder.";
+  else el.textContent = "Unlock the vault to keep this token across a reboot.";
+}
+if ($("#hfToken")) $("#hfToken").addEventListener("input", () => {
+  hfDirty = true;
+  clearTimeout(hfSaveTimer);
+  hfSaveTimer = setTimeout(async () => {
+    const token = $("#hfToken").value.trim();
+    try {
+      const res = await control("set_hf_token", { token });
+      hfDirty = false;
+      hfHint(res);
+      if (res.note) toast(res.note);
+    } catch (e) { hfHint({ error: e.message }); }
+  }, 700);
+});
 if ($("#hfShow")) $("#hfShow").onclick = () => { const i = $("#hfToken"); if (i) i.type = i.type === "password" ? "text" : "password"; };
 if ($("#hfTest")) $("#hfTest").onclick = () => toast("HF token test — live gated downloads come later; catalog downloads need no token");
 
