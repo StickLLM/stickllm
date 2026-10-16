@@ -246,7 +246,7 @@ state.models = [
     variants: [V("Q4_K_M", 4.9), V("Q8_0", 8.5)] },
   { id: "qvl", name: "Qwen2.5-VL-7B-Instruct", org: "Qwen", type: "vision", arch: "dense", params: 7, trust: "community", lic: "commercial", licName: "Apache-2.0", fmt: "GGUF", caps: ["vision", "tools"], dl: 1180000, date: "2025-01-28", kvk: 0.06, ctxMax: 32768,
     variants: [V("Q4_K_M", 5.5), V("Q8_0", 8.9)] },
-  { id: "g27", gated: true, termsOk: false, name: "gemma-3-27b-it", org: "google", type: "vision", arch: "dense", params: 27, trust: "unverified", lic: "noncommercial", licName: "Gemma terms", fmt: "safetensors", caps: ["vision", "long"], dl: 980000, date: "2025-03-12", kvk: 0.5, ctxMax: 131072,
+  { id: "g27", gated: true, termsOk: false, name: "gemma-3-27b-it", org: "google", type: "vision", arch: "dense", params: 27, trust: "unverified", lic: "noncommercial", licName: "Gemma terms", fmt: "GGUF", caps: ["vision", "long"], dl: 980000, date: "2025-03-12", kvk: 0.5, ctxMax: 131072,
     variants: [V("F16", 54.9)] },
   { id: "nomic", name: "nomic-embed-text-v1.5", org: "nomic-ai", type: "embedding", arch: "dense", params: 0.14, trust: "verified", lic: "commercial", licName: "Apache-2.0", fmt: "GGUF", caps: [], dl: 3400000, date: "2024-02-15", kvk: 0, ctxMax: 8192,
     variants: [V("F16", 0.27), V("Q8_0", 0.14)], inst: { q: "F16", where: "stick" } },
@@ -257,7 +257,7 @@ state.models = [
 ];
 state.mtab = "browse"; state.vsel = {}; state.dlp = {}; state.sel = "q3_32";
 const ALL_TRUST = () => new Set(Object.keys(TRUST));
-state.mf = { target: "this", fits: false, ctx: 8192, trust: ALL_TRUST(), abl: "include", types: new Set(), arch: "any", quant: "any", caps: new Set(), lic: "any", fmt: "any", q: "", sort: "fit" };
+state.mf = { target: "this", fits: false, ctx: 8192, trust: ALL_TRUST(), abl: "include", types: new Set(), arch: "any", quant: "any", caps: new Set(), lic: "any", q: "", sort: "fit" };
 
 const M = () => MACHINES[state.machine];
 function targetHw() {
@@ -304,7 +304,8 @@ function modelVisible(m, ignorePolicy) {
   if (f.quant !== "any" && !m.variants.some((v) => v.q === f.quant)) return false;
   if (![...f.caps].every((c) => m.caps.includes(c))) return false;
   if (f.lic !== "any" && m.lic !== f.lic) return false;
-  if (f.fmt !== "any" && m.fmt !== f.fmt) return false;
+  // GGUF only — llama.cpp does not run safetensors
+  if (String(m.fmt || "GGUF").toLowerCase() === "safetensors") return false;
   if (f.q && !(m.name + " " + m.org).toLowerCase().includes(f.q.toLowerCase())) return false;
   if (f.fits && m.trust !== "blocked" && !(f.quant === "any" ? m.variants : m.variants.filter((v) => v.q === f.quant)).some((v) => fitOf(m, v).k !== "no")) return false;
   return true;
@@ -331,7 +332,6 @@ function renderModels() {
   $$("#mfCaps button").forEach((b) => b.classList.toggle("on", f.caps.has(b.dataset.c)));
   $$("#mfArch button").forEach((b) => b.classList.toggle("on", b.dataset.v === f.arch));
   $$("#mfLic button").forEach((b) => b.classList.toggle("on", b.dataset.v === f.lic));
-  $$("#mfFmt button").forEach((b) => b.classList.toggle("on", b.dataset.v === f.fmt));
   // policy banner
   const rules = [pol.verifiedOnly && "only Verified models", pol.hideUnc && "uncensored models hidden"].filter(Boolean);
   $("#policyBanner").hidden = !rules.length;
@@ -421,7 +421,7 @@ function loadModel(id) {
   $("#runName").textContent = `${shortName(m)} ${m.inst.q}`;
   renderModels(); toast(`Loading ${shortName(m)} ${m.inst.q} with ${(+$("#ctx").value).toLocaleString()} context…`);
 }
-function resetFilters() { state.mf = { ...state.mf, fits: false, trust: ALL_TRUST(), abl: "include", types: new Set(), arch: "any", quant: "any", caps: new Set(), lic: "any", fmt: "any", q: "" }; $("#mfSearch").value = ""; state.vsel = {}; renderModels(); }
+function resetFilters() { state.mf = { ...state.mf, fits: false, trust: ALL_TRUST(), abl: "include", types: new Set(), arch: "any", quant: "any", caps: new Set(), lic: "any", q: "" }; $("#mfSearch").value = ""; state.vsel = {}; renderModels(); }
 // sidebar events
 $$(".tabs [data-tab]").forEach((b) => (b.onclick = () => { state.mtab = b.dataset.tab; state.vsel = {}; renderModels(); }));
 $("#mfTarget").onchange = (e) => { state.mf.target = e.target.value; state.vsel = {}; renderModels(); };
@@ -434,7 +434,6 @@ $$("#mfType button").forEach((b) => (b.onclick = () => { const v = b.dataset.v; 
 $$("#mfCaps button").forEach((b) => (b.onclick = () => { const c = b.dataset.c; state.mf.caps.has(c) ? state.mf.caps.delete(c) : state.mf.caps.add(c); renderModels(); }));
 $$("#mfArch button").forEach((b) => (b.onclick = () => { state.mf.arch = b.dataset.v; renderModels(); }));
 $$("#mfLic button").forEach((b) => (b.onclick = () => { state.mf.lic = b.dataset.v; renderModels(); }));
-$$("#mfFmt button").forEach((b) => (b.onclick = () => { state.mf.fmt = b.dataset.v; renderModels(); }));
 $("#mfQuant").onchange = (e) => { state.mf.quant = e.target.value; state.vsel = {}; renderModels(); };
 $("#mfSort").onchange = (e) => { state.mf.sort = e.target.value; renderModels(); };
 $("#mfSearch").addEventListener("input", (e) => { state.mf.q = e.target.value; renderModels(); });

@@ -295,8 +295,9 @@ input[type=range]{accent-color:var(--accent);width:100%}
 .modal.fp{width:min(920px,100%);height:min(600px,100%);flex-direction:column}
 .fpHead{display:flex;align-items:center;padding:12px 14px 8px 20px}
 .fpHead h2{flex:1;margin:0;font-size:16px;font-weight:620}
-.fpBar{display:flex;align-items:center;gap:2px;padding:4px 12px 10px;border-bottom:1px solid var(--line2)}
+.fpBar{display:flex;align-items:center;gap:2px;padding:4px 12px 10px;border-bottom:1px solid var(--line2);flex-wrap:wrap}
 .fpBar .iconBtn{width:32px;height:32px}
+.fpSearchBtn{flex:none;white-space:nowrap;margin-left:4px}
 .crumbs,.fpPathIn{flex:1;min-width:0;margin:0 6px;height:34px}
 .crumbs{display:flex;align-items:center;gap:2px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:0 4px;overflow:hidden;cursor:text}
 .crumbBtn{background:none;border:0;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:13.5px;color:var(--ink2);white-space:nowrap}

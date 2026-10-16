@@ -178,8 +178,7 @@
       <div class="fBlock"><div class="fTitle">Abliterated / uncensored</div><div class="seg full" id="mfAbl"><button type="button" data-v="include" class="on">Include</button><button type="button" data-v="only">Only</button><button type="button" data-v="exclude">Exclude</button></div></div>
       <div class="fBlock"><label class="fTitle" for="mfQuant">Quant</label><select id="mfQuant"><option value="any">Any</option><option>Q2_K</option><option>Q3_K_M</option><option>Q4_K_M</option><option>Q5_K_M</option><option>Q6_K</option><option>Q8_0</option><option>F16</option></select></div>
       <div class="fBlock"><div class="fTitle">Licence</div><div class="seg full" id="mfLic"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="commercial">Commercial</button><button type="button" data-v="noncommercial">Non-comm.</button></div></div>
-      <div class="fBlock"><div class="fTitle">Format</div><div class="seg full" id="mfFmt"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="GGUF">GGUF</button><button type="button" data-v="safetensors">safetensors</button></div>
-        <p class="muted small fNote">Pickle <span class="mono">.bin</span>/<span class="mono">.pt</span> checkpoints are never offered because they can run code when loaded.</p></div>
+      <p class="muted small fNote">GGUF only (llama.cpp). Pickle <span class="mono">.bin</span>/<span class="mono">.pt</span> checkpoints are never offered because they can run code when loaded.</p>
       <button class="link" id="mfReset" type="button">Reset filters</button>
     </aside>
     <div class="mbMain">
@@ -251,6 +250,8 @@
   </div>
 
   <div class="secTools"><h3>Drives</h3><span class="grow"></span>
+    <button class="btn sm" id="actFindVault" type="button" title="Scan mounts for stickllm-vault.img">Search for vault</button>
+    <button class="btn sm" id="actFindModels" type="button" title="Scan mounted volumes for .gguf model folders">Search for models</button>
     <button class="btn sm" id="refreshDrives" type="button">Refresh</button>
   </div>
   <div class="drives" id="drives"></div>
@@ -395,6 +396,8 @@
           <div class="seg" id="fpFilter" role="radiogroup" aria-label="File type"><button data-flt="images">Images</button><button data-flt="docs">Documents</button><button data-flt="all" class="on">All</button></div>
           <div class="seg icons" id="fpView" aria-label="View"><button data-view="list" class="on" aria-label="List view" title="List"><svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg></button><button data-view="grid" aria-label="Grid view" title="Grid"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button></div>
         </div>
+        <button class="btn sm fpSearchBtn" id="fpSearchVault" type="button" title="Scan mounts for stickllm-vault.img">Search for vault</button>
+        <button class="btn sm fpSearchBtn" id="fpSearchModels" type="button" title="Scan this volume for .gguf model folders">Search for models</button>
         <button class="iconBtn" id="fpNew" aria-label="New folder" title="New folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2zM12 11v5M9.5 13.5h5"/></svg></button>
       </div>
       <div class="fpMain">

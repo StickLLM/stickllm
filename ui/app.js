@@ -35,7 +35,7 @@ const state = {
   mode: "ephemeral", vaultOpen: false, web: true, theme: "dark",
   chats: [], ephemeral: [], current: null, attach: [],
   mtab: "browse", ablAck: false, kv: "f16",
-  mf: { target: "this", fits: false, ctx: 8192, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", fmt: "any", q: "", sort: "fit" },
+  mf: { target: "this", fits: false, ctx: 8192, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", q: "", sort: "fit" },
   policy: { verifiedOnly: false, hideUnc: false },
 };
 
@@ -487,8 +487,8 @@ function modelVisible(m) {
   if (f.abl === "only" && !m.abliterated) return false;
   if (f.abl === "exclude" && m.abliterated) return false;
   if (f.quant !== "any" && modelQuant(m).toUpperCase() !== f.quant.toUpperCase()) return false;
-  if (f.fmt === "GGUF" && String(m.format || "GGUF").toUpperCase() !== "GGUF") return false;
-  if (f.fmt === "safetensors" && String(m.format || "").toLowerCase() !== "safetensors") return false;
+  // GGUF only — llama.cpp does not run safetensors
+  if (String(m.format || "GGUF").toLowerCase() === "safetensors") return false;
   if (f.lic === "commercial" && m.license_noncommercial) return false;
   if (f.lic === "noncommercial" && !m.license_noncommercial) return false;
   if (f.q && !(String(m.name || "") + " " + String(m.id || "")).toLowerCase().includes(f.q.toLowerCase())) return false;
@@ -537,7 +537,6 @@ function renderModelsList() {
   $$("#mfTrust input").forEach((i) => { i.checked = state.mf.trust.has(i.dataset.t); });
   $$("#mfAbl button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.mf.abl));
   $$("#mfLic button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.mf.lic));
-  $$("#mfFmt button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.mf.fmt));
   const rules = [
     state.policy.verifiedOnly && "only Verified models",
     state.policy.hideUnc && "uncensored models hidden",
@@ -636,7 +635,7 @@ function syncModelActions() {
   updateVramBar(m);
 }
 function resetModelFilters() {
-  state.mf = { ...state.mf, fits: false, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", fmt: "any", q: "", sort: "fit" };
+  state.mf = { ...state.mf, fits: false, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", q: "", sort: "fit" };
   if ($("#mfSearch")) $("#mfSearch").value = "";
   renderModelsList();
 }
@@ -938,10 +937,26 @@ async function refreshDrivesLive() {
     $("#drives").innerHTML = `<div class="row"><small>${esc(e.message)}</small></div>`;
   }
 }
+function renderPickerSide() {
+  const side = $("#fpSide");
+  if (!side) return;
+  const cur = vaultBrowsePath || "—";
+  side.innerHTML =
+    '<div class="fpSideLab">Search</div>' +
+    '<button class="fpDrive" type="button" id="fpSideSearchVault"><span><b>Search for vault</b><small>stickllm-vault.img on mounts</small></span></button>' +
+    '<button class="fpDrive" type="button" id="fpSideSearchModels"><span><b>Search for models</b><small>.gguf folders on this volume</small></span></button>' +
+    '<div class="fpSideLab" style="margin-top:12px">Current</div>' +
+    '<div class="row"><small class="mono">' + esc(cur) + "</small></div>";
+  const sv = $("#fpSideSearchVault");
+  const sm = $("#fpSideSearchModels");
+  if (sv) sv.onclick = () => searchForVault({ inPicker: true });
+  if (sm) sm.onclick = () => searchForModels({ inPicker: true });
+}
 async function openLivePicker(startPath) {
   $("#picker").hidden = false;
-  $("#fpTitle").textContent = "Choose folder / vault";
   $("#fpFileTools").hidden = true;
+  if ($("#fpSearchVault")) $("#fpSearchVault").hidden = false;
+  if ($("#fpSearchModels")) $("#fpSearchModels").hidden = false;
   vaultBrowsePath = startPath;
   await browseLive(startPath);
 }
@@ -953,7 +968,7 @@ async function browseLive(path) {
     $("#fpUp").disabled = !parent;
     $("#fpBackB").disabled = true; $("#fpFwd").disabled = true;
     $("#fpCrumbs").innerHTML = `<button class="crumbBtn" type="button">${esc(vaultBrowsePath)}</button>`;
-    $("#fpSide").innerHTML = '<div class="fpSideLab">Current</div><div class="row"><small class="mono">' + esc(vaultBrowsePath) + "</small></div>";
+    renderPickerSide();
     const dirs = res.dirs || res.entries || [];
     const files = res.files || [];
     let rows = "";
@@ -1001,6 +1016,135 @@ async function browseLive(path) {
   } catch (e) {
     $("#fpList").innerHTML = `<div class="fpEmpty">${esc(e.message)}</div>`;
   }
+}
+function mountRootForSearch() {
+  const cur = (vaultBrowsePath || vaultPickerMount || "").trim();
+  if (cur.startsWith("/")) return cur;
+  const vp = ($("#vaultPath")?.value || "").trim();
+  if (vp.startsWith("/")) return vp;
+  const first = $("#drives [data-path]");
+  return first ? first.dataset.path : "";
+}
+async function searchForVault({ inPicker = false } = {}) {
+  try {
+    toast("Searching…");
+    const res = await control("vault_find");
+    const hits = res.hits || res.found || (res.best ? [res.best] : []);
+    if (!hits.length && !res.blob && !res.path) {
+      const note = res.note || "No stickllm-vault.img found";
+      if (inPicker) {
+        $("#fpList").innerHTML = `<div class="fpEmpty">${esc(note)}</div>`;
+      } else {
+        const box = $("#findHits");
+        if (box) { box.hidden = false; box.innerHTML = `<div class="row"><small>${esc(note)}</small></div>`; }
+      }
+      toast(note);
+      return;
+    }
+    const list = hits.length ? hits : [{ blob: res.blob || res.path, path: res.blob || res.path }];
+    if (inPicker) {
+      let rows = "";
+      for (const h of list.slice(0, 20)) {
+        const blob = h.blob || h.path || "";
+        const folder = String(blob).replace(/\/stickllm-vault\.img$/i, "");
+        rows += `<div class="fpRow" data-file="${esc(blob)}" data-kind="vault" data-folder="${esc(folder)}" role="option"><span class="fpName vault"><span class="nm">${esc(blob.split("/").pop() || blob)}</span><span class="pill acc">vault</span></span><span class="muted">${esc(folder)}</span><span class="muted">—</span></div>`;
+      }
+      $("#fpList").innerHTML = rows || '<div class="fpEmpty">No vault files found</div>';
+      $("#fpCrumbs").innerHTML = '<button class="crumbBtn" type="button">Search results — vault</button>';
+      $$("#fpList [data-file]").forEach((r) => {
+        r.onclick = () => {
+          $$("#fpList .fpRow").forEach((x) => x.classList.remove("sel"));
+          r.classList.add("sel");
+          $("#fpSel").textContent = r.dataset.file;
+          $("#fpOk").dataset.path = r.dataset.file;
+          $("#fpOk").dataset.kind = "vault";
+          $("#fpOk").textContent = "Open vault";
+          $("#fpOk").disabled = false;
+        };
+        r.ondblclick = () => { r.click(); $("#fpOk").click(); };
+      });
+      toast(`Found ${list.length} vault file(s)`);
+      return;
+    }
+    const best = res.best || list[0];
+    const blob = best.blob || best.path || "";
+    const box = $("#findHits");
+    if (box) {
+      box.hidden = false;
+      box.innerHTML = `<div class="row"><div><b class="mono">${esc(blob)}</b><small>Found vault</small></div>
+        <button class="btn sm" id="hitOpenVault" type="button">Attach</button></div>`;
+      $("#hitOpenVault").onclick = async () => {
+        try {
+          const folder = String(blob).replace(/\/stickllm-vault\.img$/i, "");
+          await control("vault_attach", { path: folder });
+          $("#vcSub").textContent = blob; $("#vaultPath").value = folder;
+          toast("Attached — unlock with passcode"); $("#vaultPass").focus();
+        } catch (e) { toast(e.message); }
+      };
+    }
+    toast(`Found ${list.length} vault file(s)`);
+  } catch (e) { toast(e.message); }
+}
+async function searchForModels({ inPicker = false } = {}) {
+  try {
+    const base = mountRootForSearch();
+    if (!base) {
+      toast("Open a mounted drive first, then Search for models");
+      return;
+    }
+    toast("Searching…");
+    const res = await control("vault_find_models", { path: base });
+    if (res.ok === false) throw new Error(res.error || "find models failed");
+    const hits = res.models || res.hits || [];
+    const jump = res.best?.path || res.jump_dir || res.start_dir || "";
+    if (inPicker) {
+      if (jump && (!hits.length || res.best)) {
+        // Prefer jumping into the best model folder, then show remaining hits as rows.
+        try { await browseLive(jump); } catch (_) {}
+      }
+      if (!hits.length) {
+        if (!jump) $("#fpList").innerHTML = '<div class="fpEmpty">No .gguf models found on this volume</div>';
+        toast(res.note || "No .gguf models found");
+        return;
+      }
+      let rows = "";
+      for (const m of hits.slice(0, 40)) {
+        const p = m.path || m.dir || "";
+        const name = m.name || m.relative || (p.split("/").pop() || p);
+        const folder = m.dir || (/\.gguf$/i.test(p) ? p.replace(/\/[^/]+$/, "") : p);
+        rows += `<div class="fpRow" data-dir="${esc(folder || p)}" role="option"><span class="fpName model"><span class="nm">${esc(name)}</span><span class="pill">model</span></span><span class="muted">${esc(folder || p)}</span><span class="muted">—</span></div>`;
+      }
+      $("#fpList").innerHTML = rows;
+      $("#fpCrumbs").innerHTML = '<button class="crumbBtn" type="button">Search results — models</button>';
+      $$("#fpList [data-dir]").forEach((r) => {
+        r.ondblclick = () => browseLive(r.dataset.dir);
+        r.onclick = () => {
+          $$("#fpList .fpRow").forEach((x) => x.classList.remove("sel"));
+          r.classList.add("sel");
+          $("#fpSel").textContent = r.dataset.dir;
+          $("#fpOk").dataset.path = r.dataset.dir;
+          $("#fpOk").dataset.kind = "folder";
+          $("#fpOk").textContent = "Use this folder";
+          $("#fpOk").disabled = false;
+        };
+      });
+      toast(`Found ${hits.length} model location(s)`);
+      return;
+    }
+    const box = $("#findHits");
+    if (box) {
+      box.hidden = false;
+      if (!hits.length) {
+        box.innerHTML = '<div class="row"><small>No .gguf models found on scanned mounts.</small></div>';
+      } else {
+        box.innerHTML = hits.slice(0, 12).map((m) =>
+          `<div class="row"><div><b>${esc(m.name || m.path)}</b><small class="mono">${esc(m.path || m.dir || "")}</small></div></div>`
+        ).join("");
+      }
+    }
+    if (jump && $("#picker") && !$("#picker").hidden) await browseLive(jump).catch(() => {});
+    toast(hits.length ? `Found ${hits.length} model(s)` : (res.note || "No models found"));
+  } catch (e) { toast(e.message); }
 }
 $("#fpUp").onclick = async () => {
   try {
@@ -1068,59 +1212,29 @@ $("#actClaim").onclick = () => {
     },
   });
 };
-if ($("#actFindVault")) $("#actFindVault").onclick = async () => {
-  try {
-    toast("Searching…");
-    const res = await control("vault_find");
-    const box = $("#findHits"); box.hidden = false;
-    const hits = res.hits || res.found || (res.best ? [res.best] : []);
-    if (!hits.length && !res.blob && !res.path) {
-      box.innerHTML = `<div class="row"><small>${esc(res.note || "No stickllm-vault.img found")}</small></div>`;
-      return;
-    }
-    const best = res.best || hits[0] || { blob: res.blob || res.path };
-    const blob = best.blob || best.path || "";
-    box.innerHTML = `<div class="row"><div><b class="mono">${esc(blob)}</b><small>Found vault</small></div>
-      <button class="btn sm" id="hitOpenVault" type="button">Attach</button></div>`;
-    $("#hitOpenVault").onclick = async () => {
-      try {
-        const folder = String(blob).replace(/\/stickllm-vault\.img$/i, "");
-        await control("vault_attach", { path: folder });
-        $("#vcSub").textContent = blob; $("#vaultPath").value = folder;
-        toast("Attached — unlock with passcode"); $("#vaultPass").focus();
-      } catch (e) { toast(e.message); }
-    };
-  } catch (e) { toast(e.message); }
-};
-if ($("#actFindModels")) $("#actFindModels").onclick = async () => {
-  try {
-    const res = await control("vault_find_models");
-    const box = $("#findHits"); box.hidden = false;
-    const hits = res.models || res.hits || [];
-    if (!hits.length) {
-      box.innerHTML = '<div class="row"><small>No .gguf models found on scanned mounts.</small></div>';
-      return;
-    }
-    box.innerHTML = hits.slice(0, 12).map((m) =>
-      `<div class="row"><div><b>${esc(m.name || m.path)}</b><small class="mono">${esc(m.path || "")}</small></div></div>`
-    ).join("");
-    toast(`Found ${hits.length} model(s)`);
-  } catch (e) { toast(e.message); }
-};
+if ($("#actFindVault")) $("#actFindVault").onclick = () => searchForVault({ inPicker: false });
+if ($("#actFindModels")) $("#actFindModels").onclick = () => searchForModels({ inPicker: false });
+if ($("#fpSearchVault")) $("#fpSearchVault").onclick = () => searchForVault({ inPicker: true });
+if ($("#fpSearchModels")) $("#fpSearchModels").onclick = () => searchForModels({ inPicker: true });
 async function openFolderPicker(purpose, title) {
   pickerPurpose = purpose || "vault";
-  if ($("#fpTitle")) $("#fpTitle").textContent = title || "Choose folder";
   const start = ($("#modelDir")?.textContent || "").trim();
   const fallback = ($("#vaultPath").value || vaultBrowsePath || "").trim();
   const path = (purpose === "models_dir" && start.startsWith("/")) ? start : (fallback || start);
+  const applyTitle = () => {
+    if ($("#fpTitle")) $("#fpTitle").textContent = title || (purpose === "models_dir" ? "Choose models folder" : "Choose folder / vault");
+  };
   if (path && path.startsWith("/") && path !== "…") {
     await openLivePicker(path);
+    applyTitle();
     return;
   }
   await refreshDrivesLive();
   const first = $("#drives [data-path]");
-  if (first) await openLivePicker(first.dataset.path);
-  else toast("Mount a drive or claim stick DATA first");
+  if (first) {
+    await openLivePicker(first.dataset.path);
+    applyTitle();
+  } else toast("Mount a drive or claim stick DATA first");
 }
 $("#pickVault").onclick = () => openFolderPicker("vault", "Choose folder / vault");
 $("#pickCreate").onclick = () => openFolderPicker("vault", "Choose folder for new vault");
@@ -1600,7 +1714,6 @@ $$("#mfTrust input").forEach((i) => (i.onchange = () => {
 }));
 $$("#mfAbl button").forEach((b) => (b.onclick = () => { state.mf.abl = b.dataset.v; renderModelsList(); }));
 $$("#mfLic button").forEach((b) => (b.onclick = () => { state.mf.lic = b.dataset.v; renderModelsList(); }));
-$$("#mfFmt button").forEach((b) => (b.onclick = () => { state.mf.fmt = b.dataset.v; renderModelsList(); }));
 if ($("#mfQuant")) $("#mfQuant").onchange = (e) => { state.mf.quant = e.target.value; renderModelsList(); };
 if ($("#mfSort")) $("#mfSort").onchange = (e) => { state.mf.sort = e.target.value; renderModelsList(); };
 if ($("#mfSearch")) $("#mfSearch").addEventListener("input", (e) => { state.mf.q = e.target.value; renderModelsList(); });
