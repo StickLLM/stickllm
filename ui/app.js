@@ -449,6 +449,41 @@ function fmtBytes(n) {
   if (gb >= 1) return `${gb.toFixed(2)} GB`;
   return `${(n / 1024 ** 2).toFixed(0)} MB`;
 }
+function fpMetaModified(item) {
+  const raw = item?.modified ?? item?.mtime ?? item?.mtime_ms ?? item?.updated_at ?? null;
+  if (raw == null || raw === "") return "—";
+  if (typeof raw === "number") {
+    const ms = raw < 1e12 ? raw * 1000 : raw;
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
+  }
+  const s = String(raw).trim();
+  if (!s || s.startsWith("/")) return "—";
+  return s.length > 18 ? s.slice(0, 16) + "…" : s;
+}
+function fpMetaSize(item) {
+  const n = item?.size ?? item?.bytes ?? item?.size_bytes;
+  if (n == null || n === "" || Number(n) <= 0) return "—";
+  return fmtBytes(Number(n));
+}
+/** Search-hit row: name + path subtitle; Modified/Size only when real metadata exists. */
+function fpSearchHitRow({ path, name, kind, pill, folder, item }) {
+  const p = path || folder || "";
+  const label = name || (p.split("/").filter(Boolean).pop() || p);
+  const sub = p || folder || "";
+  const mod = fpMetaModified(item);
+  const size = fpMetaSize(item);
+  const kindClass = kind === "vault" ? "vault" : kind === "model" ? "model" : "dir";
+  const pillHtml = pill ? `<span class="pill${kind === "vault" ? " acc" : ""}">${esc(pill)}</span>` : "";
+  const dataAttr = kind === "vault"
+    ? `data-file="${esc(p)}" data-kind="vault" data-folder="${esc(folder || p.replace(/\/stickllm-vault\.img$/i, ""))}"`
+    : `data-dir="${esc(folder || p)}"`;
+  return `<div class="fpRow fpHit" ${dataAttr} title="${esc(sub)}" role="option">` +
+    `<span class="fpName ${kindClass}"><span class="fpText"><span class="nm">${esc(label)}</span>` +
+    (sub ? `<span class="fpSub muted mono">${esc(sub)}</span>` : "") +
+    `</span>${pillHtml}</span>` +
+    `<span class="fpMeta muted">${esc(mod)}</span><span class="fpMeta muted">${esc(size)}</span></div>`;
+}
 
 function modelTrust(m) {
   const t = String(m.trust || m.trust_level || "").toLowerCase();
@@ -970,6 +1005,7 @@ async function browseLive(path) {
     $("#fpUp").disabled = !parent;
     $("#fpBackB").disabled = true; $("#fpFwd").disabled = true;
     $("#fpCrumbs").innerHTML = `<button class="crumbBtn" type="button">${esc(vaultBrowsePath)}</button>`;
+    setFpCols();
     renderPickerSide();
     const dirs = res.dirs || res.entries || [];
     const files = res.files || [];
@@ -1027,14 +1063,64 @@ function mountRootForSearch() {
   const first = $("#drives [data-path]");
   return first ? first.dataset.path : "";
 }
+function setFpCols(name = "Name", mid = "Modified", size = "Size") {
+  const cols = $(".fpCols");
+  if (!cols) return;
+  cols.innerHTML = `<span>${esc(name)}</span><span>${esc(mid)}</span><span>${esc(size)}</span>`;
+}
+function modelKindLabel(kind) {
+  switch (String(kind || "")) {
+    case "gguf_dir": return "GGUF";
+    case "models_dir": return "models/";
+    case "ollama": return "Ollama";
+    case "huggingface": return "HF cache";
+    case "lm_studio": return "LM Studio";
+    case "gpt4all": return "GPT4All";
+    default: return "folder";
+  }
+}
+/** Search-hit row: name + secondary path under it; mid/size only for real metadata. */
+function fpHitRowHtml({
+  name, pathHint = "", kindClass = "", pill = "", pillClass = "",
+  mid = "—", size = "—", attrs = "",
+}) {
+  const sub = pathHint
+    ? `<span class="fpSub muted" title="${esc(pathHint)}">${esc(pathHint)}</span>`
+    : "";
+  const pillHtml = pill
+    ? `<span class="pill ${pillClass}">${esc(pill)}</span>`
+    : "";
+  return (
+    `<div class="fpRow fpHit" ${attrs} role="option">` +
+      `<span class="fpName ${kindClass}">` +
+        `<span class="nmCol"><span class="nm">${esc(name)}</span>${sub}</span>` +
+        pillHtml +
+      `</span>` +
+      `<span class="muted fpMeta">${esc(mid)}</span>` +
+      `<span class="muted fpSize">${esc(size)}</span>` +
+    `</div>`
+  );
+}
+function fmtVaultSize(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return "";
+  if (v >= 1e9) return `${(v / 1e9).toFixed(v >= 1e10 ? 0 : 1)} GB`;
+  if (v >= 1e6) return `${Math.round(v / 1e6)} MB`;
+  return `${v} B`;
+}
 async function searchForVault({ inPicker = false } = {}) {
   try {
     toast("Searching…");
     const res = await control("vault_find");
-    const hits = res.hits || res.found || (res.best ? [res.best] : []);
-    if (!hits.length && !res.blob && !res.path) {
+    let hits = res.hits || res.found || [];
+    if (!hits.length && Array.isArray(res.candidates) && res.candidates.length) {
+      hits = res.candidates;
+    }
+    if (!hits.length && res.best) hits = [res.best];
+    if (!hits.length && !res.blob && !res.path && !res.best) {
       const note = res.note || "No stickllm-vault.img found";
       if (inPicker) {
+        setFpCols();
         $("#fpList").innerHTML = `<div class="fpEmpty">${esc(note)}</div>`;
       } else {
         const box = $("#findHits");
@@ -1043,13 +1129,27 @@ async function searchForVault({ inPicker = false } = {}) {
       toast(note);
       return;
     }
-    const list = hits.length ? hits : [{ blob: res.blob || res.path, path: res.blob || res.path }];
+    const list = hits.length
+      ? hits
+      : [{ blob: res.blob || res.path || res.best?.blob, path: res.blob || res.path || res.best?.blob }];
     if (inPicker) {
+      setFpCols("Name", "Kind", "Size");
       let rows = "";
       for (const h of list.slice(0, 20)) {
         const blob = h.blob || h.path || "";
-        const folder = String(blob).replace(/\/stickllm-vault\.img$/i, "");
-        rows += `<div class="fpRow" data-file="${esc(blob)}" data-kind="vault" data-folder="${esc(folder)}" role="option"><span class="fpName vault"><span class="nm">${esc(blob.split("/").pop() || blob)}</span><span class="pill acc">vault</span></span><span class="muted">${esc(folder)}</span><span class="muted">—</span></div>`;
+        const folder = h.root || String(blob).replace(/\/stickllm-vault\.img$/i, "");
+        const name = String(blob).split("/").pop() || "stickllm-vault.img";
+        const sz = fmtVaultSize(h.size);
+        rows += fpHitRowHtml({
+          name,
+          pathHint: folder,
+          kindClass: "vault",
+          pill: "vault",
+          pillClass: "acc",
+          mid: "vault",
+          size: sz || "—",
+          attrs: `data-file="${esc(blob)}" data-kind="vault" data-folder="${esc(folder)}"`,
+        });
       }
       $("#fpList").innerHTML = rows || '<div class="fpEmpty">No vault files found</div>';
       $("#fpCrumbs").innerHTML = '<button class="crumbBtn" type="button">Search results — vault</button>';
@@ -1100,21 +1200,35 @@ async function searchForModels({ inPicker = false } = {}) {
     const hits = res.models || res.hits || [];
     const jump = res.best?.path || res.jump_dir || res.start_dir || "";
     if (inPicker) {
-      if (jump && (!hits.length || res.best)) {
-        // Prefer jumping into the best model folder, then show remaining hits as rows.
-        try { await browseLive(jump); } catch (_) {}
-      }
       if (!hits.length) {
-        if (!jump) $("#fpList").innerHTML = '<div class="fpEmpty">No .gguf models found on this volume</div>';
+        // No list to show — jump into best folder if we have one.
+        if (jump) {
+          try { await browseLive(jump); } catch (_) {}
+        } else {
+          setFpCols();
+          $("#fpList").innerHTML = '<div class="fpEmpty">No .gguf models found on this volume</div>';
+        }
         toast(res.note || "No .gguf models found");
         return;
       }
+      setFpCols("Name", "Kind", "GGUF");
       let rows = "";
       for (const m of hits.slice(0, 40)) {
         const p = m.path || m.dir || "";
-        const name = m.name || m.relative || (p.split("/").pop() || p);
+        const name = m.name || (p.split("/").pop() || p);
         const folder = m.dir || (/\.gguf$/i.test(p) ? p.replace(/\/[^/]+$/, "") : p);
-        rows += `<div class="fpRow" data-dir="${esc(folder || p)}" role="option"><span class="fpName model"><span class="nm">${esc(name)}</span><span class="pill">model</span></span><span class="muted">${esc(folder || p)}</span><span class="muted">—</span></div>`;
+        const pathHint = m.relative || folder || p;
+        const n = Number(m.gguf_count);
+        const size = Number.isFinite(n) && n > 0 ? `${n} GGUF` : "—";
+        rows += fpHitRowHtml({
+          name,
+          pathHint,
+          kindClass: "model",
+          pill: "model",
+          mid: modelKindLabel(m.kind),
+          size,
+          attrs: `data-dir="${esc(folder || p)}" title="${esc(folder || p)}"`,
+        });
       }
       $("#fpList").innerHTML = rows;
       $("#fpCrumbs").innerHTML = '<button class="crumbBtn" type="button">Search results — models</button>';

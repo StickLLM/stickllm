@@ -323,13 +323,17 @@ input[type=range]{accent-color:var(--accent);width:100%}
 .fpRow.sel{background:var(--accent-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 50%,transparent)}
 .fpList:focus-visible .fpRow.sel{box-shadow:inset 0 0 0 2px var(--accent)}
 .fpRow.dim{opacity:.55}
-.fpRow .muted{font-size:12.5px}
+.fpRow .muted{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.fpRow.fpHit{height:auto;min-height:44px;padding-top:7px;padding-bottom:7px;align-items:center}
+.fpRow .fpMeta,.fpRow .fpSize{font-size:12px}
 .fpName{display:flex;align-items:center;gap:10px;min-width:0}
 .fpName svg{width:18px;height:18px;color:var(--muted)}
 .fpName.dir svg{color:#d9b25c}
 .fpName.vault svg{color:var(--accent)}
 .fpName.model svg{color:var(--kv)}
+.fpName .nmCol{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
 .fpName .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fpName .fpSub{display:block;font-size:11.5px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fpName .pill{flex:none;font-size:11px;padding:1px 7px}
 .fpEmpty{color:var(--muted);padding:30px;text-align:center;font-size:14px}
 .fpFoot{display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--line2);background:var(--bg2)}
