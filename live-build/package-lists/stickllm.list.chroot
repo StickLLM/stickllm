@@ -17,6 +17,8 @@ e2fsprogs
 fdisk
 util-linux
 python3
+# Scanned PDF pages for a vision model (pdftoppm). Not downloaded at runtime.
+poppler-utils
 jq
 iproute2
 iputils-ping

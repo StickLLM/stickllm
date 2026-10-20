@@ -2,13 +2,20 @@
 """StickLLM UI + chat gateway: web lookup, pair auth, control proxy (LAN :80)."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import http.client
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
 import secrets
+import shutil
+import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -39,12 +46,85 @@ CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; "
+    "img-src 'self' data: blob:; "
     "connect-src 'self'; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'"
 )
+
+
+class _LlamaCancel:
+    """Close the in-flight llama HTTP connection so generation stops."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._conn: http.client.HTTPConnection | None = None
+        self._cancel = False
+
+    def prepare(self) -> None:
+        with self._lock:
+            self._cancel = False
+            self._conn = None
+
+    def is_cancelled(self) -> bool:
+        with self._lock:
+            return self._cancel
+
+    def bind(self, conn: http.client.HTTPConnection) -> None:
+        with self._lock:
+            self._conn = conn
+            kill = self._cancel
+        if kill:
+            _close_http_conn(conn)
+
+    def cancel(self) -> bool:
+        with self._lock:
+            self._cancel = True
+            conn = self._conn
+        if conn is None:
+            return False
+        _close_http_conn(conn)
+        return True
+
+    def take_cancelled(self) -> bool:
+        with self._lock:
+            cancelled = self._cancel
+            self._cancel = False
+            self._conn = None
+            return cancelled
+
+
+def _close_http_conn(conn: http.client.HTTPConnection) -> None:
+    sock = getattr(conn, "sock", None)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            sock.close()
+        except Exception:
+            pass
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+LLAMA_CANCEL = _LlamaCancel()
+_CHAT_GATE = threading.Lock()
+
+
+class _TrackHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        super().connect()
+        LLAMA_CANCEL.bind(self)
+
+
+class _TrackHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):  # noqa: ANN001
+        return self.do_open(_TrackHTTPConnection, req)
 
 
 def http_json(url: str, payload: dict | None = None, timeout: int = 300, headers: dict | None = None) -> dict:
@@ -60,6 +140,24 @@ def http_json(url: str, payload: dict | None = None, timeout: int = 300, headers
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
+
+
+def http_json_llama(url: str, payload: dict, timeout: int = 300) -> dict:
+    """POST to llama-server. Stop closes this connection so the slot is released."""
+    if LLAMA_CANCEL.is_cancelled():
+        raise InterruptedError("stopped")
+    opener = urllib.request.build_opener(_TrackHTTPHandler)
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "User-Agent": UA},
+        method="POST",
+    )
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    finally:
+        pass
 
 
 def http_text(url: str, timeout: int = 12) -> str:
@@ -283,6 +381,7 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         "model": display,
         "model_path": model_path,
         "ctx_size": active_ctx_size(),
+        "vision": bool(active_mmproj()),
         "url": url,
         "local_url": local_url,
         "backend": detect_backend(),
@@ -294,19 +393,27 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         )
         code = read_text_safe(RUN_DIR / "pair-code.txt")
         auth = load_auth()
-        if auth.get("paired"):
-            out["pair_code"] = "(paired — Pair remints)"
-            out["pair_state"] = "paired"
-        elif code:
+        remint = read_json_safe(PAIR_REMINT_PATH) or {}
+        remint_code = str(remint.get("code") or "").strip()
+        # The file is what F9 should show. A stuck "paired" flag must not hide
+        # a code that New code just wrote (pair success deletes the file).
+        if re.fullmatch(r"[0-9]{4,8}", code):
             out["pair_code"] = code
             out["pair_state"] = "code"
+        elif re.fullmatch(r"[0-9]{4,8}", remint_code) and not auth.get("paired"):
+            out["pair_code"] = remint_code
+            out["pair_state"] = "code"
+        elif auth.get("paired"):
+            out["pair_code"] = "(paired — Pair remints)"
+            out["pair_state"] = "paired"
         else:
             out["pair_code"] = "(starting…)"
             out["pair_state"] = "waiting"
-        remint = read_json_safe(PAIR_REMINT_PATH) or {}
         rid = str(remint.get("id") or "").strip()
         if rid:
             out["remint_id"] = rid
+        if re.fullmatch(r"[0-9]{4,8}", remint_code):
+            out["remint_code"] = remint_code
         # Test/Term: surface SSH password in Settings on the stick only.
         out.update(ssh_password_for_loopback())
     else:
@@ -316,6 +423,20 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         out["ssh_password"] = None
         out["ssh_note"] = "SSH password is only shown on the stick screen / Settings (loopback)."
     return out
+
+
+def active_mmproj() -> str:
+    env = RUN_DIR / "model.env"
+    if not env.is_file():
+        return ""
+    path = ""
+    try:
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line.startswith("STICKLLM_MMPROJ="):
+                path = line.split("=", 1)[1].strip()
+    except Exception:
+        return ""
+    return path if path and Path(path).is_file() else ""
 
 
 def stickllm_ui_client(headers) -> bool:
@@ -512,7 +633,140 @@ def delete_vault_chat(chat_id: str) -> dict:
     path = CHATS_DIR / f"{cid}.json"
     if path.is_file():
         path.unlink()
+    # Converted files live beside the chat, only inside the vault mount.
+    folder = CHATS_DIR / cid
+    if folder.is_dir() and str(folder).startswith(str(CHATS_DIR)):
+        shutil.rmtree(folder, ignore_errors=True)
     return {"ok": True, "deleted": cid}
+
+
+_CONVERT_MOD = None
+
+
+def convert_mod():
+    """Sibling converter. Parsers run in a child; this import is for budgeting text."""
+    global _CONVERT_MOD
+    if _CONVERT_MOD is not None:
+        return _CONVERT_MOD
+    path = Path(__file__).resolve().with_name("stickllm-convert")
+    loader = importlib.machinery.SourceFileLoader("stickllm_convert", str(path))
+    spec = importlib.util.spec_from_loader("stickllm_convert", loader)
+    if spec is None:
+        raise RuntimeError("stickllm-convert is not installed")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _CONVERT_MOD = mod
+    return mod
+
+
+def _safe_chat_id(chat_id: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
+
+
+def persist_attachment(chat_id: str, name: str, raw: bytes, plain: str) -> None:
+    """Write the upload only when the encrypted vault is mounted. Never /tmp."""
+    if get_session_mode() != "vault" or not vault_unlocked():
+        return
+    if not os.path.ismount(str(VAULT_MNT)):
+        return
+    cid = _safe_chat_id(chat_id)
+    if not cid:
+        return
+    dest = CHATS_DIR / cid / "files"
+    if not str(dest).startswith(str(VAULT_MNT)):
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(CHATS_DIR / cid, 0o700)
+        os.chmod(dest, 0o700)
+    except Exception:
+        pass
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name or "file").name)[:80] or "file"
+    stem = f"{secrets.token_hex(4)}-{safe}"
+    blob = dest / stem
+    text = dest / f"{stem}.txt"
+    blob.write_bytes(raw)
+    text.write_text(plain or "", encoding="utf-8")
+    try:
+        os.chmod(blob, 0o600)
+        os.chmod(text, 0o600)
+    except Exception:
+        pass
+
+
+def run_attachment_convert(data: bytes, name: str, vision: bool) -> dict:
+    """Convert in a short-lived child: no network, 60s, memory cap, not as root."""
+    mod = convert_mod()
+    if len(data) > mod.MAX_BYTES:
+        mb = mod.MAX_BYTES // (1024 * 1024)
+        return {"ok": False, "error": f"{name} is over the {mb} MB limit."}
+    script = str(Path(__file__).resolve().with_name("stickllm-convert"))
+    argv = mod.sandbox_argv(script)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "HOME": "/nonexistent",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "STICKLLM_ATTACH_NAME": Path(name or "file").name[:180],
+        "STICKLLM_ATTACH_VISION": "1" if vision else "0",
+    }
+    kwargs = {
+        "input": data,
+        "capture_output": True,
+        "timeout": mod.CONVERT_TIMEOUT_SECS,
+        "env": env,
+        "check": False,
+    }
+    if os.name == "posix":
+        kwargs["preexec_fn"] = mod.limit_child
+    try:
+        proc = subprocess.run(argv, **kwargs)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Conversion took too long (60 second limit)."}
+    except OSError:
+        if argv[:3] == ["unshare", "--net", "--"]:
+            # Drop the net namespace wrapper and try once more as the unprivileged user.
+            argv = argv[3:]
+            try:
+                proc = subprocess.run(argv, **kwargs)
+            except (OSError, subprocess.TimeoutExpired):
+                return {"ok": False, "error": "Could not start the file converter."}
+        else:
+            return {"ok": False, "error": "Could not start the file converter."}
+    raw = proc.stdout.decode("utf-8", "replace").strip()
+    try:
+        result = json.loads(raw or "{}")
+    except Exception:
+        return {"ok": False, "error": "The converter returned nothing readable."}
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "The converter returned nothing readable."}
+    return result
+
+
+def llama_token_count(text: str) -> int:
+    rough = convert_mod().rough_tokens(text)
+    try:
+        data = http_json_llama(LLAMA + "/tokenize", {"content": text}, timeout=20)
+        toks = data.get("tokens")
+        if isinstance(toks, list) and toks:
+            return len(toks)
+    except Exception:
+        pass
+    return rough
+
+
+def fit_chat_messages(messages, ctx, counter):
+    """Apply the attachment budget. A failure must not forward the original attachment."""
+    mod = convert_mod()
+    try:
+        fitted, meta = mod.budget_for_chat(messages, ctx, counter)
+        return fitted, meta, ""
+    except Exception:
+        if mod.messages_have_attachment(messages):
+            return None, {}, "Could not fit the attachment into the context window."
+        return messages, {"used": False, "truncated": False, "note": ""}, ""
 
 
 def pair_rate_load() -> dict:
@@ -734,6 +988,69 @@ def fetch_url(url: str) -> str:
     return text[:6000]
 
 
+def message_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        bits = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                bits.append(str(part.get("text") or ""))
+        return "\n".join(b for b in bits if b)
+    return ""
+
+
+def _chat_image_cap() -> int:
+    """3 paperclip photos, plus scanned document pages (8)."""
+    try:
+        pages = int(convert_mod().MAX_PAGE_IMAGES)
+    except Exception:
+        pages = 8
+    return 3 + max(0, pages)
+
+
+def sanitize_chat_messages(messages: list) -> list[dict]:
+    """Keep text, and image data-URLs only. Drop remote image URLs."""
+    out: list[dict] = []
+    images = 0
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "")
+        if role not in ("system", "user", "assistant"):
+            continue
+        content = m.get("content")
+        if isinstance(content, list) and role == "user":
+            parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text = str(part.get("text") or "")[:100_000]
+                    if text:
+                        parts.append({"type": "text", "text": text})
+                elif part.get("type") == "image_url" and images < _chat_image_cap():
+                    iu = part.get("image_url")
+                    url = iu.get("url") if isinstance(iu, dict) else iu
+                    url = str(url or "")
+                    if url.startswith("data:image/") and len(url) <= 180_000:
+                        parts.append({"type": "image_url", "image_url": {"url": url}})
+                        images += 1
+            if parts:
+                out.append({"role": role, "content": parts})
+            continue
+        text = message_text(content)[:100_000]
+        if text:
+            out.append({"role": role, "content": text})
+    return out
+
+
+def _content_has_image(content) -> bool:
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(p, dict) and p.get("type") == "image_url" for p in content)
+
+
 def needs_web(text: str) -> bool:
     t = text.lower()
     keys = (
@@ -750,7 +1067,7 @@ def augment_with_web(messages: list[dict], force: bool) -> tuple[list[dict], lis
     user_text = ""
     for m in reversed(messages):
         if m.get("role") == "user":
-            user_text = str(m.get("content") or "")
+            user_text = message_text(m.get("content"))
             break
     if not user_text:
         return messages, []
@@ -778,11 +1095,15 @@ def augment_with_web(messages: list[dict], force: bool) -> tuple[list[dict], lis
         ),
     }
     rest = [m for m in messages if m.get("role") != "system"]
-    web_note = {"role": "user", "content": block + "\n\nUser question:\n" + user_text}
-    if rest and rest[-1].get("role") == "user":
-        rest = rest[:-1] + [web_note]
+    # Keep an image message intact. A text-only replacement would drop the picture.
+    if rest and rest[-1].get("role") == "user" and _content_has_image(rest[-1].get("content")):
+        rest = [{"role": "user", "content": block}] + rest
     else:
-        rest = rest + [web_note]
+        web_note = {"role": "user", "content": block + "\n\nUser question:\n" + user_text}
+        if rest and rest[-1].get("role") == "user":
+            rest = rest[:-1] + [web_note]
+        else:
+            rest = rest + [web_note]
     return [sys] + rest, hits
 
 
@@ -836,6 +1157,15 @@ class Handler(SimpleHTTPRequestHandler):
         host = (self.client_address[0] if self.client_address else "") or ""
         return host in ("127.0.0.1", "::1", "localhost")
 
+    def _may_show_secrets(self) -> bool:
+        """Stick screen, or a browser that has already paired with this UI."""
+        if self._is_loopback():
+            return True
+        if not stickllm_ui_client(self.headers):
+            return False
+        _doc, ok = self._auth()
+        return ok
+
     def _auth(self) -> tuple[dict, bool]:
         doc = load_auth()
         if self._is_loopback():
@@ -883,7 +1213,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "pair": pair,
                 "external_api": False,
                 "session_mode": session_mode,
-                "connect": connect_info(self._is_loopback(), llama_ok=llama_ok),
+                "connect": connect_info(self._may_show_secrets(), llama_ok=llama_ok),
                 "llama_load": llama_load_info(),
             }
             if path == "/api/health":
@@ -974,6 +1304,11 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
         n = int(self.headers.get("Content-Length") or 0)
+        # Base64 of a 50 MB file is about 67 MB. Refuse anything larger up front.
+        if path == "/api/attachments/convert" and n > 70 * 1024 * 1024:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "That file is over the 50 MB limit."})
+            return
         raw = self.rfile.read(n) if n else b"{}"
         try:
             req = json.loads(raw.decode() or "{}")
@@ -1030,6 +1365,9 @@ class Handler(SimpleHTTPRequestHandler):
             if blocked:
                 self._json(429, {"error": "rate_limited", "message": reason})
                 return
+            # Decide before remint. Remint clears the bearer, so a check after
+            # it always hides the new digits from the browser that asked.
+            show_code = self._may_show_secrets()
             try:
                 code, remint_id = remint_pair_code()
             except Exception as e:
@@ -1049,8 +1387,8 @@ class Handler(SimpleHTTPRequestHandler):
                     )
                 ),
             }
-            # Plaintext code only on the stick itself (same as banner / chat).
-            if self._is_loopback():
+            # Plaintext code for this StickLLM UI (stick screen or a paired browser).
+            if show_code:
                 body["pair_code"] = code
             self._json(200, body)
             return
@@ -1169,6 +1507,45 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             path = "/api/chat"
 
+        if path == "/api/attachments/convert":
+            if not (self._is_loopback() or stickllm_ui_client(self.headers)):
+                self._json(410, {"ok": False, "error": "external_api_removed", "message": "Use the StickLLM web UI only."})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"ok": False, "error": "pair_required", "message": "Pair this browser using the code on the stick screen."})
+                return
+            try:
+                payload = base64.b64decode(req.get("data_base64") or "", validate=False)
+            except Exception:
+                self._json(400, {"ok": False, "error": "Attachment data is not valid."})
+                return
+            name = str(req.get("name") or "file")
+            vision = bool(req.get("vision"))
+            result = run_attachment_convert(payload, name, vision)
+            if result.get("ok") and get_session_mode() == "vault":
+                try:
+                    persist_attachment(str(req.get("chat_id") or ""), name, payload, str(result.get("plain") or ""))
+                except Exception:
+                    pass
+            code = 200 if result.get("ok") else 400
+            # Never echo the raw upload back. plain text is what the model will see.
+            result.pop("plain_bytes", None)
+            self._json(code, result)
+            return
+
+        if path == "/api/chat/stop":
+            if not (self._is_loopback() or stickllm_ui_client(self.headers)):
+                self._json(410, {"error": "external_api_removed", "message": "Use the StickLLM web UI only."})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required", "message": "Pair this browser using the code on the stick screen."})
+                return
+            stopped = LLAMA_CANCEL.cancel()
+            self._json(200, {"ok": True, "stopped": stopped})
+            return
+
         if path != "/api/chat":
             self._json(404, {"error": "not found"})
             return
@@ -1194,7 +1571,38 @@ class Handler(SimpleHTTPRequestHandler):
             )
             return
 
-        messages = list(req.get("messages") or [])
+        messages = sanitize_chat_messages(req.get("messages") or [])
+        attach_meta = {"used": False, "truncated": False, "note": ""}
+        try:
+            mod = convert_mod()
+            if messages and sum(
+                (m.get("content") or "").count("<attachment ")
+                if isinstance(m.get("content"), str)
+                else sum(str(p.get("text") or "").count("<attachment ") for p in m.get("content") if isinstance(p, dict))
+                if isinstance(m.get("content"), list)
+                else 0
+                for m in messages
+            ) > mod.MAX_FILES:
+                self._json(400, {"error": "too_many_files", "message": f"{mod.MAX_FILES} files per message."})
+                return
+            ctx = active_ctx_size() or 8192
+            fitted, attach_meta, budget_err = fit_chat_messages(messages, ctx, llama_token_count)
+            if budget_err:
+                self._json(400, {"error": "attachment_budget", "message": budget_err})
+                return
+            messages = fitted
+        except Exception:
+            raw = json.dumps(messages, default=str)
+            if "<attachment " in raw or '"image_url"' in raw:
+                self._json(
+                    400,
+                    {
+                        "error": "attachment_budget",
+                        "message": "Could not fit the attachment into the context window.",
+                    },
+                )
+                return
+            attach_meta = {"used": False, "truncated": False, "note": ""}
         web_mode = req.get("web", "auto")
         if web_mode is True or web_mode == "on":
             force, use = True, True
@@ -1215,26 +1623,46 @@ class Handler(SimpleHTTPRequestHandler):
             "stream": False,
             "max_tokens": req.get("max_tokens", 1024),
         }
+        if not _CHAT_GATE.acquire(blocking=False):
+            self._json(409, {"error": "busy", "message": "Still answering. Press Stop first."})
+            return
+        LLAMA_CANCEL.prepare()
         try:
-            data = http_json(LLAMA + "/v1/chat/completions", upstream, timeout=300)
-            if hits:
-                data["stickllm_web"] = {"used": True, "results": hits}
-            else:
-                data["stickllm_web"] = {"used": False, "results": []}
-            self._json(200, data)
-        except urllib.error.HTTPError as e:
-            body = e.read()[:2000]
             try:
-                err = json.loads(body.decode())
-                if isinstance(err, dict):
-                    err["error"] = friendly_llama_error(Exception(str(err.get("error") or e)))
-                    self._json(e.code, err)
+                data = http_json_llama(LLAMA + "/v1/chat/completions", upstream, timeout=300)
+                if hits:
+                    data["stickllm_web"] = {"used": True, "results": hits}
+                else:
+                    data["stickllm_web"] = {"used": False, "results": []}
+                if attach_meta.get("used"):
+                    data["stickllm_attachments"] = {
+                        "truncated": bool(attach_meta.get("truncated")),
+                        "budget_tokens": attach_meta.get("budget_tokens"),
+                        "included_tokens": attach_meta.get("included_tokens"),
+                        "note": attach_meta.get("note") or "",
+                    }
+                self._json(200, data)
+            except urllib.error.HTTPError as e:
+                if LLAMA_CANCEL.take_cancelled():
+                    self._json(200, {"stopped": True, "choices": []})
                     return
-            except Exception:
-                pass
-            self._json(e.code, {"error": friendly_llama_error(e)})
-        except Exception as e:
-            self._json(502, {"error": friendly_llama_error(e)})
+                body = e.read()[:2000]
+                try:
+                    err = json.loads(body.decode())
+                    if isinstance(err, dict):
+                        err["error"] = friendly_llama_error(Exception(str(err.get("error") or e)))
+                        self._json(e.code, err)
+                        return
+                except Exception:
+                    pass
+                self._json(e.code, {"error": friendly_llama_error(e)})
+            except Exception as e:
+                if LLAMA_CANCEL.take_cancelled():
+                    self._json(200, {"stopped": True, "choices": []})
+                    return
+                self._json(502, {"error": friendly_llama_error(e)})
+        finally:
+            _CHAT_GATE.release()
 
 
 def main() -> int:

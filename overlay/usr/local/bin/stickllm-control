@@ -386,7 +386,7 @@ def discover_local_ggufs() -> list[dict]:
         else:
             stem = stem[: -len(".gguf")] if stem.lower().endswith(".gguf") else stem
         mid = "local-" + re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")[:80]
-        size_gb = round(path.stat().st_size / (1024**3), 2)
+        size_gb = round(gguf_weight_bytes(path) / (1024**3), 2)
         out.append(
             {
                 "id": mid,
@@ -566,9 +566,16 @@ def gguf_arch_dims(meta: dict) -> dict:
     head_dim = num(f"{arch}.attention.key_length")
     if not head_dim and n_embd and n_head:
         head_dim = max(1, n_embd // n_head)
+    # Hybrid models (Qwen3.5 / Qwen3.8) run full attention every Nth layer.
+    # The other layers are recurrent and do not grow a KV cache with context.
+    interval = num(f"{arch}.full_attention_interval")
+    n_kv_layer = n_layer
+    if interval > 1 and n_layer > 0:
+        n_kv_layer = max(1, n_layer // interval)
     return {
         "architecture": arch,
         "n_layer": n_layer,
+        "n_kv_layer": n_kv_layer,
         "n_ctx_train": n_ctx,
         "n_embd": n_embd,
         "n_head": n_head,
@@ -641,6 +648,37 @@ def suitable_gpus(rows: list[dict] | None = None) -> list[dict]:
     return [g for g in rows if int(g.get("total_mib") or 0) >= GPU_SUITABLE_MIB]
 
 
+_SPLIT_GGUF = re.compile(
+    r"^(?P<stem>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    re.I,
+)
+
+
+def gguf_weight_bytes(path: Path) -> int:
+    """Bytes of the whole model. Split GGUFs are name-00001-of-00003 plus siblings."""
+    path = Path(path)
+    try:
+        own = int(path.stat().st_size)
+    except OSError:
+        return 0
+    m = _SPLIT_GGUF.match(path.name)
+    if not m:
+        return own
+    total = int(m.group("total"))
+    parent = path.parent
+    nbytes = 0
+    found = 0
+    for i in range(1, total + 1):
+        part = parent / f"{m.group('stem')}-{i:05d}-of-{m.group('total')}.gguf"
+        try:
+            if part.is_file():
+                nbytes += int(part.stat().st_size)
+                found += 1
+        except OSError:
+            continue
+    return nbytes if found else own
+
+
 def estimate_n_layer(dims: dict, file_bytes: int) -> tuple[int, str]:
     """Layer count from GGUF, else a documented size bucket.
 
@@ -680,8 +718,9 @@ def kv_bytes_per_token(dims: dict, n_layer: int, file_bytes: int) -> int:
     """K+V f16 bytes per token. Uses GGUF dims, else a 70B GQA ballpark."""
     n_kv = int(dims.get("n_kv_head") or 0)
     head = int(dims.get("head_dim") or 0)
-    if n_layer > 0 and n_kv > 0 and head > 0:
-        return 2 * n_layer * n_kv * head * 2
+    n_kv_layer = int(dims.get("n_kv_layer") or n_layer or 0)
+    if n_kv_layer > 0 and n_kv > 0 and head > 0:
+        return 2 * n_kv_layer * n_kv * head * 2
     gib = file_bytes / (1024**3)
     if gib >= 30:
         # Llama-3 70B: 80 layers * 8 kv heads * 128 * 2 bytes * K and V.
@@ -898,7 +937,7 @@ def build_offload_plan(*, honor_override: bool = True) -> dict:
     if not path or not Path(path).is_file():
         return {"ok": False, "error": "model file missing", "n_gpu_layers": 0, "gpu_count": 0}
     try:
-        file_bytes = Path(path).stat().st_size
+        file_bytes = gguf_weight_bytes(Path(path))
     except OSError as e:
         return {"ok": False, "error": str(e), "n_gpu_layers": 0, "gpu_count": 0}
     meta = read_gguf_meta(path, max_keys=800)
@@ -972,6 +1011,8 @@ def llama_journal_error() -> str:
     for line in (p.stdout or "").splitlines():
         s = line.strip()
         if not s or _SECRET_LINE.search(s):
+            continue
+        if re.search(r"backend registered|stickllm-cuda-register", s, re.I):
             continue
         if _CUDA_ERR_LINE.search(s) or "stickllm-llama-start:" in s:
             picked.append(s)
@@ -1154,12 +1195,15 @@ def estimate_context_budget(
 
     Formula (documented for UI/ops):
       free_mem_after ≈ mem_gb - approx_size_gb * 1.05   # weights + small overhead
-      If GGUF dims known (n_layer, n_kv_head, head_dim):
-        kv_bytes/token ≈ 2 * n_layer * n_kv_head * head_dim * 2  # K+V, f16
+      If GGUF dims known (n_kv_layer, n_kv_head, head_dim):
+        kv_bytes/token ≈ 2 * n_kv_layer * n_kv_head * head_dim * 2  # K+V, f16
+        n_kv_layer is block_count, or block_count / full_attention_interval
+        for hybrid models whose other layers are recurrent.
       Else ballpark from weight size (calibrated ~7B @ ~56 KiB/token):
         kv_bytes/token ≈ 56000 * (approx_size_gb / 5.1)
       max_ctx_mem = floor(free_mem_after_bytes / kv_bytes_per_token)
       Clamp to [2048, model_max_ctx] (GGUF context_length when available).
+      GPU hosts are not capped at 32K. A CPU host stays at 8K.
     """
     dims = dims or {}
     size = max(0.1, float(approx_size_gb or 0) or 2.0)
@@ -1169,7 +1213,7 @@ def estimate_context_budget(
     # Leave a little headroom for runtime / fragmentation.
     free_after *= 0.85
 
-    n_layer = int(dims.get("n_layer") or 0)
+    n_layer = int(dims.get("n_kv_layer") or dims.get("n_layer") or 0)
     n_kv = int(dims.get("n_kv_head") or 0)
     head_dim = int(dims.get("head_dim") or 0)
     if n_layer > 0 and n_kv > 0 and head_dim > 0:
@@ -1181,10 +1225,10 @@ def estimate_context_budget(
     max_from_mem = int((free_after * (1024**3)) // kv_bpt) if free_after > 0 else 2048
     train_ctx = int(model_max_ctx or dims.get("n_ctx_train") or 0)
     if train_ctx <= 0:
-        train_ctx = 32768 if size >= 4 else 32768
-    # Hard ceiling for live stick UX (llama-server comfort).
-    hard_cap = 32768 if gpu else 8192
-    hi = max(2048, min(train_ctx, hard_cap, max(2048, max_from_mem)))
+        train_ctx = 32768
+    # CPU hosts stay small. GPU hosts follow the GGUF context length.
+    ceiling = train_ctx if gpu else min(train_ctx, 8192)
+    hi = max(2048, min(ceiling, max(2048, max_from_mem)))
     # Snap down to a friendly step.
     step = 1024 if hi <= 8192 else 2048
     hi = max(2048, (hi // step) * step)
@@ -1320,6 +1364,27 @@ def active_model_identity() -> dict:
     return out
 
 
+def find_mmproj(model_path: str) -> str:
+    """Vision projector GGUF sitting next to the weights. Empty if this model is text-only."""
+    p = Path(model_path)
+    if not p.is_file():
+        return ""
+    cands: list[Path] = []
+    try:
+        for f in p.parent.iterdir():
+            if not f.is_file() or f.resolve() == p.resolve():
+                continue
+            low = f.name.lower()
+            if low.endswith(".gguf") and "mmproj" in low:
+                cands.append(f)
+    except OSError:
+        return ""
+    if not cands:
+        return ""
+    cands.sort(key=lambda f: f.stat().st_size if f.is_file() else 0, reverse=True)
+    return str(cands[0])
+
+
 def active_model_path() -> str:
     """Path from explicit Activate only — never invent a baked default at boot."""
     env = RUN / "model.env"
@@ -1377,7 +1442,45 @@ def _is_abliterated(*parts: str) -> bool:
     return any(k in blob for k in ("abliterat", "uncensor", "jailbreak"))
 
 
-def hf_search(query: str, abl: str = "include") -> dict:
+_VISION_RE = re.compile(
+    r"(?:^|[^a-z0-9])(?:vl|vision)(?:[^a-z0-9]|$)"
+    r"|qwen\d*(?:\.\d+)?-?vl|llava|moondream|minicpm-?v|internvl|pixtral|smolvlm|glm-?4v|kimi-?vl|idefics",
+    re.I,
+)
+
+
+def _pick_mmproj(files: list[tuple[str, int]]) -> tuple[str, int] | None:
+    """Prefer an f16/bf16 projector. One projector does not fit a different model."""
+    if not files:
+        return None
+
+    def score(pair: tuple[str, int]) -> tuple[int, int]:
+        low = pair[0].lower()
+        pref = 0 if ("f16" in low or "bf16" in low) else 1
+        return (pref, -pair[1])
+
+    return sorted(files, key=score)[0]
+
+
+def _sidecar_repo(model_path: str) -> str:
+    p = Path(model_path)
+    sc = Path(str(p) + ".stickllm.json")
+    if not sc.is_file():
+        return ""
+    try:
+        doc = json.loads(sc.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    repo = str(doc.get("repo") or "").strip()
+    return repo if "/" in repo else ""
+
+
+def looks_vision(*parts: str) -> bool:
+    blob = " ".join(p for p in parts if p).replace("_", "-")
+    return bool(_VISION_RE.search(blob))
+
+
+def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
     """Search Hugging Face for GGUF files. Catalog hash hits are Verified."""
     q = " ".join(str(query or "").split())
     if len(q) < 2:
@@ -1387,9 +1490,14 @@ def hf_search(query: str, abl: str = "include") -> dict:
         abl = "include"
     # "Only" must ask HF for abliterated repos. Filtering the popular Qwen list
     # locally finds none, because those top hits are the normal instruct models.
+    vision = str(vision or "any").lower()
+    if vision not in ("any", "only"):
+        vision = "any"
     search_q = q
     if abl == "only" and "abliterat" not in q.lower() and "uncensor" not in q.lower():
         search_q = q + " abliterated"
+    if vision == "only" and not looks_vision(q):
+        search_q = search_q + " VL"
     search_url = "https://huggingface.co/api/models?" + urllib.parse.urlencode(
         {
             "search": search_q,
@@ -1437,6 +1545,7 @@ def hf_search(query: str, abl: str = "include") -> dict:
         if not isinstance(tree, list):
             continue
         files = []
+        mmproj_files: list[tuple[str, int]] = []
         for sib in tree:
             if not isinstance(sib, dict) or sib.get("type") not in (None, "file"):
                 continue
@@ -1444,12 +1553,13 @@ def hf_search(query: str, abl: str = "include") -> dict:
             if not name.lower().endswith(".gguf"):
                 continue
             low = name.lower()
-            if "mmproj" in low:
-                continue
             try:
                 size = int(sib.get("size") or 0)
             except (TypeError, ValueError):
                 size = 0
+            if "mmproj" in low:
+                mmproj_files.append((name, size))
+                continue
             files.append((name, size))
         def rank(pair: tuple[str, int]) -> tuple[int, int, int]:
             qm = _QUANT_RE.search(pair[0])
@@ -1467,6 +1577,10 @@ def hf_search(query: str, abl: str = "include") -> dict:
             if len(models) >= 24:
                 break
             ablit = _is_abliterated(repo, name)
+            picked = _pick_mmproj(mmproj_files)
+            sees = bool(picked) or looks_vision(repo, name)
+            if vision == "only" and not sees:
+                continue
             if abl == "only" and not ablit:
                 continue
             if abl == "exclude" and ablit:
@@ -1502,6 +1616,10 @@ def hf_search(query: str, abl: str = "include") -> dict:
                     "hf": True,
                     "pinned": bool(sha),
                     "abliterated": ablit,
+                    "vision": sees,
+                    "mmproj_file": picked[0] if picked else "",
+                    "mmproj_bytes": picked[1] if picked else 0,
+                    "mmproj_ready": bool(picked) and Path(picked[0]).name.lower() in installed_names,
                 }
             )
     return {"ok": True, "query": q, "models": models}
@@ -2141,6 +2259,9 @@ def _build_download_job(params: dict) -> dict:
         if not set_r.get("ok"):
             return {"ok": False, "error": set_r.get("error") or "invalid models folder"}
     dest = get_preferred_models_dir() or vault_download_models_dir()
+    beside = str(params.get("beside") or "").strip()
+    if beside and Path(beside).is_dir():
+        dest = Path(beside)
     if dest is None:
         return {"ok": False, "error": "choose a models folder before downloading"}
     sha = str(params.get("sha256") or "").strip().lower()
@@ -2285,6 +2406,71 @@ def _enqueue_download(params: dict) -> dict:
         "queue": pumped.get("queue") or _public_queue(items),
         "catalog": enrich_models(),
     }
+
+
+def download_mmproj(params: dict) -> dict:
+    """Queue the mmproj that belongs to this model. It is not shared with other models."""
+    repo = str(params.get("repo") or "").strip()
+    model_path = str(params.get("path") or "").strip()
+    hf_file = str(params.get("file") or "").strip()
+    try:
+        nbytes = int(params.get("bytes") or 0)
+    except (TypeError, ValueError):
+        nbytes = 0
+    if not repo and model_path:
+        repo = _sidecar_repo(model_path)
+    if not repo or "/" not in repo:
+        return {
+            "ok": False,
+            "error": "No Hugging Face repo is known for this file. Search for the model, then click its vision tag.",
+        }
+    if not hf_file or nbytes <= 0 or "mmproj" not in hf_file.lower():
+        try:
+            tree = _hf_get_json(
+                "https://huggingface.co/api/models/"
+                + urllib.parse.quote(repo, safe="/")
+                + "/tree/main",
+                timeout=20,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"Could not read that repo: {exc}"}
+        cands: list[tuple[str, int]] = []
+        if isinstance(tree, list):
+            for sib in tree:
+                if not isinstance(sib, dict):
+                    continue
+                name = str(sib.get("path") or sib.get("rfilename") or "")
+                if "mmproj" not in name.lower() or not name.lower().endswith(".gguf"):
+                    continue
+                try:
+                    size = int(sib.get("size") or 0)
+                except (TypeError, ValueError):
+                    size = 0
+                if size > 0:
+                    cands.append((name, size))
+        picked = _pick_mmproj(cands)
+        if not picked:
+            return {"ok": False, "error": "That Hugging Face repo has no mmproj file for this model."}
+        hf_file, nbytes = picked
+    dest = ""
+    if model_path and Path(model_path).is_file():
+        dest = str(Path(model_path).parent)
+        already = Path(dest) / Path(hf_file).name
+        try:
+            if already.is_file() and already.stat().st_size >= int(nbytes * 0.98):
+                return {"ok": True, "already": True, "note": "This model's mmproj is already next to it."}
+        except OSError:
+            pass
+    payload = {
+        "id": str(params.get("id") or "") or ("mmproj:" + repo.replace("/", "__") + ":" + Path(hf_file).name),
+        "repo": repo,
+        "file": hf_file,
+        "bytes": nbytes,
+        "name": "mmproj · " + Path(hf_file).name,
+    }
+    if dest:
+        payload["beside"] = dest
+    return enqueue_download(payload)
 
 
 def enqueue_download(params: dict) -> dict:
@@ -2700,7 +2886,7 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
         offload_fit = ""
         if first and Path(first).is_file():
             try:
-                nbytes = Path(first).stat().st_size
+                nbytes = gguf_weight_bytes(Path(first))
             except OSError:
                 nbytes = int(max(size_gb, 0.1) * 1e9)
             preview_ctx = int(budget.get("ctx_suggested") or 8192)
@@ -2735,6 +2921,13 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
             "offload_caption": offload_caption,
             "offload_ngl": offload_ngl,
             "offload_fit": offload_fit,
+            "vision": bool(m.get("vision")) or looks_vision(
+                str(m.get("name") or ""),
+                str(m.get("id") or ""),
+                str(dims.get("architecture") or ""),
+                first,
+            ) or bool(find_mmproj(first) if first else ""),
+            "mmproj": find_mmproj(first) if first else "",
         }
         if is_active and loaded_ctx is not None:
             entry["ctx_loaded"] = loaded_ctx
@@ -2781,13 +2974,16 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
         (RUN / "ngl.env").unlink(missing_ok=True)
     except Exception:
         pass
-    (RUN / "model.env").write_text(
+    mmproj = "" if m.get("backend") == "cpu" else str(m.get("mmproj") or find_mmproj(path) or "")
+    env_txt = (
         f"STICKLLM_MODEL={path}\n"
         f"STICKLLM_MODEL_ID={model_id}\n"
         f"STICKLLM_MODEL_NAME={m.get('name') or model_id}\n"
-        f"STICKLLM_CTX_SIZE={ctx}\n",
-        encoding="utf-8",
+        f"STICKLLM_CTX_SIZE={ctx}\n"
     )
+    if mmproj and Path(mmproj).is_file():
+        env_txt += f"STICKLLM_MMPROJ={mmproj}\n"
+    (RUN / "model.env").write_text(env_txt, encoding="utf-8")
     try:
         os.chmod(RUN / "model.env", 0o644)
     except Exception:
@@ -3015,9 +3211,15 @@ def handle(action: str, params: dict) -> dict:
     if action == "set_models_dir":
         return set_preferred_models_dir(str(params.get("path") or ""))
     if action == "hf_search":
-        return hf_search(str(params.get("q") or params.get("query") or ""), str(params.get("abl") or "include"))
+        return hf_search(
+            str(params.get("q") or params.get("query") or ""),
+            str(params.get("abl") or "include"),
+            str(params.get("vision") or "any"),
+        )
     if action == "model_download":
         return enqueue_download(params)
+    if action == "mmproj_download":
+        return download_mmproj(params)
     if action == "queue_stop":
         return queue_stop(str(params.get("id") or ""))
     if action == "queue_start":

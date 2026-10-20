@@ -75,15 +75,19 @@
         <div class="attachments" id="attachments" hidden aria-label="Attachments"></div>
         <textarea id="input" rows="1" placeholder="Message StickLLM" aria-label="Message"></textarea>
         <div class="composerBar">
-          <button type="button" class="iconBtn" id="attachBtn" disabled title="Attach files — coming later" aria-label="Attach (coming later)">
+          <button type="button" class="iconBtn" id="attachBtn" title="Attach a file" aria-label="Attach a file">
             <svg viewBox="0 0 24 24"><path d="M21.4 11l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"/></svg>
           </button>
+          <input type="file" id="attachPick" multiple hidden>
           <button type="button" class="toggleChip" id="webToggle" aria-pressed="true" title="Allow live web lookup when needed (needs internet)">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>Web
           </button>
           <span class="grow"></span>
           <button type="button" class="iconBtn" id="micBtn" disabled title="Voice input — coming later" aria-label="Mic (coming later)">
             <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
+          </button>
+          <button type="button" class="sendBtn stop" id="stopBtn" hidden aria-label="Stop">
+            <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
           </button>
           <button type="submit" class="sendBtn" id="sendBtn" aria-label="Send (Enter)">
             <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
@@ -178,6 +182,7 @@
         <label title="Unknown source"><input type="checkbox" data-t="untrusted" checked><i class="tdot bad"></i>Untrusted</label>
         <label title="Hash mismatch"><input type="checkbox" data-t="blocked" checked><i class="tdot blk"></i>Blocked</label></div></div>
       <div class="fBlock"><div class="fTitle">Abliterated / uncensored</div><div class="seg full" id="mfAbl"><button type="button" data-v="include" class="on">Include</button><button type="button" data-v="only">Only</button><button type="button" data-v="exclude">Exclude</button></div></div>
+      <div class="fBlock"><div class="fTitle">Vision</div><div class="seg full" id="mfVis"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="only">Vision only</button></div></div>
       <div class="fBlock"><label class="fTitle" for="mfQuant">Quant</label><select id="mfQuant"><option value="any">Any</option><option>Q2_K</option><option>Q3_K_M</option><option>Q4_K_M</option><option>Q5_K_M</option><option>Q6_K</option><option>Q8_0</option><option>F16</option></select></div>
       <div class="fBlock"><div class="fTitle">Licence</div><div class="seg full" id="mfLic"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="commercial">Commercial</button><button type="button" data-v="noncommercial">Non-comm.</button></div></div>
       <p class="muted small fNote">GGUF only (llama.cpp). Pickle <span class="mono">.bin</span>/<span class="mono">.pt</span> checkpoints are never offered because they can run code when loaded.</p>
@@ -194,7 +199,7 @@
       </div>
       <div class="mbTools">
         <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mfSearch" placeholder="Search Hugging Face (GGUF)" aria-label="Search Hugging Face GGUF models"></div>
-        <label class="sortSel">Sort <select id="mfSort"><option value="fit">Best fit</option><option value="size">Size</option><option value="name">Name</option></select></label>
+        <label class="sortSel">Sort <select id="mfSort"><option value="fit" selected>Best fit</option><option value="size">Size</option><option value="name">Name</option><option value="running">Running</option></select></label>
       </div>
       <div class="mbCount"><span id="modelCount"></span><span id="policyHidden"></span></div>
       <div class="cards" id="modelList" role="list" aria-label="Models"></div>
@@ -359,7 +364,7 @@
   <div class="group">
     <div class="row"><div><b>Loading a model</b><small>No model loads at boot. Go to Models, pick one, choose a preset, then Reload.</small></div><button class="btn sm" data-sec-go="models">Open Models</button></div>
     <div class="row"><div><b>Connecting another device</b><small>Open the LAN address and enter the pair code from the stick's screen.</small></div><button class="btn sm" data-sec-go="devices">Open Pairing</button></div>
-    <div class="row"><div><b>Terminal access (SSH)</b><small>Login details are shown on the stick's console only, never in the browser.</small></div></div>
+    <div class="row"><div><b>Terminal access (SSH)</b><small>F9 makes a new pair code. F10 shows the SSH password. Both work from any StickLLM screen.</small></div><button class="btn sm" id="showSsh" type="button">Show SSH password</button></div>
   </div>
 </section>
 
@@ -372,16 +377,16 @@
     <div class="group">
       <div class="row"><span>Version</span><span class="mono" id="aboutVer">hotfix</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono">b4521</span></div>
-      <div class="row"><span>UI</span><span class="mono">v0.3.9</span></div>
+      <div class="row"><span>UI</span><span class="mono">v0.4.0</span></div>
       <div class="row"><span>License</span><span>MIT</span></div>
-      <div class="row"><span>Website</span><a href="https://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
+      <div class="row"><span>Website</span><a href="http://stickllm.org" rel="noopener noreferrer">stickllm.org</a></div>
     </div>
     <h3 style="margin-top:16px">Keyboard (stick screen)</h3>
     <div class="group kbd">
       <div class="row"><span>New PAIR CODE</span><span><kbd>F9</kbd></span></div>
       <div class="row"><span>Show SSH password</span><span><kbd>F10</kbd></span></div>
     </div>
-    <p class="muted small">F10 only works on the stick (Server/kiosk). SSH must be enabled this boot (GRUB menu 2 or 3).</p>
+    <p class="muted small">F9 and F10 work from any screen in this UI. SSH must be enabled this boot (GRUB menu 2 or 3).</p>
   </div>
 </section>
 
@@ -459,6 +464,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=ctx1"></script>
+<script src="app.js?v=pdfscan1"></script>
 </body>
 </html>

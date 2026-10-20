@@ -14,8 +14,8 @@ cd "$ROOT"
 
 PROFILE="amd-rtx3090"
 # Next unshipped line. Override: STICKLLM_VERSION=0.4.0 ./scripts/build.sh
-# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8).
-VERSION="${STICKLLM_VERSION:-0.3.9}"
+# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9).
+VERSION="${STICKLLM_VERSION:-0.4.0}"
 VERSION_DIR="v${VERSION}"
 ISO_NAME="StickLLM-v${VERSION}.iso"
 CHECKSUM_FILE="checksums/v${VERSION}.sha256"
@@ -23,7 +23,7 @@ MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
 VOL_WORK="stickllm-lb-work"
 
 case "$VERSION_DIR" in
-  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8)
+  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8|v0.3.9)
     echo "REFUSE: VERSION=${VERSION} would overwrite a shipping artifact" >&2
     exit 1
     ;;

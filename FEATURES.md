@@ -2,6 +2,43 @@
 
 Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = later.
 
+The high-level idea list and the checklist below are one plan (2026-10-16). Security architecture is parked until the working product is settled. Do not start NINO, the client-stick lockdown, zero-trust remote access, or signed multi-signer updates before then.
+
+**Next (P0):** finish Models, then wire the greyed Advanced controls (ISS-021). Hugging Face search, the download queue, hash checks, and VRAM fit labels already ship. Still open: the same filters when choosing an installed model to load, and the Advanced knobs that are on screen but not applied (temperature, top-p, top-k, repeat penalty, max reply tokens, KV cache type, backend). AMD and Intel coverage stays on the hardware list after that.
+
+## Ideas
+
+Working today:
+
+- Boot menu: Local / Server (GPU chat or share on the LAN), Terminal, Test (SSH enabled for maintainers)
+- NVIDIA CUDA acceleration, with Vulkan and CPU fallback
+- Built-in small model (3B), plus downloadable larger models from Settings
+- Kiosk chat UI (desktop and phone browser), pair on the LAN with a one-time code
+- Ephemeral by default: reboot clears the session
+- Optional encrypted vault unlock from the UI for saved storage (saved chats already live here)
+- Mount host drives or claim free space on the StickLLM stick
+- Model selection, download, and verification from Hugging Face
+- Shipping ISOs as `StickLLM-vX.Y.Z.iso` (flash with Rufus DD Image, or build from source)
+
+Still to build, in order. Each line points at the checklist section that owns it:
+
+1. **Next.** Finish model filters on installed models, and wire the greyed Advanced section — Models, Settings
+2. Stronger AMD / Intel GPU paths and broader hardware coverage — Boot and hardware
+3. Rest of the vault story: stick key + PIN. The 12-word recovery phrase already exists. Panic / duress PIN stays parked — Vault and security
+4. Saved settings and per-model presets (saved chats already exist) — Settings
+5. Vision (image input), document chat, and voice — Chats and documents, Companion apps
+6. Speech to text and text to speech for agent interaction — Companion apps
+7. Agent Zero, installable — Companion apps
+8. Apps from a catalog, for a person or an agent — [docs/APPS.md](docs/APPS.md)
+
+Parked with security (do not build yet):
+
+- Dedicated client stick paired with a server stick — Client and networking
+- Mobile apps (iOS, Android, GrapheneOS) with QR pairing and authentication — Mobile
+- Zero-trust remote access: keys pinned at pairing, hole punching or relay, Tor — Client and networking
+- Signed, reproducible builds with multi-signer updates and A/B rollback — Updates
+- Tor for web search — Settings, Client and networking
+
 ## Boot and hardware
 - [x] Boot menu: Server / Local, Terminal, Test - SSH Enabled (chat UI + SSH); Secure Client deferred until available
 - [x] NVIDIA GPU support (CUDA)
@@ -26,8 +63,10 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [x] P0 Accurate loaded-model identity in UI/status (show what's actually loaded)
 - [x] P0 Model load progress UX — clear Loading model / progress so Term/LAN 503 isn't mistaken for broken pairing
 - [x] P0 Signed model catalog, pinned SHA-256, re-checked at load (v0.3: fatal sha256 on download)
-- [ ] **Next (post-v0.3.8)** Slim ISO: bake **3B Q4 only** (~2 GB); stop baking **Qwen2.5-7B Q5_K_M** (downloadable via catalog) — ISS-020
-- [ ] **Next (post-v0.3.8)** Build full Hugging Face download/search/browse flow (does not exist yet); shared filters (Verified / known-hash open-weight, Fits in VRAM, Untrusted, …) on **both** browse/download **and** installed → load-into-VRAM; wire Advanced controls now greyed in UI — ISS-021
+- [x] Slim ISO: bake **3B Q4 only** (~2 GB). **Qwen2.5-7B Q5_K_M** is download-only — shipped v0.3.9 (ISS-020)
+- [x] Hugging Face search, one-at-a-time download queue (stop / start / delete, resume), hash check, and VRAM fit labels — v0.3.9
+- [ ] **Next** Same filters (Verified / known-hash, Fits in VRAM, Untrusted, quant, licence, abliterated) on **installed models** when choosing what to load into memory — ISS-021
+- [ ] **Next** Wire Advanced controls that are on screen but not applied to the running model (sampling, KV cache type, backend). Context size is the part that already moves — ISS-021
 - [ ] P1 VRAM-based model suggestions
 - [ ] P1 Vision models (restore image input; mmproj hash-pinned)
 - [ ] P1 Download unsupported models with explicit warning
@@ -44,9 +83,10 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [ ] P1 Manual display/GPU override
 - [x] P1 Settings menu (split from Models) — Network/WiFi, claim USB; stubs for context size / SSD vault / setup AP (v0.3.1)
 - [ ] P1 Settings page + reset to defaults (persist all prefs)
-- [ ] P1 Advanced settings panel (per-model inference params)
+- [ ] **Next** Advanced settings panel (per-model inference params) — ISS-021
+  - On screen today: context size, presets, KV cache type, temperature, top-p, top-k, repeat penalty, max reply tokens. Presets only move the context slider. Sampling and KV are not sent to llama. The backend segment is disabled (“auto-selected”)
   - Defaults from per-model presets in the signed catalog (template via --jinja, sampling, auto-sized context from free VRAM); see Models → Signed model catalog
-  - Exposes: temperature, top_p, top_k, context size, KV cache type, MoE expert offload, system prompt, thinking toggle
+  - Still to expose once the greyed knobs work: MoE expert offload, system prompt, thinking toggle
   - Changes save per model in settings; reset-to-preset option
   - UI shows active context size and warns near the limit
 - Rule: settings hold nothing revealing; anything sensitive lives in the vault
@@ -80,7 +120,7 @@ Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = lat
 - [x] P0 Console WiFi bootstrap (no browser) — `stickllm-wifi-setup` on Term/tty2 (scan + password); same `stickllm-wifi-apply` profile (v0.3.1)
   - Server with no Ethernet: Ctrl+Alt+F2 → `user` / `stickllm` → `stickllm-wifi-setup`; or Local-first WiFi then reboot Server; or one-time Ethernet
   - Setup AP for first-time config: deferred (stub in Settings only)
-- [ ] P1 True air-gap / NINO (“nothing in, nothing out”) OS network lockdown — ISS-023
+- [ ] P1 True air-gap / NINO (“nothing in, nothing out”) OS network lockdown — ISS-023 (**parked**)
   - Today: UI **Web** pill gates chat live lookup only; Settings **Offline mode** is Coming soon / not wired (does not firewall the OS)
   - Local/Server same machine: disable-network button (kill NIC / block all ingress+egress)
   - Remote client stick: allow only the secure tunnel to the paired server; block all other traffic

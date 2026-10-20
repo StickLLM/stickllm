@@ -12,13 +12,15 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+**Security is parked** (2026-10-16). Do not implement NINO, firewalls, the client-stick lockdown, zero-trust remote access, pairing/TLS redesign, or signed updates until the working product is settled. The idea list and the checklist are one plan at the top of [FEATURES.md](FEATURES.md). **Next is ISS-021:** the same model filters on installed models, then the greyed Advanced controls. AMD / Intel GPU paths come after that. The rest of the vault story (stick key + PIN; not the duress PIN) comes after the GPU work.
+
 ### ISS-023 — Complete offline / NINO network lockdown (“nothing in, nothing out”)
 | | |
 |---|---|
 | **ID** | ISS-023 |
 | **Mode** | Local / Server / Client stick (all) |
 | **Severity** | PRODUCT (P1 security posture) |
-| **Status** | Open — design only; **not implemented**; no firewall yet |
+| **Status** | Parked — design only; do not implement until the product architecture is settled |
 | **Summary** | True air-gap mode: when the user wants it, **nothing in, nothing out** at the OS/network layer — not merely chat-level Web lookup off. Today the UI **Web** pill only gates chat live lookup; Terminal, HF downloads, and other processes still reach the internet when the NIC is up. Settings → Network **Offline mode** is “Coming soon” / not wired (`ui/index.html` `#offline`). |
 | **Notes** | **Goal:** NINO (nothing in, nothing out) air-gap posture the user can enable consciously. **Local / Server on same machine:** a “disable network” control that kills the NIC and/or firewalls all ingress/egress (simpler path). **Remote client stick:** still must talk to the StickLLM server over the **secure tunnel** only; allowlist that tunnel (paired server) and block all other ingress/egress. **Do not confuse with Web pill** — Web off ≠ OS offline. **HF / catalog downloads, updates, Tor, AP setup, etc. must be blocked or refused** while NINO is on. Open design questions: iptables vs nftables vs NetworkManager disconnect; WireGuard/SSH tunnel allowlist shape; LAN-pair-only vs internet-reachable server; how client stick discovers/keeps the tunnel without opening general egress; persistence across reboot; UX copy that distinguishes Web / Offline / NINO; interaction with Term SSH and BMC (out of StickLLM control). Track in FEATURES + THREAT-MODEL; implement later — **docs/issue only for this entry**. |
 
@@ -38,7 +40,7 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 | **ID** | ISS-020 |
 | **Mode** | all / build |
 | **Severity** | PRODUCT (P0 next ship after v0.3.8) |
-| **Status** | Open — plan only; **do not** remove from v0.3.8 ship or retag |
+| **Status** | Done in v0.3.9. The 3B is baked; the 7B is download-only. Do **not** change the v0.3.8 or v0.3.9 ISOs |
 | **Summary** | Next version: stop baking **Qwen2.5-7B Instruct Q5_K_M** (~5 GB split GGUF) into the ISO. Keep **Qwen2.5-3B Instruct Q4_K_M** (~2 GB) as the built-in test/default model. Users download 7B (and larger) via the hash-pinned catalog. |
 | **Notes** | Touches when implementing (not now): `models/qwen2.5-7b-instruct-q5_k_m-*.gguf`, `scripts/download-model.sh`, `scripts/build.sh` + `scripts/lib/docker-build-live.sh` (`MODEL_SHARD*`), `config/models/catalog.toml` (`qwen25-7b-q5km` notes / bake wording — keep as **downloadable** pin), `config/profiles/amd-rtx3090.toml`, docs (`MODELS.md`, `BUILD.md`, `HARDWARE.md`). `overlay/etc/stickllm/default-model.env` already points at 3B. Leave shipping `out/v0.3.8/`, checksums, and Drive ISO alone. |
 
@@ -48,9 +50,9 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 | **ID** | ISS-021 |
 | **Mode** | Local / Term / Server (Models UI) |
 | **Severity** | PRODUCT (P0 next focus after v0.3.8) |
-| **Status** | Open — plan only; **not implemented yet** |
-| **Summary** | **We do not have Hugging Face download + search/browse yet.** Next version must **build the entire HF download/search/browse flow** (not merely add checkboxes onto an existing browser). Filters such as **Verified** (known-hash open-weight / catalog-pinned), **Fits in VRAM**, **Untrusted**, etc. are part of that **new** UX. The **same filters must also apply to installed models** when choosing what to **load into memory/VRAM** — not only the download browser. Also activate or properly wire **Advanced** model controls that are currently greyed / “coming soon” (sampling knobs, KV, backend segment — see `ui/app.js` disable block near presets / `#temp` `#topp` `#topk`). |
-| **Notes** | Pairs with ISS-020 (slim ISO → downloads matter more). Shared filter surface: download/search list **and** installed → load list. Catalog trust: `config/models/catalog.toml`. Related FEATURES: VRAM suggestions, unsupported-download warning, Advanced settings panel. Do **not** treat current Models menu stubs as “HF search already shipped.” |
+| **Status** | Open — partial in v0.3.9. Search, queue, hash check, and fit labels ship. Remaining: shared filters on installed models, and Advanced knobs that are not applied |
+| **Summary** | Hugging Face search and the download queue exist. **Still to finish:** the same filters (**Verified** / known-hash, **Fits in VRAM**, **Untrusted**, quant, licence, abliterated) on **installed models** when choosing what to **load**. Wire **Advanced** controls that are on screen but not sent to llama (temperature, top-p, top-k, repeat penalty, max reply tokens, KV cache type). The backend segment stays disabled on purpose until a manual override is real (`ui/app.js` `#backendSeg`, preset toast “sampling knobs greyed”). |
+| **Notes** | Pairs with ISS-020 (slim ISO shipped in v0.3.9). Catalog trust: `config/models/catalog.toml`. Context size already moves from the preset buttons and the context slider. Sampling and KV are stored in the page only. |
 
 ### ISS-012 — stickllm-kiosk usermod + world-writable /run/stickllm
 | | |

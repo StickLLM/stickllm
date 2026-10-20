@@ -43,7 +43,7 @@ const state = {
   mode: "ephemeral", vaultOpen: false, web: true, theme: "dark",
   chats: [], ephemeral: [], current: null, attach: [],
   mtab: "browse", ablAck: false, kv: "f16",
-  mf: { target: "this", fits: false, ctx: 8192, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", q: "", sort: "fit" },
+  mf: { target: "this", fits: false, ctx: 8192, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", vis: "any", q: "", sort: "fit" },
   policy: { verifiedOnly: false, hideUnc: false },
 };
 
@@ -205,7 +205,9 @@ function msgHtml(m) {
     : "";
   const cls = m.r === "system" ? "system" : m.r;
   const av = m.r === "ai" ? "S" : m.r === "system" ? "!" : "";
-  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${m.pending ? '<span class="typing"><i></i><i></i><i></i></span>' : md(m.t)}${src}</div></div>`;
+  const pics = (m.imgs || []).map((u) => `<img class="msgImg" alt="" src="${esc(u)}">`).join("");
+  const warn = m.warn ? `<div class="attWarn">${esc(m.warn)}</div>` : "";
+  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${pics}${m.pending ? '<span class="typing"><i></i><i></i><i></i></span>' : md(m.t || "")}${warn}${src}</div></div>`;
 }
 function renderThread() {
   const th = $("#thread"), c = state.current;
@@ -370,25 +372,84 @@ function perfFromChatResponse(data, wallMs, replyText) {
   };
 }
 
+let sendBusy = false;
+let sendAbort = null;
+let sendStop = false;
+function setSending(on) {
+  sendBusy = on;
+  const sendBtn = $("#sendBtn");
+  const stopBtn = $("#stopBtn");
+  if (sendBtn) sendBtn.hidden = !!on;
+  if (stopBtn) stopBtn.hidden = !on;
+}
+function stopReply() {
+  if (!sendBusy) return;
+  sendStop = true;
+  fetch("/api/chat/stop", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: "{}",
+  }).catch(() => {});
+  if (sendAbort) sendAbort.abort();
+}
 async function send() {
+  if (sendBusy) return;
   const inp = $("#input");
   const text = inp.value.trim();
-  if (!text) return;
-  if (!(await ensurePaired())) return;
-  if (!state.current) {
-    const c = { id: Date.now(), title: text.slice(0, 40), msgs: [] };
-    state.ephemeral.unshift(c); state.current = c;
-  }
-  const c = state.current;
-  c.msgs.push({ r: "user", t: text });
-  const pend = { r: "ai", pending: true }; c.msgs.push(pend);
-  messages.push({ role: "user", content: text });
-  inp.value = ""; autosize(); renderThread(); renderConvs();
-  $("#sendBtn").disabled = true;
-  const t0 = performance.now();
+  const imgs = state.attach.filter((a) => a.kind !== "file").slice(0, PHOTO_MAX);
+  const docs = state.attach.filter((a) => a.kind === "file");
+  if (docs.some((a) => a.status === "converting")) return toast("Still converting a file");
+  const readyDocs = docs.filter((a) => a.status === "ready" || a.status === "truncated");
+  if (!text && !imgs.length && !readyDocs.length) return;
+  sendStop = false;
+  setSending(true);
+  inp.value = "";
+  autosize();
+  let pend = null;
   try {
+    if (!(await ensurePaired()) || sendStop) {
+      inp.value = text;
+      autosize();
+      return;
+    }
+    if (!state.current) {
+      const chat = { id: Date.now(), title: (text || "Image").slice(0, 40), msgs: [] };
+      state.ephemeral.unshift(chat); state.current = chat;
+    }
+    const c = state.current;
+    const docBlock = readyDocs.map((a) => a.text).filter(Boolean).join("\n\n");
+    const shown = text || (imgs.length ? "What is in this image?" : readyDocs.map((a) => a.name).join(", "));
+    const pageImgs = [];
+    if (modelVision) {
+      for (const doc of readyDocs) {
+        for (const im of doc.images || []) {
+          if (pageImgs.length >= PAGE_IMAGE_MAX) break;
+          if (im.dataUrl) pageImgs.push(im.dataUrl);
+        }
+      }
+    }
+    const photoUrls = imgs.map((x) => x.dataUrl);
+    c.msgs.push({ r: "user", t: shown, imgs: [...photoUrls, ...pageImgs] });
+    pend = { r: "ai", pending: true }; c.msgs.push(pend);
+    const apiText = [docBlock, text].filter(Boolean).join("\n\n") || "What is in this image?";
+    const allImgs = (modelVision ? [...photoUrls, ...pageImgs] : [])
+      .filter((url) => typeof url === "string" && url.startsWith("data:image/") && url.length <= 90000)
+      .slice(0, PHOTO_MAX + PAGE_IMAGE_MAX);
+    const content = allImgs.length
+      ? [
+          { type: "text", text: apiText },
+          ...allImgs.map((url) => ({ type: "image_url", image_url: { url } })),
+        ]
+      : apiText;
+    messages.push({ role: "user", content });
+    state.attach = [];
+    renderAttach();
+    renderThread(); renderConvs();
+    const t0 = performance.now();
+    sendAbort = new AbortController();
     const r = await fetch("/api/chat", {
       method: "POST",
+      signal: sendAbort.signal,
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         model: "stickllm", messages, stream: false, temperature: 0.7,
@@ -408,6 +469,14 @@ async function send() {
       throw new Error(msg);
     }
     const data = await r.json();
+    if (data?.stopped || sendStop) {
+      pend.pending = false; pend.r = "system"; pend.t = "Stopped.";
+      return;
+    }
+    if (data?.stickllm_attachments?.truncated && data.stickllm_attachments.note) {
+      const userMsg = c.msgs[c.msgs.length - 2];
+      if (userMsg) userMsg.warn = data.stickllm_attachments.note;
+    }
     const wallMs = performance.now() - t0;
     let reply = data?.choices?.[0]?.message?.content?.trim() || "(empty response)";
     const webInfo = data?.stickllm_web;
@@ -420,15 +489,29 @@ async function send() {
     updatePerfStrip(perfFromChatResponse(data, wallMs, reply));
     if (sessionMode === "vault" && state.vaultOpen) saveCurrentChat(true).catch(() => {});
   } catch (e) {
-    pend.pending = false; pend.r = "system"; pend.t = "Error: " + e.message;
+    const stopped = sendStop || e.name === "AbortError";
+    if (pend) {
+      pend.pending = false; pend.r = "system"; pend.t = stopped ? "Stopped." : ("Error: " + e.message);
+    } else if (!stopped) {
+      inp.value = text;
+      autosize();
+    }
   } finally {
-    $("#sendBtn").disabled = false; renderThread(); renderConvs(); $("#input").focus();
+    sendAbort = null;
+    setSending(false);
+    renderThread(); renderConvs(); $("#input").focus();
   }
 }
 $("#composer").onsubmit = (e) => { e.preventDefault(); send(); };
 const autosize = () => { const i = $("#input"); i.style.height = "auto"; i.style.height = Math.min(i.scrollHeight, 200) + "px"; };
 $("#input").addEventListener("input", autosize);
-$("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+$("#input").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.shiftKey || e.repeat) return;
+  e.preventDefault();
+  if (sendBusy) return;
+  send();
+});
+if ($("#stopBtn")) $("#stopBtn").onclick = () => stopReply();
 $("#webToggle").onclick = () => {
   state.web = !state.web;
   $("#webToggle").setAttribute("aria-pressed", state.web);
@@ -561,6 +644,19 @@ function fitOf(m) {
   if (need <= pool + (Number(hw.ram) || 0) - 8) return { k: "offload", need, kv, label: `Partial · ${fitGb(pool)} in VRAM`, cls: "fit-warn" };
   return { k: "no", need, kv, label: `Won't fit · needs ${size}`, cls: "fit-no" };
 }
+function visionTag(m, id) {
+  if (!modelSees(m)) return "";
+  const ready = !!(m.mmproj || m.mmproj_ready);
+  const qst = queueState("mmproj:" + id);
+  if (ready) return `<span class="pill acc" title="This model's mmproj is on disk">vision</span>`;
+  if (qst === "active" || qst === "pending") return `<span class="pill warn" title="Downloading this model's mmproj">vision…</span>`;
+  return `<button type="button" class="pill visionOff" data-mmproj="${esc(id)}" title="Download this model's mmproj from Hugging Face">vision</button>`;
+}
+function modelSees(m) {
+  if (m && m.vision) return true;
+  const s = `${m?.name || ""} ${m?.id || ""} ${m?.architecture || ""} ${m?.file || ""}`.toLowerCase();
+  return /(?:^|[^a-z0-9])(?:vl|vision)(?:[^a-z0-9]|$)|qwen\d*(?:\.\d+)?-?vl|llava|moondream|minicpm-?v|internvl|pixtral|smolvlm|glm-?4v|kimi-?vl|idefics/.test(s);
+}
 function modelVisible(m) {
   const f = state.mf;
   const trust = modelTrust(m);
@@ -573,6 +669,7 @@ function modelVisible(m) {
   if (f.quant !== "any" && modelQuant(m).toUpperCase() !== f.quant.toUpperCase()) return false;
   // GGUF only — llama.cpp does not run safetensors
   if (String(m.format || "GGUF").toLowerCase() === "safetensors") return false;
+  if (f.vis === "only" && !modelSees(m)) return false;
   if (f.lic === "commercial" && m.license_noncommercial) return false;
   if (f.lic === "noncommercial" && !m.license_noncommercial) return false;
   if (f.q && !m.hf && !(String(m.name || "") + " " + String(m.id || "")).toLowerCase().includes(f.q.toLowerCase())) return false;
@@ -600,6 +697,11 @@ function browseSource() {
   if (state.mtab === "browse" && q.length >= 2) return hfHits;
   return lastCatalog;
 }
+function showLoadTune() {
+  if (state.mtab === "local") return true;
+  const m = findModel(selectedModelId);
+  return !!(m && m.installed);
+}
 function renderModelsList() {
   const list = $("#modelList");
   if (!list) return;
@@ -610,7 +712,7 @@ function renderModelsList() {
   });
   const localN = lastCatalog.filter((m) => m.installed).length;
   if ($("#localCount")) $("#localCount").textContent = String(localN);
-  if ($("#localTune")) $("#localTune").hidden = state.mtab !== "local";
+  if ($("#localTune")) $("#localTune").hidden = !showLoadTune();
   if ($("#hfTokenBox")) $("#hfTokenBox").hidden = state.mtab !== "browse";
   if ($("#mfTarget")) $("#mfTarget").value = state.mf.target;
   if ($("#customHw")) $("#customHw").hidden = state.mf.target !== "custom";
@@ -626,6 +728,7 @@ function renderModelsList() {
   $$("#mfTrust input").forEach((i) => { i.checked = state.mf.trust.has(i.dataset.t); });
   $$("#mfAbl button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.mf.abl));
   $$("#mfLic button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.mf.lic));
+  $$("#mfVis button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.mf.vis));
   const rules = [
     state.policy.verifiedOnly && "only Verified models",
     state.policy.hideUnc && "uncensored models hidden",
@@ -661,6 +764,10 @@ function renderModelsList() {
   let rows = source.filter(modelVisible);
   const order = { gpu: 0, offload: 1, no: 2 };
   rows.sort((a, b) => {
+    if (state.mf.sort === "running") {
+      const rank = (m) => (m.running ? 0 : m.active ? 1 : 2);
+      return (rank(a) - rank(b)) || String(a.name || a.id).localeCompare(String(b.name || b.id));
+    }
     if (state.mf.sort === "size") return modelGb(b) - modelGb(a);
     if (state.mf.sort === "name") return String(a.name || a.id).localeCompare(String(b.name || b.id));
     return (order[fitOf(a).k] - order[fitOf(b).k]) || (Number(!!b.recommended) - Number(!!a.recommended));
@@ -708,13 +815,13 @@ function renderModelsList() {
         <div class="mcName"><b>${esc(name)}</b><small>${esc(q)} · ${have ? gbTxt + " on disk" : "~" + gbTxt}${have ? " · on " + where : ""}${rec ? " · recommended" : ""}</small></div>
         ${run ? '<span class="pill ok">running</span>' : ""}${loading ? '<span class="pill warn">loading</span>' : ""}${rec ? '<span class="pill acc">recommended</span>' : ""}
       </div>
-      <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">GGUF</span></div>
+      <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${visionTag(m, id)}${isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">GGUF</span></div>
       <div class="mcFoot">
         <span class="fit ${fit.cls}" title="Needs ~${fit.need.toFixed(1)} GB">${fit.label}</span>
         <span class="grow"></span>${actions}
       </div>
     </article>`;
-  }).join("") || '<div class="emptyCards">No models match these filters. <button class="link" id="mfReset2" type="button">Reset filters</button></div>';
+  }).join("") || `<div class="emptyCards">${state.mf.vis === "only" ? "No vision models match. Search for a VL model, such as Qwen2.5-VL." : 'No models match these filters. <button class="link" id="mfReset2" type="button">Reset filters</button>'}</div>`;
   $("#mfReset2") && ($("#mfReset2").onclick = resetModelFilters);
   $$("#modelList .mcard").forEach((c) => {
     const pick = (e) => {
@@ -726,6 +833,7 @@ function renderModelsList() {
     c.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e); } };
   });
   $$("#modelList [data-dl]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.dl; $("#dlModel").click(); }));
+  $$("#modelList [data-mmproj]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); downloadMmproj(b.dataset.mmproj); }));
   $$("#modelList [data-load]").forEach((b) => (b.onclick = (e) => {
     e.stopPropagation();
     const id = b.dataset.load;
@@ -772,7 +880,7 @@ function findModel(id) {
   return hfHits.find((x) => x.id === id) || lastCatalog.find((x) => x.id === id);
 }
 function resetModelFilters() {
-  state.mf = { ...state.mf, fits: false, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", q: "", sort: "fit" };
+  state.mf = { ...state.mf, fits: false, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", vis: "any", q: "", sort: "fit" };
   if ($("#mfSearch")) $("#mfSearch").value = "";
   hfHits = [];
   hfErr = "";
@@ -972,10 +1080,41 @@ $("#probeBtn").onclick = async () => {
 };
 $("#refreshCatalog").onclick = () => refreshModels().then(() => toast("Catalog refreshed")).catch((e) => toast(e.message));
 let loadPollTimer = null;
+let loadTickTimer = null;
 let loadStartedAt = 0;
 let loadSizeGb = 8;
+let loadShownPct = 1;
+let loadFailed = false;
+let loadTickLabel = "";
+let loadTickPhase = "Starting llama…";
 let lastLlama = null;
 function stopLoadPoll() { if (loadPollTimer) { clearInterval(loadPollTimer); loadPollTimer = null; } }
+function expectedLoadMs() {
+  const gb = Math.max(1, Number(loadSizeGb) || 8);
+  const per = loadBackendHint() === "ram" ? 35000 : 10000;
+  return Math.max(20000, gb * per);
+}
+function loadPctFromClock() {
+  if (!loadStartedAt) return 1;
+  const t = Math.max(0, Date.now() - loadStartedAt);
+  const pct = 92 * (1 - Math.exp(-t / expectedLoadMs()));
+  return Math.max(1, Math.min(92, pct));
+}
+function shownLoadPct() {
+  const clock = loadPctFromClock();
+  loadShownPct = Math.max(loadShownPct || 1, clock);
+  return loadShownPct;
+}
+function stopLoadTick() {
+  if (loadTickTimer) { clearInterval(loadTickTimer); loadTickTimer = null; }
+}
+function startLoadTick() {
+  if (loadTickTimer) return;
+  loadTickTimer = setInterval(() => {
+    if (!loadStartedAt) return;
+    setChipLoad(true, 0, loadTickLabel, loadTickPhase, false);
+  }, 1000);
+}
 function loadBackendHint() {
   const b = String($("#chipMeta")?.textContent || "").toUpperCase();
   if (b.includes("CUDA") || b.includes("GPU")) return "gpu";
@@ -1104,7 +1243,7 @@ function setLoadStatusLine(loading, pct, name, phase, failed) {
   const label = name && name !== "none" ? name : "model";
   const phaseText = phase || "Loading weights…";
   if ($("#loadStatusText")) $("#loadStatusText").textContent = `${phaseText} — ${label}`;
-  const n = failed ? 0 : Math.max(0, Math.min(90, Number(pct) || 0));
+  const n = failed ? 0 : Math.max(1, Math.min(92, Number(pct) || 1));
   if ($("#loadStatusFill")) $("#loadStatusFill").style.width = n + "%";
   if ($("#loadStatusPct")) $("#loadStatusPct").textContent = failed ? "" : (Math.round(n) + "%");
 }
@@ -1112,21 +1251,36 @@ function setChipLoad(loading, pct, name, phase, failed) {
   const chip = $("#statusChip");
   const bar = $("#chipLoad");
   const fill = $("#chipLoadFill");
+  if (!loading) {
+    loadStartedAt = 0;
+    loadShownPct = 1;
+    loadFailed = false;
+    stopLoadTick();
+  } else if (failed) {
+    loadFailed = true;
+    stopLoadTick();
+  } else if (loadFailed) {
+    return;
+  } else {
+    pct = shownLoadPct();
+    if (name) loadTickLabel = name;
+    if (phase) loadTickPhase = phase;
+    startLoadTick();
+  }
   setLoadStatusLine(loading, pct, name, phase, failed);
   if (!chip) return;
   chip.classList.toggle("loading", !!loading && !failed);
   chip.classList.toggle("failed", !!failed);
   chip.classList.remove("indeterminate");
   chip.classList.toggle("ready", !loading && !!name && name !== "none");
-  if (!loading) loadStartedAt = 0;
   if (bar) bar.hidden = !loading || !!failed;
-  if (fill && loading && !failed) fill.style.width = Math.max(0, Math.min(90, Number(pct) || 0)) + "%";
+  if (fill && loading && !failed) fill.style.width = Math.max(1, Math.min(92, Number(pct) || 1)) + "%";
   if ($("#chipModel")) {
     if (failed) {
       $("#chipModel").textContent = "GPU load failed";
     } else if (loading) {
       const label = name && name !== "none" ? name : "model";
-      const n = Math.max(0, Math.min(90, Math.round(Number(pct) || 0)));
+      const n = Math.max(1, Math.min(92, Math.round(Number(pct) || 1)));
       $("#chipModel").textContent = `loading ${label} ${n}%`;
     }
   }
@@ -1139,6 +1293,10 @@ function beginModelLoadUi(id, name) {
   selectedModelId = id;
   const m = lastCatalog.find((x) => x.id === id);
   loadSizeGb = modelSizeGb(m);
+  loadShownPct = 1;
+  loadFailed = false;
+  loadTickLabel = name || "";
+  loadTickPhase = "Starting llama…";
   loadStartedAt = Date.now();
   renderModelsList();
   setChipLoad(true, 1, name, "Starting llama…");
@@ -1214,6 +1372,24 @@ $("#dlModel").onclick = async () => {
   }
   await doModelDownload(m);
 };
+async function downloadMmproj(id) {
+  const m = findModel(id);
+  if (!m) return;
+  try {
+    const res = await control("mmproj_download", {
+      id: "mmproj:" + id,
+      repo: m.hf_repo || m.repo || "",
+      path: m.path || m.local_path || "",
+      file: m.mmproj_file || "",
+      bytes: m.mmproj_bytes || 0,
+    });
+    if (res.ok === false) throw new Error(res.error || "Could not download mmproj");
+    applyDownloadView(res);
+    renderModelsList();
+    if (!res.already) startDlPoll();
+    toast(res.note || (res.already ? "This model's mmproj is already next to it" : "Downloading this model's mmproj"));
+  } catch (e) { toast(e.message); }
+}
 async function doModelDownload(m) {
   try {
     const dest = ($("#modelDir")?.textContent || "").trim();
@@ -1974,20 +2150,36 @@ function showPairCodeOnStick(code) {
     `New PAIR CODE: ${c} — open the LAN URL on phone/desktop and enter this code. Previous paired browsers were unpaired.`
   );
 }
-/** Stick kiosk: pick up codes reminted from a LAN browser (never sent over the wire). */
+function pairDigits(raw) {
+  const c = String(raw || "").trim().replace(/\s/g, "");
+  return /^\d{4,8}$/.test(c) ? c : "";
+}
+/** Paint the F9 banner from the latest code. Does not consume remint id. */
+function paintF9PairCode(connect) {
+  if (!(isLocalMode || detectLocalHost()) || !$("#pairCodeShow")) return "";
+  const c = connect || {};
+  const digits = pairDigits(c.remint_code) || pairDigits(c.pair_code);
+  if (!digits) return "";
+  const shown = String($("#pairCodeShow").textContent || "").replace(/\s/g, "");
+  if (shown !== digits) $("#pairCodeShow").textContent = formatPairCode(digits);
+  return digits;
+}
+/** Stick kiosk: chat line when a LAN browser mints a new code. */
 function announceRemintFromConnect(connect) {
   if (!(isLocalMode || detectLocalHost())) return;
   const c = connect || {};
   const rid = String(c.remint_id || "").trim();
-  const code = String(c.pair_code || "").trim();
+  const digits = paintF9PairCode(c);
   if (lastRemintId === null) {
     lastRemintId = rid;
     return;
   }
   if (!rid || rid === lastRemintId) return;
+  if (!digits) return;
   lastRemintId = rid;
-  if (!/^\d{4,8}$/.test(code)) return;
-  showPairCodeOnStick(code);
+  pushSystemMsg(
+    `New PAIR CODE: ${digits} — open the LAN URL on phone/desktop and enter this code. Previous paired browsers were unpaired.`
+  );
   toast("New pair code — enter it on the LAN browser");
 }
 async function remintPairCode() {
@@ -2004,15 +2196,14 @@ async function issuePairHotkey() {
   // Keyboard-first path for HDMI kiosk (no mouse): open Pairing + mint/show code.
   openSettings("devices");
   try {
-    clearPairSession();
     const j = await remintPairCode();
+    clearPairSession();
     const rid = String(j.remint_id || "").trim();
     if (rid) lastRemintId = rid;
     const code = String(j.pair_code || "").trim();
     if (code) {
-      isLocalMode = true;
       showPairCodeOnStick(code);
-      toast("PAIR CODE in chat — press F9 again for a new one");
+      toast("New pair code " + formatPairCode(code));
     } else {
       if ($("#pairCodeShow")) $("#pairCodeShow").textContent = "(see stick screen)";
       pushSystemMsg("New pair code minted on the stick. Enter the PAIR CODE shown on the stick screen chat.");
@@ -2022,20 +2213,15 @@ async function issuePairHotkey() {
   } catch (e) { toast(e.message); }
 }
 async function issueSshHotkey() {
-  // Show SSH password on stick (loopback). Never on LAN.
+  // F10 from any StickLLM screen. The server only returns the password to this UI.
   try {
-    const r = await fetch("/api/health", { cache: "no-store" });
+    const r = await fetch("/api/health", { cache: "no-store", headers: authHeaders() });
     const j = await r.json().catch(() => ({}));
     const c = j.connect || {};
     const pass = String(c.ssh_password || "").trim();
     const enabled = !!c.ssh_enabled;
     const user = c.ssh_user || "stickllm";
     const host = c.ssh_host || c.ip || "127.0.0.1";
-    if (!(isLocalMode || detectLocalHost())) {
-      toast("SSH password only on the stick screen (press F10 there)");
-      pushSystemMsg("SSH password is only shown on the stick itself — press F10 on the Server/kiosk screen.");
-      return;
-    }
     if (enabled && pass) {
       pushSystemMsg(`SSH: ${user}@${host}  password: ${pass}`);
       toast("SSH password posted in chat");
@@ -2049,6 +2235,7 @@ async function issueSshHotkey() {
   } catch (e) { toast(e.message); }
 }
 $("#remint").onclick = () => { issuePairHotkey(); };
+if ($("#showSsh")) $("#showSsh").onclick = () => { issueSshHotkey(); };
 $("#pairForm").onsubmit = async (e) => {
   e.preventDefault();
   const v = $("#pairIn").value.trim();
@@ -2091,9 +2278,18 @@ async function refreshStatus() {
     if (!r.ok && r.status !== 503) throw new Error("health " + r.status);
     const j = await r.json();
     if (j.pair?.local || detectLocalHost()) isLocalMode = true;
+    // Before anything else that can throw — F9 must follow a browser New code.
+    announceRemintFromConnect(j.connect);
     if (j.session_mode) applyModeUi(j.session_mode === "vault" ? "vault" : "ephemeral");
     const modelPath = String(j.connect?.model_path || "").trim();
     const named = friendlyModelLabel(j.connect?.model, modelPath);
+    const visionNow = !!j.connect?.vision;
+    if (visionNow !== modelVision) {
+      modelVision = visionNow;
+      if (!modelVision) state.attach = state.attach.filter((a) => a.kind === "file");
+      renderAttach();
+      syncAttach();
+    }
     const backend = String(j.backend || j.connect?.backend || "").toUpperCase() || "—";
     const loading = !j.llama_ok && !!(named || loadingModelId);
     if (j.llama_ok) {
@@ -2120,7 +2316,7 @@ async function refreshStatus() {
       $("#chipModel").textContent = "none";
       setChipLoad(false, 0, null);
     }
-    $("#chipMeta").textContent = backend;
+    $("#chipMeta").textContent = modelVision && j.llama_ok ? backend + " · vision" : backend;
     $("#statusChip .dot")?.classList.toggle("ok", !!j.llama_ok);
     if ($("#popModel")) {
       const pop = $("#popModel");
@@ -2145,16 +2341,17 @@ async function refreshStatus() {
     }
     const url = j.connect?.url || (j.connect?.ip ? `http://${j.connect.ip}/` : location.origin + "/");
     if ($("#lanUrl2")) $("#lanUrl2").textContent = url;
-    announceRemintFromConnect(j.connect);
     const code = j.connect?.pair_code;
-    if (code && isLocalMode && $("#pairCodeShow")) {
-      const c = String(code);
-      // Only overwrite banner with a live numeric code (not the "(paired…)" placeholder).
-      if (/^\d{4,8}$/.test(c)) $("#pairCodeShow").textContent = formatPairCode(c);
-      else if (!/^\d{4,8}$/.test(String($("#pairCodeShow").textContent || "").replace(/\s/g, "")))
-        $("#pairCodeShow").textContent = c;
+    if (isLocalMode && $("#pairCodeShow")) {
+      const digits = paintF9PairCode(j.connect);
+      if (!digits) {
+        const c = String(code || "");
+        const shown = String($("#pairCodeShow").textContent || "").replace(/\s/g, "");
+        if (c && !/^\d{4,8}$/.test(shown)) $("#pairCodeShow").textContent = c;
+      }
     } else if (!isLocalMode && $("#pairCodeShow")) {
-      $("#pairCodeShow").textContent = "(see stick screen)";
+      const shown = String($("#pairCodeShow").textContent || "").replace(/\s/g, "");
+      if (!/^\d{4,8}$/.test(shown)) $("#pairCodeShow").textContent = "(see stick screen)";
     }
     try {
       const m = await fetch("/stickllm.json", { cache: "no-store" });
@@ -2175,22 +2372,17 @@ async function refreshStatus() {
   }
 }
 
+// Capture phase so F9/F10 still fire from Settings, Models, or the chat box.
 window.addEventListener("keydown", (e) => {
-  const tag = (e.target && e.target.tagName || "").toLowerCase();
-  const typing = tag === "input" || tag === "textarea" || e.target?.isContentEditable;
+  if (e.key !== "F9" && e.key !== "F10") return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === "F9") issuePairHotkey();
+  else issueSshHotkey();
+}, true);
+window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
-  // F9 = new PAIR CODE (kiosk, no mouse). Not bare P.
-  if (e.key === "F9") {
-    e.preventDefault();
-    issuePairHotkey();
-    return;
-  }
-  // F10 = show SSH password on stick on stick
-  if (e.key === "F10") {
-    e.preventDefault();
-    issueSshHotkey();
-    return;
-  }
+  if (e.key === "F9" || e.key === "F10") return;
   if (e.ctrlKey && e.shiftKey && k === "l") { e.preventDefault(); lockVault(); }
   else if (e.ctrlKey && e.shiftKey && k === "o") { e.preventDefault(); newChat(); }
   else if (e.ctrlKey && k === "b") { e.preventDefault(); toggleNav(); }
@@ -2235,7 +2427,290 @@ if ($("#resetPreset")) {
     toast("Reset to preset");
   };
 }
-if ($("#attachBtn")) { $("#attachBtn").disabled = true; $("#attachBtn").title = "Attach files — coming later"; }
+let modelVision = false;
+function syncAttach() {
+  const btn = $("#attachBtn");
+  if (!btn) return;
+  btn.disabled = false;
+  btn.title = modelVision
+    ? "Attach a file or image, or paste an image into the message box"
+    : "Attach a file. It is converted to text for this model. Images need a vision model.";
+  btn.setAttribute("aria-label", "Attach a file");
+  const inp = $("#input");
+  if (inp) inp.placeholder = modelVision ? "Message StickLLM — paste an image" : "Message StickLLM — attach a file";
+}
+function renderAttach() {
+  const box = $("#attachments");
+  if (!box) return;
+  box.hidden = !state.attach.length;
+  const sizeOf = (n) => {
+    const v = Number(n) || 0;
+    if (v >= 1024 * 1024) return (v / (1024 * 1024)).toFixed(1) + " MB";
+    if (v >= 1024) return Math.round(v / 1024) + " KB";
+    return v ? v + " B" : "";
+  };
+  box.innerHTML = state.attach.map((a, i) => {
+    if (a.kind === "file") {
+      const nImg = (a.images || []).length;
+      const bits = [
+        a.type || "file",
+        a.pages ? a.pages + " pages" : "",
+        nImg ? nImg + (nImg === 1 ? " page image" : " page images") : "",
+        sizeOf(a.size),
+        a.status || "",
+      ].filter(Boolean);
+      const view = a.plain ? `<button type="button" class="link attView" data-av="${i}">${a.open ? "Hide text" : "View extracted text"}</button>` : "";
+      const thumbs = (a.images || []).map((im) => `<img class="thumb" alt="" src="${esc(im.dataUrl)}">`).join("");
+      const pre = a.open ? `<pre class="attText">${esc(a.plain || "")}</pre>` : "";
+      return `<span class="att file ${esc(a.status || "")}"><span class="attIc">${esc((a.type || "file").slice(0, 4))}</span><span class="attTx"><b>${esc(a.name || "file")}</b><small>${esc(bits.join(" · "))}</small>${view}</span><button type="button" class="attX" data-ax="${i}" aria-label="Remove">×</button>${thumbs}${pre}</span>`;
+    }
+    return `<span class="att"><img class="thumb" alt="" src="${esc(a.dataUrl)}"><span class="attTx"><b>${esc(a.name || "image")}</b><small>image${a.size ? " · " + sizeOf(a.size) : ""}</small></span><button type="button" class="attX" data-ax="${i}" aria-label="Remove">×</button></span>`;
+  }).join("");
+  $$("[data-ax]", box).forEach((b) => (b.onclick = () => {
+    state.attach.splice(+b.dataset.ax, 1);
+    renderAttach();
+  }));
+  $$("[data-av]", box).forEach((b) => (b.onclick = () => {
+    const item = state.attach[+b.dataset.av];
+    if (item) item.open = !item.open;
+    renderAttach();
+  }));
+}
+const IMAGE_URL_MAX = 70000;
+const PHOTO_MAX = 3;
+const PAGE_IMAGE_MAX = 8;
+function jpegUnder(canvas, limit) {
+  let q = 0.82;
+  let url = canvas.toDataURL("image/jpeg", q);
+  while (url.length > limit && q > 0.42) {
+    q = Math.round((q - 0.12) * 100) / 100;
+    url = canvas.toDataURL("image/jpeg", q);
+  }
+  return url;
+}
+function drawFitted(source, sw, sh, maxEdge) {
+  const edge = Math.max(sw, sh) || 1;
+  const scale = Math.min(1, maxEdge / edge);
+  const w = Math.max(1, Math.round(sw * scale));
+  const h = Math.max(1, Math.round(sh * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(source, 0, 0, w, h);
+  const url = jpegUnder(canvas, IMAGE_URL_MAX);
+  if (url.length > IMAGE_URL_MAX && maxEdge > 480) return drawFitted(source, sw, sh, Math.round(maxEdge * 0.75));
+  return url;
+}
+function shrinkImage(file) {
+  // Decode the file itself. blob: URLs are blocked by the page policy, so
+  // new Image() + createObjectURL failed for every picture.
+  return createImageBitmap(file).then((bitmap) => {
+    const url = drawFitted(bitmap, bitmap.width, bitmap.height, 1024);
+    bitmap.close?.();
+    if (!url || url.length > 90000) throw new Error("Could not read that image");
+    return { name: file.name || "image", dataUrl: url };
+  }).catch(() => {
+    throw new Error("Could not read that image");
+  });
+}
+function shrinkDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const url = drawFitted(img, img.naturalWidth || img.width, img.naturalHeight || img.height, 1024);
+        if (!url || !url.startsWith("data:image/") || url.length > 90000) reject(new Error("Page image is too large"));
+        else resolve(url);
+      } catch (e) {
+        reject(e);
+      }
+    };
+    img.onerror = () => reject(new Error("Could not read that page image"));
+    img.src = dataUrl;
+  });
+}
+function pageDataUrl(im) {
+  if (!im || !im.data_base64) return "";
+  const mime = String(im.mime || "image/jpeg").toLowerCase();
+  if (!/^image\/(jpeg|jpg|png|webp)$/.test(mime)) return "";
+  const b64 = String(im.data_base64);
+  if (!/^[A-Za-z0-9+/=]+$/.test(b64)) return "";
+  return `data:${mime === "image/jpg" ? "image/jpeg" : mime};base64,${b64}`;
+}
+function imageFileOk(file) {
+  return /^image\/(jpeg|png|webp|gif)$/.test(file?.type || "");
+}
+const ATTACH_MAX_FILES = 10;
+const ATTACH_MAX_BYTES = 50 * 1024 * 1024;
+async function sniffImage(file) {
+  if (imageFileOk(file)) return true;
+  try {
+    const buf = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+    if (buf[0] === 0xff && buf[1] === 0xd8) return true;
+    if (buf[0] === 0x89 && buf[1] === 0x50) return true;
+    if (buf[0] === 0x47 && buf[1] === 0x49) return true;
+    if (buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57) return true;
+  } catch (_) {}
+  return false;
+}
+async function convertDocFile(chip, file) {
+  try {
+    const data = new Uint8Array(await file.arrayBuffer());
+    let bin = "";
+    const chunk = 0x2000;
+    for (let i = 0; i < data.length; i += chunk) {
+      bin += String.fromCharCode(...data.subarray(i, i + chunk));
+    }
+    const r = await fetch("/api/attachments/convert", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        name: file.name || "file",
+        chat_id: state.current?.id ? String(state.current.id) : "",
+        vision: !!modelVision,
+        data_base64: btoa(bin),
+      }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || j.message || "Could not read that file");
+    chip.type = j.type || "";
+    chip.pages = j.pages || 0;
+    chip.status = j.truncated ? "truncated" : "ready";
+    chip.text = j.text || "";
+    chip.plain = j.plain || "";
+    chip.truncated = !!j.truncated;
+    const incoming = modelVision ? (j.images || []).slice(0, PAGE_IMAGE_MAX) : [];
+    const images = [];
+    for (const im of incoming) {
+      const direct = pageDataUrl(im);
+      if (!direct) continue;
+      if (direct.length <= 90000) {
+        images.push({ dataUrl: direct });
+        continue;
+      }
+      try {
+        images.push({ dataUrl: await shrinkDataUrl(direct) });
+      } catch (_) {}
+    }
+    chip.images = images;
+    chip.status = j.truncated ? "truncated" : "ready";
+    if (j.warning) toast(j.warning);
+  } catch (e) {
+    chip.status = "failed";
+    chip.error = e.message;
+    toast(e.message);
+  }
+  renderAttach();
+}
+async function addAnyFiles(list) {
+  const incoming = [...list];
+  const room = ATTACH_MAX_FILES - state.attach.length;
+  if (room <= 0) {
+    toast("10 files per message.");
+    return 0;
+  }
+  if (incoming.length > room) toast("10 files per message. Extra files were skipped.");
+  let added = 0;
+  for (const file of incoming.slice(0, room)) {
+    if (file.size > ATTACH_MAX_BYTES) {
+      toast(`${file.name || "File"} is over the 50 MB limit.`);
+      continue;
+    }
+    if (await sniffImage(file)) {
+      if (!modelVision) {
+        toast("This model cannot see images. Other files are still converted to text.");
+        continue;
+      }
+      if (state.attach.filter((a) => a.kind !== "file").length >= PHOTO_MAX) {
+        toast("3 images max");
+        continue;
+      }
+      try {
+        const img = await shrinkImage(file);
+        state.attach.push({ kind: "image", ...img, size: file.size, status: "ready" });
+        added += 1;
+        renderAttach();
+      } catch (e) { toast(e.message); }
+      continue;
+    }
+    const chip = {
+      kind: "file", name: file.name || "file", size: file.size, type: "", pages: 0,
+      status: "converting", text: "", plain: "", truncated: false, error: "",
+    };
+    state.attach.push(chip);
+    added += 1;
+    renderAttach();
+    convertDocFile(chip, file);
+  }
+  return added;
+}
+function imageFilesFromClipboard(data) {
+  const out = [];
+  if (!data) return out;
+  // Chrome lists the same picture in items and files. Reading both attached it twice.
+  const fromItems = [];
+  for (const item of [...(data.items || [])]) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (file) fromItems.push({ file, type: item.type || file.type });
+  }
+  const raw = fromItems.length
+    ? fromItems
+    : [...(data.files || [])].map((file) => ({ file, type: file.type }));
+  const seen = new Set();
+  for (const { file, type } of raw) {
+    let next = file;
+    if (!imageFileOk(next) && imageFileOk({ type })) {
+      next = new File([file], file.name || "pasted.png", { type });
+    }
+    if (!imageFileOk(next)) continue;
+    const key = `${next.type}|${next.size}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(next);
+  }
+  return out;
+}
+if ($("#attachBtn") && $("#attachPick")) {
+  syncAttach();
+  $("#attachBtn").onclick = () => { $("#attachPick").click(); };
+  $("#attachPick").onchange = async () => {
+    const files = [...($("#attachPick").files || [])];
+    $("#attachPick").value = "";
+    await addAnyFiles(files);
+  };
+  const composer = $("#composer");
+  if (composer) {
+    composer.addEventListener("dragover", (e) => { e.preventDefault(); composer.classList.add("drop"); });
+    composer.addEventListener("dragleave", () => composer.classList.remove("drop"));
+    composer.addEventListener("drop", (e) => {
+      e.preventDefault();
+      composer.classList.remove("drop");
+      const files = [...(e.dataTransfer?.files || [])];
+      if (files.length) addAnyFiles(files);
+    });
+  }
+  $("#input")?.addEventListener("paste", async (e) => {
+    const images = imageFilesFromClipboard(e.clipboardData);
+    if (images.length) {
+      e.preventDefault();
+      const n = await addAnyFiles(images);
+      if (n === 1) toast("Image pasted");
+      return;
+    }
+    const files = [];
+    const seen = new Set();
+    for (const f of [...(e.clipboardData?.files || [])]) {
+      const key = `${f.name}|${f.size}|${f.type}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      files.push(f);
+    }
+    if (!files.length) return;
+    e.preventDefault();
+    await addAnyFiles(files);
+  });
+}
 if ($("#micBtn")) { $("#micBtn").disabled = true; $("#micBtn").title = "Voice input — coming later"; }
 
 // Models browser filters (MAP › Models)
@@ -2262,8 +2737,25 @@ $$("#mfAbl button").forEach((b) => (b.onclick = () => {
   }
 }));
 $$("#mfLic button").forEach((b) => (b.onclick = () => { state.mf.lic = b.dataset.v; renderModelsList(); }));
+$$("#mfVis button").forEach((b) => (b.onclick = () => {
+  state.mf.vis = b.dataset.v;
+  const q = (state.mf.q || "").trim();
+  if (state.mtab === "browse" && q.length >= 2) runHfSearch(q);
+  else renderModelsList();
+}));
 if ($("#mfQuant")) $("#mfQuant").onchange = (e) => { state.mf.quant = e.target.value; renderModelsList(); };
-if ($("#mfSort")) $("#mfSort").onchange = (e) => { state.mf.sort = e.target.value; renderModelsList(); };
+if ($("#mfSort")) $("#mfSort").onchange = (e) => {
+  state.mf.sort = e.target.value;
+  if (state.mf.sort === "running") {
+    const run = lastCatalog.find((m) => m.running) || lastCatalog.find((m) => m.active);
+    if (run) selectedModelId = run.id;
+    else toast("No model is running");
+  }
+  renderModelsList();
+  if (state.mf.sort === "running") {
+    document.querySelector("#modelList .mcard.sel")?.scrollIntoView({ block: "nearest" });
+  }
+};
 if ($("#mfSearch")) $("#mfSearch").addEventListener("input", (e) => {
   state.mf.q = e.target.value;
   clearTimeout(hfTimer);
@@ -2282,14 +2774,14 @@ if ($("#mfSearch")) $("#mfSearch").addEventListener("input", (e) => {
 });
 async function runHfSearch(q) {
   try {
-    const res = await control("hf_search", { q, abl: state.mf.abl || "include" });
+    const res = await control("hf_search", { q, abl: state.mf.abl || "include", vision: state.mf.vis || "any" });
     if ((state.mf.q || "").trim() !== q) return;
     if (!res.ok) {
       hfHits = [];
       hfErr = res.error || "Search failed";
     } else {
       hfHits = res.models || [];
-      hfErr = hfHits.length ? "" : (state.mf.abl === "only" ? "No abliterated GGUF files for that search" : "No GGUF files for that search");
+      hfErr = hfHits.length ? "" : (state.mf.vis === "only" ? "No vision GGUF files for that search" : state.mf.abl === "only" ? "No abliterated GGUF files for that search" : "No GGUF files for that search");
     }
   } catch (e) {
     if ((state.mf.q || "").trim() !== q) return;

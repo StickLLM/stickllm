@@ -13,19 +13,18 @@ on demand from a **pinned Hugging Face catalog**, with hashes that live on the U
 | **Base (default ship)** | ~4–6 GB ISO | **16 GB** USB is enough | OS + runtime + **lite** model (anything / RAM / 8 GB class) |
 | **Optional fat build** | ~18–22 GB | 32–64 GB | Base + large model pre-baked (power users / air-gap) |
 
-Current ship **v0.3.8** (and earlier 0.3.x / `v0.2.1-local-nvidia-kbd`) ships small text
-models on the ISO (**3B + 7B** class) and downloads larger catalog entries (e.g. 27B) to
-`STICKLLM-DATA` when space/VRAM allow. Optional durable store: encrypted SSD vault
-([VAULT.md](VAULT.md)). Target retail base still moves toward a cheaper **16 GB** stick + lite GGUF.
+**v0.3.8** and earlier 0.3.x ships bake both the **3B** and the **7B**. Current ship
+**v0.3.9** bakes the 3B only and downloads larger catalog entries (including the 7B
+and 27B-class models) to `STICKLLM-DATA` when space and VRAM allow. Optional durable
+store: encrypted SSD vault ([VAULT.md](VAULT.md)). Target retail base still moves
+toward a cheaper **16 GB** stick + lite GGUF.
 
-**Next (post-v0.3.8) — plan only (ISS-020 / ISS-021):** stop baking **Qwen2.5-7B Instruct
-Q5_K_M** into the ISO; keep **~2 GB Qwen2.5-3B Q4_K_M** as the built-in test model.
-7B stays in `catalog.toml` as a pinned download. **HF download + search/browse does not
-exist yet** — next product work builds that entire flow (ISS-021), including filter UX
-(**Verified** / known-hash open-weight, **Fits in VRAM**, **Untrusted**, …). Those filters
-must apply to the **download browser and to installed models** when choosing what to load
-into memory/VRAM. Also activate Advanced model controls. Do **not** change v0.3.8
-artifacts while implementing that later.
+**v0.3.9** ships the **~2 GB Qwen2.5-3B Q4_K_M** only. **Qwen2.5-7B Instruct Q5_K_M**
+stays in `catalog.toml` as a pinned download (ISS-020, done). Hugging Face search,
+the download queue, hash checks, and VRAM fit labels ship in that image. **Still open
+(ISS-021):** those filters on **installed models** when choosing what to load, and
+Advanced controls that are on screen but not applied (sampling, KV cache type, backend).
+Do **not** change v0.3.8 or v0.3.9 artifacts while doing that later work.
 
 ## First boot / “upgrade models” flow
 

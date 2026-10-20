@@ -23,8 +23,8 @@ if [[ "${1:-}" == "--capture-fail" ]]; then
   printf '%s\n' "$n" >"$RUN_CAP/llama-fail-count" 2>/dev/null || true
   err="$(
     journalctl -u stickllm-llama -n 80 --no-pager -o cat 2>/dev/null \
-      | grep -Ei 'cuda|cublas|out of memory|ggml_cuda|failed to allocate|unable to allocate' \
-      | grep -Eiv 'password|STICKLLM_SSH_PASS' \
+      | grep -Ei 'cuda|cublas|out of memory|ggml_cuda|failed to allocate|unable to allocate|error|fatal|cannot' \
+      | grep -Eiv 'password|STICKLLM_SSH_PASS|backend registered|stickllm-cuda-register' \
       | tail -n 1 \
       || true
   )"
@@ -171,6 +171,11 @@ fi
 if [[ "${N_CPU_MOE:-0}" =~ ^[0-9]+$ ]] && (( N_CPU_MOE > 0 )); then
   gpu_extra+=(--n-cpu-moe "$N_CPU_MOE")
 fi
+# Vision only on a GPU backend, and only when Activate found an mmproj beside the GGUF.
+mm_extra=()
+if [[ -n "${STICKLLM_MMPROJ:-}" && -f "${STICKLLM_MMPROJ}" ]]; then
+  mm_extra+=(--mmproj "$STICKLLM_MMPROJ")
+fi
 
 # 1) CUDA — only if pick-gpus said so AND list-devices still sees CUDA.
 if [[ "$BACKEND" == "cuda" ]] && [[ -x "$CUDA_BIN" ]]; then
@@ -188,6 +193,7 @@ if [[ "$BACKEND" == "cuda" ]] && [[ -x "$CUDA_BIN" ]]; then
       --n-gpu-layers "$NGL" \
       --threads "$THREADS" \
       "${gpu_extra[@]}" \
+      "${mm_extra[@]}" \
       --metrics
   fi
   echo "stickllm-llama-start: CUDA claimed but list-devices has no CUDA — not starting fake-cuda" >&2
@@ -212,6 +218,7 @@ if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "fallback" ]]; then
       --n-gpu-layers "$NGL" \
       --threads "$THREADS" \
       "${gpu_extra[@]}" \
+      "${mm_extra[@]}" \
       --metrics
   fi
   if [[ "$BACKEND" == "vulkan" ]]; then
