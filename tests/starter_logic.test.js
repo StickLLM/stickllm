@@ -2,10 +2,8 @@
 const assert = require("assert");
 const path = require("path");
 const calc = require(path.join(__dirname, "..", "ui", "apps", "calculator", "calc.js"));
-const mines = require(path.join(__dirname, "..", "ui", "apps", "minesweeper", "game.js"));
 const monitor = require(path.join(__dirname, "..", "ui", "apps", "monitor", "monitor.js"));
 require(path.join(__dirname, "..", "ui", "apps", "files", "files.js"));
-require(path.join(__dirname, "..", "ui", "apps", "notepad", "notepad.js"));
 require(path.join(__dirname, "..", "ui", "apps", "media", "media.js"));
 
 assert.strictEqual(calc.run(["2", "+", "2", "="]).display, "4");
@@ -34,77 +32,6 @@ assert.strictEqual(broken.display, "4");
 const chained = calc.run(["8", "/", "0", "+"]);
 assert.strictEqual(chained.display, "Error");
 assert.strictEqual(calc.press(chained, "3").display, "3");
-
-for (let i = 0; i < 81; i++) {
-  const game = mines.create(() => 0);
-  mines.reveal(game, i);
-  assert.strictEqual(game.cells[i].mine, false, "first click " + i);
-  assert.strictEqual(game.cells[i].open, true, "opened " + i);
-  assert.notStrictEqual(game.status, "You hit a mine");
-}
-
-const flagged = mines.create();
-mines.flag(flagged, 4);
-assert.strictEqual(flagged.cells[4].flag, true);
-assert.strictEqual(flagged.cells[4].open, false);
-mines.reveal(flagged, 4);
-assert.strictEqual(flagged.cells[4].open, false);
-mines.flag(flagged, 4);
-assert.strictEqual(flagged.cells[4].flag, false);
-
-const lost = mines.create(() => 0);
-mines.reveal(lost, 0);
-const mineAt = lost.cells.findIndex((cell) => cell.mine);
-assert.ok(mineAt >= 0);
-mines.reveal(lost, mineAt);
-assert.strictEqual(lost.over, true);
-assert.strictEqual(lost.win, false);
-assert.strictEqual(lost.status, "You hit a mine");
-assert.ok(lost.cells.every((cell) => !cell.mine || cell.open));
-
-const fresh = mines.restart();
-assert.strictEqual(fresh.status, "10 mines");
-assert.strictEqual(fresh.over, false);
-assert.ok(fresh.cells.every((cell) => !cell.open && !cell.mine && !cell.flag));
-
-const won = mines.create(() => 0);
-mines.reveal(won, 0);
-for (let i = 0; i < 81; i++) {
-  if (!won.cells[i].mine) mines.reveal(won, i);
-}
-assert.strictEqual(won.win, true);
-assert.strictEqual(won.status, "Cleared");
-assert.ok(won.cells.every((cell) => cell.open));
-
-function mineCount(game, i) {
-  return mines.neighbors(i).reduce((n, j) => n + (game.cells[j].mine ? 1 : 0), 0);
-}
-const counted = mines.create(() => 0.37);
-mines.reveal(counted, 20);
-assert.strictEqual(counted.cells[20].mine, false);
-let mineTotal = 0;
-for (let i = 0; i < 81; i++) {
-  if (counted.cells[i].mine) {
-    mineTotal++;
-    assert.strictEqual(counted.cells[i].open, false);
-    continue;
-  }
-  assert.strictEqual(counted.cells[i].n, mineCount(counted, i), "neighbour count " + i);
-}
-assert.strictEqual(mineTotal, 10);
-for (let i = 0; i < 81; i++) {
-  const cell = counted.cells[i];
-  if (!cell.open || cell.n !== 0) continue;
-  for (const j of mines.neighbors(i)) assert.strictEqual(counted.cells[j].open, true, "flood " + i);
-}
-
-const blocked = mines.create(() => 0.2);
-mines.flag(blocked, 8);
-mines.reveal(blocked, 0);
-assert.strictEqual(blocked.cells[8].flag, true);
-assert.strictEqual(blocked.cells[8].open, false);
-mines.flag(blocked, 8);
-assert.strictEqual(blocked.cells[8].flag, false);
 
 const sample = {
   ok: true,

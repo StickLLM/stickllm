@@ -87,7 +87,7 @@ if [[ -d "$SRC/opt/stickllm/ui" ]]; then
         installed=1
         continue
         ;;
-      app.js|index.html|style.css|stickllm.json) ;;
+      app.js|index.html|style.css|stickllm.json|favicon.svg) ;;
       *) echo "skipping non-UI file: $base" >&2; continue ;;
     esac
     sed -i 's/\r$//' "$f" 2>/dev/null || true
@@ -100,17 +100,24 @@ if [[ -d "$SRC/opt/stickllm/ui" ]]; then
     mkdir -p /opt/stickllm/ui/apps
     while IFS= read -r -d '' f; do
       rel="${f#"$SRC/opt/stickllm/ui/"}"
-      case "$rel" in
-        *.html|*.js|*.css|*.svg|LICENSE|*/LICENSE) ;;
-        *) echo "skipping non-app file: $rel" >&2; continue ;;
-      esac
       dest="/opt/stickllm/ui/$rel"
       mkdir -p "$(dirname "$dest")"
-      sed -i 's/\r$//' "$f" 2>/dev/null || true
-      install -m 644 "$f" "$dest"
+      case "$rel" in
+        *.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.woff|*.woff2|*.wasm)
+          install -m 644 "$f" "$dest"
+          ;;
+        *.html|*.js|*.css|*.svg|*.json|*.txt|*.webmanifest|LICENSE|*/LICENSE)
+          sed -i 's/\r$//' "$f" 2>/dev/null || true
+          install -m 644 "$f" "$dest"
+          ;;
+        *) echo "skipping non-app file: $rel" >&2; continue ;;
+      esac
       echo "installed $dest"
       installed=1
     done < <(find "$SRC/opt/stickllm/ui/apps" -type f -print0)
+    # Homemade starters replaced by the vendored trees.
+    rm -f /opt/stickllm/ui/apps/minesweeper/game.js \
+          /opt/stickllm/ui/apps/notepad/notepad.js
   fi
 fi
 

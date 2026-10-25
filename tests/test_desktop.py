@@ -18,7 +18,18 @@ GATEWAY = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-gateway"
 APPS = ROOT / "overlay" / "usr" / "local" / "lib" / "stickllm_apps.py"
 UNIT = ROOT / "overlay" / "etc" / "systemd" / "system" / "stickllm-files.service"
 
-STARTERS = ("files", "notepad", "minesweeper", "calculator", "media", "monitor")
+STARTERS = (
+    "files",
+    "notepad",
+    "minesweeper",
+    "solitaire",
+    "tetris",
+    "calculator",
+    "media",
+    "monitor",
+)
+OURS = ("files", "calculator", "media", "monitor")
+VENDORED = ("minesweeper", "solitaire", "notepad", "tetris")
 
 
 def _load(path: Path, name: str, env: dict | None = None):
@@ -42,9 +53,10 @@ def test_desktop_icons_are_the_starters_only():
     assert "agent-zero.png" not in desk
     assert "onlyoffice" not in desk
     assert "comfyui" not in desk
-    assert 'target="_blank"' in desk
+    assert 'target="_blank"' not in desk
     for starter in STARTERS:
         assert f'href="/apps/{starter}/"' in desk
+        assert f'target="stickllm-{starter}"' in desk
     assert "data-starter" not in menu
     assert "Agent Zero" in menu
     assert 'id="agentCatalogInstall"' in menu
@@ -57,8 +69,8 @@ def test_desktop_icons_are_the_starters_only():
     assert "grid-template-columns:repeat(auto-fill,64px)" in css
     assert ".deskIcons{flex:1;min-height:0;display:grid;grid-template-columns:repeat(auto-fill,64px);gap:24px;" in css
     assert ".deskGlyph{width:64px;height:64px;" in css
-    assert ">Mines</span>" in desk
-    assert "Minesweeper" not in desk
+    for label in ("Files", "Notepad", "Minesweeper", "Solitaire", "Tetris", "Calculator", "Media", "Monitor"):
+        assert f">{label}</span>" in desk
     label_css = css.split(".deskLabel{", 1)[1].split("}", 1)[0]
     icon_css = css.split(".deskIcon{", 1)[1].split("}", 1)[0]
     assert "font-size:13px" in label_css
@@ -72,6 +84,8 @@ def test_desktop_icons_are_the_starters_only():
         "files": "#2563eb",
         "notepad": "#eab308",
         "minesweeper": "#6b7280",
+        "solitaire": "#15803d",
+        "tetris": "#0891b2",
         "calculator": "#f97316",
         "media": "#dc2626",
         "monitor": "#7c3aed",
@@ -80,12 +94,9 @@ def test_desktop_icons_are_the_starters_only():
         assert f'[data-starter="{starter}"] .deskGlyph{{background:{colour}}}' in css
         assert 'class="deskLabel"' in desk
     page = (ROOT / "ui" / "apps" / "minesweeper" / "index.html").read_text(encoding="utf-8")
-    assert "background:#d7e0e6" in page
-    assert "background:#0e1214" in page
-    assert "repeat(9,var(--cell))" in page
-    script = (ROOT / "ui" / "apps" / "minesweeper" / "game.js").read_text(encoding="utf-8")
-    assert "contextmenu" in script
-    assert "putFlag" in script
+    assert 'id="gameTypeZero" checked' in page
+    assert 'id="noGuessMode"' in page
+    assert not (ROOT / "ui" / "apps" / "minesweeper" / "game.js").exists()
     apps = _load(APPS, "stickllm_apps_desktop")
     catalog_ids = {app["id"] for app in apps.CATALOG}
     assert catalog_ids.isdisjoint(STARTERS)
@@ -93,23 +104,38 @@ def test_desktop_icons_are_the_starters_only():
     assert all(app["installer"] is None for app in apps.CATALOG)
 
 
-def test_games_are_original_and_offline():
-    assert "solitaire" not in HTML.read_text(encoding="utf-8").lower()
-    assert not (ROOT / "ui" / "apps" / "solitaire").exists()
-    for name in ("minesweeper",):
+def test_games_are_vendored_and_offline():
+    pins = {
+        "minesweeper": "c30bd65ba7de859889ea76dccc1d227bed6e51d3",
+        "solitaire": "6342e1bd60581d5e0a81f9d89c8b834beb753173",
+        "notepad": "e3a33c2c0b1832ecdb7221f17d7f8a1b23e1ad19",
+        "tetris": "e5c0c42f7dac0f3514a55eff656c6e22e95d68ed",
+    }
+    for name, commit in pins.items():
         folder = ROOT / "ui" / "apps" / name
+        assert (folder / "LICENSE").is_file()
+        sources = (folder / "SOURCES.txt").read_text(encoding="utf-8")
+        assert commit in sources
+        assert "master" not in sources.lower()
         page = (folder / "index.html").read_text(encoding="utf-8")
-        license_text = (folder / "LICENSE").read_text(encoding="utf-8")
-        assert "MIT License" in license_text
-        assert "original StickLLM program" in license_text
-        assert "http://" not in page
-        assert "https://" not in page
-        for path in folder.iterdir():
-            if path.suffix.lower() not in {".html", ".js"}:
-                continue
-            text = path.read_text(encoding="utf-8")
-            assert "http://" not in text
-            assert "https://" not in text
+        assert "Back to Apps" in page
+        assert 'href="/#apps"' in page or "href=/#apps" in page
+        assert "StickLLM" in page
+        assert "fonts.googleapis" not in page
+        assert "google-analytics" not in page.lower()
+        assert "analytics.js" not in page
+        assert "rum.js" not in page
+        assert "service-worker" not in page
+        assert not (folder / "node_modules").exists()
+    assert "MIT License" in (ROOT / "ui" / "apps" / "minesweeper" / "LICENSE").read_text(encoding="utf-8")
+    assert "MIT License" in (ROOT / "ui" / "apps" / "solitaire" / "LICENSE").read_text(encoding="utf-8")
+    tetris_license = (ROOT / "ui" / "apps" / "tetris" / "LICENSE").read_text(encoding="utf-8")
+    assert "Permission is hereby granted" in tetris_license
+    assert "Jake Gordon" in tetris_license
+    assert "Apache License" in (ROOT / "ui" / "apps" / "notepad" / "LICENSE").read_text(encoding="utf-8")
+    assert not (ROOT / "ui" / "apps" / "notepad" / "inline-scripts" / "analytics.js").exists()
+    assert not (ROOT / "ui" / "apps" / "notepad" / "inline-scripts" / "rum.js").exists()
+    assert not (ROOT / "ui" / "apps" / "notepad" / "service-worker.js").exists()
     helper = (ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-files").read_text(encoding="utf-8")
     unit = UNIT.read_text(encoding="utf-8")
     assert 'HOST = "127.0.0.1"' in helper
@@ -277,8 +303,6 @@ def test_starter_pages_are_external_scripts(tmp_path):
         assert 'else if ($("#appsMenu") && !$("#appsMenu").hidden) toggleAppsMenu(false);' in app_js
         for name, src in (
             ("files", "files.js"),
-            ("notepad", "notepad.js"),
-            ("minesweeper", "game.js"),
             ("calculator", "calc.js"),
             ("media", "media.js"),
             ("monitor", "monitor.js"),
@@ -288,6 +312,7 @@ def test_starter_pages_are_external_scripts(tmp_path):
                 csp = resp.headers["Content-Security-Policy"]
                 script_src = [part for part in csp.split(";") if "script-src" in part]
                 assert script_src and "unsafe-inline" not in script_src[0]
+                assert "http:" not in script_src[0] and "https:" not in script_src[0]
                 assert f'src="{src}' in body
                 assert "<script>" not in body.lower()
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/apps/{name}/{src}", timeout=5) as resp:
@@ -295,6 +320,33 @@ def test_starter_pages_are_external_scripts(tmp_path):
                 assert resp.status == 200
                 assert "javascript" in resp.headers["Content-Type"]
                 assert len(script) > 200
+        vendored_scripts = {
+            "minesweeper": "Minesweeper/client/main.js",
+            "notepad": "inline-scripts/app.js",
+            "tetris": "stats.js",
+        }
+        for name in VENDORED:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/apps/{name}/", timeout=5) as resp:
+                body = resp.read().decode("utf-8")
+                csp = resp.headers["Content-Security-Policy"]
+                assert "unsafe-inline" in csp
+                assert "http:" not in csp and "https:" not in csp
+                assert "Back to Apps" in body
+            src = vendored_scripts.get(name)
+            if not src:
+                continue
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/apps/{name}/{src}", timeout=5) as resp:
+                assert resp.status == 200
+                assert "javascript" in resp.headers["Content-Type"]
+                assert len(resp.read()) > 200
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/apps/solitaire/", timeout=5) as resp:
+            body = resp.read().decode("utf-8")
+            assert "type=module" in body or 'type="module"' in body
+            src = body.split("src=", 1)[1].split(">", 1)[0].strip("\"' ")
+            assert src.endswith(".js")
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/apps/solitaire/{src}", timeout=5) as resp:
+            assert resp.status == 200
+            assert len(resp.read()) > 200
     finally:
         httpd.shutdown()
         for key, value in saved.items():

@@ -264,7 +264,8 @@ def _requirement_table(text: str) -> dict[str, list[str]]:
 def test_catalog_cards_show_requirements_and_low_disk_still_installs(tmp_path):
     apps = _load()
     html = HTML.read_text(encoding="utf-8")
-    assert "solitaire" not in html.lower()
+    menu = html.split('id="appsMenu"', 1)[1]
+    assert "solitaire" not in menu.lower()
     listing = html.split('id="appsList"', 1)[1].split('id="settings"', 1)[0]
     doc_rows = _requirement_table(DOC.read_text(encoding="utf-8"))
     assert set(doc_rows) == {app["id"] for app in apps.CATALOG} | {"agent-zero"}

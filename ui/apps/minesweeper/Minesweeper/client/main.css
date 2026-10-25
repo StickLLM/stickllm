@@ -1,0 +1,323 @@
+@charset "ISO-8859-1";
+
+
+html {
+    height: fit-content;
+    width: fit-content;
+}
+
+/*
+body {
+    background: #ccc;
+    border-width: 5px;
+    display: flex;
+    flex-direction: column;
+}
+*/
+
+body {
+    background: #ccc;
+    padding: 0px;
+    border-style: inset;
+    border-width: 5px;
+}
+
+
+h1 {
+    position: sticky;
+    top: 0px;
+    z-index: 1; /* Sit on top */
+    margin-top: 0px;
+    margin-bottom: 0px;
+    background: #ccc;
+    padding: 0px;
+    border-style: outset;
+    border-width: 5px;
+}
+
+nav {
+    position: absolute;
+    margin-right: 0px;
+    left: 10px;
+    width: 160px;
+    top: 75px;
+    bottom: 50px;
+    background: #ccc;
+    padding-left: 5px;
+    padding-top: 5px;
+    border-style: outset;
+    border-width: 5px;
+}
+
+/* Style the list inside the menu */
+nav ul {
+  list-style-type: none;
+  padding: 0;
+  
+}
+
+/* divisions which appear to be raised */
+div.raised {
+    margin-top: 0px;
+    margin-right: 0px;
+    margin-bottom: 0px;
+    background: #ccc;
+    padding: 0px;
+    border-style: outset;
+    border-width: 5px;
+}
+
+div.sunk {
+    margin-top: 0px;
+    margin-right: 0px;
+    margin-bottom: 0px;
+    background: #ccc;
+    padding: 0px;
+    border-style: inset;
+    border-width: 5px;
+}
+
+.hidden {
+    display: none;
+}
+
+/* the section holding the board and display canvas */
+section {
+    padding: 0px;
+    background-color: #ccc;
+}
+
+/* the section holding the canvas */
+div#board {
+    background-color: #ccc;
+    border-color: #eee;
+    border-style: ridge;
+    border-top-width: 5px;
+    border-left-width: 5px;
+    border-bottom-width: 5px;
+    border-right-width: 5px;
+    /* border-width: 5px; */
+}
+
+
+/* the section holding the number of mines */
+div#display {
+    background-color: #ccc;
+    border-color: #eee;
+    border-style: ridge;
+    border-top-width: 5px;
+    border-left-width: 5px;
+    border-bottom-width: 0px;
+    border-right-width: 5px;
+    /* border-width: 5px; */
+}
+
+
+/* canvases which hold LED digits */
+canvas.led {
+    background-color: black;
+    border-style: inset;
+    border-width: 4px;
+}
+
+button {
+    margin: 0px;
+    width: 150px;
+    height: 40px;
+    border-style: outset;
+    border-color: #aaa;
+    border-width: 6px;
+}
+
+button.small {
+    width: 40px;
+    height: 40px;
+}
+
+button.selected {
+    border-color: green;
+}
+
+button:hover {
+    background-color: powderblue;
+    cursor: pointer;
+}
+
+.radioButtons {
+    display: inline-block;
+}
+
+/* make the radio button larger*/
+.radioButton {
+    margin: 0px;
+    margin-right: 5px;
+    height: 20px;
+    width: 20px;
+}
+
+.radioButtons label {
+    display: block;
+    float: left;
+    white-space: nowrap;
+    width: 150px;
+}
+
+.radioButtons input {
+    vertical-align: middle;
+    background-color: turquoise;
+}
+
+.radioButtons label span {
+    vertical-align: middle;
+}
+
+/* for label + text combos*/
+.block label {
+    display: inline-block;
+    width: 50px;
+    text-align: right;
+}
+
+.block input {
+    display: inline-block;
+    width: 80px;
+    text-align: left;
+}
+
+/* make the tick box bigger*/
+.checkbox {
+    position: relative;
+    margin: 0px;
+    height: 20px; 
+    width: 20px;
+}
+
+.checkboxes {
+    display: inline-block;
+    position: relative;
+/*    height: 24px;  */
+    width: 150px;
+}
+
+.checkboxes label {
+    display: block;
+    float: left;
+    padding-right: 10px;
+    white-space: nowrap;
+}
+
+.checkboxes input {
+    vertical-align: middle;
+}
+
+.checkboxes label span {
+    vertical-align: middle;
+}
+
+
+/* Tooltip container */
+.tooltip {
+    position: absolute;
+    display: inline-block;
+}
+
+/* Tooltip text */
+.tooltip .tooltiptext {
+    visibility: hidden;
+    white-space: nowrap;
+    /* width: 200px; */
+    /* background-color: transparent; */
+    background-color: rgba(204, 204, 204, 0.5);
+    color: black;
+    text-align: left;
+    font-size: 24px;
+    font-weight: bold;
+    padding: 5px 0;
+    border-radius: 6px;
+    /* Position the tooltip text - see examples below! */
+    position: absolute;
+    z-index: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    /* Show the tooltip text when you mouse over the tooltip container */
+    .tooltip:hover .tooltiptext {
+        visibility: visible;
+    }
+}
+
+
+
+/* Used by the local storage window */
+/* The Modal (background) */
+.modal {
+    display: none; /* Hidden by default */
+    position: fixed; /* Stay in place */
+    z-index: 1; /* Sit on top */
+    left: 0;
+    top: 0;
+    width: 100%; /* Full width */
+    height: 100%; /* Full height */
+    overflow: auto; /* Enable scroll if needed */
+    background-color: rgb(0,0,0); /* Fallback color */
+    background-color: rgba(0,0,0,0.3); /* Black w/ opacity */
+}
+
+/* Modal Content/Box */
+.modal-content {
+    padding: 0px;
+    background-color: #ccc;
+    border-color: #eee;
+    border-style: ridge;
+    border-width: 5px;
+    box-shadow: rgba(0, 0, 0, 0.6) 10px 10px 6px;
+}
+
+#propertiesHeader {
+    padding: 10px;
+    cursor: move;
+    z-index: 10;
+    border-color: #eee;
+    border-style: ridge;
+    border-top-width: 0px;
+    border-left-width: 0px;
+    border-bottom-width: 5px;
+    border-right-width: 0px;
+}
+
+#xRayPanelHeader {
+    padding: 10px;
+    cursor: move;
+    z-index: 10;
+    border-color: #eee;
+    border-style: ridge;
+    border-top-width: 0px;
+    border-left-width: 0px;
+    border-bottom-width: 5px;
+    border-right-width: 0px;
+}
+
+
+/* styling for table */
+table {
+  width: 100%;
+  border-collapse: collapse; /* Merges double borders into a single crisp line */
+  font-family: sans-serif;
+  font-size: 14px;
+}
+
+th, td {
+  border: 1px solid #dddddd; /* Adds a light gray border around cells */
+  padding: 2px;              /* Adds breathing room inside cells */
+  text-align: center;        /* Aligns all text centrally */
+}
+
+th {
+  background-color: #f2f2f2; /* Gives headers a distinct gray background */
+  font-weight: bold;
+}
+
+/* Optional: Zebra striping for easier reading */
+tr:nth-child(even) {
+  background-color: #f9f9f9;
+}

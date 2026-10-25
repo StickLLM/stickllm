@@ -353,6 +353,11 @@ async function appsAct(action) {
   }
 }
 if ($("#appsLink")) $("#appsLink").onclick = () => showApps();
+function openAppsFromHash() {
+  if ((location.hash || "") === "#apps") showApps();
+}
+openAppsFromHash();
+window.addEventListener("hashchange", openAppsFromHash);
 function toggleAppsMenu(force) {
   const menu = $("#appsMenu");
   if (!menu) return;

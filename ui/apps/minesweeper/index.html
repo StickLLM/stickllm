@@ -1,49 +1,438 @@
 <!DOCTYPE html>
-<html lang="en">
+<meta name="viewport" content="width=device-width">
+<html>
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Minesweeper — StickLLM</title>
-<style>
-  *{box-sizing:border-box}
-  html,body{height:100%;margin:0}
-  body{background:#0e1214;color:#e4ecee;font:15px/1.4 "Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:12px;overflow:auto}
-  a{color:#2bb5a8;text-decoration:none}
-  .home{position:absolute;top:12px;left:16px}
-  .wrap{width:max-content;max-width:100%}
-  .bar{display:flex;gap:12px;align-items:center;margin:0 0 10px}
-  .bar strong{font-size:16px}
-  #status{min-width:6.5em;font-weight:650}
-  #status.win{color:#bbf7d0;background:#14532d;border-radius:8px;padding:4px 10px;font-size:18px;font-weight:800}
-  #status.lose{color:#fecaca;background:#7f1d1d;border-radius:8px;padding:4px 10px;font-size:18px;font-weight:800}
-  #again{appearance:none;background:#2bb5a8;color:#04211e;border:0;border-radius:8px;padding:8px 14px;font:inherit;font-weight:700;cursor:pointer}
-  #again:hover{filter:brightness(1.08)}
-  #again:active{transform:translateY(1px)}
-  #board{display:grid;grid-template-columns:repeat(9,var(--cell));gap:3px;padding:8px;background:#243038;border:2px solid #8ea0aa;border-radius:8px;width:max-content;--cell:min(44px,calc((100vw - 40px) / 9));touch-action:manipulation}
-  body[data-state="win"] #board{outline:3px solid #3fbf8a;outline-offset:2px}
-  body[data-state="lose"] #board{outline:3px solid #e15b5b;outline-offset:2px}
-  button.cell{appearance:none;-webkit-appearance:none;width:var(--cell);height:var(--cell);padding:0;display:grid;place-items:center;font:700 18px/1 "Segoe UI",system-ui,sans-serif;background:#d7e0e6;color:#152028;border:1px solid #6d808a;border-radius:3px;box-shadow:inset 1px 1px 0 #fff,inset -2px -2px 0 #7b8d96;cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
-  button.cell:hover:not(.open){background:#e7eef2}
-  button.cell:active:not(.open){transform:translateY(1px);box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}
-  button.cell.open{background:#eef3f6;box-shadow:inset 0 0 0 1px #c5d0d6;cursor:default}
-  button.cell.mine{background:#e15b5b;border-color:#7f1d1d;box-shadow:none}
-  button.cell.n1{color:#1d4ed8}
-  button.cell.n2{color:#15803d}
-  button.cell.n3{color:#dc2626}
-  button.cell.n4{color:#6d28d9}
-  button.cell.n5{color:#b45309}
-  button.cell.n6{color:#0f766e}
-  button.cell.n7{color:#111827}
-  button.cell.n8{color:#475569}
-  button.cell svg.mark{width:22px;height:22px;display:block}
-</style>
+    <meta charset="ISO-8859-1">
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, shrink-to-fit=yes">
+    <link rel="stylesheet" href="Minesweeper/client/main.css">
+    <link rel="icon" href="/favicon.svg" />
+    <title>Minesweeper — StickLLM</title>
 </head>
-<body>
-<a class="home" href="/">StickLLM</a>
-<div class="wrap">
-  <div class="bar"><strong>Minesweeper</strong><span id="status">10 mines</span><button type="button" id="again">New game</button></div>
-  <div id="board"></div>
-</div>
-<script src="game.js?v=desk3"></script>
+<!--    -->
+<body style="position: absolute; left:0px; right:0px; top:0px; bottom:0px; zoom: 1.0;" onresize="browserResized()" onload="load_images()">
+
+    <!-- Title at the top -->
+    <h1 id="headerPanel" style="position: absolute; left: 0px; top: 0px; height: 50px; right: 0px; overflow-y: auto;">
+        <img src="resources/images/bomb.png" style="width: 48px; vertical-align: middle;" onclick="propertiesOpen()" />
+        <!-- button type="button" style="zoom: 0.9; vertical-align: middle;" id="settingsButton" onclick="propertiesOpen()"><img src="resources/images/bomb.png" style="width: 30px;" /></button -->
+        <button class="hidden" type="button" style="zoom: 1; vertical-align: middle; top: 5px;" id="switchButton" onclick="setAnalysis()">Switch to Analyser</button>
+        <label id="title" style="font-size: 36px; vertical-align: middle;">Minesweeper player</label>
+        <label style="float: right; padding-right: 10px;">
+            <a href="/#apps">Back to Apps</a>
+        </label>
+    </h1>
+
+    <div class="" id="buttonBar" style="position: absolute; top: 65px; left: 0px; right: 0px; height: 30px;">
+        <div style="display:flex; flex-direction: row; justify-content: flex-start; ">
+            <button type="button" style="height: 30px; margin-right: 10px;" onclick="propertiesOpen()">Settings...</button>
+            <button id="xRayLaunchButton" type="button" style="height: 30px; margin-right: 10px;" onclick="clickedProbabilityXRay()">X-Ray...</button>
+            <button id="selectPlayer" class="selected" type="button" style="height: 30px; margin-right: 10px;" onclick="setAnalysis(false)">Player</button>
+            <button id="selectAnalyser" type="button" style="height: 30px; margin-right: 10px;" onclick="setAnalysis(true)">Analyser</button>
+            <button id="exportToPtta" class="hidden" type="button" style="height: 30px; margin-right: 10px;" onclick="sendToPtta()">Send to Ptta Zini</button>
+            <button id="exportToLlama" class="hidden" type="button" style="height: 30px; margin-right: 10px;" onclick="sendToLlama()">Send to Llama Zini</button>
+        </div>
+    </div>
+
+    <!-- control panel on the left -->
+    <nav id="controls" style="zoom: 0.9; position: absolute; left: 0px; top: 110px; bottom: 0px; width: 175px; overflow-y: auto">
+
+        <div id="play0" style="margin-top: 0px;">
+            <div class="checkboxes">
+                <label><input type="checkbox" class="checkbox" id="useSeed" /> <span>Use seed</span></label>
+            </div>
+            <div>
+                <input id="seed" type="text" style="width: 150px" />
+            </div>
+
+            <div class="checkboxes" style="margin-top: 10px;">
+                <label><input type="checkbox" class="checkbox" id="gameTypeZero" checked /> <span>Opening on start</span></label>
+                <label><input type="checkbox" class="checkbox" id="noGuessMode" /> <span>No Guess</span></label>
+                <label><input type="checkbox" class="checkbox" id="fastPlay" onclick="if (this.checked) startSolver()" /> <span>Fast mode</span></label>
+                <label><input type="checkbox" class="checkbox" id="hardcore" onclick="updateHints(true)" /> <span>Hard Core</span></label>
+            </div>
+        </div>
+
+        <div class="radioButtons" style="margin-top: 5px;">
+            <label><input id="beginner" type="radio" class="radioButton" name="boardSize" value="0"><span>Beginner</span></label>
+            <label><input id="intermediate" type="radio" class="radioButton" name="boardSize" value="1"><span>Intermediate</span></label>
+            <label><input id="expert" type="radio" class="radioButton" name="boardSize" value="2" checked><span>Expert</span></label>
+            <label style="margin-bottom: 0.5em;"><input id="custom" type="radio" class="radioButton" name="boardSize" value="3"><span>Custom</span></label>
+        </div>
+
+        <div style="margin-top: 0px;">
+            <div class="block">
+                <label>Width:</label>
+                <input id="width" onkeypress="makeCustom()" type="text" />
+            </div>
+            <div class="block">
+                <label>Height:</label>
+                <input id="height" onkeypress="makeCustom()" type="text" />
+            </div>
+            <div class="block">
+                <label>Mines:</label>
+                <input id="mines" onkeypress="makeCustom()" type="text" />
+            </div>
+        </div>
+
+
+        <div style="margin-top: 1em; display: none;" class="radioButtons" id="analysis0">
+            <label><input id="buildHidden" type="radio" class="radioButton" name="buildType" value="hidden"><span>Build all hidden</span></label>
+            <label><input id="buildZero" type="radio" class="radioButton" name="buildType" value="zero" checked><span>Build all zero</span></label>
+            <button style="margin-top: 1em;" id="localStorageButton" onclick="openLocalStorage()">Local Storage</button>
+        </div>
+
+        <button type="button" style="margin-top: 5px;" id="NewGame" onclick="apply()">New game</button>
+
+        <button type="button" style="margin-top: 5px; height: 30px;" id="repeatGame" onclick="playAgain()">Play again</button>
+
+        <div style="margin-top: 10px;">
+            <label>Style:</label>
+            <select id="playstyle" onchange="updateHints(true)">
+                <option value="flag">Flagging</option>
+                <option value="noflag">No flagging</option>
+                <option value="eff">Safe efficiency</option>
+                <option value="nfeff">NF efficiency</option>
+            </select>
+        </div>
+
+        <div style="margin-top: 10px;">
+            <label>Tile size:</label>
+            <select id="tilesize" onchange="changeTileSize(true)">
+                <option value="8">8px</option>
+                <option value="12">12px</option>
+                <option value="16">16px</option>
+                <option value="20">20px</option>
+                <option selected value="24">24px (default)</option>
+                <option value="28">28px</option>
+                <option value="32">32px</option>
+                <option value="36">36px</option>
+                <option value="40">40px</option>
+                <option value="44">44px</option>
+                <option value="48">48px</option>
+                <option value="52">52px</option>
+                <option value="56">56px</option>
+                <option value="60">60px</option>
+            </select>
+        </div>
+
+        <div style="margin-top: 1em;" class="checkboxes" id="play1">
+            <label><input type="checkbox" class="checkbox" id="reduction" onclick="renderTiles(board.tiles)" /> <span>Reduction</span></label>
+            <label><input type="checkbox" class="checkbox" id="showhints" onclick="updateHints(true)" checked /> <span>Show hints</span></label>
+            <label><input type="checkbox" class="checkbox" id="autoplay" onclick="if (this.checked) startSolver()" checked /> <span>Auto play</span></label>
+            <label><input type="checkbox" class="checkbox" id="acceptguesses" onclick="if (document.getElementById('autoplay').checked && this.checked) startSolver()" /> <span>Accept guesses</span></label>
+
+        </div>
+
+        <div style="margin-top: 10px;">
+            <label>Overlay:</label>
+            <select id="overlay" onchange="updateHints(true)">
+                <option value="none">None</option>
+                <option value="safety">Safety %</option>
+                <option value="mine" selected>Mine %</option>
+                <option value="zero">Zero %</option>
+            </select>
+        </div>
+
+        <div style="margin-top: 1em; display: none;" class="checkboxes" id="analysis1">
+            <label><input type="checkbox" class="checkbox" id="buildMode" checked /> <span>Build mode</span></label>
+            <label><input type="checkbox" class="checkbox" id="lockMineCount" /> <span><u>L</u>ock mine count</span></label>
+            <label><input type="checkbox" class="checkbox" id="flagIsMine" checked /> <span>Treat flags as mines</span></label>
+        </div>
+
+        <button type="button" style="margin-top: 1em;" id="AnalysisButton" onclick="doAnalysis(true)"><u>A</u>nalyse</button>
+
+        <div style="margin-top: 5px;" class="checkboxes">
+            <label><input type="checkbox" class="checkbox" id="urlQueryString" onclick="placeAnalysisQuery()" /> <span>URL query string</span></label>
+        </div>
+
+    </nav>
+
+    <!-- where the board goes -->
+    <!--
+    style="display: block; position: absolute; left: 170px; right: 0px; top: 60px; bottom: 60px;"
+    -->
+    <div id="wholeboard" style="display: flex; flex-direction: column; position: absolute; left: 170px; right: 0px; top: 100px; bottom: 60px;">
+        <div class="tooltip" id="canvas" style="position: absolute; left: 0px; top: 0px; bottom: 0px; right: 0px;">
+
+            <!-- the board header with mine count and some buttons -->
+            <div id="display" style="display: flex; flex-direction: row; height: 50px;">
+                <div>
+                    <canvas class="led" id="myMinesLeft" style="position: relative; left: 3px; top:3px; width: 60px; height: 36px" oncontextmenu="return false"></canvas>
+                    <input type="image" src='resources/images/flaggedWrong_thin.png' id="leftClickFlag" onclick="doToggleFlag()" style="position: relative; left: 5px; top: 2px; width: 40px; height: 40px;" />
+                    <input type="image" src='resources/images/face.svg' id="newGameSmiley" onclick="apply()" style="position: relative; left: 5px; top: 2px; width: 40px; height: 40px;" />
+                </div>
+                <div style="flex-grow: 1;">
+                    <button class="small" type="button" style="position: relative; font-size: 22px; float: right; top: 6px; right: 6px; " id="toggleScreen" onclick="doToggleScreen()">+</button>
+                </div>
+            </div>
+
+            <!-- the canvas with the mines on it and one with the the hints -->
+            <div id="board" style="overflow: auto; position: relative; top:0px; left:0px;">
+                <canvas id="myCanvas" width="500" height="500" oncontextmenu="return false" style="position: absolute; top: 0px; left: 0px;"></canvas>
+                <canvas id="myHints" width="500" height="500" oncontextmenu="return false" style="position: absolute; top: 0px; left: 0px; pointer-events: none;"></canvas>
+            </div>
+
+            <span id="tooltip" class="tooltiptext" style="pointer-events: none;"></span>
+
+            <!-- message line when the screen is minimal -->
+            <div id="messageBar" class="hidden">
+                <div style="display:flex; flex-direction: column; justify-content: flex-end; position: relative; bottom: 0px; left: 0px; right: 0px; height: 28px;">
+                    <label id="messageLine" style="font-size: 18px; overflow-y: auto; padding-left: 0px"></label>
+                </div>
+            </div>
+
+            <!-- A hyperlink to download the board -->
+            <div id="downloadBar" style="position: relative; left: 0px; top: 0px; right: 0px; height: 20px;">
+                <a id="saveposition" style="float: left; width: 140px; margin-right: 30px;" download="" href="">Save position</a>
+                <!-- <a id="downloadmbf" style="float: left; width: 130px" onclick="downloadAsMBF(event)" download="" href="">Download as MBF</a>  -->
+                <a id="savembf" style="float: left; width: 120px; margin-right: 30px;" download="" href="">Save as MBF</a>
+            </div>
+            <!--
+            <div style="position: absolute; left: 10px; top: 30px; right: 0px;">
+                <input type="range" min="1" max="200" value="50" style="left: 0px; width: 400px; height: 25px; margin-right: 30px;">
+            </div>
+            -->
+
+        </div>
+    </div>
+
+    <!-- message line when the screen is maximal -->
+    <div id="messageBarBottom">
+        <div class="raised" style="display:flex; flex-direction: column; justify-content: flex-end; position: absolute; bottom: 0px; left: 170px; right: 0px; height: 28px;">
+            <label id="messageLineBottom" style="font-size: 18px; overflow-y: auto; padding-left: 0px"></label>
+        </div>
+    </div>
+
+    <div id="exportBarBottom" class="hidden">
+        <div style="display:flex; flex-direction: row-reverse; justify-content: flex-end; position: absolute; bottom: 40px; left: 170px; right: 0px; height: 28px;">
+            <button type="button" style="height: 30px; margin-right: 10px;" onclick="sendToLlama()">Llama zini</button>
+            <button type="button" style="height: 30px; margin-right: 10px;" onclick="sendToPtta()">Ptta zini</button>
+        </div>
+    </div>
+
+    <!-- Local storage popup -->
+    <div id="localStorage" class="modal">
+        <!-- Modal content -->
+        <div class="modal-content" style="position: relative; width: 600px; height: 600px">
+            <p>From here you can store and fetch positions from the browsers local storage. This storage persists between sessions.</p>
+            <select style="width: 100%" id="localStorageSelection" size="24" onchange="localStorageKey.value = localStorageSelection.value">
+            </select>
+            <input id="localStorageKey" type="text" style="width: 98%" />
+            <button style="position: absolute; bottom: 50px; left: 5px" id="localStorageDelete" onclick="deleteLocalStorage()">Delete</button>
+            <button style="position: absolute; bottom: 50px; left: 225px" id="localStorageSave" onclick="saveLocalStorage()">Store</button>
+            <button style="position: absolute; bottom: 50px; Right: 5px" id="localStorageLoad" onclick="loadLocalStorage()">Fetch</button>
+
+            <button style="position: absolute; bottom: 5px; right: 5px" id="localStorageCancel" onclick="closeLocalStorage()">Cancel</button>
+        </div>
+    </div>
+
+    <!-- X-ray panel -->
+    <div id="xRayPanel" style="position: absolute; z-index: 1; top: 0px; right: 0px; display: none; width: 100%; height: 5px">
+        <!-- Modal content -->
+        <div id="xRayPanelBox" class="modal-content" style="position: absolute; top: 100px; right: 50px; width: 240px; height: 400px">
+            <div id="xRayPanelHeader" style="font-size: 20px; height: 24px; padding: 0px;">Probability X-Ray</div>
+            <table id="xRayTable">
+                <tr>
+                    <th style="width: 100">Value</th>
+                    <th>Percentage</th>
+                </tr>
+            </table>
+            <label id="xRayLabel" style="position: absolute; font-size: 16px; left: 2px; bottom: 8px; width: 50; height: 20px"></label>
+            <button style="position: absolute; bottom: 5px; right: 0px; height: 30px;" id="runXRay" onclick="runProbabilityXRay()">Run X-Ray</button>
+        </div>
+    </div>
+
+    <!-- Properties popup -->
+    <div id="properties" class="modal" style="zoom: 0.9; display: none;">
+        <!-- Modal content -->
+        <div id="propertiesBox" class="modal-content" style="position: absolute; top: 100px; left: 100px; width: 300px; height: 420px;">
+
+            <div id="propertiesHeader" style="font-size: 30px; height: 32px; padding: 0px;">Settings</div>
+
+            <div style="margin-top: 1em; margin-left: 1em;" class="checkboxes">
+                <label style="padding-top: 0px;">Functionality</label>
+                <label><input type="checkbox" class="checkbox" id="early5050" checked /> <span>Early 50/50 checking</span></label>
+                <label><input type="checkbox" class="checkbox" id="useLTR" checked /> <span>Consider long term risk</span></label>
+            </div>
+
+            <div style="margin-top: 1em; margin-left: 1em;" class="checkboxes">
+                <label>Performance vs Information</label>
+                <label><input type="checkbox" class="checkbox" id="pruneGuesses" checked /> <span>Prune guesses in Guessing heuristic</span></label>
+                <label><input type="checkbox" class="checkbox" id="pruneBruteForce" checked /> <span>Prune tiles in Brute force</span></label>
+                <label><input type="checkbox" class="checkbox" id="includeDeadTilesBf" checked /> <span>Include dead tiles in Brute force</span></label>
+                <label><input type="checkbox" class="checkbox" id="reuseBruteForce" /> <span>Re-use Brute force winning line</span></label>
+            </div>
+
+            <div style="margin-top: 1em; margin-left: 1em;">
+                <label style="display: inline-block; width: 280px;">Analysis Mode</label>
+
+                <div class="checkboxes">
+                    <label style="display: inline-block; width: 280px;">
+                        <input type="checkbox" class="checkbox" id="defaultLockMineCounter" />
+                        <span>Always lock mine count</span>
+                    </label>
+                </div>
+
+                <label style="display: inline-block; width: 280px;">
+                    <select id="bruteForceMaxSolutions">
+                        <option value="0">Zero</option>
+                        <option value="1">2,500</option>
+                        <option selected value="2">5,000</option>
+                        <option value="3">7,500</option>
+                        <option value="4">10,000</option>
+                        <option value="5">12,500</option>
+                        <option value="6">15,000</option>
+                        <option value="7">17,500</option>
+                        <option value="8">20,000</option>
+                    </select>
+                    Max brute force solutions
+                </label>
+            </div>
+
+
+            <div style="margin-top: 1em; margin-left: 1em;" class="checkboxes">
+                <label>Persist setting</label>
+                <label><input type="checkbox" class="checkbox" id="saveSettings" /> <span>Save settings locally</span></label>
+            </div>
+
+            <button style="position: absolute; bottom: 5px; Right: 5px; height: 30px;" id="propertiesClose" onclick="propertiesClose()">Close</button>
+        </div>
+    </div>
+
+    <!-- No Guess builder display -->
+    <div id="noGuessBuilder" class="modal">
+        <!-- Modal content -->
+        <div class="modal-content" style="position: absolute; width: 225px; height: 100px; top: 100px; left: 100px">
+            <label style="font-size:20px; padding:5px;">Building No Guess board</label>
+            <label id="ngText" style="font-size:20px; padding:5px;"></label>
+            <button style="position: absolute; bottom: 5px; Right: 30px" id="ngBuilderClose" onclick="noGuessCancel()">Cancel</button>
+        </div>
+    </div>
+
+    <script src="Minesweeper/client/Board.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/Tile.js" type="text/javascript"></script>
+
+    <script src="Minesweeper/client/solver_main.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/solver_probability_engine.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/Brute_force.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/BruteForceAnalysis.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/MinesweeperGame.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/SolutionCounter.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/EfficiencyHelper.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/FiftyFiftyHelper.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/LongTermRiskHelper.js" type="text/javascript"></script>
+    <script src="Minesweeper/client/main.js" type="text/javascript"></script>
+    <script src="Minesweeper/Utility/PrimeSieve.js" type="text/javascript"></script>
+    <script src="Minesweeper/Utility/Binomial.js" type="text/javascript"></script>
+
+    <script type="text/javascript">
+        function apply() {
+
+            if (document.getElementById("beginner").checked) {
+                doNewGame(9, 9, 10);
+                return;
+            }
+
+            if (document.getElementById("intermediate").checked) {
+                doNewGame(16, 16, 40);
+                return;
+            }
+
+            if (document.getElementById("expert").checked) {
+                doNewGame(30, 16, 99);
+                return;
+            }
+
+            //const MAX_WIDTH = 250;
+            //const MAX_HEIGHT = 250;
+
+            var widthX = document.getElementById("width").value;
+            var heightX = document.getElementById("height").value;
+            var minesX = document.getElementById("mines").value;
+
+            if (isNaN(widthX)) {
+                document.getElementById("width").focus();
+                return;
+            }
+            if (isNaN(heightX)) {
+                document.getElementById("height").focus();
+                return;
+            }
+            if (isNaN(minesX)) {
+                document.getElementById("mines").focus();
+                return;
+            }
+
+            var width = Number(widthX);
+            var height = Number(heightX);
+            var mines = Number(minesX);
+
+            if (width < 1) {
+                document.getElementById("width").value = 30
+                width = 30;
+            }
+
+            if (width > MAX_WIDTH) {
+                document.getElementById("width").value = MAX_WIDTH;
+                width = MAX_WIDTH;
+            }
+
+            if (height < 1) {
+                document.getElementById("height").value = 16
+                height = 16;
+            }
+
+            if (height > MAX_HEIGHT) {
+                document.getElementById("height").value = MAX_HEIGHT;
+                height = MAX_HEIGHT;
+            }
+
+            if (mines < 1) {
+                document.getElementById("mines").value = 99
+                mines = 99;
+            }
+
+            if (mines > width * height - 1) {
+                document.getElementById("mines").value = width * height - 1;
+                mines = width * height - 1;
+            }
+
+            doNewGame(width, height, mines);
+
+        }
+
+        function doNewGame(width, height, mines) {
+
+            if (document.getElementById("useSeed").checked) {
+                newGame(width, height, mines, document.getElementById("seed").value, true);
+            } else {
+                newGame(width, height, mines, 0, true);
+            }
+
+        }
+
+        function setAnalysis(gotoAnalysis) {
+
+            // can't switch modes while the solver is working
+            if (canvasLocked) {
+                return;
+            }
+
+            if (!analysisMode && gotoAnalysis) {
+                switchToAnalysis(true);
+            } else if (analysisMode && !gotoAnalysis) {
+                switchToAnalysis(false);
+            }
+
+        }
+
+        function makeCustom() {
+
+            document.getElementById("custom").checked = true;
+
+        }
+
+    </script>
+
 </body>
 </html>
