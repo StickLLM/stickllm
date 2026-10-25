@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
-<link rel="stylesheet" href="style.css?v=desk3" />
+<link rel="stylesheet" href="style.css?v=desk4" />
 </head>
 <body>
 <div class="app" id="app">
@@ -33,7 +33,7 @@
       <button class="navBtn" data-open="general"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
       <nav class="sideApps" aria-label="Apps">
         <p class="sideAppsLabel">Apps</p>
-        <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 4.6L19 8.2l-3.5 3.4.8 4.9L12 14.2 7.7 16.5l.8-4.9L5 8.2l4.8-.6z"/></svg><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
+        <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="_blank" rel="noopener noreferrer" hidden><img class="agentMark" src="agent-zero.png?v=desk4" alt=""><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
         <button class="navBtn" id="appsLink" type="button"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span class="appName"><span>Apps</span><small>Desktop</small></span></button>
       </nav>
     </div>
@@ -123,6 +123,20 @@
           <div class="appsInner">
         <div class="appsLayout">
           <div class="appsList" id="appsList">
+            <section class="appsGroup" data-group="Agent">
+              <div class="appsRows">
+                <div class="appsRow appsRowLive" id="agentCatalogRow" data-app="agent-zero" data-license="MIT">
+                  <span class="appName">
+                    <span>Agent Zero</span>
+                    <small id="agentCatalogMsg">Unlock the vault, then install. The image stays on the host drive.</small>
+                    <pre id="agentCatalogPull" class="mono appsPull" hidden></pre>
+                  </span>
+                  <span class="appsState">
+                    <button type="button" class="btn sm" id="agentCatalogInstall">Install Agent Zero</button>
+                  </span>
+                </div>
+              </div>
+            </section>
             <section class="appsGroup" data-group="Core (starter apps)">
               <div class="appsRows">
                 <button type="button" class="appsRow" data-app="onlyoffice" data-license="AGPL">
@@ -655,6 +669,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=desk3"></script>
+<script src="app.js?v=desk4"></script>
 </body>
 </html>

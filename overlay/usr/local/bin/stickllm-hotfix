@@ -80,6 +80,13 @@ if [[ -d "$SRC/opt/stickllm/ui" ]]; then
     [[ -f "$f" ]] || continue
     base="$(basename "$f")"
     case "$base" in
+      agent-zero.png)
+        # Raster logo. Do not run sed: stripping CR would corrupt the PNG.
+        install -m 644 "$f" "/opt/stickllm/ui/$base"
+        echo "installed /opt/stickllm/ui/$base"
+        installed=1
+        continue
+        ;;
       app.js|index.html|style.css|stickllm.json) ;;
       *) echo "skipping non-UI file: $base" >&2; continue ;;
     esac

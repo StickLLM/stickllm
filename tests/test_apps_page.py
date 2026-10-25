@@ -89,7 +89,11 @@ def test_apps_page_lists_the_documented_catalog():
 
     html = HTML.read_text(encoding="utf-8")
     listing = html.split('id="appsList"', 1)[1].split('id="settings"', 1)[0]
-    assert "Agent Zero" not in listing
+    assert listing.find("Agent Zero") < listing.find("ONLYOFFICE")
+    assert listing.find('id="agentCatalogInstall"') < listing.find('data-app="onlyoffice"')
+    assert ">Install Agent Zero</button>" in listing
+    agent_row = listing.split('id="agentCatalogRow"', 1)[1].split("</section>", 1)[0]
+    assert "Not available yet" not in agent_row
     assert "whisper" not in listing.lower()
     for app in apps.CATALOG:
         assert f'data-app="{app["id"]}"' in listing
@@ -243,6 +247,10 @@ def test_ui_refuses_a_successful_install_without_the_server_flag():
     assert "j.installed === true" in js
     assert "No installer yet. This app was not installed." in js
     assert "Nothing was removed." in js
+    assert 'fetch("/api/agent/install"' in js
+    assert "agentCatalogInstall" in js
+    assert "/api/agent/uninstall" not in js
+    assert "agentCatalogMsg" in js
     gateway = GATEWAY.read_text(encoding="utf-8")
     assert 'path == "/api/apps"' in gateway
     assert '"/api/apps/install"' in gateway

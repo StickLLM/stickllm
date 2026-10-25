@@ -377,6 +377,9 @@ def test_agent_sidebar_opens_a_new_tab():
     html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
     side = html.split('<aside class="sidebar"', 1)[1].split("</aside>", 1)[0]
     assert 'id="agentLink"' in side
+    tag_at = side.index('id="agentLink"')
+    tag = side[side.rfind("<", 0, tag_at) : side.index(">", tag_at) + 1]
+    assert tag.rstrip(">").split()[-1] == "hidden"
     assert 'target="_blank"' in side
     assert "noopener" in side
     assert ":5443" in side
@@ -394,6 +397,15 @@ def test_agent_sidebar_opens_a_new_tab():
     assert 'link.target = "_blank"' in js
     assert "noopener" in js
     assert 'label.textContent = "Agent"' in js
+    assert "function agentIsInstalled" in js
+    assert "link.hidden = !installed" in js
+    assert "agentDeskIcon" in js
+    assert "agent-zero.png" in js
+    assert 's.state === "starting"' in js
+    logo = ROOT / "ui" / "agent-zero.png"
+    raw = logo.read_bytes()
+    assert raw.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(raw) > 10000
 
 
 def test_console_browser_keeps_a_tab_strip():

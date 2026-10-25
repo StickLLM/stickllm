@@ -38,13 +38,17 @@ def test_desktop_icons_are_the_starters_only():
     found = [part.split('"', 1)[0] for part in desk.split('data-starter="')[1:]]
     assert found == list(STARTERS)
     assert "Agent Zero" not in desk
+    assert "agentDeskIcon" not in desk
+    assert "agent-zero.png" not in desk
     assert "onlyoffice" not in desk
     assert "comfyui" not in desk
     assert 'target="_blank"' in desk
     for starter in STARTERS:
         assert f'href="/apps/{starter}/"' in desk
     assert "data-starter" not in menu
-    assert "Agent Zero" not in menu
+    assert "Agent Zero" in menu
+    assert 'id="agentCatalogInstall"' in menu
+    assert ">Install Agent Zero</button>" in menu
     for starter in STARTERS:
         assert f'data-app="{starter}"' not in menu
     assert "Not installed" in menu

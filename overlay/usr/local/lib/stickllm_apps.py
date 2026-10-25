@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Companion-app catalog for the StickLLM Apps page.
 
-The rows match docs/APPS.md. Agent Zero is not a row: it keeps its own
-sidebar entry and ``stickllm-agent install``. whisper.cpp and KittenTTS are
-baked into the image, not companion apps.
+The placeholder rows match docs/APPS.md except Agent Zero. Agent Zero is a
+real install on the Apps page and calls ``stickllm-agent install``, the same
+action as Settings. It is not one of these placeholder rows, so this module
+must not report it installed or delete its image. whisper.cpp and KittenTTS
+are baked into the image, not companion apps.
 
-No catalog app has an installer yet. Install must not claim success, and
-uninstall must not delete anything this page did not install.
+No placeholder catalog app has an installer yet. Install must not claim
+success, and uninstall must not delete anything this page did not install.
 """
 from __future__ import annotations
 

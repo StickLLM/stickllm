@@ -78,19 +78,48 @@ function agentPageUrl(status) {
   const host = location.hostname || "127.0.0.1";
   return "https://" + host + ":5443/";
 }
+function agentIsInstalled(s) {
+  return !!(s && (s.image_present || s.state === "running" || s.state === "starting"));
+}
+function agentInstallButtons() {
+  return ["agentInstallBtn", "agentCatalogInstall"].map((id) => $("#" + id)).filter(Boolean);
+}
+function syncAgentDesktop(installed, href) {
+  const desk = $("#deskIcons");
+  if (!desk) return;
+  let icon = $("#agentDeskIcon");
+  if (!installed) {
+    if (icon) icon.remove();
+    return;
+  }
+  if (!icon) {
+    icon = document.createElement("a");
+    icon.id = "agentDeskIcon";
+    icon.className = "deskIcon";
+    icon.target = "_blank";
+    icon.rel = "noopener noreferrer";
+    icon.innerHTML = '<span class="deskGlyph deskGlyphLogo" aria-hidden="true"><img src="agent-zero.png?v=desk4" alt=""></span><span class="deskLabel">Agent</span>';
+    desk.appendChild(icon);
+  }
+  icon.href = href;
+}
 async function refreshAgentLink() {
   const label = $("#agentLinkLabel");
   const link = $("#agentLink");
-  if (!label && !link) return;
+  if (!label && !link && !$("#agentCatalogInstall")) return;
   try {
     const r = await fetch("/api/agent/status", { cache: "no-store", headers: authHeaders() });
     if (!r.ok) return;
     const s = await r.json();
+    const installed = agentIsInstalled(s);
+    const href = agentPageUrl(s);
     if (link) {
-      link.href = agentPageUrl(s);
+      link.href = href;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
+      link.hidden = !installed;
     }
+    syncAgentDesktop(installed, href);
     const note = $("#agentLinkState");
     let detail = "Opens in a new tab";
     if (!s.vault_unlocked) detail = "Unlock vault on this page";
@@ -103,26 +132,29 @@ async function refreshAgentLink() {
     else if (s.state === "low_space") detail = "Host drive is low on space";
     if (label) label.textContent = "Agent";
     if (note) note.textContent = detail;
-    const msg = $("#agentInstallMsg");
-    const btn = $("#agentInstallBtn");
-    const log = $("#agentPullLog");
-    if (msg) msg.textContent = s.message || "";
-    if (btn) {
-      const show = !!(s.needs_install || s.state === "installing" || s.state === "pull_failed");
+    const message = s.message || "";
+    for (const msg of [$("#agentInstallMsg"), $("#agentCatalogMsg")]) {
+      if (msg) msg.textContent = message;
+    }
+    const show = !!(s.needs_install || s.state === "installing" || s.state === "pull_failed");
+    for (const btn of agentInstallButtons()) {
       btn.hidden = !show;
       btn.disabled = s.state === "installing";
       btn.textContent = s.state === "installing" ? "Installing…" : "Install Agent Zero";
     }
-    if (log) {
-      const text = s.pull_log || "";
+    const text = s.pull_log || "";
+    for (const log of [$("#agentPullLog"), $("#agentCatalogPull")]) {
+      if (!log) continue;
       log.hidden = !text;
       log.textContent = text;
     }
   } catch (e) { /* status is optional until the gateway is current */ }
 }
 async function installAgent() {
-  const btn = $("#agentInstallBtn");
-  if (btn) btn.disabled = true;
+  for (const btn of agentInstallButtons()) {
+    btn.disabled = true;
+    btn.textContent = "Installing…";
+  }
   try {
     const r = await fetch("/api/agent/install", { method: "POST", headers: authHeaders() });
     const j = await r.json().catch(() => ({}));
@@ -133,7 +165,7 @@ async function installAgent() {
   }
   refreshAgentLink();
 }
-if ($("#agentInstallBtn")) $("#agentInstallBtn").onclick = () => installAgent();
+for (const btn of agentInstallButtons()) btn.onclick = () => installAgent();
 function showApps() {
   mainView = "apps";
   const thread = $("#thread");
@@ -261,6 +293,7 @@ document.addEventListener("click", (ev) => {
   toggleAppsMenu(false);
 });
 if ($("#appsList")) $("#appsList").addEventListener("click", (e) => {
+  if (e.target.closest("#agentCatalogInstall") || e.target.closest("#agentCatalogRow")) return;
   const row = e.target.closest(".appsRow");
   if (row) selectApp(row);
 });
