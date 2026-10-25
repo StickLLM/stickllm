@@ -15,8 +15,11 @@ WAIT_LLAMA_SECS="${STICKLLM_KIOSK_WAIT_LLAMA_SECS:-8}"
 FAIL_FILE="$RUN/kiosk-fail-count"
 PROFILE="$RUN/kiosk-profile"
 WESTON_INI="$RUN/weston.ini"
-# cage refuses to start as root ("Unable to drop root"); run compositor as live user.
-KIOSK_USER="${STICKLLM_KIOSK_USER:-user}"
+# cage refuses to start as root ("Unable to drop root"). Chromium's sandbox
+# also refuses root; --no-sandbox paints an error bar, so the console browser
+# runs as the unprivileged stickllm user.
+KIOSK_USER="${STICKLLM_KIOSK_USER:-stickllm}"
+KIOSK_HOME="/home/${KIOSK_USER}"
 
 mkdir -p "$RUN" "$PROFILE"
 chmod 700 "$PROFILE"
@@ -212,6 +215,22 @@ pick_display_drm() {
   local connected_nvidia="" best_nvidia=""
   local console_drm="" pick=""
   console_drm="$(pick_console_drm || true)"
+  # A kiosk restart can make HDMI report disconnected for a few seconds.
+  # Wait for a real connector before falling back to an unplugged card.
+  local wait_i conn_state
+  for wait_i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    conn_state=0
+    for conn in /sys/class/drm/card*-*/status; do
+      [[ -f "$conn" ]] || continue
+      if [[ "$(tr -d '[:space:]' <"$conn" 2>/dev/null || true)" == "connected" ]]; then
+        conn_state=1
+        break
+      fi
+    done
+    [[ "$conn_state" -eq 1 ]] && break
+    fail_note "STICKLLM_KIOSK_DRM_WAIT attempt=$wait_i"
+    sleep 1
+  done
   for card in /sys/class/drm/card[0-9]; do
     [[ -d "$card" ]] || continue
     driver="$(basename "$(readlink -f "$card/device/driver" 2>/dev/null)" 2>/dev/null || true)"
@@ -301,20 +320,29 @@ ensure_nvidia_kms() {
   serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_RELOAD"
   paint "  Enabling NVIDIA KMS for display…"
   # llama holds the driver; briefly stop so nvidia_drm can reload.
-  systemctl stop stickllm-llama.service 2>/dev/null || true
-  sleep 1
+  # Leave it stopped when it was already stopped.
+  local llama_was_active=0
+  if systemctl is-active --quiet stickllm-llama.service; then
+    llama_was_active=1
+    systemctl stop stickllm-llama.service 2>/dev/null || true
+    sleep 1
+  fi
   rmmod nvidia_drm 2>/dev/null || true
   if modprobe nvidia_drm modeset=1 2>>"$FAIL_LOG"; then
     sleep 2
     fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_OK now=$(cat /sys/module/nvidia_drm/parameters/modeset 2>/dev/null || true)"
     serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_OK"
-    systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+    if [[ "$llama_was_active" -eq 1 ]]; then
+      systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+    fi
     return 0
   fi
   fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_FAIL"
   serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_FAIL"
   modprobe nvidia_drm 2>/dev/null || true
-  systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+  if [[ "$llama_was_active" -eq 1 ]]; then
+    systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+  fi
   return 1
 }
 
@@ -370,28 +398,39 @@ release_display_for_compositor() {
 }
 
 prepare_kiosk_user() {
-  # Prefer Debian live default account; fall back to root only if missing.
-  if ! id "$KIOSK_USER" >/dev/null 2>&1; then
-    if id user >/dev/null 2>&1; then
+  # Never run the console browser as root. The sandbox then fails and Chromium
+  # only starts with --no-sandbox, which leaves an error bar on screen.
+  if [[ "$KIOSK_USER" == "root" ]] || ! id "$KIOSK_USER" >/dev/null 2>&1; then
+    if id stickllm >/dev/null 2>&1; then
+      KIOSK_USER=stickllm
+    elif id user >/dev/null 2>&1; then
       KIOSK_USER=user
-    else
-      KIOSK_USER=root
     fi
   fi
-  if [[ "$KIOSK_USER" != "root" ]]; then
-    usermod -aG video,render,input "$KIOSK_USER" 2>/dev/null || true
+  if ! id "$KIOSK_USER" >/dev/null 2>&1 || [[ "$(id -u "$KIOSK_USER")" -eq 0 ]]; then
+    fail_note "STICKLLM_KIOSK_NO_USER"
+    return 1
   fi
+  local groups="video,render,input"
+  if getent group seat >/dev/null 2>&1; then
+    groups="${groups},seat"
+  fi
+  usermod -aG "$groups" "$KIOSK_USER" 2>/dev/null || true
+  KIOSK_HOME="$(getent passwd "$KIOSK_USER" | awk -F: '{print $6}')"
+  case "$KIOSK_HOME" in
+    ""|/|/nonexistent|/var/empty) KIOSK_HOME="/home/${KIOSK_USER}" ;;
+  esac
+  mkdir -p "$KIOSK_HOME"
+  chown "${KIOSK_USER}:${KIOSK_USER}" "$KIOSK_HOME" 2>/dev/null || true
   KIOSK_UID="$(id -u "$KIOSK_USER")"
   export XDG_RUNTIME_DIR="/run/user/${KIOSK_UID}"
   mkdir -p "$XDG_RUNTIME_DIR" "$PROFILE" "$PROFILE/cache"
   chmod 700 "$XDG_RUNTIME_DIR"
-  if [[ "$KIOSK_USER" != "root" ]]; then
-    chown -R "${KIOSK_USER}:${KIOSK_USER}" "$XDG_RUNTIME_DIR" "$PROFILE" 2>/dev/null || true
-    # Allow the kiosk user to write fail/diag logs owned by the unit (root).
-    chmod 777 "$RUN" 2>/dev/null || true
-    touch "$LOG" "$FAIL_LOG" 2>/dev/null || true
-    chmod 666 "$LOG" "$FAIL_LOG" 2>/dev/null || true
-  fi
+  chown -R "${KIOSK_USER}:${KIOSK_USER}" "$XDG_RUNTIME_DIR" "$PROFILE" 2>/dev/null || true
+  # Allow the kiosk user to write fail/diag logs owned by the unit (root).
+  chmod 777 "$RUN" 2>/dev/null || true
+  touch "$LOG" "$FAIL_LOG" 2>/dev/null || true
+  chmod 666 "$LOG" "$FAIL_LOG" 2>/dev/null || true
   fail_note "STICKLLM_KIOSK_USER $KIOSK_USER uid=$KIOSK_UID XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
   serial_note "STICKLLM_KIOSK_USER $KIOSK_USER uid=$KIOSK_UID"
 }
@@ -408,7 +447,7 @@ ensure_xdg_runtime() {
 run_kiosk_cmd() {
   if [[ "$(id -u)" -eq 0 && "$KIOSK_USER" != "root" ]] && command -v runuser >/dev/null 2>&1; then
     runuser -u "$KIOSK_USER" -- env \
-      "HOME=/home/${KIOSK_USER}" \
+      "HOME=${KIOSK_HOME}" \
       "USER=${KIOSK_USER}" \
       "LOGNAME=${KIOSK_USER}" \
       "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" \
@@ -579,12 +618,54 @@ ensure_browser_tabs() {
   done
 }
 
+# Address bar stays. Tabs stay. No --kiosk, --app, or --no-sandbox.
 chromium_args() {
   local bin="$1"
   printf '%q' "$bin"
   printf ' --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars'
-  printf ' --disable-session-crashed-bubble --check-for-update-interval=31536000'
+  printf ' --disable-session-crashed-bubble --hide-crash-restore-bubble'
+  printf ' --check-for-update-interval=31536000'
   printf ' --user-data-dir=%q --disk-cache-dir=%q %q' "$PROFILE" "$PROFILE/cache" "$URL"
+}
+
+# Drop a crashed session so Chromium does not ask to open existing tabs.
+clear_restore_prompt() {
+  [[ "${BROWSER:-}" == "cog" ]] && return 0
+  local default="$PROFILE/Default" prefs
+  mkdir -p "$default"
+  rm -f "$default/Current Session" "$default/Current Tabs" \
+    "$default/Last Session" "$default/Last Tabs" 2>/dev/null || true
+  rm -rf "$default/Sessions" 2>/dev/null || true
+  prefs="$default/Preferences"
+  if [[ -f "$prefs" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 - "$prefs" << 'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+if not isinstance(data, dict):
+    raise SystemExit(0)
+profile = data.get("profile")
+if not isinstance(profile, dict):
+    profile = {}
+    data["profile"] = profile
+profile["exit_type"] = "Normal"
+profile["exited_cleanly"] = True
+session = data.get("session")
+if not isinstance(session, dict):
+    session = {}
+    data["session"] = session
+session["restore_on_startup"] = 5
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(data, handle)
+PY
+  fi
+  chown -R "${KIOSK_USER}:${KIOSK_USER}" "$PROFILE" 2>/dev/null || true
 }
 
 drm_driver_name() {
@@ -633,6 +714,9 @@ renderer_order_for_drm() {
 try_launch() {
   local label="$1" drm="$2" renderer="$3" comp="$4" browser="$5"
   local rc=0 app run_timeout=0
+  if [[ "$browser" != "cog" ]]; then
+    clear_restore_prompt
+  fi
   apply_env_for_drm "$drm" "$renderer"
   # QEMU virtio often hangs in gles/pixman without painting — bound tries so ladder advances.
   if is_virtio_or_qemu_drm "$drm"; then
@@ -647,7 +731,7 @@ try_launch() {
   if [[ "$browser" == "cog" ]]; then
     app="cog -P --enable-mediasource $URL"
   else
-    app="$browser --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
+    app="$browser --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
   fi
 
   # drop_root=1 → runuser as KIOSK_USER (required for cage).
@@ -662,7 +746,7 @@ try_launch() {
     if [[ "$drop_root" -eq 1 && "$(id -u)" -eq 0 && "$KIOSK_USER" != "root" ]] \
       && command -v runuser >/dev/null 2>&1; then
       "${prefix[@]}" runuser -u "$KIOSK_USER" -- env \
-        "HOME=/home/${KIOSK_USER}" \
+        "HOME=${KIOSK_HOME}" \
         "USER=${KIOSK_USER}" \
         "LOGNAME=${KIOSK_USER}" \
         "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" \
@@ -710,10 +794,10 @@ try_launch() {
           --start-maximized \
           --ozone-platform=wayland \
           --disable-gpu \
-          --no-sandbox \
           --no-first-run \
           --disable-infobars \
           --disable-session-crashed-bubble \
+          --hide-crash-restore-bubble \
           --check-for-update-interval=31536000 \
           --user-data-dir="$PROFILE" \
           --disk-cache-dir="$PROFILE/cache" \
@@ -731,14 +815,14 @@ try_launch() {
         else
           # shellcheck disable=SC2086
           _run 1 cage -s -- $browser \
-            --start-maximized \
-            --ozone-platform=wayland \
-            --disable-gpu \
-            --no-sandbox \
-            --no-first-run \
-            --disable-infobars \
-            --disable-session-crashed-bubble \
-            --check-for-update-interval=31536000 \
+          --start-maximized \
+          --ozone-platform=wayland \
+          --disable-gpu \
+          --no-first-run \
+          --disable-infobars \
+          --disable-session-crashed-bubble \
+          --hide-crash-restore-bubble \
+          --check-for-update-interval=31536000 \
             --user-data-dir="$PROFILE" \
             --disk-cache-dir="$PROFILE/cache" \
             "$URL" 2>&1 | kiosk_fail_filter
@@ -755,7 +839,11 @@ try_launch() {
       else
         _br_bin="$(command -v "$browser" || true)"
         [[ -n "$_br_bin" ]] || _br_bin="$browser"
-        app="${_br_bin} --start-maximized --ozone-platform=wayland --disable-gpu --no-sandbox --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
+        app="${_br_bin} --start-maximized --ozone-platform=wayland --disable-gpu --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
+        # weston itself stays root for drm-backend. The browser must not.
+        if [[ "$KIOSK_USER" != "root" ]]; then
+          app="runuser -u ${KIOSK_USER} --preserve-environment -- env HOME=${KIOSK_HOME} USER=${KIOSK_USER} LOGNAME=${KIOSK_USER} ${app}"
+        fi
       fi
       write_weston_ini "$app"
       chown "${KIOSK_USER}:${KIOSK_USER}" "$WESTON_INI" 2>/dev/null || true
@@ -854,7 +942,7 @@ elif ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then
 fi
 
 mkdir -p "$RUN"
-prepare_kiosk_user
+prepare_kiosk_user || hold_error "no unprivileged console user"
 touch "$RUN/local-mode"
 serial_note "STICKLLM_KIOSK_START chat=$CHAT_MODE fails=$(fail_count)"
 collect_drm_diag

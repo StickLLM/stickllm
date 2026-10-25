@@ -401,6 +401,11 @@ def test_console_browser_keeps_a_tab_strip():
         assert "--kiosk" not in line
         assert "--app=" not in line
         assert " --app " not in f" {line} "
+        assert "--no-sandbox" not in line
+        assert "userChrome" not in line
+    assert 'KIOSK_USER="${STICKLLM_KIOSK_USER:-stickllm}"' in text
+    assert "--hide-crash-restore-bubble" in text
+    assert "clear_restore_prompt" in text
     assert "FullscreenAllowed" in text
     assert "ensure_browser_tabs" in text
     policy = json.loads(
