@@ -88,7 +88,7 @@ def test_apps_page_lists_the_documented_catalog():
     assert not any("whisper" in name.lower() or "kitten" in name.lower() for name in names)
 
     html = HTML.read_text(encoding="utf-8")
-    listing = html.split('id="appsList"', 1)[1].split('id="appsDetail"', 1)[0]
+    listing = html.split('id="appsList"', 1)[1].split('id="settings"', 1)[0]
     assert "Agent Zero" not in listing
     assert "whisper" not in listing.lower()
     for app in apps.CATALOG:
@@ -97,9 +97,13 @@ def test_apps_page_lists_the_documented_catalog():
         assert app["description"] in listing
     assert "Not available yet" in listing
     assert "Not installed" in listing
-    assert "Nothing is installed from this page yet." in html
-    assert "Select an app to install or uninstall it." in html
-    assert "Install Agent Zero first" in html or "Install it first" in html
+    menu = html.split('id="appsMenu"', 1)[1].split('id="settings"', 1)[0]
+    assert "Nothing is installed from this page yet." not in menu
+    assert "Select an app to install or uninstall it." not in menu
+    assert "Install it first" not in menu
+    assert "Agent Zero stays" not in menu
+    assert "<h3>" not in menu
+    assert 'id="appsDetail"' not in html
 
 
 def test_install_does_not_claim_success_without_an_installer(tmp_path):

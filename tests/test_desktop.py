@@ -34,7 +34,7 @@ def _load(path: Path, name: str, env: dict | None = None):
 def test_desktop_icons_are_the_starters_only():
     html = HTML.read_text(encoding="utf-8")
     desk = html.split('id="deskIcons"', 1)[1].split('id="appsMenu"', 1)[0]
-    menu = html.split('id="appsMenu"', 1)[1].split('id="appsDetail"', 1)[0]
+    menu = html.split('id="appsMenu"', 1)[1].split('id="settings"', 1)[0]
     found = [part.split('"', 1)[0] for part in desk.split('data-starter="')[1:]]
     assert found == list(STARTERS)
     assert "Agent Zero" not in desk
@@ -53,7 +53,17 @@ def test_desktop_icons_are_the_starters_only():
     assert "grid-template-columns:repeat(auto-fill,64px)" in css
     assert ".deskIcons{flex:1;min-height:0;display:grid;grid-template-columns:repeat(auto-fill,64px);gap:24px;" in css
     assert ".deskGlyph{width:64px;height:64px;" in css
-    assert ".deskLabel{" in css and "font-size:13px" in css.split(".deskLabel{", 1)[1].split("}", 1)[0]
+    assert ">Mines</span>" in desk
+    assert "Minesweeper" not in desk
+    label_css = css.split(".deskLabel{", 1)[1].split("}", 1)[0]
+    icon_css = css.split(".deskIcon{", 1)[1].split("}", 1)[0]
+    assert "font-size:13px" in label_css
+    assert "text-align:center" in label_css
+    assert "left:" not in label_css
+    assert "transform:" not in label_css
+    assert "flex-direction:column" in icon_css
+    assert "align-items:center" in icon_css
+    assert "text-align:center" in icon_css
     colours = {
         "files": "#2563eb",
         "notepad": "#eab308",
