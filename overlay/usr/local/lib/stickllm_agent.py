@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import threading
+import urllib.request
 from pathlib import Path
 
 VAULT_MNT = Path(os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault"))
@@ -44,6 +45,12 @@ LLAMA_BRIDGE_PORT = 8080
 LLAMA_BRIDGE_SUBNET = "172.30.0.0/24"
 LLAMA_BRIDGE_IFACE = "stickllm-a0"
 LLAMA_BASE = f"http://{LLAMA_BRIDGE_HOST}:{LLAMA_BRIDGE_PORT}/v1"
+# Pinned agent0ai/agent-zero v2.14 lists this chat provider in
+# conf/model_providers.yaml. It speaks OpenAI /v1 through litellm hosted_vllm.
+LOCAL_PROVIDER = "llama_cpp"
+# A stuck model call must fail into the Agent Zero chat instead of spinning.
+MODEL_TIMEOUT = 90
+EMBED_REPO = "sentence-transformers/all-MiniLM-L6-v2"
 AGENT_PORT = 5099
 AGENT_TLS_PORT = 5443
 NFT_TABLE = "stickllm_agent"
@@ -722,7 +729,8 @@ def _html(text: str) -> str:
     )
 
 
-def _model_name() -> str:
+def _model_path() -> str:
+    """Full GGUF path from the running StickLLM model, when one is recorded."""
     override = os.environ.get("STICKLLM_AGENT_MODEL", "").strip()
     if override:
         return override
@@ -731,23 +739,96 @@ def _model_name() -> str:
         for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.startswith("STICKLLM_MODEL="):
                 value = line.split("=", 1)[1].strip().strip('"').strip("'")
-                name = Path(value).name
-                if name:
-                    return name
+                if value:
+                    return value
     except OSError:
         pass
-    return "stickllm"
+    return ""
+
+
+def _model_name() -> str:
+    path = _model_path()
+    name = Path(path).name if path else ""
+    return name or "stickllm"
+
+
+def model_id_from_list(payload: object, fallback: str) -> str:
+    """Use the first id from an OpenAI /v1/models document."""
+    if isinstance(payload, dict):
+        rows = payload.get("data")
+        if isinstance(rows, list):
+            for item in rows:
+                if isinstance(item, dict):
+                    model_id = str(item.get("id") or "").strip()
+                    if model_id:
+                        return model_id
+    return fallback
+
+
+def llama_model_id(fallback: str | None = None) -> str:
+    """Exact id llama-server advertises. Fall back to the loaded GGUF path."""
+    name = (fallback or "").strip() or _model_path() or _model_name()
+    urls = (
+        f"http://127.0.0.1:{LLAMA_BRIDGE_PORT}/v1/models",
+        f"{LLAMA_BASE}/models",
+    )
+    for url in urls:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        found = model_id_from_list(payload, "")
+        if found:
+            return found
+    return name
+
+
+def _model_kwargs() -> dict[str, object]:
+    return {"api_base": LLAMA_BASE, "api_key": "dummy", "timeout": MODEL_TIMEOUT}
+
+
+def model_settings(model_name: str) -> dict[str, object]:
+    """Legacy settings.json fields this Agent Zero image still migrates.
+
+    v2.14 reads the active model from the model-config preset. On first start
+    it also copies these fields into the plugin config when they are present.
+    """
+    kwargs = _model_kwargs()
+    return {
+        "chat_model_provider": LOCAL_PROVIDER,
+        "chat_model_name": model_name,
+        "chat_model_api_base": LLAMA_BASE,
+        "chat_model_ctx_length": 32768,
+        "chat_model_ctx_history": 0.7,
+        "chat_model_vision": False,
+        "chat_model_kwargs": dict(kwargs),
+        "util_model_provider": LOCAL_PROVIDER,
+        "util_model_name": model_name,
+        "util_model_api_base": LLAMA_BASE,
+        "util_model_ctx_length": 32768,
+        "util_model_ctx_input": 0.7,
+        "util_model_kwargs": dict(kwargs),
+    }
+
+
+def merge_model_settings(existing: dict, model_name: str) -> dict:
+    """Set the StickLLM model fields and leave every other user field in place."""
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    merged.update(model_settings(model_name))
+    return merged
 
 
 def preset_text(model_name: str) -> str:
     # device: cpu keeps the small MiniLM embedding off the GPU.
     # Chat and utility use the llama-server relay on the agent bridge.
     # The server process itself stays on 127.0.0.1:8080.
+    # timeout makes a dead relay a chat error instead of an endless spinner.
     name = json.dumps(model_name)
     return (
         "- name: Default\n"
         "  chat:\n"
-        "    provider: llama_cpp\n"
+        f"    provider: {LOCAL_PROVIDER}\n"
         f"    name: {name}\n"
         f"    api_base: {LLAMA_BASE}\n"
         "    ctx_length: 32768\n"
@@ -755,21 +836,115 @@ def preset_text(model_name: str) -> str:
         "    vision: false\n"
         "    kwargs:\n"
         f"      api_base: {LLAMA_BASE}\n"
+        "      api_key: dummy\n"
+        f"      timeout: {MODEL_TIMEOUT}\n"
         "  utility:\n"
-        "    provider: llama_cpp\n"
+        f"    provider: {LOCAL_PROVIDER}\n"
         f"    name: {name}\n"
         f"    api_base: {LLAMA_BASE}\n"
         "    ctx_length: 32768\n"
         "    ctx_input: 0.7\n"
         "    kwargs:\n"
         f"      api_base: {LLAMA_BASE}\n"
+        "      api_key: dummy\n"
+        f"      timeout: {MODEL_TIMEOUT}\n"
         "  embedding:\n"
         "    provider: huggingface\n"
-        "    name: sentence-transformers/all-MiniLM-L6-v2\n"
+        f"    name: {EMBED_REPO}\n"
         "    api_base: \"\"\n"
         "    kwargs:\n"
         "      device: cpu\n"
     )
+
+
+def embedding_cache_root() -> Path:
+    override = os.environ.get("STICKLLM_EMBED_CACHE", "").strip()
+    if override:
+        return Path(override)
+    return ADDON / "state" / ".cache" / "sentence-transformers"
+
+
+def embedding_cached(root: Path | None = None) -> bool:
+    """True when MiniLM weights are already in the container cache."""
+    base = root or embedding_cache_root()
+    if not base.is_dir():
+        return False
+    try:
+        for path in base.rglob("model.safetensors"):
+            if path.is_file() and path.stat().st_size > 1_000_000:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _sync_plugin_model_config(root: Path, model_name: str) -> None:
+    """Update an already-migrated plugin config. Leave preset selection alone."""
+    path = root / "model-config" / "config.json"
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    changed = False
+    slots = (
+        ("chat_model", "ctx_history", 0.7),
+        ("utility_model", "ctx_input", 0.7),
+    )
+    for section, ratio_key, ratio in slots:
+        slot = data.get(section)
+        if not isinstance(slot, dict):
+            continue
+        slot["provider"] = LOCAL_PROVIDER
+        slot["name"] = model_name
+        slot["api_base"] = LLAMA_BASE
+        slot["ctx_length"] = 32768
+        slot[ratio_key] = ratio
+        if section == "chat_model":
+            slot["vision"] = False
+        kwargs = slot.get("kwargs")
+        if not isinstance(kwargs, dict):
+            kwargs = {}
+        kwargs.update(_model_kwargs())
+        slot["kwargs"] = kwargs
+        data[section] = slot
+        changed = True
+    if changed:
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+
+def agent_proxy_headers(incoming: dict, *, websocket: bool = False) -> dict[str, str]:
+    """Headers for the loopback Agent Zero proxy.
+
+    The browser Origin is the stick's :5443 address. Agent Zero's websocket
+    check compares that origin to Host, and this proxy used to replace Host
+    with 127.0.0.1:5099. Forward the browser host so a failed model call is
+    delivered to the chat instead of leaving the spinner up.
+    """
+    skip = {"host", "content-length", "transfer-encoding"}
+    if not websocket:
+        skip.add("connection")
+    headers: dict[str, str] = {}
+    browser_host = ""
+    for key, value in incoming.items():
+        if key.lower() == "host":
+            browser_host = str(value)
+        if key.lower() in skip:
+            continue
+        headers[str(key)] = str(value)
+    headers["Host"] = "127.0.0.1:5099"
+    if browser_host and not any(key.lower() == "x-forwarded-host" for key in headers):
+        headers["X-Forwarded-Host"] = browser_host
+    if not any(key.lower() == "x-forwarded-proto" for key in headers):
+        headers["X-Forwarded-Proto"] = "https"
+    return headers
 
 
 _ENV_KEYS = (
@@ -842,38 +1017,52 @@ def ensure_env_file(path: Path, origins: str | None = None) -> None:
         pass
 
 
+def _write_settings(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def prepare_portable(model_name: str | None = None) -> None:
     """Write portable config only on the mounted settings partition.
 
     Kokoro TTS and Whisper STT stay at the Agent Zero image defaults.
     StickLLM's own whisper.cpp and KittenTTS are not pointed at from here.
+    The active chat and utility models are merged into settings.json. Other
+    keys the user already saved stay as they are.
     """
     if not settings_mounted():
         raise SystemExit("settings partition is not mounted")
     root = PORTABLE
     for sub in ("prompts", "instruments", "skills", "model-config"):
         (root / sub).mkdir(parents=True, exist_ok=True)
+    model = (model_name or "").strip() or llama_model_id()
     settings = root / "settings.json"
+    base = {
+        "update_check_enabled": False,
+        "rfc_auto_docker": False,
+        "a2a_server_enabled": False,
+        "mcp_server_enabled": False,
+        "workdir_path": "/a0/usr/workdir",
+    }
     if not settings.is_file() or settings.stat().st_size == 0:
-        settings.write_text(
-            json.dumps(
-                {
-                    "update_check_enabled": False,
-                    "rfc_auto_docker": False,
-                    "a2a_server_enabled": False,
-                    "mcp_server_enabled": False,
-                    "workdir_path": "/a0/usr/workdir",
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        os.chmod(settings, 0o600)
+        _write_settings(settings, merge_model_settings(base, model))
+    else:
+        try:
+            current = json.loads(settings.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            current = None
+        if isinstance(current, dict):
+            merged = merge_model_settings(current, model)
+            if merged != current:
+                _write_settings(settings, merged)
     ensure_env_file(root / ".env")
     preset = root / "model-config" / "presets.yaml"
-    preset.write_text(preset_text(model_name or _model_name()), encoding="utf-8")
+    preset.write_text(preset_text(model), encoding="utf-8")
     os.chmod(preset, 0o600)
+    _sync_plugin_model_config(root, model)
 
 
 def prepare_vault_dirs() -> None:
@@ -929,6 +1118,8 @@ def main(argv: list[str]) -> int:
     if cmd == "prepare-portable":
         prepare_portable()
         return 0
+    if cmd == "embedding-cached":
+        return 0 if embedding_cached() else 1
     if cmd == "write-status":
         state = "unknown"
         extra: dict[str, object] = {}

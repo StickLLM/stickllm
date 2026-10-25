@@ -1717,11 +1717,7 @@ class Handler(SimpleHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
         target = upstream + (("?" + query) if query else "")
-        headers = {"Host": "127.0.0.1:5099"}
-        for key, value in self.headers.items():
-            if key.lower() in ("host", "content-length", "connection", "transfer-encoding"):
-                continue
-            headers[key] = value
+        headers = agent_lib().agent_proxy_headers(dict(self.headers))
         conn = http.client.HTTPConnection("127.0.0.1", 5099, timeout=300)
         try:
             conn.request(method, target, body=body, headers=headers)
@@ -1751,10 +1747,8 @@ class Handler(SimpleHTTPRequestHandler):
         except OSError:
             self._json(502, {"ok": False, "error": "Agent is not running"})
             return
-        lines = [f"GET {target} HTTP/1.1", "Host: 127.0.0.1:5099"]
-        for key, value in self.headers.items():
-            if key.lower() in ("host", "content-length"):
-                continue
+        lines = [f"GET {target} HTTP/1.1"]
+        for key, value in agent_lib().agent_proxy_headers(dict(self.headers), websocket=True).items():
             lines.append(f"{key}: {value}")
         try:
             sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1", errors="replace"))

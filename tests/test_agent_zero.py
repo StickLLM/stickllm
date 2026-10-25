@@ -167,6 +167,11 @@ def test_agent_page_is_not_rewritten_under_agent():
     assert "172.30.0.1:8080/v1" in preset
     assert "device: cpu" in preset
     assert "llama_cpp" in preset
+    assert "timeout: 90" in preset
+    assert "api_key: dummy" in preset
+    script = _script()
+    assert "HF_HUB_OFFLINE" in script
+    assert "embedding-cached" in script
     rules = agent.nft_ruleset()
     assert rules.index("172.30.0.0/24") < rules.index("192.168.0.0/16")
     assert rules.index("172.30.0.0/24") < rules.index("10.0.0.0/8")
@@ -174,6 +179,7 @@ def test_agent_page_is_not_rewritten_under_agent():
     assert "drop" in rules
     assert 'iifname "lo" accept' in rules
     gateway = GATEWAY.read_text(encoding="utf-8")
+    assert "agent_proxy_headers" in gateway
     assert "rewrite_text" not in gateway
     assert "rewrite_bytes" not in gateway
     assert 'path == "/agent"' not in gateway
@@ -674,3 +680,59 @@ def test_loopback_agent_url_stays_on_the_stick(tmp_path):
     assert "-p 127.0.0.1:5099:5099" in run_text
     assert "-p 0.0.0.0:5099" not in run_text
     assert "-p 5099:5099" not in run_text
+
+
+def test_model_settings_merge_keeps_user_fields_and_uses_the_relay(tmp_path):
+    agent = _load(AGENT, "stickllm_agent_model_merge")
+    model_id = "/models/Qwen3.6-35B-A3B-Q8_0.gguf"
+    assert agent.model_id_from_list(
+        {"data": [{"id": model_id}, {"id": "other"}]},
+        "fallback.gguf",
+    ) == model_id
+    assert agent.model_id_from_list({}, "fallback.gguf") == "fallback.gguf"
+    existing = {
+        "auth_login": "kept",
+        "secrets": {"token": "leave-me"},
+        "chat_model_provider": "openrouter",
+        "chat_model_name": "openai/gpt-5.6-terra",
+        "workdir_path": "/a0/usr/workdir",
+    }
+    merged = agent.merge_model_settings(existing, model_id)
+    assert merged["auth_login"] == "kept"
+    assert merged["secrets"] == {"token": "leave-me"}
+    assert merged["workdir_path"] == "/a0/usr/workdir"
+    assert merged["chat_model_provider"] == "llama_cpp"
+    assert merged["util_model_provider"] == "llama_cpp"
+    assert merged["chat_model_name"] == model_id
+    assert merged["util_model_name"] == model_id
+    assert merged["chat_model_api_base"] == agent.LLAMA_BASE
+    assert merged["util_model_api_base"] == agent.LLAMA_BASE
+    assert merged["chat_model_ctx_length"] == 32768
+    assert merged["chat_model_kwargs"]["api_key"] == "dummy"
+    assert merged["chat_model_kwargs"]["timeout"] == 90
+    headers = agent.agent_proxy_headers(
+        {
+            "Host": "192.168.72.70:5443",
+            "Origin": "https://192.168.72.70:5443",
+            "Content-Length": "4",
+            "Connection": "keep-alive",
+        }
+    )
+    assert headers["Host"] == "127.0.0.1:5099"
+    assert headers["X-Forwarded-Host"] == "192.168.72.70:5443"
+    assert headers["X-Forwarded-Proto"] == "https"
+    assert headers["Origin"] == "https://192.168.72.70:5443"
+    assert "Content-Length" not in headers
+    assert "Connection" not in headers
+    socket_headers = agent.agent_proxy_headers(
+        {"Host": "192.168.72.70:5443", "Connection": "Upgrade", "Upgrade": "websocket"},
+        websocket=True,
+    )
+    assert socket_headers["Connection"] == "Upgrade"
+    assert socket_headers["X-Forwarded-Host"] == "192.168.72.70:5443"
+    cache = tmp_path / "sentence-transformers" / "snapshots"
+    cache.mkdir(parents=True)
+    weights = cache / "model.safetensors"
+    weights.write_bytes(b"x" * 1_000_001)
+    assert agent.embedding_cached(tmp_path / "sentence-transformers")
+    assert not agent.embedding_cached(tmp_path / "missing")

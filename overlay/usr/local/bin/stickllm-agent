@@ -158,6 +158,29 @@ PY
   return 1
 }
 
+cache_embedding() {
+  # MiniLM is the Agent Zero memory embedder. Cache it before the container
+  # is marked offline, so the first question cannot block on Hugging Face.
+  if "$PYBIN" "$LIB" embedding-cached; then
+    return 0
+  fi
+  if ! image_present; then
+    return 1
+  fi
+  local ref
+  ref="$("$PYBIN" "$LIB" image-ref)"
+  mkdir -p "${ADDON}/state/.cache"
+  docker_cli run --rm \
+    --network "$NETWORK" \
+    -e HF_HUB_OFFLINE=0 \
+    -e HF_HUB_DISABLE_TELEMETRY=1 \
+    -e HF_HOME=/a0/usr/.cache/huggingface \
+    -e SENTENCE_TRANSFORMERS_HOME=/a0/usr/.cache/sentence-transformers \
+    -v "${ADDON}/state:/a0/usr" \
+    --entrypoint /opt/venv-a0/bin/python3 \
+    "$ref" -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")'
+}
+
 ensure_nft() {
   local err
   err="$("$PYBIN" "$LIB" nft-apply 2>&1)" || {
@@ -238,6 +261,11 @@ cmd_run_container() {
   fi
   "$PYBIN" "$LIB" prepare-portable
   ensure_network
+  STICKLLM_HF_OFFLINE=0
+  if "$PYBIN" "$LIB" embedding-cached || cache_embedding; then
+    STICKLLM_HF_OFFLINE=1
+  fi
+  export STICKLLM_HF_OFFLINE
   ensure_nft
   ensure_relay
   local ref origins
@@ -268,6 +296,10 @@ cmd_run_container() {
     -e "ALLOWED_ORIGINS=${origins}" \
     -e HF_HOME=/a0/usr/.cache/huggingface \
     -e SENTENCE_TRANSFORMERS_HOME=/a0/usr/.cache/sentence-transformers \
+    -e HF_HUB_DISABLE_TELEMETRY=1 \
+    -e HF_HUB_OFFLINE="${STICKLLM_HF_OFFLINE:-0}" \
+    -e TRANSFORMERS_OFFLINE="${STICKLLM_HF_OFFLINE:-0}" \
+    -e HF_DATASETS_OFFLINE="${STICKLLM_HF_OFFLINE:-0}" \
     -e A0_SET_update_check_enabled=false \
     -e A0_SET_rfc_auto_docker=false \
     -e A0_SET_a2a_server_enabled=false \
