@@ -40,6 +40,15 @@ svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke
 .conv{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:0;padding:8px 10px;border-radius:8px;color:var(--ink2);cursor:pointer;font-size:14px}
 .conv span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conv:hover{background:var(--panel)}.conv.on{background:var(--panel2);color:var(--ink)}
+.convRow{display:flex;align-items:center;gap:0;border-radius:8px}
+.convRow:hover{background:var(--panel)}
+.convRow.on{background:var(--panel2)}
+.convRow .conv{flex:1;width:auto;min-width:0}
+.convRow .conv:hover,.convRow.on .conv{background:transparent}
+.convRow.on .conv{color:var(--ink)}
+.convDel{display:inline-grid;place-items:center;width:30px;height:30px;margin-right:4px;flex:none;border:0;border-radius:8px;background:none;color:var(--muted);cursor:pointer;padding:0}
+.convDel svg{width:15px;height:15px}
+.convDel:hover{color:var(--danger);background:color-mix(in srgb,var(--danger) 14%,transparent)}
 .conv .tag{flex:none;font-size:10.5px;padding:1px 6px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
 .convEmpty{font-size:13px;color:var(--muted);padding:10px}
 .sideFoot{border-top:1px solid var(--line2);padding-top:8px;display:flex;flex-direction:column;gap:2px}
@@ -132,10 +141,11 @@ button.pill.visionOff:hover{color:var(--ink);border-color:var(--muted)}
 .toggleChip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);background:none;border-radius:99px;padding:4px 10px;font-size:12.5px;color:var(--muted);cursor:pointer}
 .toggleChip svg{width:15px;height:15px}
 .toggleChip[aria-pressed=true]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);background:var(--accent-soft)}
-.sendBtn{width:36px;height:36px;border-radius:10px;border:0;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;cursor:pointer;margin-left:4px}
+.sendBtn{position:relative;z-index:77;pointer-events:auto;width:36px;height:36px;border-radius:10px;border:0;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;cursor:pointer;margin-left:4px}
 .sendBtn.stop{background:var(--danger, #c44);color:#fff}
-.sendBtn:disabled{opacity:.4}
-.composerNote{max-width:760px;margin:6px auto 0;text-align:center;font-size:12px;color:var(--muted)}
+.sendBtn:disabled{opacity:.4;pointer-events:auto;cursor:pointer}
+.composerNote{max-width:760px;margin:6px auto 0;height:1.4em;line-height:1.4;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;text-align:center;font-size:12px;color:var(--muted)}
+.composerNote.is-error{color:var(--danger)}
 /* Fixed above Settings (z40) / picker (z60); below toast (z80) so Activate stays visible */
 .loadStatus{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);width:min(720px,calc(100vw - 32px));z-index:70;margin:0;padding:10px 14px;display:flex;align-items:center;gap:12px;border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--panel) 92%,var(--warn));box-shadow:0 10px 32px rgba(0,0,0,.45);font-size:13px;color:var(--ink2);pointer-events:none}
 .loadStatus.failed{pointer-events:auto;border-color:color-mix(in srgb,var(--danger, #c44) 55%,var(--line))}
@@ -507,6 +517,20 @@ select:focus{border-color:var(--accent);outline:none}
 .hfRow label b{font-size:13px;font-weight:600}
 .hfRow input{flex:1;min-width:160px;padding:6px 9px!important;font-size:12.5px}
 .iconBtn.sm{width:30px;height:30px}.iconBtn.sm svg{width:16px;height:16px}
+#micBtn{position:relative;z-index:76;pointer-events:auto;touch-action:manipulation}
+#micBtn:disabled,#micBtn.busy:disabled{opacity:1;cursor:pointer;pointer-events:auto}
+#micBtn.recording,
+#micBtn.recording:hover,
+#micBtn.recording:focus,
+#micBtn.recording:focus-visible,
+#micBtn.recording:active,
+#micBtn.recording:hover:not(:disabled),
+#micBtn.recording:focus:not(:disabled),
+#micBtn.recording:active:not(:disabled){color:var(--danger);background:color-mix(in srgb,var(--danger) 16%,transparent)}
+.iconBtn.busy{color:var(--accent)}
+.iconBtn.muted{color:var(--danger)}
+.iconBtn.on{color:var(--accent);background:var(--accent-soft)}
+.msgTools{margin-top:6px}
 .hfState{font-size:12.5px;color:var(--muted)}.hfState.ok{color:var(--ok)}.hfState.pending{color:var(--warn)}
 .hfToken small{font-size:12px}
 #ablTitle{display:flex;align-items:center;gap:10px}

@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
-<link rel="stylesheet" href="style.css?v=queueui1" />
+<link rel="stylesheet" href="style.css?v=voice3" />
 </head>
 <body>
 <div class="app" id="app">
@@ -83,7 +83,11 @@
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>Web
           </button>
           <span class="grow"></span>
-          <button type="button" class="iconBtn" id="micBtn" disabled title="Voice input — coming later" aria-label="Mic (coming later)">
+          <button type="button" class="toggleChip" id="voiceModeBtn" aria-pressed="false" title="Voice off">Voice</button>
+          <button type="button" class="iconBtn" id="stopSpeechBtn" hidden title="Stop speaking" aria-label="Stop speaking">
+            <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9l5 6M21 9l-5 6"/></svg>
+          </button>
+          <button type="button" class="iconBtn" id="micBtn" hidden title="Voice input" aria-label="Voice input" aria-pressed="false">
             <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
           </button>
           <button type="button" class="sendBtn stop" id="stopBtn" hidden aria-label="Stop">
@@ -195,7 +199,7 @@
           <button class="iconBtn sm" id="hfShow" type="button" aria-label="Show token" title="Show/hide"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
           <button class="btn sm" id="hfTest" type="button">Test</button>
           <span class="hfState" id="hfState"></span></div>
-        <small class="muted" id="hfHint">Optional, for gated models. Use a <b>read-only</b> token. <span id="hfWhere">Unlock the vault to keep this token across a reboot.</span></small>
+        <small class="muted" id="hfHint">Optional, for gated models. Use a <b>read-only</b> token. <span id="hfWhere">Unlock the vault to keep this token on the encrypted USB settings partition.</span></small>
       </div>
       <div class="mbTools">
         <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mfSearch" placeholder="Search Hugging Face (GGUF)" aria-label="Search Hugging Face GGUF models"></div>
@@ -377,7 +381,7 @@
     <div class="group">
       <div class="row"><span>Version</span><span class="mono" id="aboutVer">hotfix</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono">b4521</span></div>
-      <div class="row"><span>UI</span><span class="mono">v0.4.0</span></div>
+      <div class="row"><span>UI</span><span class="mono">v0.4.2</span></div>
       <div class="row"><span>License</span><span>MIT</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" rel="noopener noreferrer">stickllm.org</a></div>
     </div>
@@ -464,6 +468,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=pdfscan1"></script>
+<script src="app.js?v=voice6"></script>
 </body>
 </html>

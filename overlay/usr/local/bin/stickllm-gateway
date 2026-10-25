@@ -14,6 +14,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import threading
 import time
@@ -28,6 +29,8 @@ LLAMA = os.environ.get("STICKLLM_API", "http://127.0.0.1:8080").rstrip("/")
 CONTROL = os.environ.get("STICKLLM_CONTROL", "http://127.0.0.1:8091").rstrip("/")
 HOST = os.environ.get("STICKLLM_BIND", "0.0.0.0")
 PORT = int(os.environ.get("STICKLLM_PORT", "80"))
+# Mic pages need a secure origin. HTTP :80 stays the pair/chat listener.
+TLS_PORT = int(os.environ.get("STICKLLM_TLS_PORT", "443"))
 UA = "StickLLM/0.3 (+local privacy USB; StickLLM UI only)"
 RUN_DIR = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 AUTH_PATH = RUN_DIR / "auth.json"
@@ -47,6 +50,7 @@ CSP = (
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob:; "
+    "media-src 'self' blob:; "
     "connect-src 'self'; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
@@ -55,32 +59,69 @@ CSP = (
 
 
 class _LlamaCancel:
-    """Close the in-flight llama HTTP connection so generation stops."""
+    """Close the in-flight llama HTTP connection so one question can replace another.
+
+    Each chat snapshots the stop counter when it starts. Stop bumps that counter
+    and closes the llama socket. A chat that started earlier does not call llama.
+    The next question starts only after the cancelled one has left.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._conn: http.client.HTTPConnection | None = None
-        self._cancel = False
+        self._epoch = 0
+        self._stop_id = 0
+        self._born: dict[int, int] = {}
+        self._llama_epoch = 0
+        self._inflight = 0
+        self._idle = threading.Event()
+        self._idle.set()
 
-    def prepare(self) -> None:
+    def enter(self) -> int:
         with self._lock:
-            self._cancel = False
+            self._epoch += 1
+            epoch = self._epoch
+            self._born[epoch] = self._stop_id
+            self._inflight += 1
+            self._idle.clear()
+            if len(self._born) > 8:
+                for old in [k for k in self._born if k < epoch - 4]:
+                    self._born.pop(old, None)
+            return epoch
+
+    def leave(self) -> None:
+        with self._lock:
+            self._inflight = max(0, self._inflight - 1)
+            if self._inflight == 0:
+                self._conn = None
+                self._idle.set()
+
+    def superseded(self, epoch: int) -> bool:
+        with self._lock:
+            born = self._born.get(epoch)
+            return born is None or born != self._stop_id
+
+    def arm(self, epoch: int) -> None:
+        with self._lock:
+            self._llama_epoch = epoch
             self._conn = None
 
     def is_cancelled(self) -> bool:
         with self._lock:
-            return self._cancel
+            born = self._born.get(self._llama_epoch)
+            return born is not None and born != self._stop_id
 
     def bind(self, conn: http.client.HTTPConnection) -> None:
         with self._lock:
             self._conn = conn
-            kill = self._cancel
+            born = self._born.get(self._llama_epoch)
+            kill = born is not None and born != self._stop_id
         if kill:
             _close_http_conn(conn)
 
     def cancel(self) -> bool:
         with self._lock:
-            self._cancel = True
+            self._stop_id += 1
             conn = self._conn
         if conn is None:
             return False
@@ -88,11 +129,10 @@ class _LlamaCancel:
         return True
 
     def take_cancelled(self) -> bool:
-        with self._lock:
-            cancelled = self._cancel
-            self._cancel = False
-            self._conn = None
-            return cancelled
+        return self.is_cancelled()
+
+    def wait_idle(self, timeout: float = 8.0) -> bool:
+        return self._idle.wait(timeout)
 
 
 def _close_http_conn(conn: http.client.HTTPConnection) -> None:
@@ -160,6 +200,33 @@ def http_json_llama(url: str, payload: dict, timeout: int = 300) -> dict:
         pass
 
 
+def log_stt_stats(result: dict) -> None:
+    """Journal the clip size only. Never the transcript and never the audio."""
+    if not isinstance(result, dict):
+        return
+    if "webm_bytes" not in result and "pcm_bytes" not in result:
+        return
+    try:
+        webm_bytes = int(result.get("webm_bytes") or 0)
+        pcm_bytes = int(result.get("pcm_bytes") or 0)
+        rate = int(result.get("rate") or 0)
+        duration_s = float(result.get("duration_s") or 0)
+        rms = float(result.get("rms") or 0)
+    except (TypeError, ValueError):
+        return
+    msg = (
+        "stickllm-speech stt webm_bytes=%d pcm_bytes=%d rate=%d duration_s=%.3f rms=%.5f"
+        % (webm_bytes, pcm_bytes, rate, duration_s, rms)
+    )
+    try:
+        import syslog
+        syslog.syslog(syslog.LOG_INFO, msg)
+    except Exception:
+        pass
+    for key in ("webm_bytes", "pcm_bytes", "rate", "duration_s", "rms"):
+        result.pop(key, None)
+
+
 def http_text(url: str, timeout: int = 12) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -214,23 +281,32 @@ def _parse_env_kv(text: str) -> dict[str, str]:
     return out
 
 
-def resolve_model() -> tuple[str, str]:
-    """Return (display_name, model_path) from Activate model.env or live llama breadcrumb."""
+def resolve_model() -> tuple[str, str, str, str]:
+    """Return (display_name, requested_path, model_id, running_path).
+
+    requested_path / model_id come only from Activate's model.env.
+    running_path is the file the live llama process was started with.
+    A missing display name becomes that file's basename — never the baked 3B.
+    """
     model_name = ""
     model_path = ""
+    model_id = ""
     envf = RUN_DIR / "model.env"
     if envf.is_file():
         kv = _parse_env_kv(read_text_safe(envf))
         model_name = kv.get("STICKLLM_MODEL_NAME") or ""
         model_path = kv.get("STICKLLM_MODEL") or ""
+        model_id = kv.get("STICKLLM_MODEL_ID") or ""
+    running = ""
+    rt = RUN_DIR / "llama-runtime.env"
+    if rt.is_file():
+        rtkv = _parse_env_kv(read_text_safe(rt))
+        running = rtkv.get("model") or rtkv.get("STICKLLM_MODEL") or ""
     if not model_path:
-        rt = RUN_DIR / "llama-runtime.env"
-        if rt.is_file():
-            kv = _parse_env_kv(read_text_safe(rt))
-            model_path = kv.get("model") or kv.get("STICKLLM_MODEL") or ""
+        model_path = running
     if not model_name and model_path:
         model_name = Path(model_path).name
-    return model_name, model_path
+    return model_name, model_path, model_id, running
 
 
 def llama_load_info() -> dict:
@@ -261,6 +337,7 @@ def llama_load_info() -> dict:
         ngl = int(plan.get("STICKLLM_PLAN_NGL") or 0)
     except ValueError:
         ngl = 0
+    fit_doc = read_json_safe(RUN_DIR / "llama-fit.json") or {}
     return {
         "caption": plan.get("STICKLLM_PLAN_CAPTION") or "",
         "fit": plan.get("STICKLLM_PLAN_FIT") or "",
@@ -269,7 +346,44 @@ def llama_load_info() -> dict:
         "devices": plan.get("STICKLLM_PLAN_DEVICES") or "",
         "error": fail,
         "fail_count": n_fail,
+        "model": str(fit_doc.get("model") or ""),
     }
+
+
+def llama_unit_state() -> dict:
+    """Whether stickllm-llama is actually starting or running. No secrets."""
+    snap = {"active_state": "", "sub_state": "", "process_alive": False}
+    try:
+        proc = subprocess.run(
+            [
+                "systemctl",
+                "show",
+                "stickllm-llama.service",
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        vals: dict[str, str] = {}
+        for line in (proc.stdout or "").splitlines():
+            if "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            vals[key.strip()] = val.strip()
+        snap["active_state"] = vals.get("ActiveState") or ""
+        snap["sub_state"] = vals.get("SubState") or ""
+    except (OSError, subprocess.SubprocessError):
+        pass
+    snap["process_alive"] = (
+        snap["active_state"] == "active" and snap["sub_state"] == "running"
+    )
+    return snap
 
 
 def detect_backend() -> str:
@@ -361,9 +475,10 @@ def active_ctx_size() -> int | None:
 def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
     """IP / model / URL (+ pair code / SSH password on loopback only)."""
     ip = discover_lan_ip()
-    model_name, model_path = resolve_model()
+    model_name, model_path, model_id, running_model = resolve_model()
     if not model_name:
-        # No Activate yet — do not imply a boot-time load is in progress.
+        # No Activate yet — do not imply a boot-time load is in progress,
+        # and do not substitute the baked 3B for a missing name.
         model_name = "ready" if llama_ok else "none"
     elif model_name.lower().startswith("loading") and llama_ok:
         model_name = Path(model_path).name if model_path else "ready"
@@ -379,7 +494,9 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
     out: dict = {
         "ip": ip or "",
         "model": display,
+        "model_id": model_id,
         "model_path": model_path,
+        "running_model": running_model,
         "ctx_size": active_ctx_size(),
         "vision": bool(active_mmproj()),
         "url": url,
@@ -641,6 +758,7 @@ def delete_vault_chat(chat_id: str) -> dict:
 
 
 _CONVERT_MOD = None
+_SPEECH_MOD = None
 
 
 def convert_mod():
@@ -743,6 +861,36 @@ def run_attachment_convert(data: bytes, name: str, vision: bool) -> dict:
     if not isinstance(result, dict):
         return {"ok": False, "error": "The converter returned nothing readable."}
     return result
+
+
+def speech_mod():
+    """Sibling speech runner. whisper.cpp and KittenTTS run in a child, not in this process."""
+    global _SPEECH_MOD
+    if _SPEECH_MOD is not None:
+        return _SPEECH_MOD
+    path = Path(__file__).resolve().with_name("stickllm-speech")
+    loader = importlib.machinery.SourceFileLoader("stickllm_speech", str(path))
+    spec = importlib.util.spec_from_loader("stickllm_speech", loader)
+    if spec is None:
+        raise RuntimeError("stickllm-speech is not installed")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _SPEECH_MOD = mod
+    return mod
+
+
+def run_speech(command: str, payload: bytes) -> dict:
+    """One shot: no network namespace, unprivileged when we are root, hard timeout.
+
+    payload is audio or a short JSON request. It is not logged. The child
+    stdout is parsed and not logged (it may be a transcript or wav).
+    """
+    try:
+        mod = speech_mod()
+    except Exception:
+        return {"ok": False, "error": "Speech support is not installed."}
+    script = str(Path(__file__).resolve().with_name("stickllm-speech"))
+    return mod.run_sandboxed(script, command, payload)
 
 
 def llama_token_count(text: str) -> int:
@@ -1173,6 +1321,29 @@ class Handler(SimpleHTTPRequestHandler):
         ok = token_ok(self.headers.get("Authorization"), doc)
         return doc, ok
 
+    def _speech_block(self) -> bool:
+        """Loopback or StickLLM UI, plus the pair token when require_pair is set."""
+        try:
+            mod = speech_mod()
+        except Exception:
+            self._json(500, {"ok": False, "error": "Speech support is not installed."})
+            return True
+        doc, ok = self._auth()
+        denied = mod.speech_denied(
+            self._is_loopback(),
+            stickllm_ui_client(self.headers),
+            bool(doc.get("require_pair")),
+            ok,
+        )
+        if not denied:
+            return False
+        code, message = denied
+        if code == 401:
+            self._json(401, {"ok": False, "error": "pair_required", "message": message})
+        else:
+            self._json(code, {"ok": False, "error": "external_api_removed", "message": message})
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
         if path in ("/health", "/api/health"):
@@ -1215,6 +1386,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "session_mode": session_mode,
                 "connect": connect_info(self._may_show_secrets(), llama_ok=llama_ok),
                 "llama_load": llama_load_info(),
+                "llama_service": llama_unit_state(),
             }
             if path == "/api/health":
                 self._json(200, data)
@@ -1290,6 +1462,15 @@ class Handler(SimpleHTTPRequestHandler):
             probe = read_json_safe(RUN_DIR / "model-probe.json") or {}
             self._json(200, {"version": "0.3", "storage": storage, "probe": probe})
             return
+        if path == "/api/speech/power":
+            if self._speech_block():
+                return
+            try:
+                on = bool(speech_mod().voice_power_on())
+            except Exception:
+                on = False
+            self._json(200, {"ok": True, "on": on})
+            return
         if path == "/api/web/search":
             doc, ok = self._auth()
             if doc.get("require_pair") and not ok:
@@ -1308,6 +1489,14 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/attachments/convert" and n > 70 * 1024 * 1024:
             self.close_connection = True
             self._json(413, {"ok": False, "error": "That file is over the 50 MB limit."})
+            return
+        if path == "/api/speech/transcribe" and n > 4 * 1024 * 1024:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "That recording is too long."})
+            return
+        if path == "/api/speech/speak" and n > 64 * 1024:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "That reply is too long to read aloud."})
             return
         raw = self.rfile.read(n) if n else b"{}"
         try:
@@ -1534,6 +1723,49 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(code, result)
             return
 
+        if path == "/api/speech/power":
+            if self._speech_block():
+                return
+            try:
+                result = speech_mod().set_voice_power(bool(req.get("on")))
+            except Exception:
+                result = {"ok": False, "on": False, "error": "Voice is not ready."}
+            code = 200 if result.get("ok") else 500
+            self._json(code, {
+                "ok": bool(result.get("ok")),
+                "on": bool(result.get("on")),
+                "error": result.get("error") or "",
+            })
+            return
+
+        if path == "/api/speech/transcribe":
+            if self._speech_block():
+                return
+            try:
+                audio = base64.b64decode(req.get("audio_base64") or "", validate=False)
+            except Exception:
+                self._json(400, {"ok": False, "error": "The recording could not be read."})
+                return
+            result = run_speech("stt", audio)
+            log_stt_stats(result)
+            if result.get("ok"):
+                self._json(200, {"ok": True, "text": str(result.get("text") or "")})
+            else:
+                self._json(400, {"ok": False, "error": result.get("error") or "Speech recognition failed."})
+            return
+
+        if path == "/api/speech/speak":
+            if self._speech_block():
+                return
+            voice = str(req.get("voice") or "Bella")
+            body = json.dumps({"text": str(req.get("text") or ""), "voice": voice}).encode("utf-8")
+            result = run_speech("tts", body)
+            if result.get("ok") and result.get("audio_base64"):
+                self._json(200, {"ok": True, "audio_base64": result["audio_base64"], "mime": "audio/wav"})
+            else:
+                self._json(400, {"ok": False, "error": result.get("error") or "Text to speech failed."})
+            return
+
         if path == "/api/chat/stop":
             if not (self._is_loopback() or stickllm_ui_client(self.headers)):
                 self._json(410, {"error": "external_api_removed", "message": "Use the StickLLM web UI only."})
@@ -1543,7 +1775,10 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(401, {"error": "pair_required", "message": "Pair this browser using the code on the stick screen."})
                 return
             stopped = LLAMA_CANCEL.cancel()
-            self._json(200, {"ok": True, "stopped": stopped})
+            # The cancelled chat closes its llama socket and leaves. Do not
+            # start another generation until that handler is gone.
+            idle = LLAMA_CANCEL.wait_idle(8)
+            self._json(200, {"ok": True, "stopped": bool(stopped or idle)})
             return
 
         if path != "/api/chat":
@@ -1571,7 +1806,166 @@ class Handler(SimpleHTTPRequestHandler):
             )
             return
 
-        messages = sanitize_chat_messages(req.get("messages") or [])
+        chat_epoch = LLAMA_CANCEL.enter()
+        try:
+            self._finish_chat(req, messages_in=req.get("messages") or [], chat_epoch=chat_epoch)
+        finally:
+            LLAMA_CANCEL.leave()
+        return
+
+    def _relay_chat_stream(self, upstream: dict, hits: list, attach_meta: dict, chat_epoch: int) -> None:
+        """Stream llama tokens to the browser. Speech is the client's job."""
+        opener = urllib.request.build_opener(_TrackHTTPHandler)
+        req = urllib.request.Request(
+            LLAMA + "/v1/chat/completions",
+            data=json.dumps(upstream).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": UA},
+            method="POST",
+        )
+        try:
+            resp = opener.open(req, timeout=300)
+        except urllib.error.HTTPError as e:
+            if LLAMA_CANCEL.take_cancelled() or LLAMA_CANCEL.superseded(chat_epoch):
+                self._json(200, {"stopped": True, "choices": []})
+                return
+            body = e.read()[:2000]
+            try:
+                err = json.loads(body.decode())
+                if isinstance(err, dict):
+                    err["error"] = friendly_llama_error(Exception(str(err.get("error") or e)))
+                    self._json(e.code, err)
+                    return
+            except Exception:
+                pass
+            self._json(e.code, {"error": friendly_llama_error(e)})
+            return
+        except Exception as e:
+            if LLAMA_CANCEL.take_cancelled() or LLAMA_CANCEL.superseded(chat_epoch):
+                self._json(200, {"stopped": True, "choices": []})
+                return
+            self._json(502, {"error": friendly_llama_error(e)})
+            return
+
+        content_parts: list[str] = []
+        reason_parts: list[str] = []
+        usage = None
+        headers_sent = False
+        chunks_closed = False
+
+        def send_raw(payload: bytes) -> None:
+            self.wfile.write(payload)
+            self.wfile.flush()
+
+        def send_chunk(payload: bytes) -> None:
+            # One HTTP chunk per SSE event. Flush past the socket buffer so a
+            # browser paint is not held until the reply ends. No gzip.
+            send_raw(b"%X\r\n" % len(payload) + payload + b"\r\n")
+
+        def send_obj(obj: dict) -> None:
+            send_chunk(b"data: " + json.dumps(obj, ensure_ascii=True).encode("ascii") + b"\n\n")
+
+        def end_chunks() -> None:
+            nonlocal chunks_closed
+            if not headers_sent or chunks_closed:
+                return
+            chunks_closed = True
+            try:
+                send_raw(b"0\r\n\r\n")
+            except Exception:
+                pass
+
+        try:
+            try:
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Content-Encoding", "identity")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.flush()
+            headers_sent = True
+            meta: dict = {"stickllm_web": {"used": bool(hits), "results": hits or []}}
+            if attach_meta.get("used"):
+                meta["stickllm_attachments"] = {
+                    "truncated": bool(attach_meta.get("truncated")),
+                    "budget_tokens": attach_meta.get("budget_tokens"),
+                    "included_tokens": attach_meta.get("included_tokens"),
+                    "note": attach_meta.get("note") or "",
+                }
+            send_obj(meta)
+            while True:
+                if LLAMA_CANCEL.superseded(chat_epoch):
+                    send_obj({
+                        "done": True,
+                        "stopped": True,
+                        "content": "".join(content_parts),
+                        "reasoning": "".join(reason_parts),
+                    })
+                    return
+                line = resp.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", "replace").strip()
+                if not text.startswith("data:"):
+                    continue
+                payload = text[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    ev = json.loads(payload)
+                except Exception:
+                    continue
+                if isinstance(ev.get("usage"), dict):
+                    usage = ev["usage"]
+                choices = ev.get("choices") or []
+                delta = choices[0].get("delta") if choices and isinstance(choices[0], dict) else None
+                if not isinstance(delta, dict):
+                    delta = {}
+                piece = delta.get("content")
+                think = delta.get("reasoning_content")
+                if think is None:
+                    think = delta.get("reasoning")
+                if piece:
+                    content_parts.append(str(piece))
+                    send_obj({"content": str(piece)})
+                if think:
+                    reason_parts.append(str(think))
+                    send_obj({"reasoning": str(think)})
+            done = {
+                "done": True,
+                "stopped": LLAMA_CANCEL.superseded(chat_epoch),
+                "content": "".join(content_parts),
+                "reasoning": "".join(reason_parts),
+            }
+            if usage:
+                done["usage"] = usage
+            send_obj(done)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        except Exception:
+            try:
+                if headers_sent:
+                    send_obj({
+                        "done": True,
+                        "error": "The model did not answer.",
+                        "content": "".join(content_parts),
+                        "reasoning": "".join(reason_parts),
+                    })
+            except Exception:
+                pass
+        finally:
+            end_chunks()
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    def _finish_chat(self, req: dict, messages_in, chat_epoch: int) -> None:
+        messages = sanitize_chat_messages(messages_in)
         attach_meta = {"used": False, "truncated": False, "note": ""}
         try:
             mod = convert_mod()
@@ -1616,20 +2010,45 @@ class Handler(SimpleHTTPRequestHandler):
         if use:
             out_messages, hits = augment_with_web(messages, force=force)
 
+        try:
+            max_tokens = int(req.get("max_tokens") or 1024)
+        except (TypeError, ValueError):
+            max_tokens = 1024
+        # Room for a Qwen think block plus an answer. Not an unbounded generation.
+        if max_tokens < 1:
+            max_tokens = 1
+        if max_tokens > 4096:
+            max_tokens = 4096
+        want_stream = req.get("stream") is True
         upstream = {
             "model": req.get("model") or "stickllm",
             "messages": out_messages,
             "temperature": req.get("temperature", 0.7),
-            "stream": False,
-            "max_tokens": req.get("max_tokens", 1024),
+            "stream": want_stream,
+            "max_tokens": max_tokens,
         }
+        think = req.get("chat_template_kwargs")
+        if isinstance(think, dict) and "enable_thinking" in think:
+            upstream["chat_template_kwargs"] = {"enable_thinking": bool(think.get("enable_thinking"))}
+        if LLAMA_CANCEL.superseded(chat_epoch):
+            self._json(200, {"stopped": True, "choices": []})
+            return
         if not _CHAT_GATE.acquire(blocking=False):
             self._json(409, {"error": "busy", "message": "Still answering. Press Stop first."})
             return
-        LLAMA_CANCEL.prepare()
+        LLAMA_CANCEL.arm(chat_epoch)
         try:
             try:
+                if LLAMA_CANCEL.superseded(chat_epoch):
+                    self._json(200, {"stopped": True, "choices": []})
+                    return
+                if want_stream:
+                    self._relay_chat_stream(upstream, hits, attach_meta, chat_epoch)
+                    return
                 data = http_json_llama(LLAMA + "/v1/chat/completions", upstream, timeout=300)
+                if LLAMA_CANCEL.superseded(chat_epoch):
+                    self._json(200, {"stopped": True, "choices": []})
+                    return
                 if hits:
                     data["stickllm_web"] = {"used": True, "results": hits}
                 else:
@@ -1665,8 +2084,140 @@ class Handler(SimpleHTTPRequestHandler):
             _CHAT_GATE.release()
 
 
+class _ReuseHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+def _tls_ips() -> list[str]:
+    """IPv4 addresses to put on the self-signed cert. Loopback always included."""
+    found: list[str] = []
+    try:
+        probed = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        for line in (probed.stdout or "").splitlines():
+            parts = line.split()
+            if "inet" not in parts:
+                continue
+            addr = parts[parts.index("inet") + 1].split("/", 1)[0]
+            if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", addr) and addr not in found:
+                found.append(addr)
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        found = []
+    lan = discover_lan_ip()
+    if lan and lan not in found:
+        found.append(lan)
+    if "127.0.0.1" not in found:
+        found.insert(0, "127.0.0.1")
+    return found
+
+
+def _set_tls_enabled(on: bool) -> None:
+    """connect_info already switches the banner to https when this file exists."""
+    flag = RUN_DIR / "tls.enabled"
+    try:
+        if on:
+            RUN_DIR.mkdir(parents=True, exist_ok=True)
+            flag.write_text("1\n", encoding="utf-8")
+        elif flag.is_file():
+            flag.unlink()
+    except OSError:
+        pass
+
+
+def _ensure_tls_cert(ips: list[str]) -> tuple[Path, Path]:
+    """Self-signed server cert in /run (regenerated when addresses change)."""
+    tls_dir = RUN_DIR / "tls"
+    cert = tls_dir / "cert.pem"
+    key = tls_dir / "key.pem"
+    stamp = tls_dir / "sans.txt"
+    want = ",".join(ips)
+    if cert.is_file() and key.is_file() and read_text_safe(stamp).strip() == want:
+        return cert, key
+    if not shutil.which("openssl"):
+        raise RuntimeError("openssl is not installed")
+    tls_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(tls_dir, 0o700)
+    san = ",".join(["DNS:localhost"] + [f"IP:{ip}" for ip in ips])
+    cnf = tls_dir / "openssl.cnf"
+    cnf.write_text(
+        "[req]\n"
+        "distinguished_name=dn\n"
+        "x509_extensions=v3_req\n"
+        "prompt=no\n"
+        "[dn]\n"
+        "CN=stickllm\n"
+        "[v3_req]\n"
+        "basicConstraints=CA:FALSE\n"
+        "keyUsage=digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        f"subjectAltName={san}\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(key), "-out", str(cert), "-days", "30",
+            "-config", str(cnf), "-extensions", "v3_req",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0 or not cert.is_file() or not key.is_file():
+        for path in (cert, key):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        err = (proc.stderr or proc.stdout or "openssl failed").strip().splitlines()
+        raise RuntimeError(err[-1] if err else "openssl failed")
+    os.chmod(key, 0o600)
+    os.chmod(cert, 0o644)
+    stamp.write_text(want + "\n", encoding="utf-8")
+    return cert, key
+
+
+def start_tls_server() -> int | None:
+    """Serve the same UI and /api/speech/* on HTTPS. Leave HTTP :80 alone."""
+    httpd = None
+    try:
+        ips = _tls_ips()
+        cert, key = _ensure_tls_cert(ips)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
+        httpd = _ReuseHTTPServer((HOST, TLS_PORT), Handler)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        threading.Thread(target=httpd.serve_forever, name="stickllm-tls", daemon=True).start()
+        _set_tls_enabled(True)
+        lan = discover_lan_ip() or next((ip for ip in ips if not ip.startswith("127.")), "")
+        shown = f"https://{lan}/" if lan else f"https://127.0.0.1:{TLS_PORT}/"
+        print(f"stickllm-gateway TLS on {shown}", flush=True)
+        return TLS_PORT
+    except Exception as exc:
+        if httpd is not None:
+            try:
+                httpd.server_close()
+            except Exception:
+                pass
+        _set_tls_enabled(False)
+        print(f"stickllm-gateway TLS off ({exc})", flush=True)
+        return None
+
+
 def main() -> int:
     os.chdir(UI_ROOT)
+    try:
+        speech_mod().reconcile_voice_power()
+    except Exception:
+        pass
+    start_tls_server()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"stickllm-gateway on http://{HOST}:{PORT} → {LLAMA} control={CONTROL}", flush=True)
     httpd.serve_forever()

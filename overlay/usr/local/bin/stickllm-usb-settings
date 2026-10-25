@@ -1,0 +1,396 @@
+#!/bin/bash
+# Encrypted USB settings partition. Same LUKS passphrase as the SSD vault.
+# Not a second password. Not a host-disk format. Host create-partition stays
+# disabled in stickllm-vault. This script only opens the ~256 MiB boot-USB
+# partition that stickllm-usb-claim reserved beside the live image.
+#
+# Voice weights stay in /opt/stickllm/speech. Chats stay in the SSD vault.
+set -euo pipefail
+
+LIB="${STICKLLM_SETTINGS_LIB:-/usr/local/lib/stickllm_usb_settings.py}"
+if [[ ! -f "$LIB" ]]; then
+  LIB="$(cd "$(dirname "$0")/../lib" && pwd)/stickllm_usb_settings.py"
+fi
+MNT="${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}"
+MAPPER_NAME="${STICKLLM_SETTINGS_MAPPER:-stickllm-settings}"
+MAPPER="/dev/mapper/${MAPPER_NAME}"
+DATA_MNT="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+CLAIM="${STICKLLM_USB_CLAIM:-/usr/local/bin/stickllm-usb-claim}"
+if [[ ! -x "$CLAIM" ]]; then
+  local_claim="$(cd "$(dirname "$0")" && pwd)/stickllm-usb-claim"
+  [[ -x "$local_claim" ]] && CLAIM="$local_claim"
+fi
+META_DIR="${STICKLLM_VAULT_META:-}"
+if [[ -z "$META_DIR" ]]; then
+  if findmnt -n "$DATA_MNT" >/dev/null 2>&1; then
+    META_DIR="$DATA_MNT/vault-meta"
+  else
+    META_DIR="/var/lib/stickllm/vault-meta"
+  fi
+fi
+
+die() { echo "stickllm-usb-settings: $*" >&2; exit 1; }
+
+need_root() {
+  [[ "$(id -u)" -eq 0 ]] || die "run as root (sudo)"
+}
+
+# Same stdin key-file style as stickllm-vault. No trailing newline.
+luks_pass() {
+  local pass="$1"
+  shift
+  printf '%s' "$pass" | cryptsetup "$@" --key-file=-
+}
+
+stick_keyfile_path() {
+  if findmnt -n "$DATA_MNT" >/dev/null 2>&1; then
+    printf '%s\n' "$DATA_MNT/vault.key"
+  else
+    printf '%s\n' "/var/lib/stickllm/vault.key"
+  fi
+}
+
+boot_disk() {
+  local disk=""
+  disk="$("$CLAIM" --print-boot-disk 2>/dev/null || true)"
+  [[ -n "$disk" && -b "/dev/$disk" ]] || return 1
+  printf '%s\n' "$disk"
+}
+
+live_source() {
+  local p src=""
+  for p in /lib/live/mount/medium /run/live/medium /lib/live/mount/findiso; do
+    if findmnt -n "$p" >/dev/null 2>&1; then
+      src="$(findmnt -n -o SOURCE "$p" | head -1)"
+      break
+    fi
+  done
+  printf '%s\n' "$src"
+}
+
+# Print the settings partition path, or nothing. Never prints secrets.
+find_settings_part() {
+  local disk pref="" part=""
+  disk="$(boot_disk)" || return 1
+  if [[ -f "$DATA_MNT/stickllm-settings-part.json" ]]; then
+    pref="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("part") or "")' "$DATA_MNT/stickllm-settings-part.json" 2>/dev/null || true)"
+  fi
+  # LUKS2 label, when the volume has already been formatted.
+  local -a labeled=()
+  if command -v blkid >/dev/null 2>&1; then
+    mapfile -t labeled < <(blkid -t LABEL=STICKLLM-SETTINGS -o device 2>/dev/null || true)
+  fi
+  if [[ ${#labeled[@]} -eq 1 ]]; then
+    if assert_part "${labeled[0]}" "$disk"; then
+      printf '%s\n' "${labeled[0]}"
+      return 0
+    fi
+  elif [[ ${#labeled[@]} -gt 1 ]]; then
+    echo "ambiguous STICKLLM-SETTINGS labels" >&2
+    return 1
+  fi
+  part="$(lsblk -J -b -o NAME,PATH,SIZE,TYPE,FSTYPE,LABEL,PKNAME,MOUNTPOINT "/dev/$disk" 2>/dev/null \
+    | python3 "$LIB" choose --boot-disk "$disk" --preferred "$pref" --live-source "$(live_source)" 2>/dev/null || true)"
+  [[ -n "$part" && -b "$part" ]] || return 1
+  assert_part "$part" "$disk" || return 1
+  printf '%s\n' "$part"
+}
+
+assert_part() {
+  local part="$1" disk="$2"
+  local fstype="" label="" size="" pk="" mp=""
+  fstype="$(lsblk -no FSTYPE "$part" 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+  label="$(lsblk -no LABEL "$part" 2>/dev/null | head -1 | sed 's/[[:space:]]*$//' || true)"
+  size="$(lsblk -bno SIZE "$part" 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+  pk="$(lsblk -no PKNAME "$part" 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+  mp="$(lsblk -no MOUNTPOINT "$part" 2>/dev/null | head -1 || true)"
+  [[ "$pk" == "$disk" ]] || return 1
+  python3 "$LIB" assert-part \
+    --part "$part" \
+    --type part \
+    --pkname "$pk" \
+    --boot-disk "$disk" \
+    --size "${size:-0}" \
+    --fstype "$fstype" \
+    --label "$label" \
+    --mountpoint "$mp" \
+    --live-source "$(live_source)" >/dev/null
+}
+
+mounted() {
+  findmnt -n "$MNT" >/dev/null 2>&1
+}
+
+refuse_wrong_tree() {
+  python3 - "$LIB" "$MNT" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("stickllm_usb_settings", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.assert_settings_mount(sys.argv[2])
+if "chats" in mod.LAYOUT_DIRS:
+    raise SystemExit("chats do not belong on the settings partition")
+if Path(sys.argv[2]) == Path(mod.SPEECH_DIR):
+    raise SystemExit("refusing speech directory")
+PY
+}
+
+prepare_tree() {
+  refuse_wrong_tree
+  mkdir -p "$MNT/computers" "$MNT/secrets"
+  chmod 700 "$MNT" "$MNT/computers" "$MNT/secrets" 2>/dev/null || true
+  if [[ ! -f "$MNT/README.txt" ]]; then
+    cat >"$MNT/README.txt" <<'EOF'
+StickLLM USB settings (LUKS, same passcode as the SSD vault)
+- computers/  per-computer SSD vault locations (no passcode)
+- secrets/    portable API keys and passwords
+Voice weights are not stored here (/opt/stickllm/speech).
+Chats are not stored here (they stay in the SSD vault).
+EOF
+  fi
+}
+
+cmd_status() {
+  local part="" state="absent" disk=""
+  disk="$(boot_disk 2>/dev/null || true)"
+  part="$(find_settings_part 2>/dev/null || true)"
+  if mounted; then
+    state="unlocked"
+  elif [[ -n "$part" ]]; then
+    state="locked"
+  fi
+  python3 - "$state" "$part" "$disk" "$MNT" <<'PY'
+import json, sys
+state, part, disk, mnt = sys.argv[1:5]
+print(json.dumps({
+    "ok": True,
+    "usb_settings": state,
+    "partition": part or None,
+    "boot_disk": disk or None,
+    "mount": mnt,
+    "size_mib": 256,
+    "inside_iso": False,
+    "same_key_as_vault": True,
+    "second_password": False,
+    "stores": ["per-computer SSD vault locations", "portable secrets"],
+    "excludes": ["/opt/stickllm/speech", "vault chats"],
+    "safety": "boot USB only; host disks are not partitioned; no secret values in this status",
+}))
+PY
+}
+
+cmd_ensure_partition() {
+  need_root
+  if find_settings_part >/dev/null 2>&1; then
+    echo "settings partition already present"
+    return 0
+  fi
+  [[ -x "$CLAIM" ]] || die "stickllm-usb-claim is missing"
+  "$CLAIM" --settings-only --auto --yes
+}
+
+cmd_open() {
+  # Open an existing LUKS settings volume. Never formats.
+  need_root
+  if mounted; then
+    prepare_tree
+    echo "settings already unlocked at $MNT"
+    return 0
+  fi
+  local pass="${STICKLLM_VAULT_PASS:-}"
+  [[ -n "$pass" ]] || die "vault passcode required (STICKLLM_VAULT_PASS); no second password"
+  local disk part
+  disk="$(boot_disk)" || die "cannot identify the StickLLM boot USB"
+  part="$(find_settings_part)" || die "no settings partition on the boot USB"
+  assert_part "$part" "$disk" || die "refusing $part"
+  cryptsetup isLuks "$part" 2>/dev/null || die "settings partition is not LUKS yet"
+  if findmnt -n -S "$part" >/dev/null 2>&1; then
+    die "refusing to open mounted $part"
+  fi
+  if ! luks_pass "$pass" open --type luks2 "$part" "$MAPPER_NAME"; then
+    unset pass
+    die "settings unlock failed with the vault passcode"
+  fi
+  unset pass
+  mkdir -p "$MNT"
+  mount "$MAPPER" "$MNT"
+  prepare_tree
+  echo "settings unlocked at $MNT"
+}
+
+add_existing_key_slots() {
+  local pass="$1" part="$2"
+  local keyfile rec tmp
+  keyfile="$(stick_keyfile_path)"
+  if [[ -f "$keyfile" ]]; then
+    luks_pass "$pass" luksAddKey --batch-mode "$part" "$keyfile" || true
+  fi
+  # recovery.sha256 is the hex digest the vault already uses as a key slot.
+  # The file has a trailing newline; the slot material does not.
+  if [[ -f "$META_DIR/recovery.sha256" ]]; then
+    tmp="$META_DIR/.settings-rec.$$"
+    tr -d '\n' <"$META_DIR/recovery.sha256" >"$tmp"
+    chmod 600 "$tmp"
+    luks_pass "$pass" luksAddKey --batch-mode "$part" "$tmp" || true
+    rm -f "$tmp"
+  fi
+}
+
+cmd_open_or_init() {
+  need_root
+  if mounted; then
+    prepare_tree
+    echo "settings already unlocked at $MNT"
+    return 0
+  fi
+  local pass="${STICKLLM_VAULT_PASS:-}"
+  [[ -n "$pass" ]] || die "vault passcode required (STICKLLM_VAULT_PASS); no second password"
+  local disk part fstype
+  disk="$(boot_disk)" || { unset pass; die "cannot identify the StickLLM boot USB"; }
+  part="$(find_settings_part)" || { unset pass; die "no settings partition on the boot USB"; }
+  assert_part "$part" "$disk" || { unset pass; die "refusing $part"; }
+  if findmnt -n -S "$part" >/dev/null 2>&1; then
+    unset pass
+    die "refusing to format or open mounted $part"
+  fi
+  if cryptsetup isLuks "$part" 2>/dev/null; then
+    if ! luks_pass "$pass" open --type luks2 "$part" "$MAPPER_NAME"; then
+      unset pass
+      die "settings unlock failed with the vault passcode"
+    fi
+  else
+    # Format only after the caller has already opened the SSD vault with this
+    # passcode (STICKLLM_SETTINGS_INIT=1). A wrong passcode must not create
+    # a second LUKS volume.
+    if [[ "${STICKLLM_SETTINGS_INIT:-}" != "1" ]]; then
+      unset pass
+      die "settings partition is raw; init only after the vault passcode is accepted"
+    fi
+    fstype="$(lsblk -no FSTYPE "$part" 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+    [[ -z "$fstype" ]] || { unset pass; die "refusing to format $part ($fstype)"; }
+    assert_part "$part" "$disk" || { unset pass; die "refusing $part before format"; }
+    if ! luks_pass "$pass" luksFormat --type luks2 --label STICKLLM-SETTINGS \
+        --pbkdf argon2id --batch-mode "$part"; then
+      # Older cryptsetup may not accept --label on luksFormat.
+      luks_pass "$pass" luksFormat --type luks2 --pbkdf argon2id --batch-mode "$part" \
+        || { unset pass; die "luksFormat failed on the settings partition"; }
+      cryptsetup config --label STICKLLM-SETTINGS "$part" 2>/dev/null || true
+    fi
+    add_existing_key_slots "$pass" "$part"
+    luks_pass "$pass" open --type luks2 "$part" "$MAPPER_NAME" \
+      || { unset pass; die "settings open failed after format"; }
+    mkfs.ext4 -F -L STICKLLM-SETTINGS "$MAPPER" \
+      || { unset pass; die "mkfs failed on the settings mapper"; }
+  fi
+  unset pass
+  mkdir -p "$MNT"
+  mount "$MAPPER" "$MNT"
+  prepare_tree
+  echo "settings unlocked at $MNT"
+}
+
+cmd_close() {
+  need_root
+  if mounted; then
+    sync || true
+    umount "$MNT" || die "umount failed for $MNT"
+  fi
+  if [[ -b "$MAPPER" ]] || cryptsetup status "$MAPPER_NAME" >/dev/null 2>&1; then
+    cryptsetup close "$MAPPER_NAME" || die "cryptsetup close failed for settings"
+  fi
+  echo "settings locked"
+}
+
+cmd_write_computer() {
+  [[ -d "$MNT/computers" ]] || return 0
+  mounted || return 0
+  local src="${1:-}"
+  if [[ "$src" == "--from" ]]; then
+    src="${2:-}"
+  fi
+  [[ -n "$src" && -f "$src" ]] || src="$DATA_MNT/stickllm-vault-location.json"
+  [[ -f "$src" ]] || return 0
+  python3 "$LIB" write-computer --from "$src" --mnt "$MNT"
+}
+
+cmd_print_blob() {
+  mounted || return 1
+  python3 "$LIB" print-blob --mnt "$MNT"
+}
+
+cmd_secret_set() {
+  need_root
+  mounted || die "unlock the vault to open stick settings"
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "usage: secret-set <name>  (value in STICKLLM_SECRET_VALUE, not argv)"
+  python3 "$LIB" write-secret --mnt "$MNT" --name "$name"
+}
+
+cmd_secret_get() {
+  need_root
+  mounted || die "unlock the vault to open stick settings"
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "usage: secret-get <name>"
+  python3 "$LIB" read-secret --mnt "$MNT" --name "$name"
+}
+
+cmd_secret_delete() {
+  need_root
+  mounted || die "unlock the vault to open stick settings"
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "usage: secret-delete <name>"
+  python3 "$LIB" delete-secret --mnt "$MNT" --name "$name"
+}
+
+cmd_secret_list() {
+  if ! mounted; then
+    echo '{"ok":false,"error":"settings locked","names":[]}'
+    return 0
+  fi
+  python3 "$LIB" list-secrets --mnt "$MNT"
+}
+
+usage() {
+  cat <<EOF
+USB settings partition (~256 MiB, boot stick only, not inside the ISO).
+Encrypted with the SSD vault passcode. No second password.
+
+  stickllm-usb-settings status
+  stickllm-usb-settings ensure-partition
+  stickllm-usb-settings open            # existing LUKS only; never formats
+  stickllm-usb-settings open-or-init    # format raw slot only if STICKLLM_SETTINGS_INIT=1
+  stickllm-usb-settings close
+  stickllm-usb-settings write-computer --from <vault-location.json>
+  stickllm-usb-settings print-blob
+  stickllm-usb-settings secret-list
+  stickllm-usb-settings secret-set <name>
+  stickllm-usb-settings secret-get <name>
+  stickllm-usb-settings secret-delete <name>
+
+Passcode: STICKLLM_VAULT_PASS (same value as the SSD vault).
+Secret values: STICKLLM_SECRET_VALUE. Never pass them as arguments.
+EOF
+}
+
+main() {
+  local cmd="${1:-status}"
+  shift || true
+  case "$cmd" in
+    status) cmd_status ;;
+    ensure-partition) cmd_ensure_partition ;;
+    open) cmd_open "$@" ;;
+    open-or-init) cmd_open_or_init "$@" ;;
+    close|lock) cmd_close ;;
+    write-computer) cmd_write_computer "$@" ;;
+    print-blob) cmd_print_blob ;;
+    secret-set) cmd_secret_set "$@" ;;
+    secret-get) cmd_secret_get "$@" ;;
+    secret-delete) cmd_secret_delete "$@" ;;
+    secret-list) cmd_secret_list ;;
+    -h|--help|help) usage ;;
+    *) usage; exit 2 ;;
+  esac
+}
+
+main "$@"

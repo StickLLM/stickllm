@@ -1344,12 +1344,11 @@ def active_model_identity() -> dict:
                 mid = line.split("=", 1)[1].strip()
             elif line.startswith("STICKLLM_MODEL_NAME="):
                 name = line.split("=", 1)[1].strip()
-    if not mid and path:
-        base = os.path.basename(path).lower()
-        if "3b" in base:
-            mid, name = "qwen25-3b-q4km", "Qwen2.5 3B Instruct (baked)"
-        elif "7b" in base:
-            mid, name = "qwen25-7b-q5km", "Qwen2.5 7B Instruct"
+    # A missing id/name stays the file Activate selected. Never invent the
+    # baked 3B (or 7B) from a substring — "27b" contains "7b", and a load of
+    # another id must not be reported as the default 3B.
+    if not name and path:
+        name = os.path.basename(path)
     healthy, health_msg = llama_health_ok()
     ctx = active_ctx_size()
     out = {
@@ -1674,6 +1673,8 @@ def _fmt_gb(n: int) -> str:
 
 QUEUE_DISK_NAME = ".stickllm-download-queue.json"
 VAULT_MNT = Path("/var/lib/stickllm/vault")
+SETTINGS_MNT = Path("/mnt/stickllm-settings")
+SPEECH_DIR = Path("/opt/stickllm/speech")
 HF_TOKEN_NAME = "hf-token"
 
 
@@ -1752,43 +1753,174 @@ def vault_settings_dir() -> Path | None:
     return d
 
 
-def read_hf_token() -> str:
-    d = vault_settings_dir()
-    if d is None:
-        return ""
+def _settings_api():
+    cached = getattr(_settings_api, "_mod", None)
+    if cached is not None:
+        return cached
+    lib = Path("/usr/local/lib/stickllm_usb_settings.py")
+    if not lib.is_file():
+        return None
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("stickllm_usb_settings", lib)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _settings_api._mod = mod
+    return mod
+
+
+def portable_secrets_dir() -> Path | None:
+    """Encrypted USB settings secrets dir. Never the speech tree or an unmounted path."""
+    if SETTINGS_MNT == SPEECH_DIR or SETTINGS_MNT == VAULT_MNT:
+        return None
+    if not os.path.ismount(str(SETTINGS_MNT)):
+        return None
+    mod = _settings_api()
+    if mod is not None:
+        try:
+            mod.assert_settings_mount(SETTINGS_MNT)
+        except ValueError:
+            return None
+    d = SETTINGS_MNT / "secrets"
     try:
-        raw = (d / HF_TOKEN_NAME).read_text(encoding="utf-8").strip()
+        d.mkdir(parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
     except OSError:
-        return ""
+        return None
+    return d
+
+
+def _clean_token(raw: str) -> str:
+    raw = str(raw or "").strip()
     if not raw or len(raw) > 400 or any(c.isspace() for c in raw):
         return ""
     return raw
 
 
-def write_hf_token(token: str) -> dict:
-    token = str(token or "").strip()
+def _read_token_file(path: Path) -> str:
+    try:
+        return _clean_token(path.read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+
+
+def _write_token_file(path: Path, token: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(token + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+    os.chmod(path, 0o600)
+
+
+def _vault_token_path() -> Path | None:
     d = vault_settings_dir()
     if d is None:
+        return None
+    return d / HF_TOKEN_NAME
+
+
+def read_hf_token() -> str:
+    secrets = portable_secrets_dir()
+    if secrets is not None:
+        current = _read_token_file(secrets / HF_TOKEN_NAME)
+        legacy_path = _vault_token_path()
+        legacy = _read_token_file(legacy_path) if legacy_path is not None else ""
+        if current:
+            if legacy_path is not None and legacy:
+                try:
+                    legacy_path.unlink()
+                except OSError:
+                    pass
+            return current
+        if legacy:
+            try:
+                _write_token_file(secrets / HF_TOKEN_NAME, legacy)
+                if legacy_path is not None:
+                    legacy_path.unlink()
+            except OSError:
+                return legacy
+            return legacy
+        return ""
+    legacy_path = _vault_token_path()
+    if legacy_path is None:
+        return ""
+    return _read_token_file(legacy_path)
+
+
+def write_hf_token(token: str) -> dict:
+    token = _clean_token(token)
+    secrets = portable_secrets_dir()
+    settings_open = secrets is not None
+    if secrets is None:
+        d = vault_settings_dir()
+        if d is None:
+            return {
+                "ok": False,
+                "saved": False,
+                "settings_mounted": False,
+                "error": "Unlock the vault to save the Hugging Face token",
+            }
+        path = d / HF_TOKEN_NAME
+        if not token:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return {
+                "ok": True,
+                "saved": False,
+                "settings_mounted": False,
+                "note": "Hugging Face token removed from the vault",
+            }
+        if not token.startswith("hf_") or len(token) < 10:
+            return {"ok": False, "saved": False, "settings_mounted": False, "error": "Token should look like hf_…"}
+        _write_token_file(path, token)
         return {
-            "ok": False,
-            "saved": False,
-            "error": "Unlock the vault to save the Hugging Face token",
+            "ok": True,
+            "saved": True,
+            "settings_mounted": False,
+            "note": "USB settings partition is not open; token saved in the vault until that partition is available",
         }
-    path = d / HF_TOKEN_NAME
+    path = secrets / HF_TOKEN_NAME
+    legacy = _vault_token_path()
     if not token:
         try:
             path.unlink()
         except OSError:
             pass
-        return {"ok": True, "saved": False, "note": "Hugging Face token removed from the vault"}
+        if legacy is not None:
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
+        return {
+            "ok": True,
+            "saved": False,
+            "settings_mounted": True,
+            "note": "Hugging Face token removed from USB stick settings",
+        }
     if not token.startswith("hf_") or len(token) < 10:
-        return {"ok": False, "saved": False, "error": "Token should look like hf_…"}
-    tmp = path.with_name(HF_TOKEN_NAME + ".tmp")
-    tmp.write_text(token + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
-    os.chmod(path, 0o600)
-    return {"ok": True, "saved": True, "note": "Hugging Face token saved in the vault"}
+        return {"ok": False, "saved": False, "settings_mounted": True, "error": "Token should look like hf_…"}
+    mod = _settings_api()
+    if mod is not None:
+        ok, why = mod.validate_secret_name(HF_TOKEN_NAME)
+        if not ok:
+            return {"ok": False, "saved": False, "settings_mounted": True, "error": why}
+    _write_token_file(path, token)
+    if legacy is not None:
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
+    return {
+        "ok": True,
+        "saved": True,
+        "settings_mounted": settings_open,
+        "note": "Hugging Face token saved on the USB stick settings partition",
+    }
 
 
 def _public_queue(items: list[dict]) -> list[dict]:
@@ -2853,9 +2985,13 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
                 is_active = Path(active).resolve() == Path(first).resolve()
             except Exception:
                 is_active = os.path.basename(active) == os.path.basename(first)
-        elif active and m["id"] == "qwen25-7b-q5km" and "qwen2.5-7b" in active:
+        elif active and m["id"] == "qwen25-7b-q5km" and "qwen2.5-7b" in active.lower():
             is_active = True
-        elif active and m["id"] == "qwen25-3b-q4km" and "3b" in active.lower():
+        elif (
+            active
+            and m["id"] == "qwen25-3b-q4km"
+            and os.path.basename(active).lower() == BAKED_3B.name.lower()
+        ):
             is_active = True
         # "Running" only when this model is active AND llama /health is ok.
         running = bool(is_active and healthy)
@@ -3176,6 +3312,7 @@ def handle(action: str, params: dict) -> dict:
             "gpus": inv.get("gpus") or [],
             "hf_token": read_hf_token(),
             "hf_token_saved": bool(read_hf_token()),
+            "settings_mounted": portable_secrets_dir() is not None,
             "vault_unlocked": vault_settings_dir() is not None,
             "ram_gb": round(ram, 1),
             "backend": detect_backend(),

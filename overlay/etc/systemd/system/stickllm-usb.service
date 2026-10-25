@@ -1,5 +1,5 @@
 [Unit]
-Description=StickLLM claim/mount USB STICKLLM-DATA
+Description=StickLLM claim/mount USB STICKLLM-DATA and reserve settings partition
 DefaultDependencies=no
 After=local-fs.target
 Before=stickllm-llama.service stickllm-bootstatus.service

@@ -19,6 +19,10 @@ util-linux
 python3
 # Scanned PDF pages for a vision model (pdftoppm). Not downloaded at runtime.
 poppler-utils
+# Offline read-aloud. espeak-ng and python3-numpy are in bookworm.
+# whisper.cpp and python3-onnxruntime are not; see stickllm-speech.pin.
+espeak-ng
+python3-numpy
 jq
 iproute2
 iputils-ping

@@ -130,17 +130,23 @@ space so downloads survive reboot.
 1. Detect boot device (the StickLLM USB only — never auto-touch internal disks).  
 2. Show size, free/unallocated space, proposed `STICKLLM-DATA` partition.  
 3. User confirms (or countdown accepts on first-boot setup).  
-4. Create **one** data partition in unallocated space; label `STICKLLM-DATA`.  
-5. Layout (unencrypted by default for models is OK if user wants speed; prefer
-   encrypted vault — see below):
-   - `models/` — verified GGUFs (hash vs USB catalog before use)  
-   - optional `vault/` — encrypted context / chat export (opt-in)  
-6. Later boots: mount if present; if missing/corrupt, fall back to lite-in-RAM.
+4. Create the data partition in unallocated space; label `STICKLLM-DATA`.
+   Also reserve about **256 MB** at the end of that free space for the USB
+   settings partition. It is not inside the ISO. Do not shrink an existing
+   `STICKLLM-DATA` that already fills the stick.
+5. Layout:
+   - `STICKLLM-DATA/models/` — verified GGUFs (hash vs USB catalog before use)
+   - USB settings partition — LUKS with the SSD vault passcode; per-computer
+     vault locations and portable secrets. Not voice weights, not chats
+   - SSD vault blob — chats (and the models folder the user chose)
+6. Later boots: mount DATA if present; leave the settings partition locked
+   until the vault passcode is entered. If DATA is missing or corrupt, fall
+   back to lite-in-RAM.
 
 **Rules:** only the boot USB; never shrink existing host partitions; refuse if
 the stick looks like a full disk clone of something else; confirm before write.
 
-64 GB stick ≈ same boot image + ~50 GB `STICKLLM-DATA` for models/context.
+64 GB stick ≈ same boot image + ~50 GB `STICKLLM-DATA` for models, plus about 256 MB for the settings partition.
 
 ## Encrypted vault: models + context (optional, increases risk)
 
@@ -172,7 +178,8 @@ EFI/system/BitLocker, hash models against USB catalog after unlock.
 
 ```
 config/models/catalog.toml        # tiers, HF pins, sha256 (trust anchor)
-overlay/.../stickllm-usb-claim    # first-boot: probe USB, create STICKLLM-DATA
+overlay/.../stickllm-usb-claim    # first-boot: STICKLLM-DATA + ~256 MB settings slot
+overlay/.../stickllm-usb-settings # LUKS that slot with the vault passcode
 overlay/.../stickllm-model-probe  # VRAM + free space on DATA → optimum
 overlay/.../stickllm-model-menu   # first-boot 30s + chat “Download models”
 overlay/.../stickllm-model-fetch  # HF download + verify + activate on DATA

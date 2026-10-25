@@ -1,0 +1,64 @@
+# StickLLM speech pins. The gateway never downloads these.
+# English only. Push-to-talk in, read-aloud out.
+# Not Kitten TTS 2. Not Parakeet. Not Bark. No wake word.
+#
+# Debian bookworm (the live-build suite):
+#   espeak-ng          YES  (bookworm 1.51+dfsg, package espeak-ng)
+#   python3-numpy      YES  (bookworm, package python3-numpy)
+#   whisper.cpp        NO   (sid has 1.8.3; bookworm does not)
+#   python3-onnxruntime NO  (trixie and later; not bookworm)
+#
+# Runtime paths the gateway calls. Override with the env vars in
+# overlay/usr/local/bin/stickllm-speech. Audio and transcripts stay on
+# the process pipes. Nothing is written under /tmp or the unencrypted
+# live root. Ephemeral chats do not get speech files. Vault chats keep
+# only the message text the user already saves; delete_vault_chat removes
+# that chat. Do not call api.kittenml.com or Hugging Face at runtime.
+
+[stt]
+engine = whisper.cpp
+pin = v1.8.7
+repo = https://github.com/ggml-org/whisper.cpp
+license = MIT
+why_this_tag = Last release before Parakeet landed in v1.9.0. CPU build only.
+binary = /usr/local/bin/whisper-cli
+model = /opt/stickllm/speech/ggml-tiny.en.bin
+model_license = MIT
+model_sha1 = c78c86eb1a8faa21b369bcd33207cc90d64ae9df
+model_sha256 = 921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f
+model_url = https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+source_url = https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.7.tar.gz
+source_sha256 = 0b988ba5053cfa720f6d399f3f21885b01c4222178be435ca2272d6872717554
+model_note = About 75 MB. English tiny. Image build copies this file into /opt/stickllm/speech. Not the SSD vault. Do not fetch it from the gateway.
+build = cmake -B build -DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DWHISPER_SDL2=OFF && cmake --build build --target whisper-cli && install -m 0755 build/bin/whisper-cli /usr/local/bin/whisper-cli
+
+[tts]
+engine = KittenTTS mini 0.8
+repo = https://huggingface.co/KittenML/kitten-tts-mini-0.8
+source = https://github.com/KittenML/KittenTTS
+license = Apache-2.0
+model = /opt/stickllm/speech/kitten_tts_mini_v0_8.onnx
+model_url = https://huggingface.co/KittenML/kitten-tts-mini-0.8/resolve/main/kitten_tts_mini_v0_8.onnx
+model_sha256 = 0f5bbae4fc4800c98dbc544a87ecfa79510de2fb8222db30d12e5bfe9177df91
+model_bytes = 78268016
+voices = /opt/stickllm/speech/voices.npz
+voices_url = https://huggingface.co/KittenML/kitten-tts-mini-0.8/resolve/main/voices.npz
+voices_sha256 = 40ad2638952b77b7b2f30127e2608e169fc69dd256b53bd8aaa3409a33193c42
+voices_bytes = 3278902
+config_url = https://huggingface.co/KittenML/kitten-tts-mini-0.8/resolve/main/config.json
+config_sha256 = 6b160bc9b19e24ecb21e84bc14f8a7da21fdf47ec72d42450bc5cf514b61804a
+voices_note = Numeric numpy archive. The runner loads it with allow_pickle=False.
+config = /opt/stickllm/speech/config.json
+default_voice = Bella
+default_voice_id = expr-voice-2-f
+sample_rate = 24000
+espeak = /usr/bin/espeak-ng
+onnx_import = onnxruntime
+onnx_note = Vendor a CPU onnxruntime that bookworm's python3 (3.11) can import, into /opt/stickllm/speech/py (the runner adds that directory to PYTHONPATH). Do not pip install at runtime. Do not use a CUDA wheel. Do not use Kitten TTS 2.
+
+[onnx]
+version = 1.20.1
+wheel = onnxruntime-1.20.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+url = https://files.pythonhosted.org/packages/11/ac/4120dfb74c8e45cce1c664fc7f7ce010edd587ba67ac41489f7432eb9381/onnxruntime-1.20.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+sha256 = 5eec64c0269dcdb8d9a9a53dc4d64f87b9e0c19801d9321246a53b7eb5a7d1bc
+python = 3.11

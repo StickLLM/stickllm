@@ -26,6 +26,12 @@ if [[ -d "$SRC/usr/local/bin" ]]; then
     installed=1
   done
   shopt -u nullglob
+  # ELF binary. Do not run sed on it: stripping CR would corrupt the file.
+  if [[ -f "$SRC/usr/local/bin/whisper-server" ]]; then
+    install -m 755 "$SRC/usr/local/bin/whisper-server" /usr/local/bin/whisper-server
+    echo "installed /usr/local/bin/whisper-server"
+    installed=1
+  fi
 fi
 
 units_changed=0

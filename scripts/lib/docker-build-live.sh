@@ -12,7 +12,8 @@ apt-get install -y --no-install-recommends \
   live-build live-boot live-config live-config-systemd \
   ca-certificates curl rsync xz-utils \
   squashfs-tools xorriso isolinux syslinux-common \
-  grub-pc-bin grub-efi-amd64-bin mtools dosfstools
+  grub-pc-bin grub-efi-amd64-bin mtools dosfstools \
+  build-essential cmake pkg-config python3
 
 cd /work
 rm -rf /work/*
@@ -99,6 +100,23 @@ if compgen -G "config/includes.chroot/opt/stickllm/models/*7b*" >/dev/null; then
   echo "ERROR: 7B GGUF must not be baked into the ISO" >&2
   exit 1
 fi
+
+# Voice weights live in /opt/stickllm/speech (a normal folder). Not the SSD vault.
+echo "[stickllm] bake speech (whisper.cpp CPU + KittenTTS mini 0.8)…"
+bash /stickllm/scripts/lib/bake-speech.sh /work
+test -x config/includes.chroot/usr/local/bin/whisper-cli
+test -x config/includes.chroot/usr/local/bin/whisper-server
+test -f config/includes.chroot/opt/stickllm/speech/ggml-tiny.en.bin
+test -f config/includes.chroot/opt/stickllm/speech/kitten_tts_mini_v0_8.onnx
+test -f config/includes.chroot/opt/stickllm/speech/voices.npz
+test -f config/includes.chroot/opt/stickllm/speech/py/onnxruntime/__init__.py
+test -x config/includes.chroot/usr/local/bin/stickllm-usb-claim
+test -x config/includes.chroot/usr/local/bin/stickllm-usb-settings
+test -f config/includes.chroot/usr/local/lib/stickllm_usb_settings.py
+if find config/includes.chroot -path '*vault*' \( -name 'ggml-tiny.en.bin' -o -name 'kitten_tts_mini_v0_8.onnx' -o -name 'voices.npz' \) | grep -q .; then
+  echo "ERROR: voice weights must not be inside the vault" >&2
+  exit 1
+fi
 test -x config/includes.chroot/usr/local/bin/stickllm-kiosk
 test -f config/includes.chroot/etc/systemd/system/stickllm-kiosk.service
 grep -q 'base_model_id = "qwen25-3b-q4km"' config/includes.chroot/etc/stickllm/models/catalog.toml
@@ -136,6 +154,22 @@ fi
 if [[ -f /stickllm/boot/grub/splash.png ]]; then
   cp -f /stickllm/boot/grub/splash.png config/includes.binary/boot/grub/splash.png
 fi
+
+# Docker Desktop: sync(2) walks every VM superblock and can block forever in
+# fuse_sync_fs on the Windows file share. debootstrap calls sync after the
+# base system is unpacked. Flush only the live-build volume.
+if [[ -x /bin/sync && ! -e /bin/sync.real ]]; then
+  mv /bin/sync /bin/sync.real
+fi
+cat > /bin/sync << 'EOF'
+#!/bin/sh
+# Sync the live-build volume only. A global sync(2) hangs on Docker Desktop.
+if [ -x /bin/sync.real ]; then
+  /bin/sync.real -f /work >/dev/null 2>&1 || true
+fi
+exit 0
+EOF
+chmod 755 /bin/sync
 
 echo "[stickllm] lb build (long)…"
 lb build

@@ -36,6 +36,7 @@ rsync -a \
   "$STICKLLM/overlay/usr/local/bin/stickllm-nvidia-prep" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-pick-gpus" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-usb-claim" \
+  "$STICKLLM/overlay/usr/local/bin/stickllm-usb-settings" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-model-probe" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-download-model" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-vault" \
@@ -50,6 +51,10 @@ rsync -a \
   "$STICKLLM/overlay/usr/local/bin/stickllm-kiosk" \
   "$STICKLLM/overlay/usr/local/bin/stickllm-llama-start" \
   "$work/sq/usr/local/bin/"
+mkdir -p "$work/sq/usr/local/lib"
+rsync -a "$STICKLLM/overlay/usr/local/lib/stickllm_usb_settings.py" \
+  "$work/sq/usr/local/lib/stickllm_usb_settings.py"
+sed -i 's/\r$//' "$work/sq/usr/local/lib/stickllm_usb_settings.py" 2>/dev/null || true
 rsync -a \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-bootstatus.service" \
   "$STICKLLM/overlay/etc/systemd/system/stickllm-local.service" \

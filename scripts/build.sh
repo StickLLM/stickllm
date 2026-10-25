@@ -13,9 +13,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PROFILE="amd-rtx3090"
-# Next unshipped line. Override: STICKLLM_VERSION=0.4.0 ./scripts/build.sh
-# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9).
-VERSION="${STICKLLM_VERSION:-0.4.0}"
+# Next unshipped line. Override: STICKLLM_VERSION=0.4.2 ./scripts/build.sh
+# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9 / v0.4.0 / v0.4.1).
+VERSION="${STICKLLM_VERSION:-0.4.2}"
 VERSION_DIR="v${VERSION}"
 ISO_NAME="StickLLM-v${VERSION}.iso"
 CHECKSUM_FILE="checksums/v${VERSION}.sha256"
@@ -23,7 +23,7 @@ MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
 VOL_WORK="stickllm-lb-work"
 
 case "$VERSION_DIR" in
-  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8|v0.3.9)
+  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8|v0.3.9|v0.4.0|v0.4.1)
     echo "REFUSE: VERSION=${VERSION} would overwrite a shipping artifact" >&2
     exit 1
     ;;
@@ -35,6 +35,15 @@ echo "=== StickLLM build (${ISO_NAME}) ==="
 if [[ ! -f "models/${MODEL_3B}" ]]; then
   echo "3B GGUF missing — fetching the baked base model…"
   ./scripts/download-model.sh
+fi
+
+echo "Speech assets (image build only; the stick does not download these)…"
+if [[ -x /c/Python314/python.exe ]]; then
+  /c/Python314/python.exe scripts/download-speech.py
+elif command -v python3 >/dev/null 2>&1; then
+  python3 scripts/download-speech.py
+else
+  python scripts/download-speech.py
 fi
 
 ./scripts/build-llama-server.sh
@@ -62,10 +71,12 @@ docker run --rm --privileged --network host \
 mkdir -p "out/${VERSION_DIR}"
 # Prefer hybrid iso freshly written by docker-build-live into out/
 SRC_ISO=""
-if [[ -f "out/${ISO_NAME}" ]]; then
-  SRC_ISO="out/${ISO_NAME}"
-elif compgen -G "out/live-image-amd64.hybrid.iso" >/dev/null; then
+# docker-build-live writes live-image-amd64.hybrid.iso. A previous
+# out/StickLLM-vX.Y.Z.iso must not shadow that fresh hybrid.
+if [[ -f "out/live-image-amd64.hybrid.iso" ]]; then
   SRC_ISO="out/live-image-amd64.hybrid.iso"
+elif [[ -f "out/${ISO_NAME}" ]]; then
+  SRC_ISO="out/${ISO_NAME}"
 elif compgen -G "out/*.hybrid.iso" >/dev/null; then
   shopt -s nullglob
   for f in out/*.hybrid.iso; do
@@ -86,10 +97,12 @@ if [[ -z "$SRC_ISO" || ! -f "$SRC_ISO" ]]; then
 fi
 cp -f "$SRC_ISO" "out/${VERSION_DIR}/${ISO_NAME}"
 # Also leave a copy at out/${ISO_NAME} for scripts that look there (not a shipping name).
-cp -f "$SRC_ISO" "out/${ISO_NAME}"
+if [[ "$SRC_ISO" != "out/${ISO_NAME}" ]]; then
+  cp -f "$SRC_ISO" "out/${ISO_NAME}"
+fi
 (
   cd "out/${VERSION_DIR}"
-  sha256sum "${ISO_NAME}" > "SHA256SUMS"
+  sha256sum -b "${ISO_NAME}" > "SHA256SUMS"
 )
 cp -f "out/${VERSION_DIR}/SHA256SUMS" "$CHECKSUM_FILE"
 

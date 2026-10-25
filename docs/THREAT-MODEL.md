@@ -188,9 +188,16 @@ pairing, or someone who can read the stick screen. TLS for the tunnel is next.
 ### USB data partition + encrypted vault (planned, opt-in)
 
 First boot may claim **unallocated space on the StickLLM USB** (`STICKLLM-DATA`)
-for durable models. Optional encrypted **context vault** (chats/exports) on that
-partition or a user-chosen SSD file. Optional **wipe after N failed unlocks**
+for durable models. Optional encrypted **context vault** (chats/exports) on a
+user-chosen SSD file. Optional **wipe after N failed unlocks**
 (e.g. 3) deletes the vault.
+
+A separate ~256 MB **settings partition** on that same boot USB (not inside the
+ISO) is encrypted with the SSD vault passcode. It holds per-computer vault
+locations and portable secrets. It is not a second password, not the chat
+store, and not where voice weights live (`/opt/stickllm/speech`). Claim must
+target only the boot stick and must not shrink an existing DATA partition.
+The plaintext location hint on `STICKLLM-DATA` still has no passcode.
 
 | Risk | Reality |
 |---|---|

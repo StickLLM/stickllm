@@ -7,22 +7,22 @@ node / disk number before writing.
 
 | Image | Where | Checksum |
 |---|---|---|
-| **Current ship v0.3.9** | [Google Drive](https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing) — `StickLLM-v0.3.9.iso` | [`checksums/v0.3.9.sha256`](../checksums/v0.3.9.sha256) → `32a37a66…` |
+| **Current image v0.4.2** | [Google Drive folder](https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing) — file `StickLLM-v0.4.2.iso` | [`checksums/v0.4.2.sha256`](../checksums/v0.4.2.sha256) → `3a50eb56…` |
 
-**Hash of record is on GitHub** (`checksums/v0.3.9.sha256` + [Release notes](https://github.com/StickLLM/stickllm/releases/tag/v0.3.9)). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous ship: `StickLLM-v0.3.8.iso` (`88f78154…`).
+**Hash of record is in this repo** (`checksums/v0.4.2.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Do not publish the older file of the same name (`f31b5353…`). Previous published ship: `StickLLM-v0.3.9.iso` (`32a37a66…`). `StickLLM-v0.3.8.iso` (`88f78154…`) stays available.
 
 N-1 restore: `stickllm-amd-rtx3090-v0.3.6.hybrid.iso` + [`checksums/v0.3.6.sha256`](../checksums/v0.3.6.sha256) — see [RESTORE.md](RESTORE.md).
 
 ## Verify SHA-256
 
 ```powershell
-(Get-FileHash .\StickLLM-v0.3.9.iso -Algorithm SHA256).Hash
-# expect 32A37A66110EA2D2BC113D7C3B940647597252986799B007FA1FC217399A9585
+(Get-FileHash .\StickLLM-v0.4.2.iso -Algorithm SHA256).Hash
+# expect 3A50EB56A7D2FC4E6A55AABFCCC0971E38DDE2B5560BE3B6892FA6AA38572EF7
 ```
 
 ```bash
-sha256sum StickLLM-v0.3.9.iso
-# expect 32a37a66110ea2d2bc113d7c3b940647597252986799b007fa1fc217399a9585
+sha256sum StickLLM-v0.4.2.iso
+# expect 3a50eb56a7d2fc4e6a55aabfccc0971e38dde2b5560be3b6892fa6aa38572ef7
 ```
 
 ## Windows
@@ -43,7 +43,7 @@ Avoid naive PowerShell `FileStream` raw write (Access Denied even when elevated)
 lsblk -d -o NAME,SIZE,MODEL,TRAN
 # REPLACE sdX with your USB device
 sudo wipefs -a /dev/sdX
-sudo dd if=StickLLM-v0.3.9.iso \
+sudo dd if=StickLLM-v0.4.2.iso \
   of=/dev/sdX bs=4M status=progress oflag=sync
 sudo eject /dev/sdX
 ```
@@ -51,23 +51,26 @@ sudo eject /dev/sdX
 Optional helper (same `dd` path):
 
 ```bash
-ISO=StickLLM-v0.3.9.iso ./scripts/flash-linux.sh /dev/sdX
+ISO=StickLLM-v0.4.2.iso ./scripts/flash-linux.sh /dev/sdX
 ```
 
 ## macOS
 
 ```bash
 diskutil list
-ISO=StickLLM-v0.3.9.iso ./scripts/flash-macos.sh /dev/diskN
+ISO=StickLLM-v0.4.2.iso ./scripts/flash-macos.sh /dev/diskN
 ```
 
 ## After flash
 
 1. Eject the stick.
 2. Follow [BOOT.md](BOOT.md).
-3. First boot can claim free space as `STICKLLM-DATA` for durable model downloads.
-   Until that exists, downloads only live in the RAM overlay.
-4. After reflashing over a stick that already used an SSD vault blob, use
-   Settings → **Find existing vault** / Open existing (see [VAULT.md](VAULT.md)).
+3. First boot can claim free space as `STICKLLM-DATA` for durable model downloads,
+   and reserve about 256 MB beside the live image for the encrypted settings
+   partition (same vault passcode; not a file inside the ISO). Until DATA
+   exists, downloads only live in the RAM overlay. A stick whose DATA partition
+   already fills the disk is not shrunk.
+4. When the vault file is already on the SSD, open it with
+   [Opening an existing vault](VAULT.md#opening-an-existing-vault).
 
 Maintainer-only flash tools and lab gates: [MAINTAINER.md](MAINTAINER.md).

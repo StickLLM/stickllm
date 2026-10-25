@@ -2,6 +2,6 @@
 # Users are NOT in the sudo group — do not broaden this.
 # `user` (tty2 console) and `stickllm` (SSH/Term) both need WiFi bootstrap without a LAN browser.
 # stickllm-hotfix: SSH-first iterate (scripts/units under /tmp/stickllm-hotfix only).
-Cmnd_Alias STICKLLM_HELPERS = /usr/local/bin/stickllm-persist, /usr/local/bin/stickllm-download-model, /usr/local/bin/stickllm-usb-claim, /usr/local/bin/stickllm-vault, /usr/local/bin/stickllm-model-probe, /usr/local/bin/stickllm-status, /usr/local/bin/stickllm-wifi-apply, /usr/local/bin/stickllm-wifi-setup, /usr/local/bin/stickllm-hotfix
+Cmnd_Alias STICKLLM_HELPERS = /usr/local/bin/stickllm-persist, /usr/local/bin/stickllm-download-model, /usr/local/bin/stickllm-usb-claim, /usr/local/bin/stickllm-usb-settings, /usr/local/bin/stickllm-vault, /usr/local/bin/stickllm-model-probe, /usr/local/bin/stickllm-status, /usr/local/bin/stickllm-wifi-apply, /usr/local/bin/stickllm-wifi-setup, /usr/local/bin/stickllm-hotfix
 stickllm ALL=(root) NOPASSWD: STICKLLM_HELPERS
 user ALL=(root) NOPASSWD: /usr/local/bin/stickllm-wifi-apply, /usr/local/bin/stickllm-wifi-setup

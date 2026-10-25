@@ -24,7 +24,7 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 | **Summary** | True air-gap mode: when the user wants it, **nothing in, nothing out** at the OS/network layer — not merely chat-level Web lookup off. Today the UI **Web** pill only gates chat live lookup; Terminal, HF downloads, and other processes still reach the internet when the NIC is up. Settings → Network **Offline mode** is “Coming soon” / not wired (`ui/index.html` `#offline`). |
 | **Notes** | **Goal:** NINO (nothing in, nothing out) air-gap posture the user can enable consciously. **Local / Server on same machine:** a “disable network” control that kills the NIC and/or firewalls all ingress/egress (simpler path). **Remote client stick:** still must talk to the StickLLM server over the **secure tunnel** only; allowlist that tunnel (paired server) and block all other ingress/egress. **Do not confuse with Web pill** — Web off ≠ OS offline. **HF / catalog downloads, updates, Tor, AP setup, etc. must be blocked or refused** while NINO is on. Open design questions: iptables vs nftables vs NetworkManager disconnect; WireGuard/SSH tunnel allowlist shape; LAN-pair-only vs internet-reachable server; how client stick discovers/keeps the tunnel without opening general egress; persistence across reboot; UX copy that distinguishes Web / Offline / NINO; interaction with Term SSH and BMC (out of StickLLM control). Track in FEATURES + THREAT-MODEL; implement later — **docs/issue only for this entry**. |
 
-### ISS-022 — Companion apps catalog (USB DATA / vault); Whisper/Piper bake TBD
+### ISS-022 — Companion apps catalog (USB DATA / vault)
 | | |
 |---|---|
 | **ID** | ISS-022 |
@@ -32,7 +32,7 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 | **Severity** | PRODUCT (P2 plan) |
 | **Status** | Open — first-pass catalog only; **not shipping**; list may change |
 | **Summary** | Potential companion apps (docs, mail, calendar, notes, tasks, search, chat, creative tools, agent operator) for humans via browser/UI and agents via each app’s API/tool layer. Install target: StickLLM USB DATA and/or encrypted SSD vault. Catalog: [docs/APPS.md](docs/APPS.md). |
-| **Notes** | whisper.cpp + Piper are TTS/STT candidates and **may become baked standard** on the stick — decision pending. n8n is fair-code (not OSI); Node-RED (Apache) is the OSI-friendly alternative under consideration. Do **not** bake or ship apps in v0.3.8; no ISO rebuild for this doc. |
+| **Notes** | Chat voice is decided and baked into the **v0.4.2** ISO: whisper.cpp tiny.en and KittenTTS mini 0.8 (not Piper, not Kitten TTS 2), resident `whisper-server`, Voice on/off, streaming speech, stop button, 80-token spoken replies, hidden brief prompt, thinking text skipped while Voice is on, and 1 second of silence auto-sends after real speech. Weights are an image-build pin (`overlay/usr/local/lib/stickllm-speech.pin`), not downloaded at runtime, and not stored in the vault. Wake word is still later. n8n is fair-code (not OSI); Node-RED (Apache) is the OSI-friendly alternative under consideration. The companion-apps catalog is still not shipping. Do **not** bake or ship those catalog apps in v0.3.8. |
 
 ### ISS-020 — Next ISO: drop baked Qwen2.5-7B Q5_K_M (keep ~2 GB 3B)
 | | |
@@ -98,6 +98,29 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 | **Summary** | Delete patch-iso / weston/cog/pixman fallbacks after kiosk reproducibility is solid. |
 
 ---
+
+## Closed
+
+### ISS-025 — Voice chat and load-meter hotfixes for v0.4.2
+| | |
+|---|---|
+| **ID** | ISS-025 |
+| **Mode** | Local / Server |
+| **Severity** | PRODUCT |
+| **Status** | Closed in v0.4.2 |
+| **Summary** | Voice on/off with resident Whisper and Kitten, streaming speech, a stop button, a hidden brief prompt, an 80-token voice budget, thinking text skipped while Voice is on, and 1 second of silence auto-send after real speech. Vault chats can be deleted. Loading waits for a paired browser, and the meter does not jump to a fake 30%. |
+| **Resolution** | In the v0.4.2 image. Speech files and `whisper-server` are baked. About and `stickllm.json` say v0.4.2. `out/v0.4.0` and `out/v0.4.1` were not changed. |
+
+### ISS-024 — USB settings partition was left out of v0.4.1
+| | |
+|---|---|
+| **ID** | ISS-024 |
+| **Mode** | all / vault |
+| **Severity** | PRODUCT |
+| **Status** | Closed in v0.4.2. `out/v0.4.0` and `out/v0.4.1` were not changed |
+| **Summary** | A ~256 MB settings partition on the boot USB, beside the live image, encrypted with the SSD vault passcode. Portable per-computer vault locations and portable secrets. Not a second password. |
+| **Resolution** | The v0.4.2 image includes `stickllm-usb-claim` and `stickllm-usb-settings`. First boot reserves the partition raw on the boot USB and does not shrink an existing `STICKLLM-DATA`. The slot is LUKS-formatted with the vault passcode after the SSD vault accepts it, and the existing stick keyfile and recovery digest are added when those files are already present. Host `create-partition` stays disabled. The Hugging Face token is written on the settings partition once it is unlocked; chats stay in the SSD vault; voice weights stay in `/opt/stickllm/speech`. |
+| **Notes** | Claim will not shrink a `STICKLLM-DATA` that already uses the whole stick. Encryption waits for vault setup/unlock (boot still must not ask for a passcode). The plaintext path hint on `STICKLLM-DATA` remains so Find existing vault works before settings is opened. There is no new UI for arbitrary secrets beyond the existing Hugging Face token field. `secret-set` is the command for other names. Machines with no DMI serial share one `unknown` location record. Opening an existing vault stays the steps in [docs/VAULT.md](docs/VAULT.md#opening-an-existing-vault). |
 
 ## Closed (v0.3.0)
 

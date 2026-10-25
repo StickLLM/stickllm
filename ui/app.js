@@ -19,8 +19,16 @@ let hfBusy = false;
 let hfErr = "";
 let hfTimer = null;
 let selectedModelId = null;
-/** Optimistic card badge while llama loads (cleared on running / failure). */
+/** Optimistic card badge while llama loads (cleared when that model is up, or the load fails). */
 let loadingModelId = null;
+let loadingModelName = "";
+let loadingModelPath = "";
+/** True after model_activate returns. Until then a still-healthy llama is the previous model. */
+let loadActivateSettled = false;
+/** Seen llama_ok drop after the click, so a later ok is a new process, not the one already serving. */
+let loadSawNotOk = false;
+/** Non-empty when the model that came up is not the one that was clicked. Header stays failed. */
+let loadMismatchText = "";
 let dlPollTimer = null;
 let vaultBrowsePath = "";
 let vaultPickerMount = "";
@@ -106,7 +114,11 @@ function applyModeUi(m) {
   $("#chatWhere").textContent = m === "vault"
     ? "Vault: saved encrypted on the host SSD."
     : "Ephemeral: in memory only, gone at reboot.";
-  $("#composerNote").textContent = "";
+  const note = $("#composerNote");
+  if (micState === "idle" && note) {
+    const cur = String(note.textContent || "");
+    if (!cur.startsWith("Sent ") && cur !== "The recording was empty") note.textContent = "";
+  }
   // Keep empty-state hero in sync when mode toggles without a new chat.
   const heroP = $("#thread .empty p");
   if (heroP) heroP.textContent = heroModeLine(m);
@@ -199,7 +211,7 @@ function md(t) {
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .split(/\n\n/).map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
 }
-function msgHtml(m) {
+function msgHtml(m, i) {
   const src = m.src?.length
     ? `<details class="sources"><summary>${m.src.length} web source${m.src.length > 1 ? "s" : ""}</summary>${m.src.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join("")}</details>`
     : "";
@@ -207,9 +219,13 @@ function msgHtml(m) {
   const av = m.r === "ai" ? "S" : m.r === "system" ? "!" : "";
   const pics = (m.imgs || []).map((u) => `<img class="msgImg" alt="" src="${esc(u)}">`).join("");
   const warn = m.warn ? `<div class="attWarn">${esc(m.warn)}</div>` : "";
-  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${pics}${m.pending ? '<span class="typing"><i></i><i></i><i></i></span>' : md(m.t || "")}${warn}${src}</div></div>`;
+  const speak = voiceMode && m.r === "ai" && !m.pending && String(m.t || "").trim()
+    ? `<div class="msgTools"><button type="button" class="iconBtn sm speakBtn" data-speak="${i}" title="Read aloud" aria-label="Read aloud"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 8.5a5 5 0 010 7"/></svg></button></div>`
+    : "";
+  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${pics}${m.pending ? '<span class="typing"><i></i><i></i><i></i></span>' : md(m.t || "")}${warn}${src}${speak}</div></div>`;
 }
-function renderThread() {
+function renderThread(opts) {
+  if (!(opts && opts.keepSpeech) && typeof stopSpeak === "function") stopSpeak();
   const th = $("#thread"), c = state.current;
   $("#chatTitle").textContent = c ? c.title : "New chat";
   if (!c || !c.msgs.length) {
@@ -220,8 +236,33 @@ function renderThread() {
     $$(".sugg button", th).forEach((b) => (b.onclick = () => { $("#input").value = b.textContent; send(); }));
     return;
   }
-  th.innerHTML = `<div class="msgs">${c.msgs.map(msgHtml).join("")}</div>`;
+  th.innerHTML = `<div class="msgs">${c.msgs.map((m, i) => msgHtml(m, i)).join("")}</div>`;
   th.scrollTop = th.scrollHeight;
+}
+function paintStream(text) {
+  const th = $("#thread");
+  if (!th) return;
+  const bodies = th.querySelectorAll(".msg.ai .body");
+  const body = bodies[bodies.length - 1];
+  if (!body) return;
+  const typing = body.querySelector(".typing");
+  if (typing) typing.remove();
+  let slot = body.querySelector(".streamText");
+  if (!slot) {
+    slot = document.createElement("div");
+    slot.className = "streamText";
+    body.prepend(slot);
+  }
+  slot.innerHTML = md(String(text || ""));
+  th.scrollTop = th.scrollHeight;
+}
+function stripThink(text) {
+  return String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/<think>[\s\S]*$/i, "");
+}
+function dropEmptyPlaceholder(text) {
+  const raw = String(text || "");
+  if (raw.trim() === "(empty response)") return "";
+  return raw;
 }
 function renderConvs() {
   const list = $("#convList"); let html = "";
@@ -233,9 +274,11 @@ function renderConvs() {
   }
   if (state.mode === "vault" && state.vaultOpen && state.chats.length) {
     html += '<div class="convGroup">Saved in vault</div>';
-    html += state.chats.map((c) =>
-      `<button class="conv ${state.current && state.current.id === c.id ? "on" : ""}" data-v="${esc(c.id)}"><span>${esc(c.title || c.id)}</span></button>`
-    ).join("");
+    html += state.chats.map((c) => {
+      const on = state.current && String(state.current.id) === String(c.id) ? "on" : "";
+      const id = esc(c.id);
+      return `<div class="convRow ${on}"><button type="button" class="conv" data-v="${id}"><span>${esc(c.title || c.id)}</span></button><button type="button" class="convDel" data-del="${id}" title="Delete this chat" aria-label="Delete this chat"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M8 7l1 13h6l1-13"/></svg></button></div>`;
+    }).join("");
   } else if (state.mode === "vault" && !state.vaultOpen) {
     html += '<div class="convGroup">Saved chats</div><div class="convEmpty">Locked in the vault. <button class="link" id="unlockLink">Unlock</button></div>';
   } else if (!state.ephemeral.length) {
@@ -249,6 +292,11 @@ function renderConvs() {
   $$("[data-v]", list).forEach((b) => (b.onclick = () => {
     openVaultChat(b.dataset.v);
     if (mobile()) toggleNav(false);
+  }));
+  $$("[data-del]", list).forEach((b) => (b.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    deleteVaultChat(b.dataset.del).catch((err) => toast(err.message));
   }));
   const ul = $("#unlockLink"); if (ul) ul.onclick = () => { openSettings("storage"); setTimeout(() => $("#vaultPass").focus(), 50); };
 }
@@ -374,7 +422,28 @@ function perfFromChatResponse(data, wallMs, replyText) {
 
 let sendBusy = false;
 let sendAbort = null;
-let sendStop = false;
+let sendGen = 0;
+let sendFlight = null;
+let userStopGen = 0;
+const CHAT_TOKENS = 1024;
+const CHAT_TOKENS_RETRY = 4096;
+// Two short spoken sentences. Voice off keeps the normal budget.
+const VOICE_CHAT_TOKENS = 80;
+const BUDGET_NOTE = "The model used its token budget and returned no answer.";
+function textOfMessage(value) {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value.map((p) => (typeof p === "string" ? p : (p && p.text) || "")).join("").trim();
+  }
+  return "";
+}
+function answerFromChat(data) {
+  const msg = data?.choices?.[0]?.message;
+  if (!msg || typeof msg !== "object") return "";
+  const content = textOfMessage(msg.content).replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/<think>[\s\S]*$/i, "").trim();
+  if (content) return content;
+  return textOfMessage(msg.reasoning_content != null ? msg.reasoning_content : msg.reasoning);
+}
 function setSending(on) {
   sendBusy = on;
   const sendBtn = $("#sendBtn");
@@ -382,34 +451,326 @@ function setSending(on) {
   if (sendBtn) sendBtn.hidden = !!on;
   if (stopBtn) stopBtn.hidden = !on;
 }
-function stopReply() {
-  if (!sendBusy) return;
-  sendStop = true;
-  fetch("/api/chat/stop", {
+function requestChatStop() {
+  return fetch("/api/chat/stop", {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: "{}",
   }).catch(() => {});
-  if (sendAbort) sendAbort.abort();
+}
+function stopReply() {
+  userStopGen = sendGen;
+  requestChatStop();
+  stopSpeak();
+  if (sendAbort) {
+    try { sendAbort.abort(); } catch (_) {}
+  }
+  // A send that returned before its cleanup left this red Stop button up
+  // with nothing left to abort. Restore Send unless a reply is still running.
+  if (!sendFlight) setSending(false);
+}
+function dropApiUserTurn() {
+  const last = messages[messages.length - 1];
+  if (last && last.role === "user") messages.pop();
+}
+async function takeChat(gen, abort, body) {
+  let lastMsg = "Still answering.";
+  for (let i = 0; i < 20; i++) {
+    if (gen !== sendGen || abort.signal.aborted || userStopGen === gen) {
+      const err = new Error("bail");
+      err.name = gen !== sendGen ? "Superseded" : "VoiceBail";
+      throw err;
+    }
+    let r;
+    try {
+      r = await fetch("/api/chat", {
+        method: "POST",
+        signal: abort.signal,
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      if (gen !== sendGen || (e && e.name === "AbortError") || userStopGen === gen) {
+        const err = new Error("bail");
+        err.name = gen !== sendGen ? "Superseded" : "VoiceBail";
+        throw err;
+      }
+      throw e;
+    }
+    if (r.status === 409 && i < 19) {
+      try {
+        const err = await r.json();
+        lastMsg = err.message || err.error || lastMsg;
+      } catch (_) {}
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      continue;
+    }
+    if (r.status === 401) {
+      const err = new Error("bail");
+      err.name = "PairRequired";
+      throw err;
+    }
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try {
+        const err = await r.json();
+        msg = err.message || err.error || msg;
+      } catch (_) {}
+      throw new Error(typeof msg === "string" ? msg : "The model did not answer.");
+    }
+    const data = await r.json();
+    if (gen !== sendGen) {
+      const err = new Error("bail");
+      err.name = "Superseded";
+      throw err;
+    }
+    if (data?.stopped || userStopGen === gen) {
+      const err = new Error("bail");
+      err.name = "VoiceBail";
+      throw err;
+    }
+    return data;
+  }
+  throw new Error(lastMsg);
+}
+async function takeChatStream(gen, abort, body, onShown, opts) {
+  const answerOnly = !!(opts && opts.answerOnly);
+  let lastMsg = "Still answering.";
+  for (let i = 0; i < 20; i++) {
+    if (gen !== sendGen || abort.signal.aborted || userStopGen === gen) {
+      const err = new Error("bail");
+      err.name = gen !== sendGen ? "Superseded" : "VoiceBail";
+      throw err;
+    }
+    let r;
+    try {
+      r = await fetch("/api/chat", {
+        method: "POST",
+        signal: abort.signal,
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ ...body, stream: true }),
+      });
+    } catch (e) {
+      if (gen !== sendGen || (e && e.name === "AbortError") || userStopGen === gen) {
+        const err = new Error("bail");
+        err.name = gen !== sendGen ? "Superseded" : "VoiceBail";
+        throw err;
+      }
+      throw e;
+    }
+    if (r.status === 409 && i < 19) {
+      try {
+        const err = await r.json();
+        lastMsg = err.message || err.error || lastMsg;
+      } catch (_) {}
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      continue;
+    }
+    if (r.status === 401) {
+      const err = new Error("bail");
+      err.name = "PairRequired";
+      throw err;
+    }
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try {
+        const err = await r.json();
+        msg = err.message || err.error || msg;
+      } catch (_) {}
+      throw new Error(typeof msg === "string" ? msg : "The model did not answer.");
+    }
+    const ctype = (r.headers.get("content-type") || "").toLowerCase();
+    if (!ctype.includes("text/event-stream")) {
+      const data = await r.json();
+      if (gen !== sendGen) {
+        const err = new Error("bail");
+        err.name = "Superseded";
+        throw err;
+      }
+      if (data?.stopped || userStopGen === gen) {
+        return { shown: "", content: "", reasoning: "", stopped: true, web: null, attachments: null, usage: null };
+      }
+      const content = textOfMessage(data?.choices?.[0]?.message?.content);
+      const reasoning = textOfMessage(data?.choices?.[0]?.message?.reasoning_content != null ? data.choices[0].message.reasoning_content : data?.choices?.[0]?.message?.reasoning);
+      const answer = dropEmptyPlaceholder(stripThink(content)).trim();
+      const think = dropEmptyPlaceholder(stripThink(reasoning)).trim();
+      const shown = answerOnly ? answer : (answer || think);
+      if (shown && onShown) onShown(shown);
+      return {
+        shown,
+        content,
+        reasoning,
+        stopped: false,
+        web: data?.stickllm_web || null,
+        attachments: data?.stickllm_attachments || null,
+        usage: data?.usage || null,
+      };
+    }
+    const reader = r.body && r.body.getReader ? r.body.getReader() : null;
+    if (!reader) throw new Error("The model did not answer.");
+    const dec = new TextDecoder();
+    let buf = "";
+    let content = "";
+    let reasoning = "";
+    let web = null;
+    let attachments = null;
+    let usage = null;
+    let stopped = false;
+    let errText = "";
+    const applyBlock = (block) => {
+      const line = block.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("data:")).pop();
+      if (!line) return;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") return;
+      let ev;
+      try { ev = JSON.parse(payload); } catch (_) { return; }
+      if (ev.stickllm_web) web = ev.stickllm_web;
+      if (ev.stickllm_attachments) attachments = ev.stickllm_attachments;
+      if (ev.usage) usage = ev.usage;
+      if (ev.done) {
+        // The gateway repeats the full reply on the last event. Appending it
+        // doubles the text and makes the speech buffer look new, so the first
+        // sentence is thrown away and only spoken after the stream ends.
+        if (!content && ev.content) content = String(ev.content);
+        if (!reasoning && ev.reasoning) reasoning = String(ev.reasoning);
+      } else {
+        if (ev.content) content += String(ev.content);
+        if (ev.reasoning) reasoning += String(ev.reasoning);
+      }
+      const answer = dropEmptyPlaceholder(stripThink(content));
+      const think = dropEmptyPlaceholder(stripThink(reasoning));
+      // Voice mode shows and speaks the answer only. Text mode may show
+      // reasoning until the answer replaces it, and does not speak it.
+      const shown = answerOnly ? answer : (answer.trim() ? answer : think);
+      if (shown.trim() && shown.trim() !== "(empty response)" && onShown) onShown(shown);
+      if (ev.stopped) stopped = true;
+      if (ev.error && ev.done) errText = String(ev.error);
+    };
+    while (true) {
+      if (gen !== sendGen || abort.signal.aborted || userStopGen === gen) {
+        try { reader.cancel(); } catch (_) {}
+        const err = new Error("bail");
+        err.name = gen !== sendGen ? "Superseded" : "VoiceBail";
+        throw err;
+      }
+      const step = await reader.read();
+      if (step.done) break;
+      buf += dec.decode(step.value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        applyBlock(buf.slice(0, cut));
+        buf = buf.slice(cut + 2);
+        if (!buf.includes("\n\n")) break;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (gen !== sendGen || abort.signal.aborted || userStopGen === gen) {
+          try { reader.cancel(); } catch (_) {}
+          const err = new Error("bail");
+          err.name = gen !== sendGen ? "Superseded" : "VoiceBail";
+          throw err;
+        }
+      }
+    }
+    if (buf.trim()) applyBlock(buf);
+    if (errText && !stripThink(content).trim() && !stripThink(reasoning).trim()) throw new Error(errText);
+    const answer = dropEmptyPlaceholder(stripThink(content)).trim();
+    const think = dropEmptyPlaceholder(stripThink(reasoning)).trim();
+    const shown = answerOnly ? answer : (answer || think);
+    return { shown, content, reasoning, stopped, web, attachments, usage };
+  }
+  throw new Error(lastMsg);
+}
+function messagesForRequest(voiceOn) {
+  if (!voiceOn) return messages;
+  const brief = "Answer in one or two plain spoken sentences. No headings, no bullet lists, no markdown. Keep the response short.";
+  let added = false;
+  const out = [];
+  for (const m of messages) {
+    if (!added && m && m.role === "system" && typeof m.content === "string") {
+      added = true;
+      out.push({ role: "system", content: m.content + "\n\n" + brief });
+    } else {
+      out.push(m);
+    }
+  }
+  if (!added) out.unshift({ role: "system", content: brief });
+  return out;
 }
 async function send() {
-  if (sendBusy) return;
+  unlockSpeech();
+  const gen = ++sendGen;
+  const prev = sendFlight;
+  let resolveDone;
+  const done = new Promise((resolve) => { resolveDone = resolve; });
+  const abort = new AbortController();
+  const flight = { gen, abort, done };
+  sendFlight = flight;
+  sendAbort = abort;
+  const job = (async () => {
+    try {
+      await runSend(gen, abort, prev);
+    } finally {
+      resolveDone();
+      if (sendFlight === flight) sendFlight = null;
+    }
+  })();
+  return job;
+}
+async function runSend(gen, abort, prev) {
+  setSending(true);
+  speakHalted = false;
+  stopSpeak();
+  if (prev && prev.abort) {
+    try { prev.abort.abort(); } catch (_) {}
+  }
+  await requestChatStop();
+  if (prev && prev.done) {
+    try { await prev.done; } catch (_) {}
+  }
+  const inpEarly = $("#input");
+  const tookMic = !sendFromMic && micHot();
+  const typedBesideMic = tookMic && !composerFromMic ? (inpEarly ? inpEarly.value : "") : "";
+  if (tookMic && composerFromMic && inpEarly) {
+    inpEarly.value = "";
+    composerFromMic = false;
+  }
+  if (tookMic) await finishMic("stop");
+  else if (!sendFromMic && finishPromise) await finishPromise;
+  if (gen !== sendGen || userStopGen === gen) {
+    setSending(false);
+    return;
+  }
+  if (tookMic && !typedBesideMic && !composerFromMic) {
+    setSending(false);
+    return;
+  }
+  const holdVoice = voiceMode;
+  if (holdVoice) voiceHold = true;
   const inp = $("#input");
   const text = inp.value.trim();
   const imgs = state.attach.filter((a) => a.kind !== "file").slice(0, PHOTO_MAX);
   const docs = state.attach.filter((a) => a.kind === "file");
-  if (docs.some((a) => a.status === "converting")) return toast("Still converting a file");
+  if (docs.some((a) => a.status === "converting")) {
+    if (holdVoice) { voiceHold = false; resumeVoiceListen(); }
+    toast("Still converting a file");
+    setSending(false);
+    return;
+  }
   const readyDocs = docs.filter((a) => a.status === "ready" || a.status === "truncated");
-  if (!text && !imgs.length && !readyDocs.length) return;
-  sendStop = false;
-  setSending(true);
+  if (!text && !imgs.length && !readyDocs.length) {
+    if (holdVoice) { voiceHold = false; resumeVoiceListen(); }
+    setSending(false);
+    return;
+  }
   inp.value = "";
   autosize();
   let pend = null;
+  let pushedUser = false;
   try {
-    if (!(await ensurePaired()) || sendStop) {
-      inp.value = text;
-      autosize();
+    if (!(await ensurePaired()) || gen !== sendGen || userStopGen === gen) {
+      if (gen === sendGen) {
+        inp.value = text;
+        autosize();
+      }
       return;
     }
     if (!state.current) {
@@ -442,73 +803,130 @@ async function send() {
         ]
       : apiText;
     messages.push({ role: "user", content });
+    pushedUser = true;
     state.attach = [];
     renderAttach();
     renderThread(); renderConvs();
     const t0 = performance.now();
-    sendAbort = new AbortController();
-    const r = await fetch("/api/chat", {
-      method: "POST",
-      signal: sendAbort.signal,
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({
-        model: "stickllm", messages, stream: false, temperature: 0.7,
-        web: state.web ? "on" : "off",
-      }),
-    });
-    if (r.status === 401) {
-      clearPairSession();
-      pend.pending = false; pend.t = "Pair required — enter the code from the stick screen.";
-      pend.r = "system";
-      openSettings("devices");
-      return;
+    const base = {
+      model: "stickllm",
+      messages: messagesForRequest(holdVoice),
+      temperature: 0.7,
+      web: state.web ? "on" : "off",
+      max_tokens: holdVoice ? VOICE_CHAT_TOKENS : CHAT_TOKENS,
+    };
+    if (holdVoice) base.chat_template_kwargs = { enable_thinking: false };
+    const onShown = (shown) => {
+      if (gen !== sendGen || userStopGen === gen) return;
+      pend.t = shown;
+      paintStream(shown);
+      // The bubble is the answer. Speak each finished sentence of this reply.
+      if (holdVoice) feedSpeech(shown);
+    };
+    let acc = await takeChatStream(gen, abort, base, onShown, { answerOnly: holdVoice });
+    if (acc.stopped || userStopGen === gen) {
+      const err = new Error("bail");
+      err.name = "VoiceBail";
+      throw err;
     }
-    if (!r.ok) {
-      let msg = `HTTP ${r.status}`;
-      try { const err = await r.json(); msg = err.message || err.error || msg; } catch (_) {}
-      throw new Error(msg);
+    let reply = acc.shown;
+    if (!reply && gen === sendGen && userStopGen !== gen) {
+      resetSpeechFeed();
+      acc = await takeChatStream(gen, abort, {
+        ...base,
+        max_tokens: holdVoice ? VOICE_CHAT_TOKENS : CHAT_TOKENS_RETRY,
+        chat_template_kwargs: { enable_thinking: false },
+      }, onShown, { answerOnly: holdVoice });
+      if (acc.stopped || userStopGen === gen) {
+        const err = new Error("bail");
+        err.name = "VoiceBail";
+        throw err;
+      }
+      reply = acc.shown;
     }
-    const data = await r.json();
-    if (data?.stopped || sendStop) {
-      pend.pending = false; pend.r = "system"; pend.t = "Stopped.";
-      return;
+    if (gen !== sendGen) {
+      const err = new Error("bail");
+      err.name = "Superseded";
+      throw err;
     }
-    if (data?.stickllm_attachments?.truncated && data.stickllm_attachments.note) {
+    if (acc.attachments?.truncated && acc.attachments.note) {
       const userMsg = c.msgs[c.msgs.length - 2];
-      if (userMsg) userMsg.warn = data.stickllm_attachments.note;
+      if (userMsg) userMsg.warn = acc.attachments.note;
     }
     const wallMs = performance.now() - t0;
-    let reply = data?.choices?.[0]?.message?.content?.trim() || "(empty response)";
-    const webInfo = data?.stickllm_web;
+    const webInfo = acc.web;
     let src = [];
     if (webInfo?.used && webInfo.results?.length) {
       src = webInfo.results.slice(0, 3).map((x) => x.url).filter(Boolean);
     }
+    const perfData = acc.usage ? { usage: acc.usage } : {};
+    if (!reply) {
+      pend.pending = false;
+      pend.r = "system";
+      pend.t = BUDGET_NOTE;
+      if (src.length) pend.src = src;
+      updatePerfStrip(perfFromChatResponse(perfData, wallMs, ""));
+      return;
+    }
+    if (holdVoice) {
+      const answer = dropEmptyPlaceholder(stripThink(acc.content)).trim();
+      if (answer) {
+        feedSpeech(answer);
+        flushSpeech();
+      }
+    }
     messages.push({ role: "assistant", content: reply });
     pend.pending = false; pend.t = reply; if (src.length) pend.src = src;
-    updatePerfStrip(perfFromChatResponse(data, wallMs, reply));
+    updatePerfStrip(perfFromChatResponse(perfData, wallMs, reply));
     if (sessionMode === "vault" && state.vaultOpen) saveCurrentChat(true).catch(() => {});
   } catch (e) {
-    const stopped = sendStop || e.name === "AbortError";
-    if (pend) {
-      pend.pending = false; pend.r = "system"; pend.t = stopped ? "Stopped." : ("Error: " + e.message);
-    } else if (!stopped) {
+    const superseded = e && (e.name === "Superseded" || (gen !== sendGen));
+    const stopped = e && (e.name === "VoiceBail" || e.name === "AbortError" || userStopGen === gen);
+    if (e && e.name === "PairRequired") {
+      clearPairSession();
+      if (pend) {
+        pend.pending = false;
+        pend.r = "system";
+        pend.t = "Pair required — enter the code from the stick screen.";
+      }
+      openSettings("devices");
+      if (pushedUser) dropApiUserTurn();
+    } else if (superseded || stopped) {
+      if (pend && pend.pending) {
+        pend.pending = false;
+        pend.r = "system";
+        pend.t = "Stopped.";
+      }
+      if (pushedUser) dropApiUserTurn();
+    } else if (pend) {
+      pend.pending = false;
+      pend.r = "system";
+      pend.t = "Error: " + (e && e.message ? e.message : "The model did not answer.");
+    } else if (gen === sendGen) {
       inp.value = text;
       autosize();
     }
   } finally {
-    sendAbort = null;
-    setSending(false);
-    renderThread(); renderConvs(); $("#input").focus();
+    if (gen === sendGen) {
+      if (sendAbort === abort) sendAbort = null;
+      setSending(false);
+      renderThread({ keepSpeech: true }); renderConvs();
+      const box = $("#input");
+      if (box) box.focus();
+    }
+  }
+  if (gen !== sendGen) return;
+  if (voiceMode && !speakQ.length && !speakPumping && !speakAudio) {
+    voiceHold = false;
+    resumeVoiceListen();
   }
 }
 $("#composer").onsubmit = (e) => { e.preventDefault(); send(); };
 const autosize = () => { const i = $("#input"); i.style.height = "auto"; i.style.height = Math.min(i.scrollHeight, 200) + "px"; };
-$("#input").addEventListener("input", autosize);
+$("#input").addEventListener("input", () => { composerFromMic = false; autosize(); });
 $("#input").addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || e.shiftKey || e.repeat) return;
   e.preventDefault();
-  if (sendBusy) return;
   send();
 });
 if ($("#stopBtn")) $("#stopBtn").onclick = () => stopReply();
@@ -917,19 +1335,22 @@ async function refreshModels() {
     $("#recGpuLabel").textContent = gpuCount > 1 ? `Recommended for these ${gpuCount} GPUs` : "Recommended for this GPU";
   }
   const run = lastCatalog.find((m) => m.running || m.active) || lastCatalog.find((m) => m.installed);
-  if (loadingModelId) {
-    const lm = lastCatalog.find((m) => m.id === loadingModelId);
-    if (lm?.running || st.llama_ok) loadingModelId = null;
-  }
-  if (!selectedModelId && run) selectedModelId = run.id;
+  // Do not clear a click just because some other model is still healthy.
+  if (!selectedModelId && run && !loadingModelId) selectedModelId = run.id;
   if (!selectedModelId && lastCatalog[0]) selectedModelId = lastCatalog[0].id;
-  const name = st.loaded?.name || run?.name || "none";
+  let name = st.loaded?.name || run?.name || "none";
+  if (loadingModelId) name = requestedLoadName();
+  else if (loadMismatchText) name = "Load failed";
   if ($("#runName")) $("#runName").textContent = name;
   if ($("#recName")) $("#recName").textContent = String(probe.recommend_id || probe.recommend || "—");
   const pill = $("#runPill");
   if (pill) {
-    const activeLoading = !!loadingModelId || lastCatalog.some((m) => m.active && !m.running);
-    if (st.llama_ok || st.llama?.status === "ok" || run?.running) {
+    const activeLoading = !!loadingModelId || (!loadMismatchText && lastCatalog.some((m) => m.active && !m.running));
+    if (loadingModelId) {
+      pill.textContent = "loading"; pill.className = "pill warn";
+    } else if (loadMismatchText) {
+      pill.textContent = "failed"; pill.className = "pill";
+    } else if (st.llama_ok || st.llama?.status === "ok" || run?.running) {
       pill.textContent = "running"; pill.className = "pill ok";
     } else if (activeLoading) {
       pill.textContent = "loading"; pill.className = "pill warn";
@@ -1139,6 +1560,14 @@ function guessSizeGb(name) {
   if (p >= 6) return 5;
   return 2.5;
 }
+function llamaUnitBusy(health) {
+  const svc = health && health.llama_service;
+  if (!svc || typeof svc !== "object") return false;
+  if (svc.process_alive) return true;
+  const active = String(svc.active_state || "").toLowerCase();
+  const sub = String(svc.sub_state || "").toLowerCase();
+  return active === "activating" || sub === "start" || sub === "auto-restart";
+}
 function llamaView(health) {
   const svc = lastLlama || {};
   const load = (health && health.llama_load) || {};
@@ -1165,51 +1594,129 @@ function loadPhaseText(view) {
   if (!view.alive) return "Starting llama…";
   return "Loading weights…";
 }
-function startLoadPoll(expectName) {
+function sameModelPath(a, b) {
+  const norm = (p) => String(p || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const na = norm(a);
+  const nb = norm(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ba = na.split("/").pop();
+  const bb = nb.split("/").pop();
+  return !!ba && ba === bb;
+}
+function requestedLoadName() {
+  if (loadingModelName) return loadingModelName;
+  const m = findModel(loadingModelId);
+  return m?.name || loadingModelId || "model";
+}
+function requestedLoadPath() {
+  if (loadingModelPath) return loadingModelPath;
+  const m = findModel(loadingModelId);
+  return String(m?.path || "");
+}
+/** llama_ok is the model that was clicked, not whichever server was already up. */
+function loadFinishedOk(j) {
+  if (!j?.llama_ok || !loadingModelId) return false;
+  const runPath = String(j.connect?.running_model || "").trim();
+  const envPath = String(j.connect?.model_path || "").trim();
+  const gotId = String(j.connect?.model_id || "").trim();
+  const wantPath = requestedLoadPath();
+  if (runPath && wantPath && sameModelPath(runPath, wantPath)) return true;
+  if (runPath && gotId === loadingModelId && envPath && sameModelPath(runPath, envPath)) return true;
+  if (!runPath && loadSawNotOk && loadActivateSettled) {
+    if (gotId && gotId === loadingModelId) return true;
+    if (wantPath && sameModelPath(envPath, wantPath)) return true;
+  }
+  return false;
+}
+/** New process is healthy, and it is a different model than the click. */
+function loadFinishedWrong(j) {
+  if (!j?.llama_ok || !loadActivateSettled || !loadingModelId) return false;
+  if (loadFinishedOk(j)) return false;
+  const runPath = String(j.connect?.running_model || "").trim();
+  const envPath = String(j.connect?.model_path || "").trim();
+  const gotId = String(j.connect?.model_id || "").trim();
+  const wantPath = requestedLoadPath();
+  const processMatchesEnv = !!(runPath && envPath && sameModelPath(runPath, envPath));
+  if (!processMatchesEnv && !loadSawNotOk) return false;
+  if (processMatchesEnv && gotId && gotId !== loadingModelId) return true;
+  if (processMatchesEnv && wantPath && runPath && !sameModelPath(runPath, wantPath)) return true;
+  if (loadSawNotOk && gotId && gotId !== loadingModelId) return true;
+  return false;
+}
+function runningModelLabel(j) {
+  const runPath = String(j?.connect?.running_model || "").trim();
+  const fromRun = friendlyModelLabel("", runPath);
+  if (fromRun) return fromRun;
+  return friendlyModelLabel(j?.connect?.model, j?.connect?.model_path) || "another model";
+}
+function phaseForRequestedLoad(view, j) {
+  if (view.crashed || view.giveUp) return view.error || "GPU load failed";
+  const planModel = String(j?.llama_load?.model || "").trim();
+  const wantPath = requestedLoadPath();
+  const captionOk = !!(view.caption && planModel && wantPath && sameModelPath(planModel, wantPath));
+  if (captionOk) return view.caption;
+  if (!view.alive) return "Starting llama…";
+  return "Loading weights…";
+}
+function finishLoadSuccess(name) {
+  if (!loadingModelId) return;
+  const ready = name && name !== "none" ? name : requestedLoadName();
+  stopLoadPoll();
+  loadingModelId = null;
+  loadingModelName = "";
+  loadingModelPath = "";
+  loadMismatchText = "";
+  loadActivateSettled = false;
+  loadSawNotOk = false;
+  if ($("#chipModel")) $("#chipModel").textContent = ready;
+  setChipLoad(false, 100, ready);
+  if ($("#runName")) $("#runName").textContent = ready;
+  if ($("#popModel")) {
+    $("#popModel").textContent = ready;
+    $("#popModel").title = "";
+  }
+  renderModelsList();
+  toast("Model ready: " + ready);
+}
+function showLoadMismatch(actual) {
+  if (!loadingModelId) return;
+  const got = actual || "another model";
+  const wanted = requestedLoadName();
+  stopLoadPoll();
+  loadingModelId = null;
+  loadingModelName = "";
+  loadingModelPath = "";
+  loadActivateSettled = false;
+  loadSawNotOk = false;
+  loadMismatchText = `Load failed — running ${got}, not ${wanted}`;
+  setChipLoad(true, 0, wanted, loadMismatchText, true);
+  if ($("#chipModel")) $("#chipModel").textContent = "Load failed";
+  if ($("#runName")) $("#runName").textContent = "Load failed";
+  if ($("#popModel")) {
+    $("#popModel").textContent = loadMismatchText;
+    $("#popModel").title = got;
+  }
+  renderModelsList();
+  toast(loadMismatchText);
+}
+function startLoadPoll() {
   stopLoadPoll();
   let ticks = 0;
   loadPollTimer = setInterval(async () => {
     ticks += 1;
     try {
       await refreshStatus();
+      if (!loadingModelId) {
+        stopLoadPoll();
+        return;
+      }
       await refreshModels().catch(() => {});
-      const running = lastCatalog.find((x) => x.running);
-      if (running && (!loadingModelId || running.id === loadingModelId)) {
-        loadingModelId = null;
-        stopLoadPoll();
-        setChipLoad(false, 100, expectName || running.name);
-        renderModelsList();
-        toast("Model ready" + (expectName ? `: ${expectName}` : ""));
-        await refreshStatus();
-        return;
-      }
-      const r = await fetch("/api/health", { cache: "no-store" });
-      const j = await r.json().catch(() => ({}));
-      if (j.llama_ok) {
-        loadingModelId = null;
-        stopLoadPoll();
-        setChipLoad(false, 100, expectName);
-        renderModelsList();
-        toast("Model ready" + (expectName ? `: ${expectName}` : ""));
-        await refreshStatus();
-        return;
-      }
-      const view = llamaView(j);
-      if (view.crashed || view.giveUp) {
-        setChipLoad(true, 0, expectName, loadPhaseText(view), true);
-        showFewerLayers(view.giveUp);
-        if (view.giveUp && ticks > 2) {
-          // Stay on the error. Do not keep a percent climbing while llama is stopped.
-        }
-      } else {
-        showFewerLayers(false);
-        const pct = view.alive ? view.pct : 1;
-        setChipLoad(true, pct, expectName, loadPhaseText(view), false);
-      }
-      // Large RAM mmap loads can take many minutes — keep polling, but not a fake 95%.
-      if (!view.crashed && ticks > 450) {
+      if (!loadingModelId) return;
+      if (ticks > 450) {
         stopLoadPoll();
         loadingModelId = null;
+        loadingModelName = "";
         setChipLoad(false, 0, null);
         renderModelsList();
         toast("Still loading — check Models");
@@ -1240,9 +1747,12 @@ function setLoadStatusLine(loading, pct, name, phase, failed) {
   box.hidden = false;
   box.removeAttribute("hidden");
   box.classList.toggle("failed", !!failed);
-  const label = name && name !== "none" ? name : "model";
+  const label = name && name !== "none" ? name : "";
   const phaseText = phase || "Loading weights…";
-  if ($("#loadStatusText")) $("#loadStatusText").textContent = `${phaseText} — ${label}`;
+  if ($("#loadStatusText")) {
+    const already = label && phaseText.includes(label);
+    $("#loadStatusText").textContent = label && !already ? `${phaseText} — ${label}` : phaseText;
+  }
   const n = failed ? 0 : Math.max(1, Math.min(92, Number(pct) || 1));
   if ($("#loadStatusFill")) $("#loadStatusFill").style.width = n + "%";
   if ($("#loadStatusPct")) $("#loadStatusPct").textContent = failed ? "" : (Math.round(n) + "%");
@@ -1251,6 +1761,11 @@ function setChipLoad(loading, pct, name, phase, failed) {
   const chip = $("#statusChip");
   const bar = $("#chipLoad");
   const fill = $("#chipLoadFill");
+  // While a click is in flight, never paint connect.model / the baked 3B over it.
+  if (loading && !failed && loadingModelId) {
+    const want = requestedLoadName();
+    if (want) name = want;
+  }
   if (!loading) {
     loadStartedAt = 0;
     loadShownPct = 1;
@@ -1277,7 +1792,7 @@ function setChipLoad(loading, pct, name, phase, failed) {
   if (fill && loading && !failed) fill.style.width = Math.max(1, Math.min(92, Number(pct) || 1)) + "%";
   if ($("#chipModel")) {
     if (failed) {
-      $("#chipModel").textContent = "GPU load failed";
+      $("#chipModel").textContent = String(phase || "").startsWith("Load failed") ? "Load failed" : "GPU load failed";
     } else if (loading) {
       const label = name && name !== "none" ? name : "model";
       const n = Math.max(1, Math.min(92, Math.round(Number(pct) || 1)));
@@ -1289,18 +1804,29 @@ function setChipLoad(loading, pct, name, phase, failed) {
 }
 /** Paint Loading UI before any network await (card badge + chip + under-composer line). */
 function beginModelLoadUi(id, name) {
+  const m = findModel(id) || lastCatalog.find((x) => x.id === id);
   loadingModelId = id;
+  loadingModelName = name || m?.name || id || "model";
+  loadingModelPath = String(m?.path || "");
+  loadActivateSettled = false;
+  loadSawNotOk = false;
+  loadMismatchText = "";
   selectedModelId = id;
-  const m = lastCatalog.find((x) => x.id === id);
   loadSizeGb = modelSizeGb(m);
   loadShownPct = 1;
   loadFailed = false;
-  loadTickLabel = name || "";
+  loadTickLabel = loadingModelName;
   loadTickPhase = "Starting llama…";
   loadStartedAt = Date.now();
   renderModelsList();
-  setChipLoad(true, 1, name, "Starting llama…");
-  toast("Loading " + name + "…");
+  if ($("#runName")) $("#runName").textContent = loadingModelName;
+  if ($("#runPill")) { $("#runPill").textContent = "loading"; $("#runPill").className = "pill warn"; }
+  if ($("#popModel")) {
+    $("#popModel").textContent = `loading — ${loadingModelName}`;
+    $("#popModel").title = loadingModelPath || "";
+  }
+  setChipLoad(true, 1, loadingModelName, "Starting llama…");
+  toast("Loading " + loadingModelName + "…");
 }
 function paintSoon() {
   return new Promise((resolve) => {
@@ -1315,27 +1841,36 @@ $("#activate").onclick = async () => {
   try {
     // Synchronous UI first — do not wait for activate round-trip.
     beginModelLoadUi(m.id, name);
-    startLoadPoll(name);
+    startLoadPoll();
     await paintSoon();
     const res = await control("model_activate", { id: m.id, ctx_size: +$("#ctx").value });
+    loadActivateSettled = true;
     if (!res.ok && res.error) throw new Error(res.error);
+    if (res.id && String(res.id) !== String(m.id)) {
+      showLoadMismatch(res.name || res.id);
+      return;
+    }
     if (res.running || res.load_state === "running") {
-      stopLoadPoll();
-      loadingModelId = null;
-      setChipLoad(false, 100, name);
-      toast("Model running: " + name);
+      finishLoadSuccess(res.name || name);
     } else {
       const view = llamaView(null);
-      setChipLoad(true, view.pct || 1, name, loadPhaseText(view), view.crashed);
+      setChipLoad(true, 1, name, phaseForRequestedLoad(view, null), view.crashed);
       showFewerLayers(view.giveUp);
     }
     await refreshModels(); await refreshStatus();
   } catch (e) {
     stopLoadPoll();
+    const wanted = loadingModelId ? requestedLoadName() : (m.name || m.id);
     loadingModelId = null;
-    setChipLoad(false, 0, null);
+    loadingModelName = "";
+    loadingModelPath = "";
+    loadMismatchText = `Load failed — ${wanted} did not start`;
+    setChipLoad(true, 0, wanted, loadMismatchText, true);
+    if ($("#chipModel")) $("#chipModel").textContent = "Load failed";
+    if ($("#runName")) $("#runName").textContent = "Load failed";
+    if ($("#popModel")) $("#popModel").textContent = loadMismatchText;
     renderModelsList();
-    toast(e.message);
+    toast(e.message || loadMismatchText);
   }
 };
 
@@ -1346,7 +1881,8 @@ async function retryFewerLayers() {
     toast("Retrying with " + n + " GPU layers");
     const m = lastCatalog.find((x) => x.id === selectedModelId) || lastCatalog.find((x) => x.active);
     beginModelLoadUi(m?.id || selectedModelId || "", m?.name || "model");
-    startLoadPoll(m?.name || "model");
+    loadActivateSettled = true;
+    startLoadPoll();
   } catch (e) {
     toast(e.message);
   }
@@ -2095,6 +2631,25 @@ async function saveCurrentChat(quiet) {
   if (!quiet) toast("Saved to vault");
   loadVaultChats().catch(() => {});
 }
+async function deleteVaultChat(id) {
+  const cid = String(id || "").trim();
+  if (!cid) return;
+  if (!confirm("Delete this chat?")) return;
+  const wasOpen = !!(state.current && String(state.current.id) === cid);
+  const r = await fetch("/api/chats", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ delete: true, id: cid }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.error || "delete failed");
+  state.chats = state.chats.filter((c) => String(c.id) !== cid);
+  if (wasOpen) newChat();
+  else renderConvs();
+  renderSaved();
+  try { await loadVaultChats(); } catch (_) {}
+  toast("Deleted");
+}
 function renderSaved() {
   const box = $("#savedChats");
   if (!state.vaultOpen) {
@@ -2111,18 +2666,8 @@ function renderSaved() {
     <button class="btn sm danger ghost" data-dc="${esc(c.id)}" type="button">Delete</button></div></div>`
   ).join("");
   $$("[data-oc]").forEach((b) => (b.onclick = () => openVaultChat(b.dataset.oc)));
-  $$("[data-dc]").forEach((b) => (b.onclick = async () => {
-    if (!confirm("Delete this chat?")) return;
-    try {
-      const r = await fetch("/api/chats", {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ delete: true, id: b.dataset.dc }),
-      });
-      const j = await r.json();
-      if (!r.ok || j.ok === false) throw new Error(j.error || "delete failed");
-      await loadVaultChats(); toast("Deleted");
-    } catch (e) { toast(e.message); }
+  $$("[data-dc]").forEach((b) => (b.onclick = () => {
+    deleteVaultChat(b.dataset.dc).catch((e) => toast(e.message));
   }));
 }
 $("#saveChat").onclick = () => saveCurrentChat(false).catch((e) => toast(e.message));
@@ -2252,6 +2797,7 @@ $("#pairForm").onsubmit = async (e) => {
     token = j.token; localStorage.setItem(TOKEN_KEY, token);
     err.hidden = true; $("#pairIn").value = "";
     toast("Browser paired"); closeSettings();
+    startAppStatus();
   } catch (ex) { err.hidden = false; err.textContent = ex.message; }
 };
 
@@ -2273,6 +2819,8 @@ $("#wifiBtn").onclick = async () => {
 };
 
 async function refreshStatus() {
+  // A refresh must not paint Loading until this browser is paired.
+  if (!browserPaired) return;
   try {
     const r = await fetch("/api/health", { cache: "no-store" });
     if (!r.ok && r.status !== 503) throw new Error("health " + r.status);
@@ -2291,40 +2839,83 @@ async function refreshStatus() {
       syncAttach();
     }
     const backend = String(j.backend || j.connect?.backend || "").toUpperCase() || "—";
-    const loading = !j.llama_ok && !!(named || loadingModelId);
-    if (j.llama_ok) {
+    if (loadingModelId && !j.llama_ok) loadSawNotOk = true;
+    if (loadingModelId) {
+      const label = requestedLoadName();
+      if ($("#runName")) $("#runName").textContent = label;
+      if (loadFinishedWrong(j)) {
+        showLoadMismatch(runningModelLabel(j));
+      } else if (loadFinishedOk(j)) {
+        finishLoadSuccess(label);
+      } else {
+        if (!loadStartedAt) {
+          loadStartedAt = Date.now();
+          const m = findModel(loadingModelId);
+          loadSizeGb = m ? modelSizeGb(m) : guessSizeGb(label);
+        }
+        const view = llamaView(j);
+        const runPath = String(j.connect?.running_model || "").trim();
+        const wantPath = requestedLoadPath();
+        const progressTrust = !!(runPath && wantPath && sameModelPath(runPath, wantPath));
+        if (view.crashed || view.giveUp) {
+          setChipLoad(true, 0, label, phaseForRequestedLoad(view, j), true);
+          showFewerLayers(view.giveUp);
+        } else {
+          showFewerLayers(false);
+          const pct = progressTrust && view.alive ? view.pct : 1;
+          setChipLoad(true, pct, label, phaseForRequestedLoad(view, j), false);
+        }
+        if ($("#popModel")) {
+          $("#popModel").textContent = `loading — ${label}`;
+          $("#popModel").title = wantPath || "";
+        }
+        if (!loadPollTimer) startLoadPoll();
+      }
+    } else if (loadMismatchText) {
+      if ($("#chipModel")) $("#chipModel").textContent = "Load failed";
+      if ($("#runName")) $("#runName").textContent = "Load failed";
+      setChipLoad(true, 0, "", loadMismatchText, true);
+    } else if (j.llama_ok) {
       stopLoadPoll();
-      loadingModelId = null;
       const readyName = named || "ready";
       $("#chipModel").textContent = readyName;
       setChipLoad(false, 100, readyName);
-    } else if (loading) {
+    } else if (named && named !== "none" && llamaUnitBusy(j)) {
+      // Reload while this unit is actually starting. A saved model name is not a load.
       if (!loadStartedAt) {
         loadStartedAt = Date.now();
-        const m = lastCatalog.find((x) => x.id === loadingModelId) || lastCatalog.find((x) => x.name === named);
-        loadSizeGb = m ? modelSizeGb(m) : guessSizeGb(named);
+        loadSizeGb = guessSizeGb(named);
       }
       if (!loadPollTimer) {
         const view = llamaView(j);
-        setChipLoad(true, view.crashed ? 0 : (view.pct || 1), named || "model", loadPhaseText(view), view.crashed || view.giveUp);
+        setChipLoad(true, view.crashed ? 0 : (view.pct || 1), named, loadPhaseText(view), view.crashed || view.giveUp);
         showFewerLayers(view.giveUp);
-        startLoadPoll(named || "model");
+        startLoadPoll();
       }
     } else {
       stopLoadPoll();
-      loadingModelId = null;
       $("#chipModel").textContent = "none";
       setChipLoad(false, 0, null);
     }
     $("#chipMeta").textContent = modelVision && j.llama_ok ? backend + " · vision" : backend;
-    $("#statusChip .dot")?.classList.toggle("ok", !!j.llama_ok);
+    $("#statusChip .dot")?.classList.toggle("ok", !loadingModelId && !loadMismatchText && !!j.llama_ok);
+    $("#statusChip .dot")?.classList.toggle("busy", !!loadingModelId);
     if ($("#popModel")) {
       const pop = $("#popModel");
-      if (j.llama_ok) {
+      if (loadingModelId) {
+        pop.textContent = `loading — ${requestedLoadName()}`;
+        pop.title = requestedLoadPath() || "";
+      } else if (loadMismatchText) {
+        pop.textContent = loadMismatchText;
+        pop.title = "";
+      } else if (j.llama_ok) {
         pop.textContent = named || "ready";
         pop.title = modelPath || named || "";
-      } else if (loading) {
-        pop.textContent = named ? `loading — ${named}` : "loading…";
+      } else if (named && named !== "none" && llamaUnitBusy(j)) {
+        pop.textContent = `loading — ${named}`;
+        pop.title = modelPath || "";
+      } else if (named && named !== "none") {
+        pop.textContent = `${named} — not running`;
         pop.title = modelPath || "";
       } else {
         pop.textContent = "none — Activate in Models";
@@ -2711,7 +3302,1037 @@ if ($("#attachBtn") && $("#attachPick")) {
     await addAnyFiles(files);
   });
 }
-if ($("#micBtn")) { $("#micBtn").disabled = true; $("#micBtn").title = "Voice input — coming later"; }
+let micState = "idle";
+let micChunks = [];
+let micStream = null;
+let micCtx = null;
+let micSource = null;
+let micTimer = null;
+let micAbort = null;
+let micRec = null;
+let micRecMime = "";
+let micAnalyser = null;
+let micVadTimer = null;
+let micStarting = false;
+let micStopWanted = false;
+let micGen = 0;
+let micEpoch = 0;
+let finishPromise = null;
+let sendFromMic = false;
+let speakAudio = null;
+let speakIndex = -1;
+let speakAbort = null;
+let speakAborts = new Set();
+let speakAhead = null;
+let micNode = null;
+let voicePowerBusy = false;
+let speakToken = 0;
+let speakQ = [];
+let speakPumping = false;
+let speakHalted = false;
+let speakDone = null;
+let speechSeen = "";
+let speechHold = "";
+let composerFromMic = false;
+const VOICE_SILENCE_MS = 1000;
+const VOICE_MIN_SPEECH_MS = 400;
+// Quiet on purpose. Remote Desktop mics are often well below a normal laptop mic.
+const VOICE_SPEECH_RMS = 0.006;
+let voiceMode = false;
+let voiceMuted = false;
+let voiceHold = false;
+let voiceHeard = false;
+let voiceSpeechMs = 0;
+let voiceQuietMs = 0;
+
+function setMicNote(_text) {
+  // Status copy under the composer changes its height. Leave the line blank.
+  const note = $("#composerNote");
+  if (!note) return;
+  note.textContent = "";
+  note.classList.remove("is-error");
+}
+function sentLabel(n) {
+  const bytes = Number(n) || 0;
+  if (bytes >= 1000) return "Sent " + Math.round(bytes / 1000) + " KB.";
+  return "Sent " + bytes + " B.";
+}
+function showComposerLine(text, isError) {
+  const note = $("#composerNote");
+  if (!note) return;
+  note.textContent = text || "";
+  note.classList.toggle("is-error", !!isError);
+}
+function speechFail(msg) {
+  const text = String(msg || "Speech recognition failed.").trim();
+  const note = $("#composerNote");
+  if (note) {
+    note.textContent = text;
+    note.classList.add("is-error");
+  }
+  const btn = $("#micBtn");
+  if (btn) {
+    btn.disabled = false;
+    if (micState !== "recording") {
+      btn.title = "Voice input";
+      btn.setAttribute("aria-label", "Voice input");
+    }
+  }
+}
+function setMicUi(state) {
+  micState = state;
+  const btn = $("#micBtn");
+  if (!btn) return;
+  const recording = state === "recording";
+  const busy = state === "transcribing";
+  btn.classList.toggle("recording", recording);
+  btn.classList.toggle("busy", busy);
+  btn.disabled = false;
+  btn.setAttribute("aria-pressed", recording ? "true" : "false");
+  btn.setAttribute("aria-busy", busy ? "true" : "false");
+  const title = recording ? (voiceMode ? "Listening" : "Recording… click to transcribe") : busy ? "Transcribing…" : "Voice input";
+  btn.title = title;
+  btn.setAttribute("aria-label", title);
+}
+function releaseMic() {
+  if (micTimer) clearTimeout(micTimer);
+  micTimer = null;
+  if (micVadTimer) clearInterval(micVadTimer);
+  micVadTimer = null;
+  try { if (micSource) micSource.disconnect(); } catch (_) {}
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  if (micCtx) micCtx.close().catch(() => {});
+  micAnalyser = null;
+  micSource = null;
+  micStream = null;
+  micCtx = null;
+  micRec = null;
+}
+function cancelMic() {
+  micEpoch++;
+  micGen++;
+  if (micAbort) micAbort.abort();
+  micAbort = null;
+  micChunks = [];
+  const rec = micRec;
+  micRec = null;
+  try { if (rec && rec.state !== "inactive") rec.stop(); } catch (_) {}
+  releaseMic();
+  setMicUi("idle");
+}
+function bytesToBase64(bytes) {
+  let bin = "";
+  const step = 8192;
+  for (let i = 0; i < bytes.length; i += step) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(bytes.length, i + step)));
+  }
+  return btoa(bin);
+}
+function micHallucination(text) {
+  const n = String(text || "").toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
+  return n === "you" || n === "you you" || n === "thank you" || n === "thanks for watching" || n === "thanks for listening";
+}
+function micHot() {
+  const btn = $("#micBtn");
+  return micState === "recording" || !!(micRec && micRec.state === "recording") || !!(btn && btn.classList.contains("recording"));
+}
+function appendTranscript(text, sent) {
+  const input = $("#input");
+  const add = String(text || "").replace(/\s+/g, " ").trim();
+  const prefix = sent ? sent + " " : "";
+  if (!add) {
+    speechFail(prefix + "No speech detected.");
+    return false;
+  }
+  if (micHallucination(add)) {
+    speechFail(prefix + "No speech detected.");
+    return false;
+  }
+  const cur = input.value;
+  input.value = !cur || composerFromMic ? add : (/\s$/.test(cur) ? cur + add : cur + " " + add);
+  composerFromMic = true;
+  autosize();
+  input.focus();
+  return true;
+}
+function pickRecMime() {
+  if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return "";
+  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  for (const t of types) {
+    try { if (MediaRecorder.isTypeSupported(t)) return t; } catch (_) {}
+  }
+  return "";
+}
+function recorderLive(rec) {
+  const cur = rec || micRec;
+  return !!(cur && cur.state && cur.state !== "inactive");
+}
+function haltRecorder(rec) {
+  const target = rec || micRec;
+  if (!target || !target.state || target.state === "inactive") {
+    if (micRec === target) micRec = null;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      // dataavailable is specified to run before stop. Wait one turn in case
+      // this browser fires stop first, so the last chunk is in the part list.
+      setTimeout(resolve, 0);
+    };
+    target.addEventListener("stop", done, { once: true });
+    target.addEventListener("error", done, { once: true });
+    try { target.stop(); } catch (_) { done(); }
+    setTimeout(done, 2000);
+  }).finally(() => { if (micRec === target) micRec = null; });
+}
+function startVad(stream) {
+  if (!voiceMode) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+    // The meter has to reach the destination or Chrome reports silence.
+    // Gain stays at 0 so the microphone is not played back.
+    const tap = ctx.createGain();
+    tap.gain.value = 0;
+    analyser.connect(tap);
+    tap.connect(ctx.destination);
+    micCtx = ctx;
+    micSource = source;
+    micAnalyser = analyser;
+    const buf = new Float32Array(analyser.fftSize);
+    ctx.resume().catch(() => {});
+    micVadTimer = setInterval(() => {
+      if (micState !== "recording" || !voiceMode || !micAnalyser) return;
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      micAnalyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      const rms = Math.sqrt(sum / buf.length);
+      if (rms >= VOICE_SPEECH_RMS) {
+        voiceHeard = true;
+        voiceSpeechMs += 100;
+        voiceQuietMs = 0;
+      } else if (voiceSpeechMs >= VOICE_MIN_SPEECH_MS) {
+        voiceQuietMs += 100;
+        if (voiceQuietMs >= VOICE_SILENCE_MS) finishMic();
+      } else if (voiceHeard) {
+        voiceQuietMs += 100;
+        if (voiceQuietMs >= VOICE_SILENCE_MS) {
+          voiceHeard = false;
+          voiceSpeechMs = 0;
+          voiceQuietMs = 0;
+        }
+      }
+    }, 100);
+  } catch (_) {}
+}
+function finishMic(reason) {
+  if (finishPromise) {
+    if (recorderLive()) {
+      try { micRec.stop(); } catch (_) {}
+    }
+    return finishPromise;
+  }
+  if (!micHot() && !recorderLive()) return Promise.resolve();
+  if (micTimer) clearTimeout(micTimer);
+  micTimer = null;
+  if (micVadTimer) clearInterval(micVadTimer);
+  micVadTimer = null;
+  micState = "transcribing";
+  const parts = micChunks;
+  const rec = micRec;
+  const mime = micRecMime;
+  finishPromise = finishMicBody(reason, parts, rec, mime).finally(() => {
+    finishPromise = null;
+  });
+  return finishPromise;
+}
+async function finishMicBody(reason, parts, rec, mime) {
+  const stop = reason === "stop";
+  setMicUi("transcribing");
+  await haltRecorder(rec);
+  releaseMic();
+  // Chrome records audio/webm;codecs=opus. The stick decodes that to 16 kHz WAV.
+  // decodeAudioData drops or rejects these blobs, so the container is what we post.
+  const blob = new Blob(parts || [], { type: mime || "audio/webm" });
+  let raw = new Uint8Array(0);
+  try {
+    raw = new Uint8Array(await blob.arrayBuffer());
+  } catch (_) {
+    raw = new Uint8Array(0);
+  }
+  if (!parts || !parts.length || !raw.length) {
+    setMicUi("idle");
+    if (stop || !voiceMode) speechFail("The recording was empty");
+    if (!stop && voiceMode) resumeVoiceListen();
+    return;
+  }
+  const sent = sentLabel(raw.length);
+  showComposerLine(sent, false);
+  const postedMime = mime || blob.type || "audio/webm";
+  const ctrl = new AbortController();
+  micAbort = ctrl;
+  let handed = false;
+  try {
+    const r = await fetch("/api/speech/transcribe", {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ audio_base64: bytesToBase64(raw), mime: postedMime }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (ctrl.signal.aborted) return;
+    if (r.status === 401) {
+      clearPairSession();
+      speechFail(sent + " Pair this browser using the code on the stick screen.");
+      openSettings("devices");
+      return;
+    }
+    if (!r.ok || !j.ok) {
+      const msg = j.message || j.error || "Speech recognition failed.";
+      speechFail(sent + " " + msg);
+      return;
+    }
+    showComposerLine(sent, false);
+    const heard = appendTranscript(j.text || "", sent);
+    // Stop, or a finished voice-mode phrase, sends the transcript.
+    // Empty audio and the "you" hallucination never get here.
+    if (heard && (stop || voiceMode) && !sendBusy && !sendFlight) {
+      const said = ($("#input").value || "").trim();
+      if (said && !micHallucination(said)) {
+        handed = true;
+        sendFromMic = true;
+        try { await send(); }
+        finally { sendFromMic = false; }
+        return;
+      }
+    }
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+    speechFail(sent + " Speech recognition failed.");
+  } finally {
+    micAbort = null;
+    if (micState === "transcribing") setMicUi("idle");
+    if (!handed && !stop && voiceMode && !sendBusy && !voiceHold && !speakAudio) resumeVoiceListen();
+  }
+}
+function secureMicMessage() {
+  const shown = ($("#lanUrl2") && $("#lanUrl2").textContent || "").trim();
+  if (/^https:\/\//i.test(shown)) return "Open " + shown + " in this browser to use the microphone.";
+  return "Open this page with https to use the microphone.";
+}
+function abandonReplyForMic() {
+  userStopGen = sendGen;
+  if (sendAbort) {
+    try { sendAbort.abort(); } catch (_) {}
+  }
+  requestChatStop();
+  stopSpeak();
+}
+async function startMic() {
+  if (!voiceMode) return;
+  if (micStopWanted) return;
+  if (recorderLive() || micHot()) {
+    finishMic("stop");
+    return;
+  }
+  if (micStarting || micState !== "idle") return;
+  const btn = $("#micBtn");
+  if (btn) btn.disabled = false;
+  if (typeof MediaRecorder === "undefined") {
+    speechFail("This browser cannot record audio.");
+    setMicUi("idle");
+    return;
+  }
+  micStarting = true;
+  const gen = ++micGen;
+  let stream = null;
+  try {
+    if (!(await ensurePaired())) {
+      speechFail("Pair this browser before using the microphone.");
+      setMicUi("idle");
+      return;
+    }
+    if (gen !== micGen || micStopWanted) return;
+    if (!window.isSecureContext) {
+      speechFail(secureMicMessage());
+      setMicUi("idle");
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      speechFail("This browser cannot use the microphone.");
+      setMicUi("idle");
+      return;
+    }
+    const micAudio = {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+    const virtualMic = (label) => /cable|vb-audio|virtual|stereo mix|loopback|wave out|what u hear/i.test(String(label || ""));
+    const realMicId = async () => {
+      try {
+        const list = await navigator.mediaDevices.enumerateDevices();
+        const mics = list.filter((d) => d.kind === "audioinput" && d.deviceId && d.label && !virtualMic(d.label));
+        const named = mics.find((d) => /microphone|headset|\bmic\b|usb/i.test(d.label));
+        return (named || mics[0] || {}).deviceId || "";
+      } catch (_) {
+        return "";
+      }
+    };
+    try {
+      const preferId = await realMicId();
+      const withId = preferId ? Object.assign({ deviceId: { exact: preferId } }, micAudio) : micAudio;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: withId });
+      } catch (err) {
+        const name = err && err.name;
+        if (name !== "OverconstrainedError" && name !== "NotSupportedError" && name !== "ConstraintNotSatisfiedError") throw err;
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      const opened = stream.getAudioTracks()[0];
+      if (opened && virtualMic(opened.label)) {
+        const id = await realMicId();
+        if (id) {
+          try {
+            const next = await navigator.mediaDevices.getUserMedia({
+              audio: Object.assign({ deviceId: { exact: id } }, micAudio),
+            });
+            stream.getTracks().forEach((t) => t.stop());
+            stream = next;
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      const name = e && e.name;
+      if (name === "NotFoundError" || name === "DevicesNotFoundError") speechFail("No microphone was found.");
+      else if (name === "NotAllowedError" || name === "SecurityError" || name === "PermissionDeniedError") speechFail("Microphone permission was denied.");
+      else speechFail("Could not use the microphone.");
+      setMicUi("idle");
+      return;
+    }
+    if (gen !== micGen || micStopWanted || micState !== "idle") {
+      stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+      return;
+    }
+    const mime = pickRecMime();
+    let rec;
+    try {
+      rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    } catch (_) {
+      stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+      speechFail("This browser cannot record audio.");
+      setMicUi("idle");
+      return;
+    }
+    const parts = [];
+    micChunks = parts;
+    voiceHeard = false;
+    voiceSpeechMs = 0;
+    voiceQuietMs = 0;
+    micStream = stream;
+    micRec = rec;
+    micRecMime = rec.mimeType || mime || "";
+    rec.ondataavailable = (ev) => {
+      if (!ev.data || !ev.data.size) return;
+      parts.push(ev.data);
+    };
+    try {
+      rec.start(250);
+    } catch (_) {
+      try { rec.start(); } catch (_) {
+        stream.getTracks().forEach((t) => t.stop());
+        micRec = null;
+        micStream = null;
+        stream = null;
+        speechFail("This browser cannot record audio.");
+        setMicUi("idle");
+        return;
+      }
+    }
+    if (micStopWanted || gen !== micGen) {
+      if (recorderLive(rec)) {
+        stream = null;
+        finishMic("stop");
+        return;
+      }
+      try { rec.stop(); } catch (_) {}
+      micRec = null;
+      stream = micStream;
+      micStream = null;
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+      setMicUi("idle");
+      return;
+    }
+    stream = null;
+    startVad(micStream);
+    setMicUi("recording");
+    const armTimer = () => {
+      micTimer = setTimeout(() => {
+        if (micState !== "recording") return;
+        if (voiceMode) {
+          if (voiceSpeechMs >= VOICE_MIN_SPEECH_MS) finishMic();
+          else armTimer();
+        } else finishMic("stop");
+      }, 60000);
+    };
+    armTimer();
+  } catch (_) {
+    speechFail("Could not use the microphone.");
+    releaseMic();
+    setMicUi("idle");
+  } finally {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    micStarting = false;
+    const btn = $("#micBtn");
+    if (btn) btn.disabled = false;
+  }
+}
+function toggleMic() {
+  if (!voiceMode) return;
+  const btn = $("#micBtn");
+  if (btn) btn.disabled = false;
+  unlockSpeech();
+  if (recorderLive() || micHot()) {
+    micStopWanted = true;
+    finishMic("stop");
+    return;
+  }
+  if (finishPromise || micState === "transcribing") return;
+  if (micStarting) return;
+  setMicNote("");
+  micStopWanted = false;
+  cancelMic();
+  micStarting = false;
+  micStopWanted = false;
+  if (btn) btn.disabled = false;
+  abandonReplyForMic();
+  startMic();
+}
+function resumeVoiceListen() {
+  // Voice on shows the mic. Recording starts only on the next press.
+  if (!voiceMode || voiceMuted || voiceHold || sendBusy || speakAudio || speakQ.length || speakPumping) return;
+  if (micState !== "idle") return;
+}
+function setVoiceMute(on) {
+  voiceMuted = !!on;
+  const btn = $("#voiceMuteBtn");
+  if (btn) {
+    btn.classList.toggle("muted", voiceMuted);
+    btn.setAttribute("aria-pressed", voiceMuted ? "true" : "false");
+    btn.title = voiceMuted ? "Unmute the microphone" : "Mute the microphone";
+    btn.setAttribute("aria-label", btn.title);
+  }
+  if (voiceMuted) {
+    if (micState === "recording" || micState === "transcribing") cancelMic();
+    setMicNote("Microphone muted. Voice mode stays on.");
+    return;
+  }
+  resumeVoiceListen();
+}
+function voiceControls(on) {
+  const mic = micNode || (micNode = document.getElementById("micBtn"));
+  const stopSpeech = $("#stopSpeechBtn");
+  const btn = $("#voiceModeBtn");
+  if (mic) {
+    if (!on) {
+      if (mic.parentNode) {
+        mic._home = mic.parentNode;
+        mic._next = mic.nextSibling;
+        mic.remove();
+      }
+    } else if (!mic.isConnected && mic._home) {
+      mic.hidden = false;
+      mic._home.insertBefore(mic, mic._next || null);
+    } else {
+      mic.hidden = false;
+    }
+  }
+  if (stopSpeech) stopSpeech.hidden = !on;
+  if (btn) {
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.title = on ? "Voice on" : "Voice off";
+  }
+}
+async function setVoiceMode(on) {
+  if (voicePowerBusy) return;
+  on = !!on;
+  if (on && !window.isSecureContext) {
+    speechFail(secureMicMessage());
+    return;
+  }
+  voicePowerBusy = true;
+  voiceMode = on;
+  voiceControls(on);
+  if (!on) {
+    voiceMuted = false;
+    voiceHold = false;
+    voiceHeard = false;
+    voiceSpeechMs = 0;
+    const mute = $("#voiceMuteBtn");
+    if (mute) mute.classList.remove("muted");
+    cancelMic();
+    stopSpeak();
+    setMicNote("");
+  }
+  if (typeof renderThread === "function") renderThread({ keepSpeech: true });
+  try {
+    const r = await fetch("/api/speech/power", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ on: on }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok || !!j.on !== on) {
+      voiceMode = false;
+      voiceControls(false);
+      cancelMic();
+      stopSpeak();
+      if (typeof renderThread === "function") renderThread({ keepSpeech: true });
+      toast(j.error || "Could not change voice.");
+      return;
+    }
+  } catch (_) {
+    voiceMode = false;
+    voiceControls(false);
+    cancelMic();
+    stopSpeak();
+    toast("Could not change voice.");
+  } finally {
+    voicePowerBusy = false;
+  }
+}
+async function loadVoicePower() {
+  voiceMode = false;
+  voiceControls(false);
+  try {
+    const r = await fetch("/api/speech/power", { headers: authHeaders() });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.on) await setVoiceMode(true);
+  } catch (_) {}
+}
+async function speakVoiceReply(text) {
+  voiceHold = true;
+  if (micState !== "idle") cancelMic();
+  stopSpeak();
+  voiceHold = true;
+  const mine = speakToken;
+  const ctrl = new AbortController();
+  speakAbort = ctrl;
+  const idx = state.current && state.current.msgs ? state.current.msgs.length - 1 : -1;
+  try {
+    const r = await fetch("/api/speech/speak", {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ text, voice: "Bella" }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (mine !== speakToken || !voiceMode) return;
+    if (r.status === 401) {
+      clearPairSession();
+      toast("Pair required — enter the code from the stick screen");
+      openSettings("devices");
+      return;
+    }
+    if (!r.ok || !j.ok || !j.audio_base64) {
+      toast(j.message || j.error || "Could not read the reply aloud.");
+      return;
+    }
+    const raw = atob(j.audio_base64);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+    const audio = new Audio(url);
+    audio._url = url;
+    speakAudio = audio;
+    speakIndex = idx;
+    const btn = idx >= 0 ? document.querySelector(`[data-speak="${idx}"]`) : null;
+    if (btn) {
+      btn.classList.add("on");
+      btn.title = "Stop reading";
+      btn.setAttribute("aria-label", "Stop reading");
+    }
+    if (mine !== speakToken) {
+      try { audio.pause(); } catch (_) {}
+      if (audio._url) URL.revokeObjectURL(audio._url);
+      if (speakAudio === audio) speakAudio = null;
+      return;
+    }
+    setMicNote("Speaking the reply…");
+    audio.onended = () => {
+      if (speakAudio !== audio) return;
+      stopSpeak();
+      voiceHold = false;
+      resumeVoiceListen();
+    };
+    await audio.play();
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+    if (mine !== speakToken) return;
+    toast("Could not read the reply aloud.");
+  } finally {
+    if (mine === speakToken && !speakAudio) {
+      voiceHold = false;
+      resumeVoiceListen();
+    }
+  }
+}
+function newSpeakAbort() {
+  const ctrl = new AbortController();
+  speakAborts.add(ctrl);
+  speakAbort = ctrl;
+  return ctrl;
+}
+function stopCurrentSpeech() {
+  speakHalted = true;
+  stopSpeak();
+  voiceHold = false;
+  resumeVoiceListen();
+}
+function stopSpeak() {
+  speakToken++;
+  speakQ.length = 0;
+  speechSeen = "";
+  speechHold = "";
+  speakAhead = null;
+  speakAborts.forEach((ctrl) => {
+    try { ctrl.abort(); } catch (_) {}
+  });
+  speakAborts.clear();
+  if (speakAbort) {
+    try { speakAbort.abort(); } catch (_) {}
+    speakAbort = null;
+  }
+  if (speakAudio) {
+    try { speakAudio.pause(); } catch (_) {}
+    if (speakAudio._url) URL.revokeObjectURL(speakAudio._url);
+    speakAudio = null;
+  }
+  if (speakDone) {
+    const done = speakDone;
+    speakDone = null;
+    done();
+  }
+  speakIndex = -1;
+  $$(".speakBtn.on, .speakBtn.busy").forEach((b) => {
+    b.classList.remove("on", "busy");
+    b.disabled = false;
+    b.title = "Read aloud";
+    b.setAttribute("aria-label", "Read aloud");
+  });
+}
+function resetSpeechFeed() {
+  speechSeen = "";
+  speechHold = "";
+}
+function speechCut(text) {
+  // A sentence is finished when . ! ? or a newline is already in the bubble.
+  // Do not wait for another character, or for the rest of the reply.
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\n") return i + 1;
+    if (c !== "." && c !== "!" && c !== "?") continue;
+    let j = i + 1;
+    while (j < text.length && /["')\]]/.test(text[j])) j++;
+    if (j >= text.length || /\s/.test(text[j])) return j;
+  }
+  return 0;
+}
+function unlockSpeech() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  try {
+    if (!unlockSpeech.ctx) unlockSpeech.ctx = new Ctx();
+    const ctx = unlockSpeech.ctx;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    const buf = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start();
+  } catch (_) {}
+}
+function feedSpeech(full) {
+  if (!voiceMode || speakHalted) return;
+  const text = dropEmptyPlaceholder(stripThink(String(full || "")));
+  if (!text.trim() || text.trim() === "(empty response)") return;
+  // The answer replaced the thinking text. Keep anything already sent to
+  // Kitten, and queue the new sentences behind it. Do not wait for the stream.
+  if (!text.startsWith(speechSeen)) resetSpeechFeed();
+  speechHold += text.slice(speechSeen.length);
+  speechSeen = text;
+  while (speechHold) {
+    const cut = speechCut(speechHold);
+    if (cut <= 0) break;
+    const chunk = speechHold.slice(0, cut).trim();
+    speechHold = speechHold.slice(cut);
+    if (chunk && !micHallucination(chunk)) enqueueSpeak(chunk);
+  }
+}
+function flushSpeech() {
+  if (speakHalted) {
+    speechHold = "";
+    return;
+  }
+  const chunk = speechHold.trim();
+  speechHold = "";
+  if (chunk && chunk !== BUDGET_NOTE && !micHallucination(chunk)) enqueueSpeak(chunk);
+}
+function enqueueSpeak(text) {
+  if (speakHalted) return;
+  const mine = speakToken;
+  speakQ.push({ text, mine });
+  if (speakAudio && !speakAhead) kickAhead(mine);
+  pumpSpeak();
+}
+function kickAhead(mine) {
+  if (speakAhead || mine !== speakToken || !voiceMode) return;
+  let item = null;
+  while (speakQ.length) {
+    const next = speakQ.shift();
+    if (next && next.mine === mine) {
+      item = next;
+      break;
+    }
+  }
+  if (!item) return;
+  const ctrl = newSpeakAbort();
+  speakAhead = { mine, ctrl, job: fetchSpeakWav(item.text, mine, ctrl) };
+}
+async function fetchSpeakWav(text, mine, ctrl) {
+  if (mine !== speakToken || !voiceMode) return null;
+  if (!text || text.trim() === "(empty response)") return null;
+  const speakPromise = fetch("/api/speech/speak", {
+    method: "POST",
+    signal: ctrl.signal,
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ text, voice: "Bella" }),
+  });
+  if (!(await ensurePaired())) {
+    try { ctrl.abort(); } catch (_) {}
+    return null;
+  }
+  const r = await speakPromise;
+  const j = await r.json().catch(() => ({}));
+  if (mine !== speakToken || !voiceMode) return null;
+  if (!r.ok || !j.ok || !j.audio_base64) return null;
+  const raw = atob(j.audio_base64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+}
+async function playWavUrl(url, mine) {
+  const audio = new Audio(url);
+  audio._url = url;
+  speakAudio = audio;
+  try {
+    if (mine !== speakToken) return false;
+    await audio.play();
+    if (mine !== speakToken) return false;
+    // The next sentence synthesizes while this one is still playing.
+    kickAhead(mine);
+    await new Promise((resolve) => {
+      speakDone = resolve;
+      const finish = () => {
+        if (speakDone === resolve) {
+          speakDone = null;
+          resolve();
+        }
+      };
+      audio.onended = finish;
+      audio.onerror = finish;
+    });
+    return mine === speakToken;
+  } catch (e) {
+    if (e && e.name === "AbortError") return false;
+    return false;
+  } finally {
+    if (speakAudio === audio) {
+      try { audio.pause(); } catch (_) {}
+      if (audio._url) URL.revokeObjectURL(audio._url);
+      speakAudio = null;
+    }
+  }
+}
+async function pumpSpeak() {
+  if (speakPumping) return;
+  speakPumping = true;
+  const mine = speakToken;
+  voiceHold = true;
+  try {
+    while (mine === speakToken) {
+      let job = null;
+      if (speakAhead && speakAhead.mine === mine) {
+        job = speakAhead.job;
+        speakAhead = null;
+      } else if (speakQ.length) {
+        const item = speakQ.shift();
+        if (!item || item.mine !== mine) continue;
+        const ctrl = newSpeakAbort();
+        job = fetchSpeakWav(item.text, mine, ctrl);
+      } else {
+        break;
+      }
+      let url = null;
+      try {
+        url = await job;
+      } catch (_) {
+        url = null;
+      }
+      if (mine !== speakToken) {
+        if (url) URL.revokeObjectURL(url);
+        break;
+      }
+      if (!url) continue;
+      await playWavUrl(url, mine);
+    }
+  } finally {
+    speakPumping = false;
+    if (mine === speakToken && (speakQ.length || (speakAhead && speakAhead.mine === mine))) {
+      pumpSpeak();
+      return;
+    }
+    if (mine === speakToken && !speakQ.length && !speakAudio && !speakAhead) {
+      voiceHold = false;
+      resumeVoiceListen();
+    }
+  }
+}
+async function readAloud(btn) {
+  const idx = Number(btn.dataset.speak);
+  const msg = state.current && state.current.msgs[idx];
+  const text = msg && msg.t;
+  if (!text || !String(text).trim()) return;
+  if (speakIndex === idx && speakAudio) {
+    stopSpeak();
+    voiceHold = false;
+    resumeVoiceListen();
+    return;
+  }
+  stopSpeak();
+  if (voiceMode) {
+    voiceHold = true;
+    if (micState !== "idle") cancelMic();
+  }
+  if (!(await ensurePaired())) {
+    voiceHold = false;
+    resumeVoiceListen();
+    return;
+  }
+  btn.classList.add("busy");
+  btn.disabled = true;
+  btn.title = "Preparing audio…";
+  btn.setAttribute("aria-label", "Preparing audio");
+  const mine = speakToken;
+  const ctrl = new AbortController();
+  speakAbort = ctrl;
+  try {
+    const r = await fetch("/api/speech/speak", {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ text, voice: "Bella" }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (mine !== speakToken) return;
+    if (r.status === 401) {
+      clearPairSession();
+      toast("Pair required — enter the code from the stick screen");
+      openSettings("devices");
+      return;
+    }
+    if (!r.ok || !j.ok || !j.audio_base64) {
+      toast(j.message || j.error || "Could not read that aloud.");
+      return;
+    }
+    const raw = atob(j.audio_base64);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+    const audio = new Audio(url);
+    audio._url = url;
+    speakAudio = audio;
+    speakIndex = idx;
+    btn.classList.remove("busy");
+    btn.classList.add("on");
+    btn.disabled = false;
+    btn.title = "Stop reading";
+    btn.setAttribute("aria-label", "Stop reading");
+    audio.onended = () => {
+      if (speakAudio !== audio) return;
+      stopSpeak();
+      voiceHold = false;
+      resumeVoiceListen();
+    };
+    if (mine !== speakToken) {
+      try { audio.pause(); } catch (_) {}
+      if (audio._url) URL.revokeObjectURL(audio._url);
+      if (speakAudio === audio) speakAudio = null;
+      return;
+    }
+    await audio.play();
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+    if (mine !== speakToken) return;
+    toast("Could not read that aloud.");
+    stopSpeak();
+    voiceHold = false;
+  } finally {
+    if (mine === speakToken && !speakAudio) resumeVoiceListen();
+    if (!btn.classList.contains("on")) {
+      btn.classList.remove("busy");
+      btn.disabled = false;
+      if (btn.title === "Preparing audio…") {
+        btn.title = "Read aloud";
+        btn.setAttribute("aria-label", "Read aloud");
+      }
+    }
+  }
+}
+const micBtn = $("#micBtn");
+micNode = micBtn;
+if (micBtn) {
+  micBtn.disabled = false;
+  micBtn.title = "Voice input";
+  micBtn.setAttribute("aria-label", "Voice input");
+  // One complete press is pointerdown then pointerup. pointerdown starts and
+  // leaves the recorder running. pointerup and click must not stop it: that
+  // posted a WebM header with no audio clusters. The next press's pointerdown
+  // stops and posts every chunk.
+  let pressDown = false;
+  micBtn.addEventListener("pointerdown", (e) => {
+    if (e.button != null && e.button !== 0) return;
+    if (pressDown) return;
+    pressDown = true;
+    toggleMic();
+  });
+  micBtn.addEventListener("pointerup", () => { pressDown = false; });
+  micBtn.addEventListener("pointercancel", () => { pressDown = false; });
+  micBtn.addEventListener("click", (e) => { e.preventDefault(); });
+}
+if ($("#voiceModeBtn")) $("#voiceModeBtn").onclick = () => { setVoiceMode(!voiceMode); };
+loadVoicePower();
+if ($("#stopSpeechBtn")) $("#stopSpeechBtn").onclick = () => { stopCurrentSpeech(); };
+if ($("#thread")) {
+  $("#thread").addEventListener("click", (e) => {
+    const btn = e.target.closest && e.target.closest("[data-speak]");
+    if (!btn) return;
+    e.preventDefault();
+    readAloud(btn);
+  });
+}
 
 // Models browser filters (MAP › Models)
 $$(".tabs [data-tab]").forEach((b) => (b.onclick = () => { state.mtab = b.dataset.tab; renderModelsList(); }));
@@ -2798,9 +4419,17 @@ function hfHint(st) {
   const el = $("#hfWhere");
   if (!el) return;
   if (st?.error) { el.textContent = st.error; return; }
-  if (st?.saved || st?.hf_token_saved) { el.textContent = "Saved in the vault."; return; }
-  if (st?.vault_unlocked) el.textContent = "Saved in the vault when you enter a token. Not kept in the models folder.";
-  else el.textContent = "Unlock the vault to keep this token across a reboot.";
+  if (st?.saved || st?.hf_token_saved) {
+    el.textContent = st.settings_mounted
+      ? "Saved on the USB stick settings partition."
+      : "Saved in the vault.";
+    return;
+  }
+  if (st?.vault_unlocked) {
+    el.textContent = st.settings_mounted
+      ? "Saved on the USB stick settings partition when you enter a token. Same vault key. Not kept in the models folder."
+      : "Saved in the vault when you enter a token. Not kept in the models folder.";
+  } else el.textContent = "Unlock the vault to keep this token on the encrypted USB settings partition.";
 }
 if ($("#hfToken")) $("#hfToken").addEventListener("input", () => {
   hfDirty = true;
@@ -2821,14 +4450,18 @@ if ($("#hfTest")) $("#hfTest").onclick = () => toast("HF token test — live gat
 applyModeUi("ephemeral");
 newChat();
 if (detectLocalHost()) isLocalMode = true;
-refreshStatus();
-// Stick kiosk polls faster so LAN Pair remints show in chat promptly.
-setInterval(() => { refreshStatus(); }, isLocalMode || detectLocalHost() ? 2000 : 3000);
-ensurePaired(false).then(async () => {
-  try {
-    const st = await pairStatus();
-    if (st.local || detectLocalHost()) isLocalMode = true;
-  } catch (_) {}
+let browserPaired = false;
+let statusTimer = null;
+function startAppStatus() {
+  browserPaired = true;
+  refreshStatus();
+  if (statusTimer) return;
+  // Stick kiosk polls faster so LAN Pair remints show in chat promptly.
+  statusTimer = setInterval(() => { refreshStatus(); }, isLocalMode || detectLocalHost() ? 2000 : 3000);
+}
+ensurePaired(false).then((ok) => {
+  if (!ok) return;
+  startAppStatus();
 });
 
 })();

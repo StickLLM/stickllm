@@ -54,6 +54,40 @@ fi
 grep -q 'Never formats' "$V" && echo "OK   safety banner in script" || { echo "FAIL safety banner"; fail=1; }
 grep -q 'create-partition is disabled' "$V" && echo "OK   partition disabled" || { echo "FAIL partition"; fail=1; }
 grep -Eq 'luksFormat.*\$blob|luksFormat \\' "$V" && echo "OK   luksFormat targets blob var" || echo "WARN review luksFormat target"
+if grep -nE 'luks_pass .*luksFormat|cryptsetup .*luksFormat' "$V" | grep -v 'blob'; then
+  echo "FAIL vault luksFormat is not limited to the blob file"
+  fail=1
+else
+  echo "OK   vault luksFormat stays on the blob file"
+fi
+
+S="$ROOT/overlay/usr/local/bin/stickllm-usb-settings"
+C="$ROOT/overlay/usr/local/bin/stickllm-usb-claim"
+P="$ROOT/overlay/usr/local/lib/stickllm_usb_settings.py"
+[[ -f "$S" && -f "$C" && -f "$P" ]] || { echo "FAIL missing USB settings files"; fail=1; }
+grep -q 'STICKLLM-SETTINGS' "$S" && echo "OK   settings script names STICKLLM-SETTINGS" || { echo "FAIL settings label"; fail=1; }
+grep -q 'assert-part' "$S" && echo "OK   settings format is gated by assert-part" || { echo "FAIL assert-part gate"; fail=1; }
+grep -q '/opt/stickllm/speech' "$S" && echo "OK   speech path excluded from settings" || { echo "FAIL speech exclusion"; fail=1; }
+if grep -n 'wipefs' "$S" "$C" "$P" >/dev/null; then
+  echo "FAIL wipefs in USB settings path"
+  fail=1
+else
+  echo "OK   no wipefs in USB settings path"
+fi
+if grep -nE 'luksFormat.*/dev/sd|luksFormat.*/dev/nvme' "$S" >/dev/null; then
+  echo "FAIL settings luksFormat uses a hardcoded disk"
+  fail=1
+else
+  echo "OK   settings luksFormat is not hardcoded to a disk"
+fi
+grep -q '256' "$P" && echo "OK   settings size is 256 MiB" || { echo "FAIL settings size"; fail=1; }
+grep -q 'settings-only' "$C" && echo "OK   claim can reserve settings without shrinking DATA" || { echo "FAIL settings-only"; fail=1; }
+if grep -nE 'resizepart|ntfsresize|resize2fs' "$C" >/dev/null; then
+  echo "FAIL claim script can shrink an existing partition"
+  fail=1
+else
+  echo "OK   claim script does not shrink partitions"
+fi
 
 # Ensure we never wipefs a partition in vault script
 if grep -n 'wipefs' "$V" >/dev/null; then

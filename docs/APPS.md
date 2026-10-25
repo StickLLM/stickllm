@@ -7,8 +7,9 @@ agent via each app’s API or tool layer. Install target: StickLLM USB **DATA** 
 and/or the encrypted SSD **vault** ([VAULT.md](VAULT.md)). Nothing here is baked into
 the current ISO unless noted below.
 
-**Whisper / Piper:** candidates for **baked standard** TTS/STT on the stick. Decision
-pending — they may stay optional downloads, or become part of the base image later.
+**Chat voice** is part of the StickLLM UI, not a companion download: whisper.cpp
+tiny.en for the mic, KittenTTS mini 0.8 for read-aloud. Pins live in
+`overlay/usr/local/lib/stickllm-speech.pin`. Piper is not the on-stick voice.
 
 This catalog is a planning surface for humans and agents, not a commitment to ship any
 specific app.
@@ -55,7 +56,7 @@ specific app.
 | App | License | Role |
 |---|---|---|
 | **ComfyUI** | GPL | Image generation on the 3090. |
-| **whisper.cpp** and **Piper** | MIT | Speech-to-text and text-to-speech for the voice app. **May become standard on-stick TTS/STT — undecided.** |
+| **whisper.cpp** and **KittenTTS mini 0.8** | MIT and Apache-2.0 | Chat mic and read-aloud. Baked with the image (see `stickllm-speech.pin`), not a companion app. Not Piper. Not Kitten TTS 2. |
 | **code-server** and **Jupyter** | MIT and BSD | Coding and data analysis. |
 | **n8n** | fair-code (not OSI open source) | Automations. Prefer an OSI-friendly stack unless license posture is explicit. |
 | **Node-RED** | Apache | OSI-friendly automation alternative under consideration instead of (or beside) n8n. |

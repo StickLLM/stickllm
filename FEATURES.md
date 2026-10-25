@@ -15,7 +15,9 @@ Working today:
 - Built-in small model (3B), plus downloadable larger models from Settings
 - Kiosk chat UI (desktop and phone browser), pair on the LAN with a one-time code
 - Ephemeral by default: reboot clears the session
-- Optional encrypted vault unlock from the UI for saved storage (saved chats already live here)
+- Optional encrypted vault unlock from the UI for saved storage (saved chats already live here, and a saved chat can be deleted)
+- About 256 MB USB settings partition: raw on first boot, formatted with the vault passcode on unlock
+- Voice on/off: resident Whisper and Kitten, streaming speech, stop button, one-second silence sends after real speech
 - Mount host drives or claim free space on the StickLLM stick
 - Model selection, download, and verification from Hugging Face
 - Shipping ISOs as `StickLLM-vX.Y.Z.iso` (flash with Rufus DD Image, or build from source)
@@ -24,10 +26,10 @@ Still to build, in order. Each line points at the checklist section that owns it
 
 1. **Next.** Finish model filters on installed models, and wire the greyed Advanced section — Models, Settings
 2. Stronger AMD / Intel GPU paths and broader hardware coverage — Boot and hardware
-3. Rest of the vault story: stick key + PIN. The 12-word recovery phrase already exists. Panic / duress PIN stays parked — Vault and security
+3. Rest of the vault story: stick key + PIN. The 12-word recovery phrase already exists. Panic / duress PIN stays parked — Vault and security. The 256 MB USB settings partition ships in v0.4.2 (raw on first boot, same vault passcode on unlock)
 4. Saved settings and per-model presets (saved chats already exist) — Settings
-5. Vision (image input), document chat, and voice — Chats and documents, Companion apps
-6. Speech to text and text to speech for agent interaction — Companion apps
+5. Vision (image input) and document RAG — Chats and documents. Voice chat ships in v0.4.2
+6. Agent voice (wake word) — chat Voice on/off, streaming speech, and read-aloud ship in v0.4.2; see Companion apps
 7. Agent Zero, installable — Companion apps
 8. Apps from a catalog, for a person or an agent — [docs/APPS.md](docs/APPS.md)
 
@@ -61,7 +63,7 @@ Parked with security (do not build yet):
 - [x] Download models from menu to data partition
 - [x] P0 Delete models from data partition (v0.3; baked-in models protected)
 - [x] P0 Accurate loaded-model identity in UI/status (show what's actually loaded)
-- [x] P0 Model load progress UX — clear Loading model / progress so Term/LAN 503 isn't mistaken for broken pairing
+- [x] P0 Model load progress UX — clear Loading model / progress so Term/LAN 503 isn't mistaken for broken pairing. v0.4.2: the status poll does not paint Loading until the browser is paired, and the meter starts at 1% instead of jumping to a fake 30%
 - [x] P0 Signed model catalog, pinned SHA-256, re-checked at load (v0.3: fatal sha256 on download)
 - [x] Slim ISO: bake **3B Q4 only** (~2 GB). **Qwen2.5-7B Q5_K_M** is download-only — shipped v0.3.9 (ISS-020)
 - [x] Hugging Face search, one-at-a-time download queue (stop / start / delete, resume), hash check, and VRAM fit labels — v0.3.9
@@ -89,13 +91,14 @@ Parked with security (do not build yet):
   - Still to expose once the greyed knobs work: MoE expert offload, system prompt, thinking toggle
   - Changes save per model in settings; reset-to-preset option
   - UI shows active context size and warns near the limit
-- Rule: settings hold nothing revealing; anything sensitive lives in the vault
+- Rule: ordinary UI prefs are not a secret store. Portable secrets (API keys, passwords) and per-computer SSD vault locations live in the encrypted USB settings partition, opened with the same vault passcode. Chats stay in the SSD vault. Voice weights stay in `/opt/stickllm/speech`
 
 ## Vault and security
 - [x] Ephemeral sessions (reboot clears pair + session)
 - [x] P1 Header **Mode** dropdown: Ephemeral (default, no SSD vault writes) | Vault (conscious opt-in)
-- [x] P1 Encrypted vault on host SSD — **file blob only** in a user-chosen mounted folder (`feature/encrypted-ssd-vault` / **v0.3.6**); Find/Open existing after reflash; never partition/format; fail-closed on BitLocker/unknown/RAID
+- [x] P1 Encrypted vault on host SSD — **file blob only** in a user-chosen mounted folder (`feature/encrypted-ssd-vault` / **v0.3.6**); Find/Open existing after reflash; on a current stick, open an existing vault with [Opening an existing vault](docs/VAULT.md#opening-an-existing-vault); never partition/format; fail-closed on BitLocker/unknown/RAID
 - [x] P1 Unlock = passcode (+ optional key file on stick DATA)
+- [x] P1 USB settings partition, about 256 MB, on the boot stick beside the live image (not a file inside the ISO). In the **v0.4.2** image, first boot reserves it raw; `stickllm-usb-settings` encrypts it with the same LUKS passcode, stick keyfile, and recovery digest as the SSD vault when that vault is unlocked. No second password. Holds per-computer vault locations and portable secrets (the Hugging Face token is stored here once the partition is unlocked). Voice weights stay in `/opt/stickllm/speech`. Chats stay in the SSD vault. A stick whose `STICKLLM-DATA` already fills the disk is not shrunk. Open an existing SSD vault with [Opening an existing vault](docs/VAULT.md#opening-an-existing-vault)
 - [x] P1 One-time 12-word recovery phrase shown once at setup
 - [x] P1 Failed-attempt counter; wipe-after-N destroys **blob** LUKS header only (default **off**)
 - [ ] P1 Panic / duress PIN: opens decoy empty vault, silently destroys real key (server-side)
@@ -152,7 +155,7 @@ Parked with security (do not build yet):
 
 ## Companion apps (planned)
 - [ ] P2 Optional companion apps downloadable to USB DATA / vault — first-pass catalog in [docs/APPS.md](docs/APPS.md) (ISS-022); not shipping yet
-- [ ] P2 Voice input + TTS (whisper.cpp / Piper candidates; may become baked standard — undecided; see APPS.md)
+- [x] P2 Voice input + read-aloud — in the **v0.4.2** ISO. Voice on/off keeps whisper.cpp tiny.en and KittenTTS mini 0.8 resident (Bella by default), including `whisper-server`. Replies stream to speech; Stop speaking cuts that audio. While Voice is on, the reply budget is 80 tokens, a short spoken-style instruction is sent without appearing in the thread, and thinking text is not shown or spoken. After real speech, 1 second of silence sends the line. Weights are image-build pins (`overlay/usr/local/lib/stickllm-speech.pin`), not downloaded at runtime, and not stored in the vault. Wake word is still later.
 
 ## UI and extras
 - [ ] P1 Status/health page (GPU temp, VRAM, tok/s, loaded model); doubles as Server/Term screen
