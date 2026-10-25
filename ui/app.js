@@ -8,6 +8,8 @@ const TOKEN_KEY = "stickllm_pair_token";
 let token = localStorage.getItem(TOKEN_KEY) || "";
 let isLocalMode = false;
 let sessionMode = "ephemeral";
+let mainView = "chat";
+let selectedAppId = "";
 let loadedCtx = 0;
 let lastPerf = null;
 let sessionModeBusy = false;
@@ -132,6 +134,115 @@ async function installAgent() {
   refreshAgentLink();
 }
 if ($("#agentInstallBtn")) $("#agentInstallBtn").onclick = () => installAgent();
+function showApps() {
+  mainView = "apps";
+  const thread = $("#thread");
+  const composer = $("#composer");
+  const view = $("#appsView");
+  if (thread) thread.hidden = true;
+  if (composer) composer.hidden = true;
+  if (view) view.hidden = false;
+  const title = $("#chatTitle");
+  if (title) title.textContent = "Apps";
+  const btn = $("#appsLink");
+  if (btn) { btn.classList.add("on"); btn.setAttribute("aria-current", "page"); }
+  if (mobile()) toggleNav(false);
+  refreshApps().catch(() => {});
+}
+function appsMessage(text) {
+  const el = $("#appsMsg");
+  if (!el) return;
+  el.hidden = !text;
+  el.textContent = text || "";
+}
+function selectApp(row) {
+  if (!row) return;
+  selectedAppId = row.dataset.app || "";
+  $$(".appsRow").forEach((r) => {
+    const on = r === row;
+    r.classList.toggle("on", on);
+    r.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  const empty = $("#appsEmpty");
+  const selected = $("#appsSelected");
+  if (empty) empty.hidden = true;
+  if (selected) selected.hidden = false;
+  const name = row.querySelector(".appName span");
+  const desc = row.querySelector(".appName small");
+  const installed = row.querySelector("[data-installed]");
+  const state = row.querySelector("[data-state]");
+  if ($("#appsSelName")) $("#appsSelName").textContent = name ? name.textContent : "";
+  if ($("#appsSelDesc")) $("#appsSelDesc").textContent = desc ? desc.textContent : "";
+  if ($("#appsSelLicense")) $("#appsSelLicense").textContent = row.dataset.license || "";
+  if ($("#appsSelInstalled")) $("#appsSelInstalled").textContent = installed ? installed.textContent : "Not installed";
+  if ($("#appsSelState")) $("#appsSelState").textContent = state ? state.textContent : "Not available yet";
+  appsMessage("");
+}
+async function refreshApps() {
+  const r = await fetch("/api/apps", { cache: "no-store", headers: authHeaders() });
+  if (!r.ok) return;
+  const j = await r.json();
+  const apps = Array.isArray(j.apps) ? j.apps : [];
+  const byId = new Map(apps.map((a) => [a.id, a]));
+  let installedCount = 0;
+  $$(".appsRow").forEach((row) => {
+    const a = byId.get(row.dataset.app);
+    if (!a) return;
+    const pill = row.querySelector("[data-state]");
+    const sub = row.querySelector("[data-installed]");
+    if (pill) pill.textContent = a.label || "Not available yet";
+    if (sub) sub.textContent = a.installed ? "Installed" : "Not installed";
+    if (a.installed) installedCount += 1;
+  });
+  const empty = $("#appsInstalledEmpty");
+  if (empty) empty.hidden = installedCount > 0;
+  if (!selectedAppId) return;
+  const row = $(`.appsRow[data-app="${selectedAppId}"]`);
+  if (!row || !$("#appsSelected") || $("#appsSelected").hidden) return;
+  const pill = row.querySelector("[data-state]");
+  const sub = row.querySelector("[data-installed]");
+  if ($("#appsSelInstalled")) $("#appsSelInstalled").textContent = sub ? sub.textContent : "Not installed";
+  if ($("#appsSelState")) $("#appsSelState").textContent = pill ? pill.textContent : "Not available yet";
+}
+async function appsAct(action) {
+  if (!selectedAppId) return;
+  const installBtn = $("#appsInstall");
+  const removeBtn = $("#appsUninstall");
+  if (installBtn) installBtn.disabled = true;
+  if (removeBtn) removeBtn.disabled = true;
+  try {
+    const r = await fetch("/api/apps/" + action, {
+      method: "POST",
+      cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ id: selectedAppId }),
+    });
+    const j = await r.json().catch(() => ({}));
+    const succeeded = r.ok && j.ok === true && (action !== "install" || j.installed === true);
+    if (!succeeded) {
+      appsMessage(j.message || (action === "install"
+        ? "No installer yet. This app was not installed."
+        : "This app was not installed from the Apps page. Nothing was removed."));
+      return;
+    }
+    appsMessage(j.message || "");
+  } catch (e) {
+    appsMessage(action === "install"
+      ? "No installer yet. This app was not installed."
+      : "Nothing was removed.");
+  } finally {
+    if (installBtn) installBtn.disabled = false;
+    if (removeBtn) removeBtn.disabled = false;
+    refreshApps().catch(() => {});
+  }
+}
+if ($("#appsLink")) $("#appsLink").onclick = () => showApps();
+if ($("#appsList")) $("#appsList").addEventListener("click", (e) => {
+  const row = e.target.closest(".appsRow");
+  if (row) selectApp(row);
+});
+if ($("#appsInstall")) $("#appsInstall").onclick = () => appsAct("install");
+if ($("#appsUninstall")) $("#appsUninstall").onclick = () => appsAct("uninstall");
 async function pairStatus() {
   const r = await fetch("/api/pair/status", { cache: "no-store" });
   return r.json();
@@ -296,7 +407,7 @@ function msgHtml(m, i) {
 function renderThread(opts) {
   if (!(opts && opts.keepSpeech) && typeof stopSpeak === "function") stopSpeak();
   const th = $("#thread"), c = state.current;
-  $("#chatTitle").textContent = c ? c.title : "New chat";
+  if (mainView !== "apps") $("#chatTitle").textContent = c ? c.title : "New chat";
   if (!c || !c.msgs.length) {
     th.innerHTML = `<div class="empty"><span class="logo lg"></span><h2>What can I help with?</h2>
       <p>${esc(heroModeLine(state.mode))}</p>
@@ -369,8 +480,21 @@ function renderConvs() {
   }));
   const ul = $("#unlockLink"); if (ul) ul.onclick = () => { openSettings("storage"); setTimeout(() => $("#vaultPass").focus(), 50); };
 }
-function openChat(c) { state.current = c; activeChatId = c?.id || null; renderThread(); renderConvs(); }
+function leaveApps() {
+  if (mainView !== "apps") return;
+  mainView = "chat";
+  const view = $("#appsView");
+  if (view) view.hidden = true;
+  const thread = $("#thread");
+  const composer = $("#composer");
+  if (thread) thread.hidden = false;
+  if (composer) composer.hidden = false;
+  const btn = $("#appsLink");
+  if (btn) { btn.classList.remove("on"); btn.removeAttribute("aria-current"); }
+}
+function openChat(c) { leaveApps(); state.current = c; activeChatId = c?.id || null; renderThread(); renderConvs(); }
 function newChat() {
+  leaveApps();
   state.current = null; activeChatId = null;
   messages.length = 1;
   messages[0] = { role: "system", content: "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful." };
@@ -2679,6 +2803,7 @@ async function openVaultChat(id) {
     if (!messages.some((x) => x.role === "system")) {
       messages.unshift({ role: "system", content: "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful." });
     }
+    leaveApps();
     state.current = c; renderThread(); renderConvs(); closeSettings();
   } catch (e) { toast(e.message); }
 }

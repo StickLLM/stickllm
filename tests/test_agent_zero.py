@@ -375,18 +375,21 @@ def test_interstitial_links_home_not_agent_port():
 
 def test_agent_sidebar_opens_a_new_tab():
     html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
-    assert 'id="agentLink"' in html
-    assert 'target="_blank"' in html
-    assert "noopener" in html
-    assert 'id="comfyLink"' in html
-    assert 'id="writerLink"' in html
-    assert "Not installed" in html
-    assert "Word processor" in html
-    assert "Coming later" in html
-    for slot in ("comfyLink", "writerLink"):
-        start = html.index(f'id="{slot}"')
-        tag = html[html.rfind("<a", 0, start) : html.index(">", start) + 1]
-        assert "href=" not in tag
+    side = html.split('<aside class="sidebar"', 1)[1].split("</aside>", 1)[0]
+    assert 'id="agentLink"' in side
+    assert 'target="_blank"' in side
+    assert "noopener" in side
+    assert ":5443" in side
+    assert 'id="appsLink"' in side
+    assert "comfyLink" not in side
+    assert "writerLink" not in side
+    assert "Comfy" not in side
+    assert "Word processor" not in side
+    apps_at = side.index('id="appsLink"')
+    apps_tag = side[side.rfind("<", 0, apps_at) : side.index(">", apps_at) + 1]
+    assert apps_tag.startswith("<button")
+    assert "target=" not in apps_tag
+    assert ":5443" not in apps_tag
     js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
     assert 'link.target = "_blank"' in js
     assert "noopener" in js

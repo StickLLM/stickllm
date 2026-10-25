@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
-<link rel="stylesheet" href="style.css?v=apps1" />
+<link rel="stylesheet" href="style.css?v=apps2" />
 </head>
 <body>
 <div class="app" id="app">
@@ -34,8 +34,7 @@
       <nav class="sideApps" aria-label="Apps">
         <p class="sideAppsLabel">Apps</p>
         <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 4.6L19 8.2l-3.5 3.4.8 4.9L12 14.2 7.7 16.5l.8-4.9L5 8.2l4.8-.6z"/></svg><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
-        <a class="navBtn appSoon" id="comfyLink" aria-disabled="true" title="Comfy is not installed. When it is, it will open in its own browser tab."><span class="appName"><span>Comfy</span><small>Not installed</small></span></a>
-        <a class="navBtn appSoon" id="writerLink" aria-disabled="true" title="A word processor is not installed yet. When it is, it will open in its own browser tab."><span class="appName"><span>Word processor</span><small>Coming later</small></span></a>
+        <button class="navBtn" id="appsLink" type="button"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span class="appName"><span>Apps</span><small>Catalog</small></span></button>
       </nav>
     </div>
   </aside>
@@ -106,6 +105,189 @@
       </div>
       <p class="composerNote"><span id="composerNote"></span><span class="composerPerf" id="composerPerf" hidden></span></p>
     </form>
+    <section class="appsView" id="appsView" hidden aria-label="Apps">
+      <div class="appsInner">
+        <p class="appsIntro" id="appsIntro">Agent Zero stays in the sidebar. Install it first, then use it to install and configure these apps.</p>
+        <p class="appsInstalledEmpty" id="appsInstalledEmpty">Nothing is installed from this page yet.</p>
+        <div class="appsLayout">
+          <div class="appsList" id="appsList">
+            <section class="appsGroup" data-group="Core (starter apps)">
+              <h3>Core (starter apps)</h3>
+              <div class="appsRows">
+                <button type="button" class="appsRow" data-app="onlyoffice" data-license="AGPL">
+                  <span class="appName">
+                    <span>ONLYOFFICE Docs</span>
+                    <small>Documents, spreadsheets, and slides. The bot can edit open files live.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="paperless-ngx" data-license="GPL">
+                  <span class="appName">
+                    <span>Paperless-ngx</span>
+                    <small>Scans and files receipts and documents, with text recognition and tagging, through a REST API.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="snappymail" data-license="AGPL">
+                  <span class="appName">
+                    <span>SnappyMail</span>
+                    <small>Webmail over IMAP and SMTP, so the bot can triage and draft. Sending is the user’s click.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="radicale" data-license="GPL">
+                  <span class="appName">
+                    <span>Radicale</span>
+                    <small>Calendar and contacts (CalDAV and CardDAV), very light.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="trilium" data-license="AGPL">
+                  <span class="appName">
+                    <span>Trilium Notes</span>
+                    <small>Notes and a knowledge base with an API.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Productivity">
+              <h3>Productivity</h3>
+              <div class="appsRows">
+                <button type="button" class="appsRow" data-app="vikunja" data-license="AGPL">
+                  <span class="appName">
+                    <span>Vikunja</span>
+                    <small>Tasks and projects.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="actual" data-license="MIT">
+                  <span class="appName">
+                    <span>Actual Budget</span>
+                    <small>Budgeting and bank CSV import.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="immich" data-license="AGPL">
+                  <span class="appName">
+                    <span>Immich</span>
+                    <small>Photos, with search that runs on your local GPU.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="searxng" data-license="AGPL">
+                  <span class="appName">
+                    <span>SearXNG</span>
+                    <small>Private web search for the agent, which can run over Tor.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Communications">
+              <h3>Communications</h3>
+              <div class="appsRows">
+                <button type="button" class="appsRow" data-app="matrix" data-license="Apache">
+                  <span class="appName">
+                    <span>Matrix (Conduit + Element)</span>
+                    <small>Encrypted chat and calls, with bridges to other messengers.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="simplex" data-license="AGPL">
+                  <span class="appName">
+                    <span>SimpleX Chat</span>
+                    <small>Anonymous messaging with no IDs, with self-hosted relays.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="jitsi" data-license="Apache">
+                  <span class="appName">
+                    <span>Jitsi Meet</span>
+                    <small>Browser video calls.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="onionshare" data-license="GPL">
+                  <span class="appName">
+                    <span>OnionShare</span>
+                    <small>Anonymous file sharing and a drop box over Tor.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Publishing">
+              <h3>Publishing</h3>
+              <div class="appsRows">
+                <button type="button" class="appsRow" data-app="postiz" data-license="AGPL">
+                  <span class="appName">
+                    <span>Postiz</span>
+                    <small>Posts to many social networks at once, with an API.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="opentimestamps" data-license="LGPL or MIT">
+                  <span class="appName">
+                    <span>OpenTimestamps + a signing tool</span>
+                    <small>Proof that a published file hasn’t been changed.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Creative and technical">
+              <h3>Creative and technical</h3>
+              <div class="appsRows">
+                <button type="button" class="appsRow" data-app="comfyui" data-license="GPL">
+                  <span class="appName">
+                    <span>ComfyUI</span>
+                    <small>Image generation on the 3090.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="code-server-jupyter" data-license="MIT and BSD">
+                  <span class="appName">
+                    <span>code-server and Jupyter</span>
+                    <small>Coding and data analysis.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="n8n" data-license="fair-code (not OSI open source)">
+                  <span class="appName">
+                    <span>n8n</span>
+                    <small>Automations. Prefer an OSI-friendly stack unless license posture is explicit.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="node-red" data-license="Apache">
+                  <span class="appName">
+                    <span>Node-RED</span>
+                    <small>OSI-friendly automation alternative under consideration instead of (or beside) n8n.</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+              </div>
+            </section>
+          </div>
+          <div class="appsDetail" id="appsDetail">
+            <div class="appsEmpty" id="appsEmpty">Select an app to install or uninstall it.</div>
+            <div id="appsSelected" hidden>
+              <h2 id="appsSelName"></h2>
+              <p class="muted small" id="appsSelLicense"></p>
+              <p id="appsSelDesc"></p>
+              <p id="appsSelInstalled">Not installed</p>
+              <p id="appsSelState">Not available yet</p>
+              <p class="appsMsg" id="appsMsg" hidden></p>
+              <div class="appsActions">
+                <button class="btn primary" id="appsInstall" type="button">Install</button>
+                <button class="btn danger ghost" id="appsUninstall" type="button">Uninstall</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- Settings modal -->
@@ -479,6 +661,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=apps1"></script>
+<script src="app.js?v=apps2"></script>
 </body>
 </html>

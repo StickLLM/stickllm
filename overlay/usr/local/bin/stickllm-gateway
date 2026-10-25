@@ -282,6 +282,25 @@ def agent_lib():
     return mod
 
 
+_APPS_LIB = None
+
+
+def apps_lib():
+    """Catalog and install/uninstall gate. Shared with the Apps page tests."""
+    global _APPS_LIB
+    if _APPS_LIB is not None:
+        return _APPS_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_apps.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_apps", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_apps helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _APPS_LIB = mod
+    return mod
+
+
 def token_ok(header: str | None, doc: dict) -> bool:
     if not header:
         return False
@@ -1427,6 +1446,48 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._json(200, {"ok": True, "message": "Install started. The image is pulled onto the host drive."})
 
+    def _apps_allowed(self) -> bool:
+        if not stickllm_ui_client(self.headers) and not self._is_loopback():
+            self._json(403, {"ok": False, "error": "ui_only", "message": "Apps are StickLLM UI only."})
+            return False
+        doc, ok = self._auth()
+        if doc.get("require_pair") and not ok:
+            self._json(401, {"ok": False, "error": "pair_required"})
+            return False
+        return True
+
+    def _apps_catalog(self) -> None:
+        if not self._apps_allowed():
+            return
+        try:
+            self._json(200, apps_lib().catalog_document())
+        except Exception:
+            self._json(500, {"ok": False, "error": "apps catalog failed"})
+
+    def _apps_mutate(self, action: str, req: dict) -> None:
+        if not self._apps_allowed():
+            return
+        app_id = str((req or {}).get("id") or "")
+        try:
+            mod = apps_lib()
+            if action == "install":
+                result = mod.install_app(app_id)
+            else:
+                result = mod.uninstall_app(app_id)
+        except Exception:
+            self._json(
+                500,
+                {
+                    "ok": False,
+                    "installed": False,
+                    "error": "apps action failed",
+                    "message": "Nothing was changed.",
+                    "deleted": [],
+                },
+            )
+            return
+        self._json(200 if result.get("ok") else 409, result)
+
     def _agent_status_doc(self) -> dict:
         mod = agent_lib()
         return mod.status_document(
@@ -1783,6 +1844,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/agent/status":
             self._agent_status()
             return
+        if path == "/api/apps":
+            self._apps_catalog()
+            return
         return super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
@@ -1812,6 +1876,11 @@ class Handler(SimpleHTTPRequestHandler):
             req = json.loads(raw.decode() or "{}")
         except Exception:
             self._json(400, {"error": "bad json"})
+            return
+
+        if path in ("/api/apps/install", "/api/apps/uninstall"):
+            action = "install" if path.endswith("/install") else "uninstall"
+            self._apps_mutate(action, req if isinstance(req, dict) else {})
             return
 
         if path == "/api/session-mode":
