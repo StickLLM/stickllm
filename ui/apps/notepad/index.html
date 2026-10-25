@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Notepad — StickLLM</title>
+<style>
+  body{margin:0;background:#0e1214;color:#e4ecee;font:15px/1.45 "Segoe UI",sans-serif;height:100vh;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #263136}
+  header a{color:#2bb5a8;text-decoration:none}
+  button,select{font:inherit;background:#1e272c;color:#e4ecee;border:1px solid #263136;border-radius:8px;padding:7px 12px;cursor:pointer}
+  .bar{display:flex;gap:8px;align-items:center;padding:10px 16px}
+  textarea{flex:1;margin:0 16px 16px;background:#13181b;color:#e4ecee;border:1px solid #263136;border-radius:12px;padding:12px;font:16px/1.45 ui-monospace,monospace;resize:none}
+  .muted{color:#7d8c91}
+</style>
+</head>
+<body>
+<header><a href="/">StickLLM</a><strong>Notepad</strong><span class="muted" id="where">Plain text</span></header>
+<div class="bar">
+  <button type="button" id="neu">New</button>
+  <button type="button" id="open">Open</button>
+  <button type="button" id="save">Save</button>
+  <select id="root"><option value="home">Home</option><option value="vault">Vault</option></select>
+  <span class="muted" id="msg"></span>
+</div>
+<textarea id="doc" spellcheck="false" aria-label="Note"></textarea>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+let name = "note.txt";
+function say(text) { $("#msg").textContent = text || ""; $("#where").textContent = name; }
+function txtName(value) {
+  const base = String(value || "").replace(/\\/g, "/").split("/").pop().trim();
+  if (!base || base.includes("..") || /[\/:*?"<>|]/.test(base)) return "";
+  return base.toLowerCase().endsWith(".txt") ? base : base + ".txt";
+}
+async function api(url, opt) {
+  const r = await fetch(url, Object.assign({ cache: "no-store" }, opt || {}));
+  if (r.status === 401) throw new Error("Pair this browser from StickLLM first.");
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.message || "Request failed");
+  return j;
+}
+$("#neu").onclick = () => { $("#doc").value = ""; name = "note.txt"; say("New note"); };
+$("#save").onclick = async () => {
+  const picked = txtName(prompt("Save as", name));
+  if (!picked) { say("Use a plain .txt name."); return; }
+  name = picked;
+  try {
+    await api("/api/files/text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ root: $("#root").value, path: name, text: $("#doc").value }),
+    });
+    say("Saved " + name);
+  } catch (e) { say(e.message); }
+};
+$("#open").onclick = async () => {
+  const root = $("#root").value;
+  try {
+    const doc = await api("/api/files/list?root=" + encodeURIComponent(root) + "&path=");
+    const files = (doc.entries || []).filter((e) => !e.dir && !e.symlink && e.name.toLowerCase().endsWith(".txt"));
+    if (!files.length) { say("No .txt files in that folder."); return; }
+    const picked = prompt("Open which file?\n" + files.map((e) => e.name).join("\n"), files[0].name);
+    const file = txtName(picked);
+    if (!file || !files.some((e) => e.name === file)) { say("That file is not in the list."); return; }
+    const r = await fetch("/api/files/read?root=" + encodeURIComponent(root) + "&path=" + encodeURIComponent(file), { cache: "no-store" });
+    if (r.status === 401) throw new Error("Pair this browser from StickLLM first.");
+    if (!r.ok) throw new Error("Could not open that file.");
+    $("#doc").value = await r.text();
+    name = file;
+    say("Opened " + file);
+  } catch (e) { say(e.message); }
+};
+api("/api/files/roots").then((doc) => {
+  const vault = (doc.roots || []).find((r) => r.id === "vault");
+  const opt = $("#root").querySelector('option[value="vault"]');
+  if (opt && (!vault || !vault.available)) opt.disabled = true;
+}).catch(() => {});
+</script>
+</body>
+</html>

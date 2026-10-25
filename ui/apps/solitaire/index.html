@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Solitaire — StickLLM</title>
+<style>
+  body{margin:0;min-height:100vh;background:#0e1214;color:#e4ecee;font:14px/1.3 "Segoe UI",sans-serif;padding:12px}
+  a{color:#2bb5a8;text-decoration:none}
+  .top{display:flex;gap:12px;align-items:center;margin-bottom:12px}
+  .row{display:flex;gap:8px;align-items:flex-start;min-height:120px}
+  .pile{min-width:64px;min-height:88px}
+  button.card,button.slot{width:64px;height:88px;border-radius:8px;border:1px solid #263136;background:#1e272c;color:#e4ecee;font:16px/1.1 "Segoe UI",sans-serif;cursor:pointer}
+  button.card.red{color:#e07a7a}
+  button.card.on{outline:2px solid #2bb5a8}
+  .stack{display:flex;flex-direction:column}
+  .stack button.card{margin-top:-64px}
+  .stack button.card:first-child{margin-top:0}
+  button.card.down{color:transparent;background:#16332f}
+</style>
+</head>
+<body>
+<div class="top"><a href="/">StickLLM</a><strong>Solitaire</strong><span id="msg">Klondike</span><button type="button" id="again">New game</button></div>
+<div class="row" id="toprow"></div>
+<div class="row" id="tableau"></div>
+<script>
+"use strict";
+/* Original Klondike. Click a card, then click where it should go. Draw one. */
+const RANKS = "A23456789TJQK";
+const SUITS = ["S","H","D","C"];
+const RED = { H:1, D:1 };
+let stock = [], waste = [], found = [[],[],[],[]], tab = [[],[],[],[],[],[],[]];
+let sel = null;
+const msg = document.getElementById("msg");
+function deck() {
+  const cards = [];
+  SUITS.forEach((s) => { for (const r of RANKS) cards.push(r + s); });
+  for (let i = cards.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [cards[i], cards[j]] = [cards[j], cards[i]];
+  }
+  return cards;
+}
+function rank(c) { return RANKS.indexOf(c[0]); }
+function suit(c) { return c[1]; }
+function color(c) { return RED[suit(c)] ? "red" : "black"; }
+function canTab(card, dest) {
+  if (!dest.length) return rank(card) === 12;
+  const top = dest[dest.length - 1];
+  return top.up && color(card) !== color(top.card) && rank(card) === rank(top.card) - 1;
+}
+function canFound(card, dest) {
+  if (!dest.length) return rank(card) === 0;
+  const top = dest[dest.length - 1];
+  return suit(card) === suit(top) && rank(card) === rank(top) + 1;
+}
+function takeSel() {
+  if (!sel) return null;
+  if (sel.kind === "waste") return waste.length ? [waste.pop()] : null;
+  if (sel.kind === "tab") {
+    const pile = tab[sel.pile];
+    const at = pile.findIndex((c) => c === sel.card);
+    if (at < 0 || !pile[at].up) return null;
+    return pile.splice(at);
+  }
+  return null;
+}
+function putBack(cards) {
+  if (!sel) return;
+  if (sel.kind === "waste") waste.push(cards[0]);
+  else tab[sel.pile].push(...cards);
+}
+function tryMove(target) {
+  const cards = takeSel();
+  if (!cards) { sel = null; draw(); return; }
+  const card = cards[0].card || cards[0];
+  const moving = cards.map((c) => (c.card ? c : { card: c, up: true }));
+  let ok = false;
+  if (target.kind === "found" && moving.length === 1 && canFound(card, found[target.pile])) {
+    found[target.pile].push(card); ok = true;
+  } else if (target.kind === "tab" && canTab(card, tab[target.pile])) {
+    tab[target.pile].push(...moving); ok = true;
+  }
+  if (!ok) putBack(cards);
+  else if (sel.kind === "tab") {
+    const pile = tab[sel.pile];
+    if (pile.length && !pile[pile.length - 1].up) pile[pile.length - 1].up = true;
+  }
+  sel = null;
+  draw();
+  if (found.every((p) => p.length === 13)) msg.textContent = "Done";
+}
+function drawStock() {
+  if (stock.length) waste.push(stock.pop());
+  else { stock = waste.reverse(); waste = []; }
+  sel = null;
+  draw();
+}
+function button(label, className, onclick) {
+  const el = document.createElement("button");
+  el.type = "button";
+  el.className = className;
+  el.textContent = label;
+  el.onclick = onclick;
+  return el;
+}
+function draw() {
+  const top = document.getElementById("toprow");
+  const table = document.getElementById("tableau");
+  top.innerHTML = "";
+  table.innerHTML = "";
+  top.appendChild(button(stock.length ? "Draw" : "Turn", "slot", drawStock));
+  const wasteTop = waste[waste.length - 1];
+  top.appendChild(button(wasteTop || "Waste", wasteTop ? "card " + color(wasteTop) + (sel && sel.kind === "waste" ? " on" : "") : "slot", () => {
+    if (!wasteTop) return;
+    sel = { kind: "waste" };
+    draw();
+  }));
+  found.forEach((pile, i) => {
+    const topCard = pile[pile.length - 1];
+    top.appendChild(button(topCard || "A", topCard ? "card " + color(topCard) : "slot", () => tryMove({ kind: "found", pile: i })));
+  });
+  tab.forEach((pile, i) => {
+    const col = document.createElement("div");
+    col.className = "pile stack";
+    if (!pile.length) col.appendChild(button("", "slot", () => tryMove({ kind: "tab", pile: i })));
+    pile.forEach((item, n) => {
+      const face = item.up ? item.card : "";
+      const on = sel && sel.kind === "tab" && sel.card === item;
+      const el = button(face, "card" + (item.up ? " " + color(item.card) : " down") + (on ? " on" : ""), () => {
+        if (!item.up) return;
+        if (sel) tryMove({ kind: "tab", pile: i });
+        else { sel = { kind: "tab", pile: i, card: item }; draw(); }
+      });
+      if (n) el.style.marginTop = item.up ? "-64px" : "-72px";
+      col.appendChild(el);
+    });
+    table.appendChild(col);
+  });
+}
+function deal() {
+  const cards = deck();
+  stock = []; waste = []; found = [[],[],[],[]]; tab = [[],[],[],[],[],[],[]]; sel = null;
+  for (let i = 0; i < 7; i++) {
+    for (let j = 0; j <= i; j++) tab[i].push({ card: cards.pop(), up: j === i });
+  }
+  while (cards.length) stock.push(cards.pop());
+  msg.textContent = "Klondike";
+  draw();
+}
+document.getElementById("again").onclick = deal;
+deal();
+</script>
+</body>
+</html>

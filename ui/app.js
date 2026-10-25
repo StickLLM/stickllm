@@ -237,6 +237,15 @@ async function appsAct(action) {
   }
 }
 if ($("#appsLink")) $("#appsLink").onclick = () => showApps();
+function toggleAppsMenu(force) {
+  const menu = $("#appsMenu");
+  if (!menu) return;
+  const open = typeof force === "boolean" ? force : menu.hidden;
+  menu.hidden = !open;
+  const btn = $("#appsMenuBtn");
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+if ($("#appsMenuBtn")) $("#appsMenuBtn").onclick = () => toggleAppsMenu();
 if ($("#appsList")) $("#appsList").addEventListener("click", (e) => {
   const row = e.target.closest(".appsRow");
   if (row) selectApp(row);

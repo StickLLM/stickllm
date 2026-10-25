@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Media — StickLLM</title>
+<style>
+  body{margin:0;background:#0e1214;color:#e4ecee;font:15px/1.45 "Segoe UI",sans-serif}
+  header{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid #263136}
+  header a{color:#2bb5a8;text-decoration:none}
+  main{display:grid;grid-template-columns:260px 1fr;min-height:calc(100vh - 52px)}
+  aside{border-right:1px solid #263136;padding:12px}
+  button,select{font:inherit;background:#1e272c;color:#e4ecee;border:1px solid #263136;border-radius:8px;padding:7px 10px}
+  ul{list-style:none;padding:0;margin:10px 0}
+  li button{width:100%;text-align:left;margin:0 0 6px;background:none;cursor:pointer}
+  section{padding:16px;display:grid;gap:12px;align-content:start}
+  img,video,audio{max-width:100%;background:#000}
+  .muted{color:#7d8c91}
+  @media (max-width:720px){main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><a href="/">StickLLM</a><strong>Media</strong><span class="muted">Pictures, audio, and video</span></header>
+<main>
+  <aside>
+    <select id="root"></select>
+    <ul id="files"></ul>
+    <label>Or pick a file on this computer<br><input type="file" id="local" accept="image/*,audio/*,video/*" /></label>
+    <p class="muted" id="msg"></p>
+  </aside>
+  <section id="stage"><p class="muted">Choose a file.</p></section>
+</main>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const MEDIA = /\.(png|jpe?g|gif|webp|bmp|mp3|wav|ogg|m4a|mp4|webm|ogv)$/i;
+function say(text) { $("#msg").textContent = text || ""; }
+function kind(name) {
+  if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) return "img";
+  if (/\.(mp3|wav|ogg|m4a)$/i.test(name)) return "audio";
+  if (/\.(mp4|webm|ogv)$/i.test(name)) return "video";
+  return "";
+}
+function show(url, name) {
+  const stage = $("#stage");
+  stage.innerHTML = "";
+  const tag = kind(name);
+  if (!tag) { say("That file is not a picture, audio, or video."); return; }
+  const el = document.createElement(tag);
+  el.src = url;
+  el.controls = tag !== "img";
+  el.alt = name;
+  stage.appendChild(el);
+  say(name);
+}
+async function load() {
+  const r = await fetch("/api/files/roots", { cache: "no-store" });
+  if (r.status === 401) { say("Pair this browser from StickLLM first."); return; }
+  const doc = await r.json();
+  const sel = $("#root");
+  sel.innerHTML = "";
+  (doc.roots || []).forEach((item) => {
+    if (!item.available) return;
+    const opt = document.createElement("option");
+    opt.value = item.id;
+    opt.textContent = item.label;
+    sel.appendChild(opt);
+  });
+  if (!sel.options.length) say("No folders are available. You can still pick a file on this computer.");
+  else list();
+}
+async function list() {
+  const root = $("#root").value;
+  if (!root) return;
+  const r = await fetch("/api/files/list?root=" + encodeURIComponent(root) + "&path=", { cache: "no-store" });
+  if (r.status === 401) { say("Pair this browser from StickLLM first."); return; }
+  const doc = await r.json();
+  const box = $("#files");
+  box.innerHTML = "";
+  (doc.entries || []).filter((e) => !e.dir && !e.symlink && !e.outside && MEDIA.test(e.name)).forEach((entry) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = entry.name;
+    btn.onclick = () => show("/api/files/read?root=" + encodeURIComponent(root) + "&path=" + encodeURIComponent(entry.name), entry.name);
+    li.appendChild(btn);
+    box.appendChild(li);
+  });
+}
+$("#root").onchange = () => list().catch((e) => say(e.message));
+$("#local").onchange = (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  show(URL.createObjectURL(file), file.name);
+};
+load().catch((e) => say(e.message));
+</script>
+</body>
+</html>

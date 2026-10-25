@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Calculator — StickLLM</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0e1214;color:#e4ecee;font:16px/1.4 "Segoe UI",sans-serif}
+  .wrap{width:min(320px,92vw)}
+  a{color:#2bb5a8;text-decoration:none}
+  output{display:block;background:#13181b;border:1px solid #263136;border-radius:12px;padding:16px;text-align:right;font:28px/1.2 ui-monospace,monospace;margin:12px 0;overflow:hidden}
+  .keys{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  button{font:18px/1 "Segoe UI",sans-serif;padding:16px 0;border-radius:10px;border:1px solid #263136;background:#1e272c;color:#e4ecee;cursor:pointer}
+  button.op{color:#2bb5a8}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/">StickLLM</a>
+  <output id="screen">0</output>
+  <div class="keys" id="keys"></div>
+</div>
+<script>
+"use strict";
+const screen = document.getElementById("screen");
+const keys = ["C","±","%","/","7","8","9","*","4","5","6","-","1","2","3","+","0",".","⌫","="];
+let acc = null, op = null, fresh = true;
+function show(value) {
+  const text = String(value);
+  screen.textContent = text.length > 14 ? Number(value).toPrecision(8) : text;
+}
+function apply(next) {
+  const cur = Number(screen.textContent);
+  if (op === "+") return acc + cur;
+  if (op === "-") return acc - cur;
+  if (op === "*") return acc * cur;
+  if (op === "/") return cur === 0 ? NaN : acc / cur;
+  return next;
+}
+function press(key) {
+  if (key === "C") { acc = null; op = null; fresh = true; show(0); return; }
+  if (key === "⌫") {
+    if (fresh) return;
+    const next = screen.textContent.slice(0, -1);
+    show(next === "" || next === "-" ? 0 : next);
+    return;
+  }
+  if (key === "±") { show(Number(screen.textContent) * -1); fresh = false; return; }
+  if (key === "%") { show(Number(screen.textContent) / 100); fresh = false; return; }
+  if ("+-*/".includes(key)) {
+    const cur = Number(screen.textContent);
+    acc = acc === null || fresh ? cur : apply(cur);
+    if (!Number.isFinite(acc)) { show("Error"); acc = null; op = null; fresh = true; return; }
+    op = key; fresh = true; show(acc); return;
+  }
+  if (key === "=") {
+    if (op === null || acc === null) return;
+    const result = apply(Number(screen.textContent));
+    show(Number.isFinite(result) ? result : "Error");
+    acc = null; op = null; fresh = true; return;
+  }
+  if (fresh) { show(key === "." ? "0." : key); fresh = false; return; }
+  if (key === "." && screen.textContent.includes(".")) return;
+  show(screen.textContent === "0" && key !== "." ? key : screen.textContent + key);
+}
+const box = document.getElementById("keys");
+keys.forEach((key) => {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = key;
+  if ("+-*/=".includes(key)) btn.className = "op";
+  btn.onclick = () => press(key);
+  box.appendChild(btn);
+});
+document.addEventListener("keydown", (ev) => {
+  const map = { Enter: "=", Escape: "C", Backspace: "⌫" };
+  const key = map[ev.key] || ev.key;
+  if (keys.includes(key)) { ev.preventDefault(); press(key); }
+});
+</script>
+</body>
+</html>

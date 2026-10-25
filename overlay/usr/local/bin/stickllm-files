@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Loopback file helper for the StickLLM desktop.
+
+Binds 127.0.0.1 only. The gateway is the LAN entry and checks pairing before
+it proxies here. File contents are not written to the log.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+LIB = Path(__file__).resolve().parent.parent / "lib" / "stickllm_files.py"
+HOST = "127.0.0.1"
+PORT = int(os.environ.get("STICKLLM_FILES_PORT", "8096"))
+
+
+def load_lib():
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("stickllm_files", str(LIB))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise SystemExit("stickllm_files helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+FILES = load_lib()
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt: str, *args) -> None:
+        # Request line only. Bodies are never appended.
+        sys.stderr.write("stickllm-files %s\n" % (fmt % args))
+
+    def _json(self, code: int, obj: dict) -> None:
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _error(self, exc: Exception) -> None:
+        if isinstance(exc, FILES.FilesError):
+            self._json(exc.status, {"ok": False, "error": exc.code, "message": exc.message})
+            return
+        self._json(500, {"ok": False, "error": "files_failed", "message": "That file could not be used."})
+
+    def _query(self) -> dict[str, str]:
+        parsed = parse_qs(urlparse(self.path).query)
+        return {key: values[0] for key, values in parsed.items() if values}
+
+    def do_GET(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        query = self._query()
+        try:
+            if path in ("/health", "/"):
+                self._json(200, {"ok": True, "bind": f"{HOST}:{PORT}"})
+                return
+            if path == "/roots":
+                self._json(200, FILES.roots_document())
+                return
+            if path == "/list":
+                self._json(200, FILES.list_dir(query.get("root", ""), query.get("path", "")))
+                return
+            if path == "/read":
+                target, ctype, inline = FILES.read_file(query.get("root", ""), query.get("path", ""))
+                size = target.stat().st_size
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                if not inline:
+                    name = target.name.replace('"', "")
+                    self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.end_headers()
+                with target.open("rb") as handle:
+                    while True:
+                        chunk = handle.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                return
+        except Exception as exc:
+            self._error(exc)
+            return
+        self._json(404, {"ok": False, "error": "not_found", "message": "Unknown file request."})
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > FILES.MAX_BYTES + 1024:
+            self._json(413, {"ok": False, "error": "too_large", "message": "That file is over the 32 MB limit."})
+            return
+        raw = self.rfile.read(length) if length else b""
+        query = self._query()
+        try:
+            if path == "/upload":
+                result = FILES.write_bytes(query.get("root", ""), query.get("path", ""), raw)
+                self._json(200, result)
+                return
+            try:
+                req = json.loads(raw.decode() or "{}")
+            except (UnicodeDecodeError, ValueError):
+                self._json(400, {"ok": False, "error": "bad_json", "message": "That request was not understood."})
+                return
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json", "message": "That request was not understood."})
+                return
+            root = str(req.get("root") or "")
+            rel = str(req.get("path") or "")
+            if path == "/text":
+                self._json(200, FILES.write_text(root, rel, req.get("text") if isinstance(req.get("text"), str) else ""))
+                return
+            if path == "/mkdir":
+                self._json(200, FILES.make_dir(root, rel))
+                return
+            if path == "/delete":
+                self._json(200, FILES.remove_path(root, rel))
+                return
+        except Exception as exc:
+            self._error(exc)
+            return
+        self._json(404, {"ok": False, "error": "not_found", "message": "Unknown file request."})
+
+
+def serve() -> None:
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and geteuid() == 0:
+        raise SystemExit("stickllm-files must not run as root")
+    if HOST != "127.0.0.1":
+        raise SystemExit("stickllm-files must bind 127.0.0.1")
+    httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    bound = httpd.server_address
+    if bound[0] != "127.0.0.1":
+        raise SystemExit("stickllm-files must bind 127.0.0.1")
+    print(f"stickllm-files on http://{HOST}:{bound[1]}", flush=True)
+    httpd.serve_forever()
+
+
+def main(argv: list[str]) -> int:
+    cmd = argv[1] if len(argv) > 1 else "serve"
+    if cmd == "grant-vault":
+        # Missing privileges must not keep the helper from starting.
+        # Home still works; a locked or unreadable vault stays absent.
+        if getattr(os, "geteuid", lambda: 1)() != 0:
+            print("grant-vault skipped")
+            return 0
+        try:
+            result = FILES.grant_vault_to_user()
+        except Exception:
+            print("grant-vault skipped")
+            return 0
+        print(json.dumps({"ok": bool(result.get("ok")), "changed": bool(result.get("changed"))}))
+        return 0
+    if cmd == "serve":
+        serve()
+        return 0
+    print("usage: stickllm-files serve|grant-vault", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

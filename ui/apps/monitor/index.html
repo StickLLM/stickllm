@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Monitor — StickLLM</title>
+<style>
+  body{margin:0;background:#0e1214;color:#e4ecee;font:15px/1.45 "Segoe UI",sans-serif}
+  header{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid #263136}
+  header a{color:#2bb5a8;text-decoration:none}
+  main{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;padding:16px}
+  article{background:#13181b;border:1px solid #263136;border-radius:14px;padding:14px}
+  h2{margin:0 0 8px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:#7d8c91}
+  p{margin:4px 0}
+  .big{font-size:28px;font-weight:620}
+</style>
+</head>
+<body>
+<header><a href="/">StickLLM</a><strong>Monitor</strong></header>
+<main id="board"><article><h2>Status</h2><p>Reading the stick…</p></article></main>
+<script>
+"use strict";
+function gb(n) {
+  if (typeof n !== "number") return "—";
+  return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+}
+function card(title, lines) {
+  const el = document.createElement("article");
+  const h = document.createElement("h2");
+  h.textContent = title;
+  el.appendChild(h);
+  lines.forEach((line) => {
+    const p = document.createElement("p");
+    if (line.big) p.className = "big";
+    p.textContent = line.text;
+    el.appendChild(p);
+  });
+  return el;
+}
+function render(doc) {
+  const board = document.getElementById("board");
+  board.innerHTML = "";
+  const cpu = doc.cpu || {};
+  const cpuLines = [];
+  if (!cpu.available) cpuLines.push({ text: cpu.message || "CPU stats are unavailable" });
+  else {
+    cpuLines.push({ big: true, text: cpu.percent == null ? "…" : cpu.percent + "%" });
+    if (cpu.load) cpuLines.push({ text: "Load " + cpu.load.map((n) => n.toFixed(2)).join("  ") });
+  }
+  const mem = doc.memory || {};
+  const memLines = [];
+  if (!mem.available) memLines.push({ text: mem.message || "Memory stats are unavailable" });
+  else {
+    memLines.push({ big: true, text: gb(mem.used) });
+    memLines.push({ text: "of " + gb(mem.total) + "  ·  " + gb(mem.free) + " free" });
+  }
+  const gpu = doc.gpu || {};
+  const gpuLines = [];
+  if (!gpu.available) gpuLines.push({ text: gpu.message || "GPU stats are unavailable" });
+  else (gpu.gpus || []).forEach((g) => {
+    gpuLines.push({ text: g.name });
+    gpuLines.push({ big: true, text: g.memory_used_mib + " / " + g.memory_total_mib + " MiB" });
+    gpuLines.push({ text: g.temperature_c + " °C" });
+  });
+  const disk = doc.disk || {};
+  const diskLines = [];
+  if (!disk.available) diskLines.push({ text: disk.message || "Disk stats are unavailable" });
+  else (disk.volumes || []).forEach((vol) => {
+    diskLines.push({ text: vol.available ? vol.label + "  " + gb(vol.free) + " free of " + gb(vol.total) : vol.label + " unavailable" });
+  });
+  const model = doc.model || {};
+  const modelLines = [];
+  if (!model.available) modelLines.push({ text: model.message || "No model is loaded" });
+  else {
+    modelLines.push({ text: model.name || "Model" });
+    modelLines.push({ text: model.llama_up ? "Responding" : "Not responding" });
+    if (model.service) modelLines.push({ text: "Service " + model.service });
+  }
+  [ ["CPU", cpuLines], ["Memory", memLines], ["GPU", gpuLines], ["Disk", diskLines], ["Model", modelLines] ]
+    .forEach(([title, lines]) => board.appendChild(card(title, lines)));
+}
+async function tick() {
+  try {
+    const r = await fetch("/api/system", { cache: "no-store" });
+    if (r.status === 401) {
+      document.getElementById("board").innerHTML = "<article><h2>Pair</h2><p>Pair this browser from StickLLM first.</p></article>";
+      return;
+    }
+    render(await r.json());
+  } catch (e) {
+    document.getElementById("board").innerHTML = "<article><h2>Status</h2><p>Could not read the stick.</p></article>";
+  }
+}
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>

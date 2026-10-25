@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Minesweeper — StickLLM</title>
+<style>
+  body{margin:0;min-height:100vh;background:#0e1214;color:#e4ecee;font:15px/1.4 "Segoe UI",sans-serif;display:grid;justify-items:center;padding:16px}
+  a{color:#2bb5a8;text-decoration:none}
+  .bar{display:flex;gap:12px;align-items:center;margin:8px 0 12px}
+  button.cell{width:32px;height:32px;font:16px/1 "Segoe UI",sans-serif;background:#1e272c;color:#e4ecee;border:1px solid #263136;cursor:pointer}
+  button.cell.open{background:#13181b;cursor:default}
+  button.cell.mine{background:#6b2a2a}
+  #board{display:grid;grid-template-columns:repeat(9,32px);gap:2px}
+</style>
+</head>
+<body>
+<a href="/">StickLLM</a>
+<div class="bar"><strong>Minesweeper</strong><span id="status">10 mines</span><button type="button" id="again">New game</button></div>
+<div id="board"></div>
+<script>
+"use strict";
+/* Original 9×9 minesweeper. First click is never a mine. */
+const W = 9, H = 9, MINES = 10;
+let cells = [], started = false, over = false, left = W * H - MINES;
+const board = document.getElementById("board");
+const status = document.getElementById("status");
+function idx(x, y) { return y * W + x; }
+function neighbors(i) {
+  const x = i % W, y = (i / W) | 0, out = [];
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    if (!dx && !dy) continue;
+    const nx = x + dx, ny = y + dy;
+    if (nx >= 0 && ny >= 0 && nx < W && ny < H) out.push(idx(nx, ny));
+  }
+  return out;
+}
+function paint(cell) {
+  const btn = cell.el;
+  btn.textContent = "";
+  btn.className = "cell";
+  if (cell.open) {
+    btn.classList.add("open");
+    if (cell.mine) { btn.textContent = "•"; btn.classList.add("mine"); }
+    else if (cell.n) btn.textContent = String(cell.n);
+  } else if (cell.flag) btn.textContent = "⚑";
+}
+function flood(i) {
+  const stack = [i];
+  while (stack.length) {
+    const cur = stack.pop();
+    const cell = cells[cur];
+    if (cell.open || cell.flag) continue;
+    cell.open = true;
+    left--;
+    paint(cell);
+    if (cell.n === 0 && !cell.mine) neighbors(cur).forEach((n) => { if (!cells[n].open) stack.push(n); });
+  }
+}
+function place(safe) {
+  const bag = [];
+  for (let i = 0; i < W * H; i++) if (i !== safe) bag.push(i);
+  for (let i = bag.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [bag[i], bag[j]] = [bag[j], bag[i]];
+  }
+  bag.slice(0, MINES).forEach((i) => { cells[i].mine = true; });
+  cells.forEach((cell, i) => {
+    if (!cell.mine) cell.n = neighbors(i).reduce((n, j) => n + (cells[j].mine ? 1 : 0), 0);
+  });
+}
+function end(win) {
+  over = true;
+  cells.forEach((cell) => { if (cell.mine) { cell.open = true; paint(cell); } });
+  status.textContent = win ? "Clear" : "Mine";
+}
+function click(i, flag) {
+  if (over) return;
+  const cell = cells[i];
+  if (flag) {
+    if (cell.open) return;
+    cell.flag = !cell.flag;
+    paint(cell);
+    return;
+  }
+  if (cell.open || cell.flag) return;
+  if (!started) { place(i); started = true; }
+  if (cell.mine) { cell.open = true; paint(cell); end(false); return; }
+  flood(i);
+  if (left <= 0) end(true);
+}
+function deal() {
+  cells = []; started = false; over = false; left = W * H - MINES;
+  board.innerHTML = "";
+  status.textContent = MINES + " mines";
+  for (let i = 0; i < W * H; i++) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "cell";
+    el.oncontextmenu = (ev) => { ev.preventDefault(); click(i, true); };
+    el.onclick = () => click(i, false);
+    board.appendChild(el);
+    cells.push({ el, mine: false, open: false, flag: false, n: 0 });
+  }
+}
+document.getElementById("again").onclick = deal;
+deal();
+</script>
+</body>
+</html>

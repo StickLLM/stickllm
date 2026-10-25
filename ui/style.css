@@ -63,7 +63,22 @@ svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke
 .navBtn.appSoon{cursor:default;opacity:.72}
 .navBtn.appSoon:hover{background:none;color:var(--ink2)}
 .navBtn.on{background:var(--accent-soft);color:var(--accent)}
-.appsView{flex:1;min-height:0;overflow:auto;padding:22px 20px 32px}
+.appsView{flex:1;min-height:0;overflow:hidden;padding:0;position:relative;background:
+  radial-gradient(1200px 500px at 10% -10%, rgba(43,181,168,.16), transparent 55%),
+  linear-gradient(180deg, #12181c 0%, var(--bg) 42%)}
+html[data-theme="light"] .appsView{background:
+  radial-gradient(1200px 500px at 10% -10%, rgba(19,138,127,.12), transparent 55%),
+  linear-gradient(180deg, #e7f3f1 0%, var(--bg) 42%)}
+.desk{height:100%;min-height:0;display:flex;flex-direction:column;position:relative}
+.deskIcons{flex:1;display:flex;flex-wrap:wrap;align-content:flex-start;gap:8px 6px;padding:22px 18px 12px}
+.deskIcon{width:96px;display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 6px;border-radius:12px;color:var(--ink);text-decoration:none;text-align:center;font-size:12.5px;font-weight:550}
+.deskIcon:hover,.deskIcon:focus-visible{background:var(--accent-soft)}
+.deskGlyph{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;background:var(--panel);border:1px solid var(--line);color:var(--accent)}
+.deskGlyph svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linejoin:round;stroke-linecap:round}
+.deskBar{display:flex;align-items:center;gap:10px;padding:10px 14px 14px}
+.deskStart{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:999px;padding:8px 16px;font:inherit;font-weight:620;cursor:pointer}
+.deskStart:hover{border-color:var(--accent);color:var(--accent)}
+.appsMenu{position:absolute;left:14px;bottom:62px;width:min(920px,calc(100% - 28px));max-height:min(70vh,640px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 50px rgba(0,0,0,.28);padding:16px}
 .appsInner{max-width:920px;margin:0 auto}
 .appsIntro{margin:0 0 8px;color:var(--ink2);font-size:14px}
 .appsInstalledEmpty{margin:0 0 14px;color:var(--muted);font-size:13px}

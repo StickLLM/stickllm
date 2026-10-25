@@ -258,7 +258,7 @@ def catalog_document(record_path: Path | None = None, catalog: tuple | list | No
     apps = [_public_app(app, record) for app in rows]
     return {
         "ok": True,
-        "note": "Install Agent Zero first, then use it to install and configure these apps.",
+        "note": "Install it first, then use it to install and configure these apps.",
         "installed_count": sum(1 for app in apps if app["installed"]),
         "apps": apps,
     }

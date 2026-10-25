@@ -37,6 +37,8 @@ PORT = int(os.environ.get("STICKLLM_PORT", "80"))
 TLS_PORT = int(os.environ.get("STICKLLM_TLS_PORT", "443"))
 # Agent Zero's own origin. Not a raw publish of the loopback UI port.
 AGENT_TLS_PORT = int(os.environ.get("STICKLLM_AGENT_TLS_PORT", "5443"))
+# Desktop file helper. Loopback only; this gateway is the LAN entry.
+FILES_PORT = int(os.environ.get("STICKLLM_FILES_PORT", "8096"))
 UA = "StickLLM/0.3 (+local privacy USB; StickLLM UI only)"
 RUN_DIR = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 AUTH_PATH = RUN_DIR / "auth.json"
@@ -299,6 +301,35 @@ def apps_lib():
     loader.exec_module(mod)
     _APPS_LIB = mod
     return mod
+
+
+_FILES_LIB = None
+_SYSTEM_LIB = None
+
+
+def _load_sibling(cache_name: str, filename: str):
+    path = Path(__file__).resolve().parent.parent / "lib" / filename
+    loader = importlib.machinery.SourceFileLoader(cache_name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError(f"{filename} is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def files_lib():
+    global _FILES_LIB
+    if _FILES_LIB is None:
+        _FILES_LIB = _load_sibling("stickllm_files", "stickllm_files.py")
+    return _FILES_LIB
+
+
+def system_lib():
+    global _SYSTEM_LIB
+    if _SYSTEM_LIB is None:
+        _SYSTEM_LIB = _load_sibling("stickllm_system", "stickllm_system.py")
+    return _SYSTEM_LIB
 
 
 def token_ok(header: str | None, doc: dict) -> bool:
@@ -1488,6 +1519,110 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._json(200 if result.get("ok") else 409, result)
 
+    def _desktop_allowed(self) -> bool:
+        """Loopback, or a browser that already paired. New tabs send the cookie."""
+        doc, ok = self._auth()
+        if doc.get("require_pair") and not ok:
+            self._json(401, {"ok": False, "error": "pair_required"})
+            return False
+        return True
+
+    def _serve_desktop(self, path: str) -> None:
+        if not self._desktop_allowed():
+            return
+        parts = [part for part in path.split("/") if part]
+        if not parts or parts[0] != "apps" or any(part in {".", ".."} for part in parts):
+            self._json(400, {"ok": False, "error": "bad_path"})
+            return
+        try:
+            root = UI_ROOT.resolve()
+            target = root.joinpath(*parts).resolve()
+        except OSError:
+            self._json(404, {"ok": False, "error": "not_found"})
+            return
+        if target != root and root not in target.parents:
+            self._json(400, {"ok": False, "error": "bad_path"})
+            return
+        if target.is_dir():
+            target = target / "index.html"
+        if not target.is_file():
+            self._json(404, {"ok": False, "error": "not_found", "message": "That app is not on this stick."})
+            return
+        data = target.read_bytes()
+        suffix = target.suffix.lower()
+        ctype = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".txt": "text/plain; charset=utf-8",
+        }.get(suffix, "application/octet-stream")
+        self._send(200, data, ctype)
+
+    def _proxy_files(self, method: str) -> None:
+        if not self._desktop_allowed():
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(min(length, 1024 * 1024))
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        upstream = parsed.path[len("/api/files") :] or "/"
+        if not upstream.startswith("/"):
+            upstream = "/" + upstream
+        target = upstream + (("?" + parsed.query) if parsed.query else "")
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 33 * 1024 * 1024:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large", "message": "That file is over the 32 MB limit."})
+            return
+        body = self.rfile.read(length) if length else None
+        conn = http.client.HTTPConnection("127.0.0.1", FILES_PORT, timeout=120)
+        try:
+            headers = {"Host": f"127.0.0.1:{FILES_PORT}"}
+            if body is not None:
+                headers["Content-Length"] = str(len(body))
+            ctype = self.headers.get("Content-Type")
+            if ctype:
+                headers["Content-Type"] = ctype
+            conn.request(method, target, body=body, headers=headers)
+            resp = conn.getresponse()
+            self.send_response(resp.status)
+            for key, value in resp.getheaders():
+                low = key.lower()
+                if low in ("transfer-encoding", "connection", "content-length"):
+                    continue
+                self.send_header(key, value)
+            self.send_header("Cache-Control", "no-store")
+            size = resp.getheader("Content-Length")
+            if size and size.isdigit():
+                self.send_header("Content-Length", size)
+                self.end_headers()
+                remaining = int(size)
+                while remaining > 0:
+                    chunk = resp.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+            else:
+                data = resp.read()
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                if data:
+                    self.wfile.write(data)
+        except Exception:
+            self._json(503, {"ok": False, "error": "files_down", "message": "The file helper is not running."})
+        finally:
+            conn.close()
+
+    def _system_status(self) -> None:
+        if not self._desktop_allowed():
+            return
+        try:
+            self._json(200, system_lib().snapshot())
+        except Exception:
+            self._json(500, {"ok": False, "error": "system status failed"})
+
     def _agent_status_doc(self) -> dict:
         mod = agent_lib()
         return mod.status_document(
@@ -1847,6 +1982,15 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/apps":
             self._apps_catalog()
             return
+        if path == "/api/system":
+            self._system_status()
+            return
+        if path.startswith("/api/files"):
+            self._proxy_files("GET")
+            return
+        if path == "/apps" or path.startswith("/apps/"):
+            self._serve_desktop(path)
+            return
         return super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
@@ -1854,6 +1998,9 @@ class Handler(SimpleHTTPRequestHandler):
             self._serve_agent_gateway("POST")
             return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/files"):
+            self._proxy_files("POST")
+            return
         if path == "/api/agent/install":
             self._agent_install()
             return

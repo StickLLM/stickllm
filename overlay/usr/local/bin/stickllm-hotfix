@@ -89,6 +89,22 @@ if [[ -d "$SRC/opt/stickllm/ui" ]]; then
     installed=1
   done
   shopt -u nullglob
+  if [[ -d "$SRC/opt/stickllm/ui/apps" ]]; then
+    mkdir -p /opt/stickllm/ui/apps
+    while IFS= read -r -d '' f; do
+      rel="${f#"$SRC/opt/stickllm/ui/"}"
+      case "$rel" in
+        *.html|*.js|*.css|*.svg|LICENSE|*/LICENSE) ;;
+        *) echo "skipping non-app file: $rel" >&2; continue ;;
+      esac
+      dest="/opt/stickllm/ui/$rel"
+      mkdir -p "$(dirname "$dest")"
+      sed -i 's/\r$//' "$f" 2>/dev/null || true
+      install -m 644 "$f" "$dest"
+      echo "installed $dest"
+      installed=1
+    done < <(find "$SRC/opt/stickllm/ui/apps" -type f -print0)
+  fi
 fi
 
 if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
@@ -109,6 +125,10 @@ fi
 
 if [[ "$units_changed" -eq 1 ]]; then
   systemctl daemon-reload
+fi
+if [[ -f "$SRC/etc/systemd/system/stickllm-files.service" ]]; then
+  systemctl enable stickllm-files.service
+  echo "enabled stickllm-files.service"
 fi
 
 if [[ "$#" -gt 0 ]]; then

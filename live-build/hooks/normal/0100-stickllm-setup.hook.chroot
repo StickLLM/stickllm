@@ -23,7 +23,8 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-vault \
           /usr/local/bin/stickllm-vault-boot \
           /usr/local/bin/stickllm-agent \
-          /usr/local/bin/stickllm-agent-entrypoint || true
+          /usr/local/bin/stickllm-agent-entrypoint \
+          /usr/local/bin/stickllm-files || true
 
 # Force LF — CRLF in sudoers breaks ALL rules on the stick
 if [[ -f /etc/sudoers.d/stickllm ]]; then
@@ -113,6 +114,7 @@ systemctl disable docker.socket 2>/dev/null || true
 systemctl mask docker.service 2>/dev/null || true
 systemctl mask docker.socket 2>/dev/null || true
 systemctl enable stickllm-agent.service || true
+systemctl enable stickllm-files.service || true
 
 # NM system-connections must be 600
 if [[ -d /etc/NetworkManager/system-connections ]]; then

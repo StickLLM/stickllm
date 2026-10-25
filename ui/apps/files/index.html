@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Files — StickLLM</title>
+<style>
+  body{margin:0;background:#0e1214;color:#e4ecee;font:15px/1.45 "Segoe UI",sans-serif}
+  header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #263136}
+  header a{color:#2bb5a8;text-decoration:none}
+  main{padding:16px;display:grid;gap:12px}
+  button,input{font:inherit;background:#1e272c;color:#e4ecee;border:1px solid #263136;border-radius:8px;padding:7px 12px}
+  button{cursor:pointer}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .roots button.on{border-color:#2bb5a8;color:#2bb5a8}
+  ul{list-style:none;margin:0;padding:0;border:1px solid #263136;border-radius:12px;overflow:hidden}
+  li{display:flex;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid #1f292d}
+  li:first-child{border-top:0}
+  li button{background:none;border:0;color:inherit;padding:0;text-align:left}
+  .muted{color:#7d8c91}
+  #msg{min-height:1.2em}
+</style>
+</head>
+<body>
+<header><a href="/">StickLLM</a><strong>Files</strong><span class="muted">Home, vault, and the SSD apps folder</span></header>
+<main>
+  <div class="row roots" id="roots"></div>
+  <div class="row">
+    <button type="button" id="up">Up</button>
+    <button type="button" id="mkdir">New folder</button>
+    <label class="row">Upload <input type="file" id="upload" /></label>
+    <span id="crumb" class="muted"></span>
+  </div>
+  <ul id="list"></ul>
+  <p id="msg" class="muted"></p>
+</main>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+let root = "";
+let rel = "";
+function say(text) { $("#msg").textContent = text || ""; }
+async function api(url, opt) {
+  const r = await fetch(url, Object.assign({ cache: "no-store" }, opt || {}));
+  if (r.status === 401) throw new Error("Pair this browser from StickLLM first.");
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.message || "Request failed");
+  return j;
+}
+async function loadRoots() {
+  const doc = await api("/api/files/roots");
+  const box = $("#roots");
+  box.innerHTML = "";
+  doc.roots.forEach((item) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = item.available ? item.label : item.label + " (not available)";
+    btn.disabled = !item.available;
+    if (item.id === root) btn.className = "on";
+    btn.onclick = () => { root = item.id; rel = ""; refresh(); };
+    box.appendChild(btn);
+  });
+  if (!root) {
+    const first = doc.roots.find((item) => item.available);
+    if (first) root = first.id;
+  }
+}
+async function refresh() {
+  await loadRoots();
+  if (!root) { $("#list").innerHTML = ""; say("No folders are available."); return; }
+  const doc = await api("/api/files/list?root=" + encodeURIComponent(root) + "&path=" + encodeURIComponent(rel));
+  $("#crumb").textContent = root + (doc.path ? " / " + doc.path : "");
+  const list = $("#list");
+  list.innerHTML = "";
+  if (!doc.exists) say("That folder is not on the drive yet. Upload or create a folder to make it.");
+  else say("");
+  (doc.entries || []).forEach((entry) => {
+    const li = document.createElement("li");
+    const open = document.createElement("button");
+    open.type = "button";
+    open.textContent = (entry.dir ? "Folder  " : "File  ") + entry.name;
+    open.onclick = () => openEntry(entry);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "Delete";
+    del.onclick = () => remove(entry.name);
+    li.append(open, del);
+    list.appendChild(li);
+  });
+}
+function join(name) { return rel ? rel + "/" + name : name; }
+function openEntry(entry) {
+  if (entry.outside || entry.symlink) { say("That link points outside the allowed folders."); return; }
+  if (entry.dir) { rel = join(entry.name); refresh().catch((e) => say(e.message)); return; }
+  const url = "/api/files/read?root=" + encodeURIComponent(root) + "&path=" + encodeURIComponent(join(entry.name));
+  window.open(url, "_blank", "noopener");
+}
+async function remove(name) {
+  if (!confirm("Delete " + name + "?")) return;
+  await api("/api/files/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root, path: join(name) }),
+  });
+  refresh();
+}
+$("#up").onclick = () => {
+  if (!rel) return;
+  rel = rel.split("/").slice(0, -1).join("/");
+  refresh().catch((e) => say(e.message));
+};
+$("#mkdir").onclick = async () => {
+  const name = prompt("Folder name");
+  if (!name) return;
+  try {
+    await api("/api/files/mkdir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ root, path: join(name) }),
+    });
+    refresh();
+  } catch (e) { say(e.message); }
+};
+$("#upload").onchange = async (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = "";
+  if (!file || !root) return;
+  try {
+    const r = await fetch("/api/files/upload?root=" + encodeURIComponent(root) + "&path=" + encodeURIComponent(join(file.name)), {
+      method: "POST",
+      cache: "no-store",
+      body: file,
+    });
+    if (r.status === 401) throw new Error("Pair this browser from StickLLM first.");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.message || "Upload failed");
+    refresh();
+  } catch (e) { say(e.message); }
+};
+refresh().catch((e) => say(e.message));
+</script>
+</body>
+</html>

@@ -1793,7 +1793,20 @@ PY
 
 ensure_dirs_in_vault() {
   mkdir -p "$MNT_POINT"/{models,chats,settings}
-  chmod 700 "$MNT_POINT" "$MNT_POINT"/chats "$MNT_POINT"/settings 2>/dev/null || true
+  # The file helper runs as stickllm. Own the mount directory only, not the
+  # whole tree, and never follow a symlink out of the vault.
+  if [[ -L "$MNT_POINT" ]]; then
+    return 0
+  fi
+  chown stickllm:stickllm "$MNT_POINT" 2>/dev/null || true
+  chmod 700 "$MNT_POINT" 2>/dev/null || true
+  local dir
+  for dir in models chats settings; do
+    if [[ -d "$MNT_POINT/$dir" && ! -L "$MNT_POINT/$dir" ]]; then
+      chown stickllm:stickllm "$MNT_POINT/$dir" 2>/dev/null || true
+      chmod 700 "$MNT_POINT/$dir" 2>/dev/null || true
+    fi
+  done
 }
 
 ui_vault_mounted() {
