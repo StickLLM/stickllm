@@ -52,7 +52,7 @@ svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke
 .conv .tag{flex:none;font-size:10.5px;padding:1px 6px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
 .convEmpty{font-size:13px;color:var(--muted);padding:10px}
 .sideFoot{border-top:1px solid var(--line2);padding-top:8px;display:flex;flex-direction:column;gap:2px}
-.navBtn{display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 10px;border-radius:8px;color:var(--ink2);cursor:pointer;text-align:left}
+.navBtn{display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 10px;border-radius:8px;color:var(--ink2);cursor:pointer;text-align:left;text-decoration:none;font:inherit}
 .navBtn:hover{background:var(--panel);color:var(--ink)}
 .navBtn svg{width:18px;height:18px}
 

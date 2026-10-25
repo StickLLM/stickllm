@@ -21,7 +21,9 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-nvidia-prep \
           /usr/local/bin/stickllm-pick-gpus \
           /usr/local/bin/stickllm-vault \
-          /usr/local/bin/stickllm-vault-boot || true
+          /usr/local/bin/stickllm-vault-boot \
+          /usr/local/bin/stickllm-agent \
+          /usr/local/bin/stickllm-agent-entrypoint || true
 
 # Force LF — CRLF in sudoers breaks ALL rules on the stick
 if [[ -f /etc/sudoers.d/stickllm ]]; then
@@ -105,6 +107,12 @@ systemctl enable seatd.service 2>/dev/null || true
 systemctl enable stickllm-ssh.service || true
 systemctl enable NetworkManager.service || true
 systemctl enable nvidia-persistenced.service || true
+# Docker must not start at boot. stickllm-agent starts dockerd after the vault unlocks.
+systemctl disable docker.service 2>/dev/null || true
+systemctl disable docker.socket 2>/dev/null || true
+systemctl mask docker.service 2>/dev/null || true
+systemctl mask docker.socket 2>/dev/null || true
+systemctl enable stickllm-agent.service || true
 
 # NM system-connections must be 600
 if [[ -d /etc/NetworkManager/system-connections ]]; then

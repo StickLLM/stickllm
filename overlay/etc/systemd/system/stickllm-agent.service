@@ -1,0 +1,17 @@
+[Unit]
+Description=StickLLM Agent Zero (vault Docker, loopback UI only)
+After=local-fs.target
+# The unit is skipped until the server vault is actually mounted.
+ConditionPathIsMountPoint=/var/lib/stickllm/vault
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/stickllm-agent run
+ExecStop=/usr/local/bin/stickllm-agent stop
+Restart=on-failure
+RestartSec=5
+# Host mount namespace so the vault and settings mounts are visible.
+# Docker data-root is the vault; the daemon is not started by docker.service.
+
+[Install]
+WantedBy=multi-user.target

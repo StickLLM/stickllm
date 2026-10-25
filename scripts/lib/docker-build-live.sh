@@ -63,6 +63,7 @@ else
   echo "ERROR: missing /stickllm/live-build/package-lists/stickllm.list.chroot" >&2
   exit 1
 fi
+grep -q '^docker.io$' config/package-lists/stickllm.list.chroot
 grep -q '^chromium$' config/package-lists/stickllm.list.chroot
 grep -q '^cage$' config/package-lists/stickllm.list.chroot
 grep -q '^seatd$' config/package-lists/stickllm.list.chroot
@@ -122,6 +123,11 @@ test -f config/includes.chroot/etc/systemd/system/stickllm-kiosk.service
 grep -q 'base_model_id = "qwen25-3b-q4km"' config/includes.chroot/etc/stickllm/models/catalog.toml
 grep -q 'stickllm-llama-start' config/includes.chroot/etc/systemd/system/stickllm-llama.service
 grep -q 'STICKLLM_LLAMA_HOST=127.0.0.1' config/includes.chroot/etc/systemd/system/stickllm-llama.service
+test -f config/includes.chroot/usr/local/share/stickllm/agent-zero.pin
+grep -q 'amd64_digest=sha256:307a2ceffc8501ba05a1e7253e8b6e4d656d2e1c3b97f0eb943c18b9c40a30fd' \
+  config/includes.chroot/usr/local/share/stickllm/agent-zero.pin
+test -f config/includes.chroot/usr/local/bin/stickllm-agent
+test -f config/includes.chroot/etc/systemd/system/stickllm-agent.service
 
 mkdir -p config/bootloaders/grub-pc config/bootloaders/grub-efi
 # Prefer tracked boot/grub.cfg (LF). Fall back to inline copy if missing.

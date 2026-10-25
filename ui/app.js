@@ -60,8 +60,28 @@ function authHeaders(extra = {}) {
   if (token) h.Authorization = `Bearer ${token}`;
   return h;
 }
+function rememberPairCookie() {
+  if (!token) {
+    document.cookie = "stickllm_pair=; Path=/; Max-Age=0; SameSite=Strict";
+    return;
+  }
+  document.cookie = "stickllm_pair=" + encodeURIComponent(token) + "; Path=/; SameSite=Strict";
+}
 function clearPairSession() {
   token = ""; localStorage.removeItem(TOKEN_KEY);
+  rememberPairCookie();
+}
+async function refreshAgentLink() {
+  const label = $("#agentLinkLabel");
+  if (!label) return;
+  try {
+    const r = await fetch("/api/agent/status", { cache: "no-store", headers: authHeaders() });
+    if (!r.ok) return;
+    const s = await r.json();
+    if (!s.vault_unlocked) label.textContent = "Unlock vault to use Agent";
+    else if (!s.settings_mounted) label.textContent = "Unlock settings to use Agent";
+    else label.textContent = "Agent";
+  } catch (e) { /* status is optional until the gateway is current */ }
 }
 async function pairStatus() {
   const r = await fetch("/api/pair/status", { cache: "no-store" });
@@ -2795,6 +2815,7 @@ $("#pairForm").onsubmit = async (e) => {
     const j = await r.json();
     if (!r.ok) throw new Error(j.message || j.error || "Pair failed");
     token = j.token; localStorage.setItem(TOKEN_KEY, token);
+    rememberPairCookie();
     err.hidden = true; $("#pairIn").value = "";
     toast("Browser paired"); closeSettings();
     startAppStatus();
@@ -4457,7 +4478,9 @@ function startAppStatus() {
   refreshStatus();
   if (statusTimer) return;
   // Stick kiosk polls faster so LAN Pair remints show in chat promptly.
-  statusTimer = setInterval(() => { refreshStatus(); }, isLocalMode || detectLocalHost() ? 2000 : 3000);
+  rememberPairCookie();
+  refreshAgentLink();
+  statusTimer = setInterval(() => { refreshStatus(); refreshAgentLink(); }, isLocalMode || detectLocalHost() ? 2000 : 3000);
 }
 ensurePaired(false).then((ok) => {
   if (!ok) return;

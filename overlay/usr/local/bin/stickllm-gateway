@@ -249,6 +249,33 @@ def save_auth(doc: dict) -> None:
         pass
 
 
+_AGENT_LIB = None
+
+
+def _agent_port_open(port: int = 5099) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def agent_lib():
+    """Load the vault/docker gate beside this script. Tests and the unit share it."""
+    global _AGENT_LIB
+    if _AGENT_LIB is not None:
+        return _AGENT_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_agent.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_agent", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_agent helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _AGENT_LIB = mod
+    return mod
+
+
 def token_ok(header: str | None, doc: dict) -> bool:
     if not header:
         return False
@@ -1280,13 +1307,16 @@ class Handler(SimpleHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
     def end_headers(self) -> None:
-        self.send_header("Content-Security-Policy", CSP)
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        path = urllib.parse.urlparse(self.path).path
-        if path.endswith((".js", ".css", ".html")) or path in ("/", ""):
-            self.send_header("Cache-Control", "no-store, max-age=0")
-            self.send_header("Pragma", "no-cache")
+        # Proxied Agent Zero responses keep their own headers. StickLLM's CSP
+        # would block that UI's inline startup script.
+        if not getattr(self, "_skip_stick_headers", False):
+            self.send_header("Content-Security-Policy", CSP)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            path = urllib.parse.urlparse(self.path).path
+            if path.endswith((".js", ".css", ".html")) or path in ("/", ""):
+                self.send_header("Cache-Control", "no-store, max-age=0")
+                self.send_header("Pragma", "no-cache")
         super().end_headers()
 
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
@@ -1301,6 +1331,219 @@ class Handler(SimpleHTTPRequestHandler):
     def _json(self, code: int, obj: dict) -> None:
         self._send(code, json.dumps(obj).encode())
 
+    def _agent_refused(self) -> bool:
+        doc, ok = self._auth()
+        try:
+            allowed = agent_lib().agent_http_allowed(bool(doc.get("require_pair")), ok)
+        except Exception:
+            allowed = ok or not bool(doc.get("require_pair"))
+        if allowed:
+            return False
+        self._json(
+            401,
+            {
+                "error": "pair_required",
+                "message": "Pair this browser using the code on the stick screen.",
+            },
+        )
+        return True
+
+    def _agent_status(self) -> None:
+        if self._agent_refused():
+            return
+        try:
+            mod = agent_lib()
+            doc = mod.status_document(
+                vault_open=vault_unlocked(),
+                settings_open=mod.settings_mounted(),
+                upstream_up=_agent_port_open(),
+                saved=mod.read_status(),
+            )
+        except Exception:
+            self._json(500, {"ok": False, "error": "agent status failed"})
+            return
+        self._json(200, doc)
+
+    def _agent_install(self) -> None:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(min(n, 1024 * 1024))
+        if self._agent_refused():
+            return
+        if not vault_unlocked():
+            self._json(403, {"ok": False, "error": "Unlock vault to use Agent"})
+            return
+        try:
+            subprocess.Popen(
+                ["/usr/local/bin/stickllm-agent", "install"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            self._json(500, {"ok": False, "error": "Could not start the installer"})
+            return
+        self._json(200, {"ok": True, "message": "Install started in this server's vault."})
+
+    def _proxy_agent(self, method: str) -> None:
+        if self._agent_refused():
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        try:
+            mod = agent_lib()
+        except Exception:
+            self._json(500, {"ok": False, "error": "agent helper missing"})
+            return
+        status = mod.status_document(
+            vault_open=vault_unlocked(),
+            settings_open=mod.settings_mounted(),
+            upstream_up=_agent_port_open(),
+            saved=mod.read_status(),
+        )
+        page = path in ("/agent", "/agent/")
+        upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
+        if not status["vault_unlocked"] or not status["settings_mounted"] or not status["running"]:
+            if page and method == "GET" and not upgrade:
+                body = mod.status_html(status).encode("utf-8")
+                self._send(200, body, "text/html; charset=utf-8")
+                return
+            self._json(503, {"ok": False, "error": status["message"]})
+            return
+        upstream = mod.upstream_path(path)
+        if upgrade and method == "GET":
+            self._relay_websocket(mod, upstream, parsed.query)
+            return
+        self._relay_http(mod, method, upstream, parsed.query)
+
+    def _relay_http(self, mod, method: str, upstream: str, query: str) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        target = upstream + (("?" + query) if query else "")
+        headers = {"Host": "127.0.0.1:5099"}
+        for key, value in self.headers.items():
+            if key.lower() in ("host", "content-length", "connection", "transfer-encoding"):
+                continue
+            headers[key] = value
+        conn = http.client.HTTPConnection("127.0.0.1", 5099, timeout=300)
+        try:
+            conn.request(method, target, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+        except Exception:
+            self._json(502, {"ok": False, "error": "Agent is not running"})
+            return
+        finally:
+            conn.close()
+        ctype = ""
+        for key, value in resp.getheaders():
+            if key.lower() == "content-type":
+                ctype = value
+        if mod.should_rewrite(ctype):
+            data = mod.rewrite_bytes(data)
+        self._skip_stick_headers = True
+        self.send_response(resp.status)
+        for key, value in resp.getheaders():
+            low = key.lower()
+            if low in ("transfer-encoding", "connection", "content-length", "content-security-policy"):
+                continue
+            if low == "location":
+                value = mod.rewrite_location(value)
+            elif low == "set-cookie":
+                value = mod.rewrite_cookie(value)
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if method != "HEAD" and data:
+            self.wfile.write(data)
+
+    def _relay_websocket(self, mod, upstream: str, query: str) -> None:
+        target = upstream + (("?" + query) if query else "")
+        try:
+            sock = socket.create_connection(("127.0.0.1", 5099), timeout=10)
+        except OSError:
+            self._json(502, {"ok": False, "error": "Agent is not running"})
+            return
+        lines = [f"GET {target} HTTP/1.1", "Host: 127.0.0.1:5099"]
+        for key, value in self.headers.items():
+            if key.lower() in ("host", "content-length"):
+                continue
+            lines.append(f"{key}: {value}")
+        try:
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1", errors="replace"))
+            header = b""
+            while b"\r\n\r\n" not in header and len(header) < 65536:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                header += chunk
+            marker = header.find(b"\r\n\r\n")
+            if marker < 0:
+                sock.close()
+                self._json(502, {"ok": False, "error": "Agent did not accept the socket"})
+                return
+            head = header[: marker + 4]
+            rest = header[marker + 4 :]
+            self.connection.sendall(head)
+            if rest:
+                self.connection.sendall(rest)
+        except OSError:
+            sock.close()
+            return
+        self.close_connection = True
+
+        def _pump(src, dst) -> None:
+            try:
+                while True:
+                    data = src.recv(65536)
+                    if not data:
+                        break
+                    dst.sendall(data)
+            except OSError:
+                pass
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+        left = threading.Thread(target=_pump, args=(self.connection, sock), daemon=True)
+        right = threading.Thread(target=_pump, args=(sock, self.connection), daemon=True)
+        left.start()
+        right.start()
+        left.join()
+        right.join()
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/agent" or path.startswith("/agent/"):
+            self._proxy_agent("HEAD")
+            return
+        super().do_HEAD()
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._agent_method("PUT")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._agent_method("DELETE")
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        self._agent_method("PATCH")
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._agent_method("OPTIONS")
+
+    def _agent_method(self, method: str) -> None:
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/agent" or path.startswith("/agent/"):
+            self._proxy_agent(method)
+            return
+        self._json(405, {"error": "method not allowed"})
+
     def _is_loopback(self) -> bool:
         host = (self.client_address[0] if self.client_address else "") or ""
         return host in ("127.0.0.1", "::1", "localhost")
@@ -1314,11 +1557,24 @@ class Handler(SimpleHTTPRequestHandler):
         _doc, ok = self._auth()
         return ok
 
+    def _presented_token(self) -> str | None:
+        header = self.headers.get("Authorization")
+        if header:
+            return header
+        # Page loads cannot send the localStorage bearer. The UI copies it
+        # into this cookie after pairing. An unpaired browser has neither.
+        cookie = self.headers.get("Cookie") or ""
+        for bit in cookie.split(";"):
+            name, _, value = bit.strip().partition("=")
+            if name == "stickllm_pair" and value:
+                return "Bearer " + urllib.parse.unquote(value.strip())
+        return None
+
     def _auth(self) -> tuple[dict, bool]:
         doc = load_auth()
         if self._is_loopback():
             return doc, True
-        ok = token_ok(self.headers.get("Authorization"), doc)
+        ok = token_ok(self._presented_token(), doc)
         return doc, ok
 
     def _speech_block(self) -> bool:
@@ -1480,10 +1736,22 @@ class Handler(SimpleHTTPRequestHandler):
             hits = duckduckgo_search(q or "StickLLM", n=5)
             self._json(200, {"results": hits, "online": uplink_ok()})
             return
+        if path == "/api/agent/status":
+            self._agent_status()
+            return
+        if path == "/agent" or path.startswith("/agent/"):
+            self._proxy_agent("GET")
+            return
         return super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/agent/install":
+            self._agent_install()
+            return
+        if path == "/agent" or path.startswith("/agent/"):
+            self._proxy_agent("POST")
+            return
         n = int(self.headers.get("Content-Length") or 0)
         # Base64 of a 50 MB file is about 67 MB. Refuse anything larger up front.
         if path == "/api/attachments/convert" and n > 70 * 1024 * 1024:

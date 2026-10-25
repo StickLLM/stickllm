@@ -56,3 +56,5 @@ vulkan-tools
 # Encrypted vault (Phase C feature; LUKS2 tools present for SSH-tested vault work)
 cryptsetup
 cryptsetup-bin
+# Agent Zero runtime. The agent image is pulled into the vault, not baked here.
+docker.io

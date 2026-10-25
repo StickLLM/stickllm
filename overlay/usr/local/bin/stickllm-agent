@@ -1,0 +1,216 @@
+#!/bin/bash
+# Start Agent Zero only after the server vault is mounted.
+# The image is pulled into the vault. It is not part of the ISO.
+# Do not print API keys, vault passcodes, or chat text.
+set -euo pipefail
+
+PYBIN="$(command -v python3 || command -v python || true)"
+LIB="/usr/local/lib/stickllm_agent.py"
+VAULT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
+ADDON="${VAULT}/addons/agent-zero"
+SOCK="${ADDON}/docker.sock"
+PIDFILE="/run/stickllm/agent-dockerd.pid"
+CONTAINER="stickllm-agent-zero"
+ENTRY="/usr/local/bin/stickllm-agent-entrypoint"
+
+if [[ -z "${PYBIN}" || ! -f "$LIB" ]]; then
+  echo "stickllm-agent: python helper missing" >&2
+  exit 1
+fi
+
+docker_cli() {
+  DOCKER_HOST="unix://${SOCK}" docker "$@"
+}
+
+refuse_locked() {
+  "$PYBIN" "$LIB" write-status --state locked --image_present false >/dev/null || true
+  echo "vault locked: docker not started" >&2
+}
+
+cmd_gate() {
+  if "$PYBIN" "$LIB" docker-may-start; then
+    exit 0
+  fi
+  refuse_locked
+  exit 2
+}
+
+ensure_dockerd() {
+  # Gate again immediately before the daemon. A locked vault never reaches dockerd.
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  "$PYBIN" "$LIB" prepare-vault
+  mkdir -p /run/stickllm
+  if [[ -S "$SOCK" ]] && docker_cli info >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v dockerd >/dev/null 2>&1; then
+    echo "stickllm-agent: dockerd is not installed" >&2
+    exit 1
+  fi
+  # data-root is the unlocked vault. iptables stay untouched so no new LAN forwards.
+  dockerd \
+    --data-root "${VAULT}/docker" \
+    --host "unix://${SOCK}" \
+    --pidfile "$PIDFILE" \
+    --iptables=false \
+    --ip6tables=false \
+    --live-restore=false \
+    >/var/log/stickllm-dockerd.log 2>&1 &
+  local i
+  for i in $(seq 1 60); do
+    if docker_cli info >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "stickllm-agent: dockerd did not become ready" >&2
+  exit 1
+}
+
+image_present() {
+  local ref
+  ref="$("$PYBIN" "$LIB" image-ref)"
+  docker_cli image inspect "$ref" >/dev/null 2>&1
+}
+
+cmd_install() {
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  if ! "$PYBIN" "$LIB" pull-allowed >/dev/null; then
+    "$PYBIN" "$LIB" write-status --state low_space --low_space true --image_present false >/dev/null || true
+    echo "vault free space is under 15 GB: image pull stopped" >&2
+    exit 0
+  fi
+  ensure_dockerd
+  local ref
+  ref="$("$PYBIN" "$LIB" image-ref)"
+  if ! image_present; then
+    docker_cli pull "$ref"
+  fi
+  "$PYBIN" "$LIB" write-status --state pulled --image_present true --low_space false >/dev/null || true
+  cmd_run_container
+}
+
+stop_container() {
+  if [[ -S "$SOCK" ]]; then
+    docker_cli rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  fi
+}
+
+cmd_run_container() {
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  # Secrets live on the encrypted settings partition. Do not start without it.
+  if ! "$PYBIN" "$LIB" settings-mounted; then
+    "$PYBIN" "$LIB" write-status --state settings_missing --image_present false >/dev/null || true
+    echo "USB settings partition is not mounted: agent not started" >&2
+    exit 0
+  fi
+  ensure_dockerd
+  if ! image_present; then
+    "$PYBIN" "$LIB" write-status --state needs_install --image_present false --low_space false >/dev/null || true
+    echo "agent image is not in this vault" >&2
+    exit 0
+  fi
+  "$PYBIN" "$LIB" prepare-portable
+  local ref
+  ref="$("$PYBIN" "$LIB" image-ref)"
+  "$PYBIN" "$LIB" write-status --state running --image_present true --low_space false >/dev/null || true
+  stop_container
+  # Host network so llama-server on 127.0.0.1:8080 is reachable.
+  # The entrypoint binds the UI to 127.0.0.1:5099 and does not start sshd.
+  # No host disks except the vault addon and the portable settings dir.
+  docker_cli run --name "$CONTAINER" \
+    --network host \
+    --cap-drop ALL \
+    --cap-add CHOWN \
+    --cap-add DAC_OVERRIDE \
+    --cap-add FOWNER \
+    --cap-add SETUID \
+    --cap-add SETGID \
+    --cap-add KILL \
+    --security-opt no-new-privileges:true \
+    --pids-limit 1024 \
+    -e NVIDIA_VISIBLE_DEVICES=void \
+    -e CUDA_VISIBLE_DEVICES= \
+    -e HF_HOME=/a0/usr/.cache/huggingface \
+    -e SENTENCE_TRANSFORMERS_HOME=/a0/usr/.cache/sentence-transformers \
+    -e A0_SET_update_check_enabled=false \
+    -e A0_SET_rfc_auto_docker=false \
+    -e A0_SET_a2a_server_enabled=false \
+    -e A0_SET_mcp_server_enabled=false \
+    -e A0_SET_workdir_path=/a0/usr/workdir \
+    --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+    -v "${ADDON}/state:/a0/usr" \
+    -v "${ADDON}/work:/a0/usr/workdir" \
+    -v "${ADDON}/memory:/a0/usr/memory" \
+    -v "${ADDON}/logs:/a0/usr/logs" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/.env:/a0/usr/.env" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/settings.json:/a0/usr/settings.json" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/prompts:/a0/usr/prompts" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/instruments:/a0/usr/instruments" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/skills:/a0/usr/skills" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/model-config:/a0/usr/plugins/_model_config" \
+    -v "${ENTRY}:/stickllm-entrypoint.sh:ro" \
+    --entrypoint /bin/bash \
+    "$ref" \
+    /stickllm-entrypoint.sh
+}
+
+cmd_run() {
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  cmd_run_container
+}
+
+cmd_stop() {
+  stop_container || true
+  if [[ -f "$PIDFILE" ]]; then
+    local pid
+    pid="$(tr -cd '0-9' <"$PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$PIDFILE"
+  fi
+  if [[ -S "$SOCK" ]]; then
+    rm -f "$SOCK" || true
+  fi
+  "$PYBIN" "$LIB" write-status --state stopped >/dev/null || true
+}
+
+cmd_start() {
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  if [[ -z "${STICKLLM_AGENT_NO_SYSTEMD:-}" ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl start stickllm-agent.service
+    exit 0
+  fi
+  cmd_run
+}
+
+usage() {
+  echo "usage: stickllm-agent {gate|start|run|stop|install}" >&2
+  exit 1
+}
+
+case "${1:-}" in
+  gate) cmd_gate ;;
+  start) cmd_start ;;
+  run) cmd_run ;;
+  stop) cmd_stop ;;
+  install) cmd_install ;;
+  *) usage ;;
+esac

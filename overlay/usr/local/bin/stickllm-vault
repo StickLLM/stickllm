@@ -1832,6 +1832,7 @@ refresh_gateway_vault_view() {
     nsenter --mount="/proc/$pid/ns/mnt" -- mkdir -p "$MNT_POINT" 2>/dev/null || true
     if ui_vault_mounted "$pid"; then
       echo "result=already-in-ui-ns" >>"$log" 2>/dev/null || true
+      start_agent_addon
       return 0
     fi
     # Mount mapper into UI private NS (same device already open on host).
@@ -1839,6 +1840,7 @@ refresh_gateway_vault_view() {
       || nsenter --mount="/proc/$pid/ns/mnt" -- mount "$mapper" "$MNT_POINT" 2>>"$log"; then
       if ui_vault_mounted "$pid"; then
         echo "result=nsenter-mounted" >>"$log" 2>/dev/null || true
+        start_agent_addon
         return 0
       fi
     fi
@@ -1847,7 +1849,15 @@ refresh_gateway_vault_view() {
     echo "result=no-ui-or-unmounted-defer-restart" >>"$log" 2>/dev/null || true
   fi
   schedule_ui_vault_refresh
+  start_agent_addon
   return 0
+}
+
+start_agent_addon() {
+  # Docker and Agent Zero stay down until this vault is mounted.
+  if [[ -x /usr/local/bin/stickllm-agent ]]; then
+    /usr/local/bin/stickllm-agent start >/run/stickllm/agent-start.log 2>&1 &
+  fi
 }
 
 drop_gateway_vault_view() {
@@ -2549,6 +2559,9 @@ cmd_unlock() {
 
 cmd_lock() {
   need_root
+  if [[ -x /usr/local/bin/stickllm-agent ]]; then
+    /usr/local/bin/stickllm-agent stop >/run/stickllm/agent-stop.log 2>&1 || true
+  fi
   local helper=""
   helper="$(settings_helper || true)"
   if [[ -n "$helper" ]]; then
