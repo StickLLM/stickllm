@@ -12,6 +12,7 @@ API keys, vault passcodes, or chat text.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import socket
@@ -295,13 +296,49 @@ def docker_data_root(
     return None
 
 
+# Agent Zero matches these with fnmatch. The loopback patterns are its own
+# defaults. They have to be repeated here: once ALLOWED_ORIGINS is set, the
+# image does not add the defaults itself. ``*://127.0.0.1:*`` is what lets
+# the console keep using http://127.0.0.1:5099. Port 5099 stays on loopback.
+_LOOPBACK_ORIGINS = (
+    "*://localhost",
+    "*://localhost:*",
+    "*://127.0.0.1",
+    "*://127.0.0.1:*",
+    "*://0.0.0.0",
+    "*://0.0.0.0:*",
+)
+
+
+def _non_loopback_ips(ips: list[str]) -> list[str]:
+    found: list[str] = []
+    for raw in ips:
+        ip = (raw or "").strip()
+        if not ip or ip in found:
+            continue
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if addr.version != 4 or addr.is_loopback or addr.is_unspecified:
+            continue
+        found.append(ip)
+    return found
+
+
 def allowed_origins(ips: list[str] | None = None) -> str:
-    found = [ip.strip() for ip in (ips or []) if ip and ip.strip()]
-    origins: list[str] = []
-    for ip in found + ["127.0.0.1"]:
-        origin = f"https://{ip}:{AGENT_TLS_PORT}"
-        if origin not in origins:
-            origins.append(origin)
+    """Origins for a paired browser on https://<lan-ip>:5443.
+
+    fnmatch does not treat ``https://<ip>`` as ``https://<ip>:5443``. Each
+    current non-loopback address is listed with the gateway port and as
+    ``*://<ip>:*``, the same port-wildcard form Agent Zero already uses for
+    localhost.
+    """
+    origins = list(_LOOPBACK_ORIGINS)
+    for ip in _non_loopback_ips(ips or []):
+        for origin in (f"https://{ip}:{AGENT_TLS_PORT}", f"*://{ip}:*"):
+            if origin not in origins:
+                origins.append(origin)
     return ",".join(origins)
 
 
@@ -743,24 +780,62 @@ _ENV_KEYS = (
 )
 
 
-def ensure_env_file(path: Path) -> None:
-    """Create the portable env if needed. Never print its contents."""
+def _env_key_name(line: str) -> str | None:
+    stripped = line.strip()
+    if stripped.startswith("export "):
+        stripped = stripped[len("export ") :].strip()
+    name, sep, _value = stripped.partition("=")
+    if sep != "=":
+        return None
+    name = name.strip()
+    return name or None
+
+
+def _upsert_env_key(text: str, key: str, value: str) -> str:
+    """Replace every ``key=`` line with one current value. Do not print ``text``."""
+    replaced = False
+    out: list[str] = []
+    for line in text.splitlines():
+        if _env_key_name(line) == key:
+            if not replaced:
+                out.append(f"{key}={value}")
+                replaced = True
+            continue
+        out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    rendered = "\n".join(out)
+    if rendered and not rendered.endswith("\n"):
+        rendered += "\n"
+    return rendered
+
+
+def ensure_env_file(path: Path, origins: str | None = None) -> None:
+    """Create the portable env if needed. Never print its contents.
+
+    Agent Zero loads this file with ``override=True``, so a stale
+    ``ALLOWED_ORIGINS`` line replaces the container environment. Rewrite that
+    one key on every start. Leave every other line alone.
+    """
     existing = ""
     if path.is_file():
         existing = path.read_text(encoding="utf-8", errors="replace")
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("", encoding="utf-8")
     missing = []
     for line in _ENV_KEYS:
         key = line.split("=", 1)[0]
         if f"{key}=" not in existing:
             missing.append(line)
+    text = existing
     if missing:
-        with path.open("a", encoding="utf-8") as fh:
-            if existing and not existing.endswith("\n"):
-                fh.write("\n")
-            fh.writelines(missing)
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "".join(missing)
+    value = origins if origins is not None else allowed_origins(_local_ipv4s())
+    text = _upsert_env_key(text, "ALLOWED_ORIGINS", value)
+    if text != existing or not path.is_file():
+        path.write_text(text, encoding="utf-8")
     try:
         os.chmod(path, 0o600)
     except OSError:

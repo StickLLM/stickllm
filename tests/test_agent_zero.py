@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -189,8 +190,65 @@ def test_agent_page_is_not_rewritten_under_agent():
     assert "\napparmor\n" in packages
     assert "\nnftables\n" in packages
     origins = agent.allowed_origins(["192.168.72.70"])
-    assert origins.startswith("https://192.168.72.70:5443")
-    assert "https://127.0.0.1:5443" in origins
+    parts = origins.split(",")
+    assert "https://192.168.72.70:5443" in parts
+    assert "*://127.0.0.1:*" in parts
+    assert "https://192.168.72.70" not in parts
+
+
+def test_allowed_origins_include_lan_port_not_the_bare_host(tmp_path):
+    """A browser on another PC sends Origin https://<lan-ip>:5443.
+
+    Agent Zero's matcher is fnmatch. ``https://<ip>`` does not match that
+    origin, so the generated list has to carry the gateway port itself.
+    """
+    agent = _load(AGENT, "stickllm_agent_origins_port")
+    origins = agent.allowed_origins(["192.168.72.70", "127.0.0.1", "10.9.8.7"])
+    parts = origins.split(",")
+    browser = "https://192.168.72.70:5443"
+    assert "https://192.168.72.70:5443" in parts
+    assert "*://192.168.72.70:*" in parts
+    assert "https://10.9.8.7:5443" in parts
+    assert "*://10.9.8.7:*" in parts
+    assert "https://192.168.72.70" not in parts
+    assert "https://10.9.8.7" not in parts
+    assert "https://127.0.0.1:5443" not in parts
+    assert "*://localhost" in parts
+    assert "*://localhost:*" in parts
+    assert "*://127.0.0.1" in parts
+    assert "*://127.0.0.1:*" in parts
+    assert any(fnmatch.fnmatch(browser, item) for item in parts)
+    assert not fnmatch.fnmatch(browser, "https://192.168.72.70")
+    bare_only = [
+        "*://localhost",
+        "*://localhost:*",
+        "*://127.0.0.1",
+        "*://127.0.0.1:*",
+        "*://0.0.0.0",
+        "*://0.0.0.0:*",
+        "https://192.168.72.70",
+    ]
+    assert not any(fnmatch.fnmatch(browser, item) for item in bare_only)
+    assert any(fnmatch.fnmatch("http://127.0.0.1:5099", item) for item in parts)
+    assert not any(":5099" in item and "192.168.72.70" in item for item in parts)
+    assert "-p 127.0.0.1:5099:5099" in _script()
+    env = tmp_path / ".env"
+    env.write_text(
+        "API_KEY_LLAMA_CPP=dummy\n"
+        "ALLOWED_ORIGINS=*://localhost,*://127.0.0.1,https://192.168.72.70\n",
+        encoding="utf-8",
+    )
+    agent.ensure_env_file(env, origins=origins)
+    text = env.read_text(encoding="utf-8")
+    assert "API_KEY_LLAMA_CPP=dummy" in text
+    stored = next(
+        line.split("=", 1)[1]
+        for line in text.splitlines()
+        if line.startswith("ALLOWED_ORIGINS=")
+    )
+    assert stored.split(",") == parts
+    assert "https://192.168.72.70" not in stored.split(",")
+    assert "https://192.168.72.70:5443" in stored.split(",")
 
 
 def test_llama_relay_forwards_on_loopback_only():
