@@ -424,21 +424,25 @@ def test_console_browser_keeps_a_tab_strip():
         assert "--app=" not in line
         assert " --app " not in f" {line} "
         assert "--no-sandbox" not in line
+        assert "--allow-insecure-localhost" not in line
+        assert "--ignore-certificate-errors" not in line
+        assert "--disable-web-security" not in line
+        assert "--test-type" not in line
         assert "userChrome" not in line
     assert 'KIOSK_USER="${STICKLLM_KIOSK_USER:-stickllm}"' in text
     assert "--hide-crash-restore-bubble" in text
     assert "clear_restore_prompt" in text
     assert "FullscreenAllowed" in text
     assert "ensure_browser_tabs" in text
+    assert "http://127.0.0.1:5099/" in text
+    assert "chromium_trust_args" not in text
+    assert "stick_cert_spki" not in text
     policy = json.loads(
         (
             ROOT / "overlay" / "etc" / "chromium" / "policies" / "managed" / "stickllm-tabs.json"
         ).read_text(encoding="utf-8")
     )
     assert policy["FullscreenAllowed"] is False
-    assert "--allow-insecure-localhost" in text
-    assert "ignore-certificate-errors-spki-list" in text
-    assert "stick_cert_spki" in text
 
 
 def _nft_check(text: str) -> None:
