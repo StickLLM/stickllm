@@ -245,7 +245,21 @@ function toggleAppsMenu(force) {
   const btn = $("#appsMenuBtn");
   if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
 }
-if ($("#appsMenuBtn")) $("#appsMenuBtn").onclick = () => toggleAppsMenu();
+if ($("#appsMenuBtn")) {
+  $("#appsMenuBtn").onclick = (ev) => {
+    ev.stopPropagation();
+    toggleAppsMenu();
+  };
+}
+// A click on the desktop, including an app icon, closes the menu. The icon's link still opens.
+document.addEventListener("click", (ev) => {
+  const menu = $("#appsMenu");
+  if (!menu || menu.hidden) return;
+  if (menu.contains(ev.target)) return;
+  const btn = $("#appsMenuBtn");
+  if (btn && (ev.target === btn || btn.contains(ev.target))) return;
+  toggleAppsMenu(false);
+});
 if ($("#appsList")) $("#appsList").addEventListener("click", (e) => {
   const row = e.target.closest(".appsRow");
   if (row) selectApp(row);
@@ -491,6 +505,7 @@ function renderConvs() {
 }
 function leaveApps() {
   if (mainView !== "apps") return;
+  toggleAppsMenu(false);
   mainView = "chat";
   const view = $("#appsView");
   if (view) view.hidden = true;
@@ -3188,6 +3203,7 @@ window.addEventListener("keydown", (e) => {
     else if (!$("#picker").hidden) $("#picker").hidden = true;
     else if (!$("#settings").hidden) closeSettings();
     else if (!$("#statusPop").hidden) $("#statusPop").hidden = true;
+    else if ($("#appsMenu") && !$("#appsMenu").hidden) toggleAppsMenu(false);
     else if (app.classList.contains("navOpen")) toggleNav(false);
   }
 });

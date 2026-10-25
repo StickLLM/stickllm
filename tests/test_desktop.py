@@ -58,12 +58,19 @@ def test_desktop_icons_are_the_starters_only():
 
 def test_games_are_original_and_offline():
     for name in ("minesweeper", "solitaire"):
-        page = (ROOT / "ui" / "apps" / name / "index.html").read_text(encoding="utf-8")
-        license_text = (ROOT / "ui" / "apps" / name / "LICENSE").read_text(encoding="utf-8")
+        folder = ROOT / "ui" / "apps" / name
+        page = (folder / "index.html").read_text(encoding="utf-8")
+        license_text = (folder / "LICENSE").read_text(encoding="utf-8")
         assert "MIT License" in license_text
         assert "original StickLLM program" in license_text
         assert "http://" not in page
         assert "https://" not in page
+        for path in folder.iterdir():
+            if path.suffix.lower() not in {".html", ".js"}:
+                continue
+            text = path.read_text(encoding="utf-8")
+            assert "http://" not in text
+            assert "https://" not in text
     helper = (ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-files").read_text(encoding="utf-8")
     unit = UNIT.read_text(encoding="utf-8")
     assert 'HOST = "127.0.0.1"' in helper
@@ -206,6 +213,57 @@ def test_gpu_stats_are_absent_without_nvidia_smi():
     assert second["percent"] == 100.0
     empty = system.memory_block("")
     assert empty["available"] is False
+
+
+def test_starter_pages_are_external_scripts(tmp_path):
+    """Inline scripts never run: the gateway CSP is script-src 'self'."""
+    ui = ROOT / "ui"
+    run = tmp_path / "run"
+    run.mkdir()
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }
+    saved = {key: os.environ.get(key) for key in env}
+    gateway = _load(GATEWAY, "stickllm_gateway_starters", env)
+    httpd = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        app_js = (ui / "app.js").read_text(encoding="utf-8")
+        assert "menu.contains(ev.target)" in app_js
+        assert 'else if ($("#appsMenu") && !$("#appsMenu").hidden) toggleAppsMenu(false);' in app_js
+        for name, src in (
+            ("files", "files.js"),
+            ("notepad", "notepad.js"),
+            ("minesweeper", "game.js"),
+            ("solitaire", "game.js"),
+            ("calculator", "calc.js"),
+            ("media", "media.js"),
+            ("monitor", "monitor.js"),
+        ):
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/apps/{name}/", timeout=5) as resp:
+                body = resp.read().decode("utf-8")
+                csp = resp.headers["Content-Security-Policy"]
+                script_src = [part for part in csp.split(";") if "script-src" in part]
+                assert script_src and "unsafe-inline" not in script_src[0]
+                assert f'src="{src}' in body
+                assert "<script>" not in body.lower()
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/apps/{name}/{src}", timeout=5) as resp:
+                script = resp.read().decode("utf-8")
+                assert resp.status == 200
+                assert "javascript" in resp.headers["Content-Type"]
+                assert len(script) > 200
+    finally:
+        httpd.shutdown()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def test_unpaired_app_routes_are_401(tmp_path):
