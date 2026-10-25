@@ -19,7 +19,9 @@ import socket
 import subprocess
 import sys
 import threading
+import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 VAULT_MNT = Path(os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault"))
@@ -42,9 +44,17 @@ DOCKER_DIR_NAME = "stickllm-docker"
 # relay bound only to this bridge address, not through 0.0.0.0.
 LLAMA_BRIDGE_HOST = "172.30.0.1"
 LLAMA_BRIDGE_PORT = 8080
+# Static StickLLM apps only. Same bridge address as the llama relay, never 0.0.0.0.
+APPS_BRIDGE_PORT = 8081
 LLAMA_BRIDGE_SUBNET = "172.30.0.0/24"
 LLAMA_BRIDGE_IFACE = "stickllm-a0"
 LLAMA_BASE = f"http://{LLAMA_BRIDGE_HOST}:{LLAMA_BRIDGE_PORT}/v1"
+# Directory ids under ui/apps. The desktop label for minesweeper is minesweep.
+APPS_URL_IDS = ("minesweeper", "solitaire", "tetris", "notepad", "calculator")
+APPS_NOTE = (
+    "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
+    "(minesweeper, solitaire, tetris, notepad, calculator)."
+)
 # Pinned agent0ai/agent-zero v2.14 lists this chat provider in
 # conf/model_providers.yaml. It speaks OpenAI /v1 through litellm hosted_vllm.
 LOCAL_PROVIDER = "llama_cpp"
@@ -376,14 +386,20 @@ def nft_ruleset(
     subnet: str = LLAMA_BRIDGE_SUBNET,
     gateway: str = LLAMA_BRIDGE_HOST,
     llama_port: int = LLAMA_BRIDGE_PORT,
+    apps_port: int = APPS_BRIDGE_PORT,
 ) -> str:
     """Forward rules owned by stickllm-agent. dockerd is started with --iptables=false.
 
-    The bridge subnet is accepted before the RFC1918 drops, so the container
-    can reach the llama relay and the bridge itself. Other addresses in
-    192.168.0.0/16, 10.0.0.0/8, and 172.16.0.0/12 are dropped. Internet is
-    allowed. The llama relay is not accepted from outside the bridge.
+    The bridge subnet is accepted before the RFC1918 drops, so forwarded
+    traffic can stay on the bridge. Other addresses in 192.168.0.0/16,
+    10.0.0.0/8, and 172.16.0.0/12 are dropped. Internet is allowed.
+
+    From the bridge, the host accepts only the llama relay and the static
+    apps server. Loopback still reaches the relay for the host health check.
+    LAN clients cannot open those ports, and the container cannot open any
+    other host port.
     """
+    ports = f"{{ {int(llama_port)}, {int(apps_port)} }}"
     return (
         f"table inet {NFT_TABLE} {{\n"
         "  chain forward {\n"
@@ -402,10 +418,13 @@ def nft_ruleset(
         "  chain input {\n"
         "    type filter hook input priority 0; policy accept;\n"
         # The host health check connects to the bridge address via lo.
-        # Packets from any other interface are still dropped, so the relay
-        # is not reachable from the LAN. The container uses the bridge.
+        # Return traffic for the published loopback UI is established.
+        # New bridge connections are limited to the llama relay and apps.
         '    iifname "lo" accept\n'
-        f'    iifname != "{bridge}" ip daddr {gateway} tcp dport {llama_port} drop\n'
+        f'    iifname "{bridge}" ct state established,related accept\n'
+        f'    iifname "{bridge}" ip daddr {gateway} tcp dport {ports} accept\n'
+        f'    iifname "{bridge}" drop\n'
+        f"    ip daddr {gateway} tcp dport {ports} drop\n"
         "  }\n"
         "  chain postrouting {\n"
         "    type nat hook postrouting priority srcnat; policy accept;\n"
@@ -508,6 +527,190 @@ def run_tcp_relay(listen_host: str, listen_port: int, target_host: str, target_p
         except OSError:
             return
         threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+
+_APPS_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".json": "application/json",
+    ".webmanifest": "application/manifest+json",
+    ".txt": "text/plain; charset=utf-8",
+    ".map": "application/json",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".wasm": "application/wasm",
+}
+
+
+def apps_ui_root() -> Path:
+    """Host directory of static apps. Not the vault, home, or the chat UI."""
+    return Path(os.environ.get("STICKLLM_UI", "/opt/stickllm/ui")) / "apps"
+
+
+def apps_target(root: Path, raw_path: str) -> Path | None:
+    """Map /apps/<id>/... onto a file under root. Anything else is absent."""
+    parsed = urllib.parse.urlsplit(raw_path or "")
+    path = urllib.parse.unquote(parsed.path or "")
+    if path != "/apps" and not path.startswith("/apps/"):
+        return None
+    rel = path[len("/apps") :].lstrip("/")
+    parts = [part for part in rel.split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        return None
+    try:
+        base = root.resolve()
+        target = base.joinpath(*parts).resolve() if parts else base
+        if target != base and base not in target.parents:
+            return None
+        if target.is_dir():
+            target = (target / "index.html").resolve()
+        if target != base and base not in target.parents:
+            return None
+        if not target.is_file():
+            return None
+    except OSError:
+        return None
+    return target
+
+
+def apps_prompt_text() -> str:
+    """Always-included profile note. The URL id is minesweeper; the label is minesweep."""
+    lines = [
+        "{{include original}}",
+        "",
+        "## StickLLM apps",
+        APPS_NOTE,
+        "The desktop label minesweep uses URL id minesweeper: "
+        "http://172.30.0.1:8081/apps/minesweeper/",
+        "URL ids and no others:",
+    ]
+    for app_id in APPS_URL_IDS:
+        lines.append(f"- {app_id}: http://172.30.0.1:8081/apps/{app_id}/")
+    lines.append(
+        "Fetch only these static pages. Do not use other host ports or LAN addresses."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def apps_skill_text() -> str:
+    body = apps_prompt_text().split("## StickLLM apps\n", 1)[1]
+    return (
+        "---\n"
+        "name: stickllm-apps\n"
+        "description: StickLLM local apps. URL ids are minesweeper, solitaire, "
+        "tetris, notepad, and calculator. The desktop label minesweep is URL id minesweeper.\n"
+        "---\n\n"
+        + body
+    )
+
+
+def ensure_apps_instructions() -> None:
+    """Write the apps note onto mounts the container already has.
+
+    The profile prompt is under the vault state directory that is already
+    mounted at /a0/usr. The skill is on the settings partition mounted at
+    /a0/usr/skills. No new host path is mounted.
+    """
+    if vault_mounted():
+        prompt_dir = ADDON / "state" / "agents" / "agent0" / "prompts"
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        prompt_path = prompt_dir / "agent.system.main.specifics.md"
+        text = apps_prompt_text()
+        current = ""
+        if prompt_path.is_file():
+            current = prompt_path.read_text(encoding="utf-8", errors="replace")
+        if current != text:
+            prompt_path.write_text(text, encoding="utf-8")
+    if settings_mounted():
+        skill_dir = PORTABLE / "skills" / "stickllm-apps"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        skill_path = skill_dir / "SKILL.md"
+        text = apps_skill_text()
+        current = ""
+        if skill_path.is_file():
+            current = skill_path.read_text(encoding="utf-8", errors="replace")
+        if current != text:
+            skill_path.write_text(text, encoding="utf-8")
+
+
+def apps_server(listen_host: str, listen_port: int, root: Path | None = None) -> ThreadingHTTPServer:
+    """Read-only static server for ui/apps. Refuses every interface address."""
+    if listen_host in ("0.0.0.0", "::", ""):
+        raise SystemExit("apps bridge must not listen on all interfaces")
+    apps = root or apps_ui_root()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _send(self, code: int, body: bytes, content_type: str) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            if self.command != "HEAD" and body:
+                self.wfile.write(body)
+
+        def _serve(self) -> None:
+            if self.command not in ("GET", "HEAD"):
+                self._send(404, b"not found\n", "text/plain; charset=utf-8")
+                return
+            target = apps_target(apps, self.path)
+            if target is None:
+                self._send(404, b"not found\n", "text/plain; charset=utf-8")
+                return
+            try:
+                data = target.read_bytes()
+            except OSError:
+                self._send(404, b"not found\n", "text/plain; charset=utf-8")
+                return
+            ctype = _APPS_TYPES.get(target.suffix.lower(), "application/octet-stream")
+            self._send(200, data, ctype)
+
+        def do_GET(self) -> None:
+            self._serve()
+
+        def do_HEAD(self) -> None:
+            self._serve()
+
+        def do_POST(self) -> None:
+            self._send(404, b"not found\n", "text/plain; charset=utf-8")
+
+        do_PUT = do_POST
+        do_DELETE = do_POST
+        do_PATCH = do_POST
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+        def version_string(self) -> str:
+            return "StickLLM"
+
+    return ThreadingHTTPServer((listen_host, int(listen_port)), Handler)
+
+
+def run_apps_bridge(listen_host: str, listen_port: int, root: Path | None = None) -> None:
+    """Serve ui/apps on the bridge address. Read-only. No chat, vault, or control API."""
+    srv = apps_server(listen_host, listen_port, root)
+    try:
+        srv.serve_forever()
+    except OSError:
+        return
+    finally:
+        try:
+            srv.server_close()
+        except OSError:
+            pass
 
 
 def read_status() -> dict:
@@ -1059,6 +1262,7 @@ def prepare_portable(model_name: str | None = None) -> None:
             if merged != current:
                 _write_settings(settings, merged)
     ensure_env_file(root / ".env")
+    ensure_apps_instructions()
     preset = root / "model-config" / "presets.yaml"
     preset.write_text(preset_text(model), encoding="utf-8")
     os.chmod(preset, 0o600)
@@ -1108,6 +1312,9 @@ def main(argv: list[str]) -> int:
         return nft_delete()
     if cmd == "llama-relay":
         run_tcp_relay(LLAMA_BRIDGE_HOST, LLAMA_BRIDGE_PORT, "127.0.0.1", LLAMA_BRIDGE_PORT)
+        return 0
+    if cmd == "apps-bridge":
+        run_apps_bridge(LLAMA_BRIDGE_HOST, APPS_BRIDGE_PORT)
         return 0
     if cmd == "image-ref":
         print(image_ref())

@@ -736,3 +736,120 @@ def test_model_settings_merge_keeps_user_fields_and_uses_the_relay(tmp_path):
     weights.write_bytes(b"x" * 1_000_001)
     assert agent.embedding_cached(tmp_path / "sentence-transformers")
     assert not agent.embedding_cached(tmp_path / "missing")
+
+
+def test_apps_bridge_serves_only_static_apps(tmp_path):
+    apps = tmp_path / "ui" / "apps"
+    calc = apps / "calculator"
+    calc.mkdir(parents=True)
+    (calc / "index.html").write_text("<title>Calculator — StickLLM</title>\n", encoding="utf-8")
+    (calc / "calc.js").write_text("/* 12*34 */\n", encoding="utf-8")
+    (tmp_path / "ui" / "index.html").write_text("chat", encoding="utf-8")
+    agent = _load(AGENT, "stickllm_agent_apps_only")
+    root = apps
+    assert agent.apps_target(root, "/apps/calculator/").name == "index.html"
+    assert agent.apps_target(root, "/apps/calculator/calc.js").name == "calc.js"
+    assert agent.apps_target(root, "/api/chat") is None
+    assert agent.apps_target(root, "/api/vault") is None
+    assert agent.apps_target(root, "/") is None
+    assert agent.apps_target(root, "/apps/../index.html") is None
+    assert agent.apps_target(root, "/index.html") is None
+    try:
+        agent.apps_server("0.0.0.0", 0, root)
+    except SystemExit as exc:
+        assert "all interfaces" in str(exc)
+    else:
+        raise AssertionError("apps bridge accepted 0.0.0.0")
+    httpd = agent.apps_server("127.0.0.1", 0, root)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/apps/calculator/", timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+            assert resp.status == 200
+            assert "Calculator" in page
+        for blocked in ("/api/chat", "/api/vault", "/", "/apps/../index.html"):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}{blocked}", timeout=5)
+            except urllib.error.HTTPError as exc:
+                assert exc.code == 404
+            else:
+                raise AssertionError(blocked)
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/apps/calculator/",
+            data=b"{}",
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+        else:
+            raise AssertionError("POST served an app")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    rules = agent.nft_ruleset()
+    assert 'iifname "lo" accept' in rules
+    assert rules.index('iifname "lo" accept') < rules.index('iifname "stickllm-a0" drop')
+    assert "tcp dport { 8080, 8081 }" in rules
+    assert 'iifname "stickllm-a0" ip daddr 172.30.0.1 tcp dport { 8080, 8081 } accept' in rules
+    assert "192.168.0.0/16 drop" in rules
+    assert "5099" not in rules
+    assert "0.0.0.0:8081" not in rules
+    assert "0.0.0.0:8080" not in rules
+    script = _script()
+    assert "apps-bridge" in script
+    assert "ensure_apps" in script
+    assert "0.0.0.0:8081" not in script
+    assert "-p 127.0.0.1:5099:5099" in script
+    run = script.split("docker_cli run --name", 1)[1].split("--entrypoint", 1)[0]
+    assert ":8081" not in run
+    assert "/opt/stickllm/ui" not in run
+    assert 'iifname "lo" accept' in agent.nft_apply_text()
+
+
+def test_apps_prompt_names_url_ids(tmp_path):
+    vault = tmp_path / "vault"
+    settings = tmp_path / "settings"
+    vault.mkdir()
+    settings.mkdir()
+    mounts = tmp_path / "mounts"
+    mounts.write_text(
+        f"dev {vault} ext4 rw 0 0\ndev {settings} ext4 rw 0 0\n",
+        encoding="utf-8",
+    )
+    agent = _load(
+        AGENT,
+        "stickllm_agent_apps_prompt",
+        {
+            "STICKLLM_VAULT_MNT": str(vault),
+            "STICKLLM_SETTINGS_MNT": str(settings),
+            "STICKLLM_MOUNTS_FILE": str(mounts),
+        },
+    )
+    agent.ensure_apps_instructions()
+    prompt = (
+        vault
+        / "addons"
+        / "agent-zero"
+        / "state"
+        / "agents"
+        / "agent0"
+        / "prompts"
+        / "agent.system.main.specifics.md"
+    ).read_text(encoding="utf-8")
+    note = (
+        "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
+        "(minesweeper, solitaire, tetris, notepad, calculator)."
+    )
+    assert note in prompt
+    assert "http://172.30.0.1:8081/apps/minesweeper/" in prompt
+    assert "minesweep" in prompt
+    skill = (
+        settings / "agent-zero" / "skills" / "stickllm-apps" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert note in skill
+    assert "URL id minesweeper" in skill or "minesweeper" in skill
+    assert "minesweep" in skill

@@ -12,6 +12,7 @@ ADDON="${VAULT}/addons/agent-zero"
 SOCK="/run/stickllm/agent-docker.sock"
 PIDFILE="/run/stickllm/agent-dockerd.pid"
 RELAY_PIDFILE="/run/stickllm/agent-llama-relay.pid"
+APPS_PIDFILE="/run/stickllm/agent-apps-bridge.pid"
 PULL_LOG="/run/stickllm/agent-pull.log"
 CONTAINER="stickllm-agent-zero"
 NETWORK="stickllm-agent"
@@ -125,6 +126,18 @@ stop_relay() {
   fi
 }
 
+stop_apps() {
+  if [[ -f "$APPS_PIDFILE" ]]; then
+    local pid
+    pid="$(tr -cd '0-9' <"$APPS_PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$APPS_PIDFILE"
+  fi
+}
+
 ensure_relay() {
   # Bridge address only. llama-server stays on 127.0.0.1:8080.
   local i
@@ -155,6 +168,39 @@ PY
   done
   echo "stickllm-agent: llama relay did not bind 172.30.0.1:8080" >&2
   "$PYBIN" "$LIB" write-status --state error --image_present true --message "llama relay did not bind 172.30.0.1:8080" >/dev/null || true
+  return 1
+}
+
+ensure_apps() {
+  # Static ui/apps only, on the bridge address. Not 0.0.0.0 and not the LAN.
+  local i
+  for i in $(seq 1 25); do
+    local pid=""
+    if [[ -f "$APPS_PIDFILE" ]]; then
+      pid="$(tr -cd '0-9' <"$APPS_PIDFILE" || true)"
+    fi
+    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      "$PYBIN" "$LIB" apps-bridge >/var/log/stickllm-agent-apps.log 2>&1 &
+      echo $! >"$APPS_PIDFILE"
+    fi
+    if "$PYBIN" - <<'PY'
+import socket
+s = socket.socket()
+s.settimeout(0.2)
+try:
+    s.connect(("172.30.0.1", 8081))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+    then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "stickllm-agent: apps bridge did not bind 172.30.0.1:8081" >&2
+  "$PYBIN" "$LIB" write-status --state error --image_present true --message "apps bridge did not bind 172.30.0.1:8081" >/dev/null || true
   return 1
 }
 
@@ -268,6 +314,7 @@ cmd_run_container() {
   export STICKLLM_HF_OFFLINE
   ensure_nft
   ensure_relay
+  ensure_apps
   local ref origins
   ref="$("$PYBIN" "$LIB" image-ref)"
   origins="$("$PYBIN" "$LIB" allowed-origins)"
@@ -334,6 +381,7 @@ cmd_run() {
 cmd_stop() {
   stop_container || true
   stop_relay || true
+  stop_apps || true
   "$PYBIN" "$LIB" nft-delete >/dev/null 2>&1 || true
   if [[ -f "$PIDFILE" ]]; then
     local pid

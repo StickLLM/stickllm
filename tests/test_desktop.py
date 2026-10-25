@@ -69,8 +69,10 @@ def test_desktop_icons_are_the_starters_only():
     assert "grid-template-columns:repeat(auto-fill,64px)" in css
     assert ".deskIcons{flex:1;min-height:0;display:grid;grid-template-columns:repeat(auto-fill,64px);gap:24px;" in css
     assert ".deskGlyph{width:64px;height:64px;" in css
-    for label in ("Files", "Notepad", "Minesweeper", "Solitaire", "Tetris", "Calculator", "Media", "Monitor"):
+    for label in ("Files", "Notepad", "minesweep", "Solitaire", "Tetris", "Calculator", "Media", "Monitor"):
         assert f">{label}</span>" in desk
+    assert ">Minesweeper</span>" not in desk
+    assert ">minespweeper</span>" not in desk
     label_css = css.split(".deskLabel{", 1)[1].split("}", 1)[0]
     icon_css = css.split(".deskIcon{", 1)[1].split("}", 1)[0]
     assert "font-size:13px" in label_css
