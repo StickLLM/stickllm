@@ -77,6 +77,36 @@ assert.strictEqual(won.win, true);
 assert.strictEqual(won.status, "Cleared");
 assert.ok(won.cells.every((cell) => cell.open));
 
+function mineCount(game, i) {
+  return mines.neighbors(i).reduce((n, j) => n + (game.cells[j].mine ? 1 : 0), 0);
+}
+const counted = mines.create(() => 0.37);
+mines.reveal(counted, 20);
+assert.strictEqual(counted.cells[20].mine, false);
+let mineTotal = 0;
+for (let i = 0; i < 81; i++) {
+  if (counted.cells[i].mine) {
+    mineTotal++;
+    assert.strictEqual(counted.cells[i].open, false);
+    continue;
+  }
+  assert.strictEqual(counted.cells[i].n, mineCount(counted, i), "neighbour count " + i);
+}
+assert.strictEqual(mineTotal, 10);
+for (let i = 0; i < 81; i++) {
+  const cell = counted.cells[i];
+  if (!cell.open || cell.n !== 0) continue;
+  for (const j of mines.neighbors(i)) assert.strictEqual(counted.cells[j].open, true, "flood " + i);
+}
+
+const blocked = mines.create(() => 0.2);
+mines.flag(blocked, 8);
+mines.reveal(blocked, 0);
+assert.strictEqual(blocked.cells[8].flag, true);
+assert.strictEqual(blocked.cells[8].open, false);
+mines.flag(blocked, 8);
+assert.strictEqual(blocked.cells[8].flag, false);
+
 const dealt = sol.deal(sol.create(() => 0.25));
 assert.strictEqual(dealt.tab.reduce((n, pile) => n + pile.length, 0), 28);
 assert.strictEqual(dealt.stock.length, 24);

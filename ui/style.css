@@ -70,11 +70,21 @@ html[data-theme="light"] .appsView{background:
   radial-gradient(1200px 500px at 10% -10%, rgba(19,138,127,.12), transparent 55%),
   linear-gradient(180deg, #e7f3f1 0%, var(--bg) 42%)}
 .desk{height:100%;min-height:0;display:flex;flex-direction:column;position:relative}
-.deskIcons{flex:1;display:flex;flex-wrap:wrap;align-content:flex-start;gap:8px 6px;padding:22px 18px 12px}
-.deskIcon{width:96px;display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 6px;border-radius:12px;color:var(--ink);text-decoration:none;text-align:center;font-size:12.5px;font-weight:550}
-.deskIcon:hover,.deskIcon:focus-visible{background:var(--accent-soft)}
-.deskGlyph{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;background:var(--panel);border:1px solid var(--line);color:var(--accent)}
-.deskGlyph svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linejoin:round;stroke-linecap:round}
+.deskIcons{flex:1;min-height:0;display:grid;grid-template-columns:repeat(auto-fill,64px);gap:24px;align-content:start;justify-content:start;padding:24px;overflow:auto}
+.deskIcon{width:64px;min-width:64px;max-width:64px;min-height:64px;display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--ink);text-decoration:none;text-align:center;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+.deskGlyph{width:64px;height:64px;border-radius:16px;display:grid;place-items:center;color:#fff;transition:transform .08s ease,filter .08s ease,box-shadow .08s ease}
+.deskIcon[data-starter="files"] .deskGlyph{background:#2563eb}
+.deskIcon[data-starter="notepad"] .deskGlyph{background:#eab308}
+.deskIcon[data-starter="minesweeper"] .deskGlyph{background:#6b7280}
+.deskIcon[data-starter="solitaire"] .deskGlyph{background:#16a34a}
+.deskIcon[data-starter="calculator"] .deskGlyph{background:#f97316}
+.deskIcon[data-starter="media"] .deskGlyph{background:#dc2626}
+.deskIcon[data-starter="monitor"] .deskGlyph{background:#7c3aed}
+.deskGlyph svg{width:32px;height:32px;stroke:#fff;fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.deskGlyph svg [fill="#fff"]{fill:#fff}
+.deskIcon:hover .deskGlyph,.deskIcon:focus-visible .deskGlyph{filter:brightness(1.14);transform:translateY(-2px);box-shadow:0 8px 16px rgba(0,0,0,.32)}
+.deskIcon:active .deskGlyph{filter:brightness(.86);transform:translateY(1px) scale(.96);box-shadow:none}
+.deskLabel{display:block;width:max-content;max-width:112px;position:relative;left:50%;transform:translateX(-50%);font-size:13px;line-height:1.2;font-weight:550;text-align:center;white-space:nowrap}
 .deskBar{display:flex;align-items:center;gap:10px;padding:10px 14px 14px}
 .deskStart{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:999px;padding:8px 16px;font:inherit;font-weight:620;cursor:pointer}
 .deskStart:hover{border-color:var(--accent);color:var(--accent)}

@@ -5,21 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Minesweeper — StickLLM</title>
 <style>
-  body{margin:0;min-height:100vh;background:#0e1214;color:#e4ecee;font:15px/1.4 "Segoe UI",sans-serif;display:grid;justify-items:center;padding:16px}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:#0e1214;color:#e4ecee;font:15px/1.4 "Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:12px;overflow:auto}
   a{color:#2bb5a8;text-decoration:none}
-  .bar{display:flex;gap:12px;align-items:center;margin:8px 0 12px}
-  button.cell{width:32px;height:32px;font:16px/1 "Segoe UI",sans-serif;background:#1e272c;color:#e4ecee;border:1px solid #263136;cursor:pointer;user-select:none;touch-action:manipulation}
-  #status.win{color:#2bb5a8;font-weight:700}
-  #status.lose{color:#e07a7a;font-weight:700}
-  button.cell.open{background:#13181b;cursor:default}
-  button.cell.mine{background:#6b2a2a}
-  #board{display:grid;grid-template-columns:repeat(9,32px);gap:2px}
+  .home{position:absolute;top:12px;left:16px}
+  .wrap{width:max-content;max-width:100%}
+  .bar{display:flex;gap:12px;align-items:center;margin:0 0 10px}
+  .bar strong{font-size:16px}
+  #status{min-width:6.5em;font-weight:650}
+  #status.win{color:#bbf7d0;background:#14532d;border-radius:8px;padding:4px 10px;font-size:18px;font-weight:800}
+  #status.lose{color:#fecaca;background:#7f1d1d;border-radius:8px;padding:4px 10px;font-size:18px;font-weight:800}
+  #again{appearance:none;background:#2bb5a8;color:#04211e;border:0;border-radius:8px;padding:8px 14px;font:inherit;font-weight:700;cursor:pointer}
+  #again:hover{filter:brightness(1.08)}
+  #again:active{transform:translateY(1px)}
+  #board{display:grid;grid-template-columns:repeat(9,var(--cell));gap:3px;padding:8px;background:#243038;border:2px solid #8ea0aa;border-radius:8px;width:max-content;--cell:min(44px,calc((100vw - 40px) / 9));touch-action:manipulation}
+  body[data-state="win"] #board{outline:3px solid #3fbf8a;outline-offset:2px}
+  body[data-state="lose"] #board{outline:3px solid #e15b5b;outline-offset:2px}
+  button.cell{appearance:none;-webkit-appearance:none;width:var(--cell);height:var(--cell);padding:0;display:grid;place-items:center;font:700 18px/1 "Segoe UI",system-ui,sans-serif;background:#d7e0e6;color:#152028;border:1px solid #6d808a;border-radius:3px;box-shadow:inset 1px 1px 0 #fff,inset -2px -2px 0 #7b8d96;cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
+  button.cell:hover:not(.open){background:#e7eef2}
+  button.cell:active:not(.open){transform:translateY(1px);box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}
+  button.cell.open{background:#eef3f6;box-shadow:inset 0 0 0 1px #c5d0d6;cursor:default}
+  button.cell.mine{background:#e15b5b;border-color:#7f1d1d;box-shadow:none}
+  button.cell.n1{color:#1d4ed8}
+  button.cell.n2{color:#15803d}
+  button.cell.n3{color:#dc2626}
+  button.cell.n4{color:#6d28d9}
+  button.cell.n5{color:#b45309}
+  button.cell.n6{color:#0f766e}
+  button.cell.n7{color:#111827}
+  button.cell.n8{color:#475569}
+  button.cell svg.mark{width:22px;height:22px;display:block}
 </style>
 </head>
 <body>
-<a href="/">StickLLM</a>
-<div class="bar"><strong>Minesweeper</strong><span id="status">10 mines</span><button type="button" id="again">New game</button></div>
-<div id="board"></div>
-<script src="game.js?v=desk2"></script>
+<a class="home" href="/">StickLLM</a>
+<div class="wrap">
+  <div class="bar"><strong>Minesweeper</strong><span id="status">10 mines</span><button type="button" id="again">New game</button></div>
+  <div id="board"></div>
+</div>
+<script src="game.js?v=desk3"></script>
 </body>
 </html>

@@ -100,6 +100,9 @@
 
   function restart(rng) { return create(rng); }
 
+  const FLAG = '<svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="#dc2626" d="M6 3h2v18H6z"/><path fill="#dc2626" d="M8 4h11l-3 4 3 4H8z"/></svg>';
+  const MINE = '<svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="#1c1917"/><path stroke="#1c1917" stroke-width="2" stroke-linecap="round" d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>';
+
   function boot() {
     if (typeof document === "undefined") return;
     const board = document.getElementById("board");
@@ -109,52 +112,116 @@
     let game = create();
 
     function paint() {
-      status.textContent = game.status;
+      const flags = game.cells.reduce((n, cell) => n + (cell.flag ? 1 : 0), 0);
+      status.textContent = game.over ? game.status : String(game.mines - flags) + " mines";
       status.className = game.win ? "win" : game.over ? "lose" : "";
+      document.body.dataset.state = game.win ? "win" : game.over ? "lose" : "";
       game.cells.forEach((cell, i) => {
         const btn = board.children[i];
         if (!btn) return;
-        btn.textContent = "";
         btn.className = "cell";
+        btn.innerHTML = "";
         if (cell.open) {
           btn.classList.add("open");
-          if (cell.mine) { btn.textContent = "•"; btn.classList.add("mine"); }
-          else if (cell.n) btn.textContent = String(cell.n);
-        } else if (cell.flag) btn.textContent = "⚑";
+          if (cell.mine) {
+            btn.classList.add("mine");
+            btn.innerHTML = MINE;
+            btn.setAttribute("aria-label", "Mine");
+          } else if (cell.n) {
+            btn.textContent = String(cell.n);
+            btn.classList.add("n" + cell.n);
+            btn.setAttribute("aria-label", String(cell.n));
+          } else {
+            btn.setAttribute("aria-label", "Empty");
+          }
+        } else if (cell.flag) {
+          btn.classList.add("flag");
+          btn.innerHTML = FLAG;
+          btn.setAttribute("aria-label", "Flagged");
+        } else {
+          btn.setAttribute("aria-label", "Cell " + (i + 1));
+        }
+      });
+    }
+
+    function bind(el, i) {
+      let hold = 0;
+      let suppress = false;
+      let flagged = false;
+
+      function stopHold() {
+        if (!hold) return;
+        clearTimeout(hold);
+        hold = 0;
+      }
+
+      function putFlag() {
+        flagged = true;
+        suppress = true;
+        flag(game, i);
+        paint();
+      }
+
+      el.addEventListener("pointerdown", (ev) => {
+        if (ev.button === 2) {
+          ev.preventDefault();
+          suppress = true;
+          return;
+        }
+        if (ev.button !== 0) return;
+        // A right-click that never emitted click must not swallow this tap.
+        suppress = false;
+        flagged = false;
+        stopHold();
+        if (ev.pointerType === "mouse") return;
+        hold = setTimeout(() => {
+          hold = 0;
+          if (flagged) return;
+          putFlag();
+        }, 450);
+      });
+      el.addEventListener("pointerup", (ev) => {
+        stopHold();
+        if (ev.button === 2 && !flagged) putFlag();
+      });
+      el.addEventListener("pointercancel", stopHold);
+      el.addEventListener("pointerleave", (ev) => {
+        if (ev.pointerType === "mouse") return;
+        stopHold();
+      });
+      el.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        stopHold();
+        if (flagged) return;
+        putFlag();
+      });
+      el.addEventListener("click", (ev) => {
+        stopHold();
+        if (suppress || flagged) {
+          suppress = false;
+          flagged = false;
+          ev.preventDefault();
+          return;
+        }
+        reveal(game, i);
+        paint();
       });
     }
 
     function build() {
       board.innerHTML = "";
+      document.body.dataset.state = "";
       for (let i = 0; i < W * H; i++) {
         const el = document.createElement("button");
         el.type = "button";
         el.className = "cell";
-        el.setAttribute("aria-label", "Cell " + (i + 1));
-        el.addEventListener("pointerdown", (ev) => {
-          if (ev.button !== 2) return;
-          ev.preventDefault();
-          el._right = true;
-          flag(game, i);
-          paint();
-          setTimeout(() => { el._right = false; }, 0);
-        });
-        el.addEventListener("click", (ev) => {
-          if (el._right || (ev.button != null && ev.button !== 0)) return;
-          reveal(game, i);
-          paint();
-        });
-        el.addEventListener("contextmenu", (ev) => {
-          ev.preventDefault();
-          if (el._right) return;
-          flag(game, i);
-          paint();
-        });
+        bind(el, i);
         board.appendChild(el);
       }
       paint();
     }
 
+    board.addEventListener("contextmenu", (ev) => ev.preventDefault());
     again.addEventListener("click", () => {
       game = restart();
       build();

@@ -49,6 +49,30 @@ def test_desktop_icons_are_the_starters_only():
         assert f'data-app="{starter}"' not in menu
     assert "Not installed" in menu
     assert "Not available yet" in menu
+    css = (ROOT / "ui" / "style.css").read_text(encoding="utf-8")
+    assert "grid-template-columns:repeat(auto-fill,64px)" in css
+    assert ".deskIcons{flex:1;min-height:0;display:grid;grid-template-columns:repeat(auto-fill,64px);gap:24px;" in css
+    assert ".deskGlyph{width:64px;height:64px;" in css
+    assert ".deskLabel{" in css and "font-size:13px" in css.split(".deskLabel{", 1)[1].split("}", 1)[0]
+    colours = {
+        "files": "#2563eb",
+        "notepad": "#eab308",
+        "minesweeper": "#6b7280",
+        "solitaire": "#16a34a",
+        "calculator": "#f97316",
+        "media": "#dc2626",
+        "monitor": "#7c3aed",
+    }
+    for starter, colour in colours.items():
+        assert f'[data-starter="{starter}"] .deskGlyph{{background:{colour}}}' in css
+        assert 'class="deskLabel"' in desk
+    page = (ROOT / "ui" / "apps" / "minesweeper" / "index.html").read_text(encoding="utf-8")
+    assert "background:#d7e0e6" in page
+    assert "background:#0e1214" in page
+    assert "repeat(9,var(--cell))" in page
+    script = (ROOT / "ui" / "apps" / "minesweeper" / "game.js").read_text(encoding="utf-8")
+    assert "contextmenu" in script
+    assert "putFlag" in script
     apps = _load(APPS, "stickllm_apps_desktop")
     catalog_ids = {app["id"] for app in apps.CATALOG}
     assert catalog_ids.isdisjoint(STARTERS)
