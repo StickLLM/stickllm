@@ -18,7 +18,7 @@ GATEWAY = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-gateway"
 APPS = ROOT / "overlay" / "usr" / "local" / "lib" / "stickllm_apps.py"
 UNIT = ROOT / "overlay" / "etc" / "systemd" / "system" / "stickllm-files.service"
 
-STARTERS = ("files", "notepad", "minesweeper", "solitaire", "calculator", "media", "monitor")
+STARTERS = ("files", "notepad", "minesweeper", "calculator", "media", "monitor")
 
 
 def _load(path: Path, name: str, env: dict | None = None):
@@ -72,7 +72,6 @@ def test_desktop_icons_are_the_starters_only():
         "files": "#2563eb",
         "notepad": "#eab308",
         "minesweeper": "#6b7280",
-        "solitaire": "#16a34a",
         "calculator": "#f97316",
         "media": "#dc2626",
         "monitor": "#7c3aed",
@@ -95,7 +94,9 @@ def test_desktop_icons_are_the_starters_only():
 
 
 def test_games_are_original_and_offline():
-    for name in ("minesweeper", "solitaire"):
+    assert "solitaire" not in HTML.read_text(encoding="utf-8").lower()
+    assert not (ROOT / "ui" / "apps" / "solitaire").exists()
+    for name in ("minesweeper",):
         folder = ROOT / "ui" / "apps" / name
         page = (folder / "index.html").read_text(encoding="utf-8")
         license_text = (folder / "LICENSE").read_text(encoding="utf-8")
@@ -278,7 +279,6 @@ def test_starter_pages_are_external_scripts(tmp_path):
             ("files", "files.js"),
             ("notepad", "notepad.js"),
             ("minesweeper", "game.js"),
-            ("solitaire", "game.js"),
             ("calculator", "calc.js"),
             ("media", "media.js"),
             ("monitor", "monitor.js"),

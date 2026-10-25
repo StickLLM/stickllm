@@ -3,7 +3,6 @@ const assert = require("assert");
 const path = require("path");
 const calc = require(path.join(__dirname, "..", "ui", "apps", "calculator", "calc.js"));
 const mines = require(path.join(__dirname, "..", "ui", "apps", "minesweeper", "game.js"));
-const sol = require(path.join(__dirname, "..", "ui", "apps", "solitaire", "game.js"));
 const monitor = require(path.join(__dirname, "..", "ui", "apps", "monitor", "monitor.js"));
 require(path.join(__dirname, "..", "ui", "apps", "files", "files.js"));
 require(path.join(__dirname, "..", "ui", "apps", "notepad", "notepad.js"));
@@ -106,74 +105,6 @@ assert.strictEqual(blocked.cells[8].flag, true);
 assert.strictEqual(blocked.cells[8].open, false);
 mines.flag(blocked, 8);
 assert.strictEqual(blocked.cells[8].flag, false);
-
-const dealt = sol.deal(sol.create(() => 0.25));
-assert.strictEqual(dealt.tab.reduce((n, pile) => n + pile.length, 0), 28);
-assert.strictEqual(dealt.stock.length, 24);
-assert.strictEqual(dealt.tab[0].length, 1);
-assert.strictEqual(dealt.tab[0][0].up, true);
-assert.strictEqual(dealt.tab[6].length, 7);
-assert.strictEqual(dealt.tab[6][0].up, false);
-assert.strictEqual(dealt.tab[6][6].up, true);
-
-const ace = sol.create();
-ace.waste = ["AS"];
-ace.sel = { kind: "waste" };
-sol.tryMove(ace, { kind: "found", pile: 0 });
-assert.deepStrictEqual(ace.found[0], ["AS"]);
-assert.strictEqual(ace.waste.length, 0);
-
-const king = sol.create();
-king.waste = ["KH"];
-king.sel = { kind: "waste" };
-sol.tryMove(king, { kind: "tab", pile: 3 });
-assert.strictEqual(king.tab[3][0].card, "KH");
-
-const notKing = sol.create();
-notKing.waste = ["QH"];
-notKing.sel = { kind: "waste" };
-sol.tryMove(notKing, { kind: "tab", pile: 0 });
-assert.deepStrictEqual(notKing.waste, ["QH"]);
-assert.strictEqual(notKing.tab[0].length, 0);
-
-const onto = sol.create();
-onto.tab[0] = [{ card: "KS", up: true }];
-onto.waste = ["QH"];
-onto.sel = { kind: "waste" };
-sol.tryMove(onto, { kind: "tab", pile: 0 });
-assert.strictEqual(onto.tab[0][1].card, "QH");
-
-const sameColor = sol.create();
-sameColor.tab[0] = [{ card: "KS", up: true }];
-sameColor.waste = ["QS"];
-sameColor.sel = { kind: "waste" };
-sol.tryMove(sameColor, { kind: "tab", pile: 0 });
-assert.deepStrictEqual(sameColor.waste, ["QS"]);
-
-const draw = sol.create();
-draw.stock = ["AS", "KH"];
-sol.drawStock(draw);
-assert.deepStrictEqual(draw.waste, ["KH"]);
-sol.drawStock(draw);
-assert.deepStrictEqual(draw.waste, ["KH", "AS"]);
-draw.stock = [];
-sol.drawStock(draw);
-assert.deepStrictEqual(draw.stock, ["AS", "KH"]);
-assert.deepStrictEqual(draw.waste, []);
-
-function suitRun(suit, n) {
-  return "A23456789TJQK".slice(0, n).split("").map((r) => r + suit);
-}
-const done = sol.create();
-done.found[0] = suitRun("S", 12);
-done.found[1] = suitRun("H", 13);
-done.found[2] = suitRun("D", 13);
-done.found[3] = suitRun("C", 13);
-done.waste = ["KS"];
-done.sel = { kind: "waste" };
-sol.tryMove(done, { kind: "found", pile: 0 });
-assert.strictEqual(done.status, "Done");
-assert.strictEqual(done.found[0].length, 13);
 
 const sample = {
   ok: true,

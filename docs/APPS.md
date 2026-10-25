@@ -69,6 +69,39 @@ specific app.
 
 ---
 
+## Requirements
+
+Estimates until the next test boot. The card line is `Disk X GB · RAM X GB · GPU: none/optional/X GB`, with minimum RAM and the recommended figure in parentheses when it differs. Each estimate is labelled **approx.** Agent Zero’s disk and the starter-app footprint below are the figures already measured on the stick. Do not record a measurement for a catalog app that is not installed.
+
+| id | disk_gb (app only) | ram_gb min/rec | vram_gb | gpu | note |
+|---|---|---|---|---|---|
+| onlyoffice | 3 | 2 / 4 | 0 | none | Heavy for an office suite; 4 GB RAM for smooth editing |
+| paperless-ngx | 1.5 | 1 / 2 | 0 | none | + Redis; OCR spikes RAM/CPU; documents stored extra |
+| snappymail | 0.1 | 0.1 / 0.25 | 0 | none | Very light |
+| radicale | 0.05 | 0.05 / 0.1 | 0 | none | Very light |
+| trilium | 0.5 | 0.25 / 0.5 | 0 | none | |
+| vikunja | 0.15 | 0.1 / 0.25 | 0 | none | |
+| actual | 0.3 | 0.15 / 0.3 | 0 | none | |
+| immich | 5 | 6 / 8 | 0 or 1-2 | optional | Server + ML + Postgres + Redis; photo library stored extra; GPU ML search uses ~1-2 GB VRAM |
+| searxng | 0.2 | 0.25 / 0.5 | 0 | none | + Valkey/Redis; Tor adds ~0.1 GB |
+| matrix | 0.2 | 0.25 / 0.5 | 0 | none | Conduit + Element web; bridges add more |
+| simplex | 0.1 | 0.1 / 0.25 | 0 | none | SMP/XFTP relay servers; clients are phone/desktop apps |
+| jitsi | 2 | 2 / 4 | 0 | none | 4 containers incl. Java video bridge; CPU heavy with many callers |
+| onionshare | 0.1 | 0.1 / 0.25 | 0 | none | CLI + Tor |
+| postiz | 2.5 | 2 / 4 | 0 | none | Node + Postgres + Redis |
+| opentimestamps | 0.05 | 0.05 / 0.05 | 0 | none | Client + minisign; negligible |
+| comfyui | 8 | 8 / 16 | 8 / 12-24 | required | PyTorch+CUDA install; models extra (SDXL ~7 GB, Flux 12-24 GB); unload or shrink the LLM to free VRAM |
+| code-server-jupyter | 1.5 | 1 / 2 | 0 | optional | GPU only if notebooks use it |
+| n8n | 0.5 | 0.5 / 1 | 0 | none | Pick n8n or Node-RED, not both by default |
+| node-red | 0.3 | 0.2 / 0.5 | 0 | none | |
+| agent-zero | 4 (measured) | 2 / 4 | 0 | none | Uses llama-server for the model; Kokoro TTS on CPU ~0.5-1 GB RAM; needs a few GB free while unpacking |
+
+Base StickLLM with starter apps: ~25 MB extra, <3 GB RAM with a model loaded (measured on the stick).
+
+After the next test boot, replace these estimates with measured disk (`du` of the app directory) and RAM (`docker stats` or RSS at idle and under use). Leave a figure labelled approx. until that measurement exists. Catalog apps that are not installed stay approx.
+
+Before install, StickLLM checks free host-SSD space and total RAM. Below the minimum it shows a warning and still allows install. GPU required or optional cards show current free VRAM from `nvidia-smi` beside the requirement. If `nvidia-smi` is missing, the card says VRAM is unavailable.
+
 ## Notes
 
 - Apps would be **downloadable** to USB DATA or vault — not required for StickLLM chat.

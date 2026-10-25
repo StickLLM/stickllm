@@ -241,6 +241,116 @@ def test_uninstall_does_not_follow_a_symlink_out_of_the_app_dir(tmp_path):
     assert str(link) not in "".join(result["deleted"])
 
 
+def _requirement_table(text: str) -> dict[str, list[str]]:
+    rows: dict[str, list[str]] = {}
+    started = False
+    for line in text.splitlines():
+        if line.startswith("| id |"):
+            started = True
+            continue
+        if not started:
+            continue
+        if not line.startswith("|"):
+            break
+        if not line.replace("|", "").replace("-", "").replace(":", "").strip():
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 6:
+            continue
+        rows[cells[0]] = cells
+    return rows
+
+
+def test_catalog_cards_show_requirements_and_low_disk_still_installs(tmp_path):
+    apps = _load()
+    html = HTML.read_text(encoding="utf-8")
+    assert "solitaire" not in html.lower()
+    listing = html.split('id="appsList"', 1)[1].split('id="settings"', 1)[0]
+    doc_rows = _requirement_table(DOC.read_text(encoding="utf-8"))
+    assert set(doc_rows) == {app["id"] for app in apps.CATALOG} | {"agent-zero"}
+    for app in apps.CATALOG:
+        for field in ("disk_gb", "ram_gb", "vram_gb", "gpu", "note"):
+            assert field in app
+        assert app["gpu"] in {"none", "optional", "required"}
+        assert "min" in app["ram_gb"] and "recommended" in app["ram_gb"]
+        line = apps.requirement_line(app)
+        assert "Disk" in line and "RAM" in line and "GPU:" in line and "approx." in line
+        assert "(measured)" not in line
+        assert line in listing
+        if app["note"]:
+            assert app["note"] in listing
+        row = doc_rows[app["id"]]
+        vram = app["vram_gb"]
+        vram_cell = apps.fmt_gb(vram) if isinstance(vram, (int, float)) else str(vram)
+        assert row[1] == apps.fmt_gb(app["disk_gb"])
+        assert row[2] == f"{apps.fmt_gb(app['ram_gb']['min'])} / {apps.fmt_gb(app['ram_gb']['recommended'])}"
+        assert row[3] == vram_cell
+        assert row[4] == app["gpu"]
+        assert row[5] == app["note"]
+    agent_line = apps.requirement_line(apps.AGENT_ZERO)
+    assert "Disk 4 GB (measured)" in agent_line
+    assert "RAM" in agent_line and "GPU:" in agent_line and "approx." in agent_line
+    assert agent_line in listing
+    assert listing.find("Agent Zero") < listing.find("ONLYOFFICE")
+    assert ">Install Agent Zero</button>" in listing
+    assert doc_rows["agent-zero"][1] == "4 (measured)"
+    assert "0 or 1-2" in apps.requirement_line(apps.find_app("immich"))
+    assert "8 / 12-24" in apps.requirement_line(apps.find_app("comfyui"))
+    text = DOC.read_text(encoding="utf-8")
+    assert apps.STARTER_FOOTPRINT in text
+    assert "After the next test boot" in text
+    assert "`du`" in text
+    assert "docker stats" in text
+    js = JS.read_text(encoding="utf-8")
+    assert "VRAM is unavailable" in js
+    assert "You can still install." in js
+    assert "memory_total_mib" in js
+    vram_fn = js.split("function freeVramLabel", 1)[1].split("function paintResourceWarnings", 1)[0]
+    assert "hwInfo" not in vram_fn
+    agent = js.split("async function installAgent", 1)[1].split("async function showApps", 1)[0]
+    assert "if (warn) toast(warn);" in agent
+    assert 'fetch("/api/agent/install"' in agent
+    catalog = [
+        {
+            "id": "comfyui",
+            "name": "ComfyUI",
+            "group": "Creative and technical",
+            "license": "GPL",
+            "description": "Image generation on the 3090.",
+            "installer": "test-only",
+            "disk_gb": 8,
+            "ram_gb": {"min": 8, "recommended": 16},
+            "vram_gb": "8 / 12-24",
+            "gpu": "required",
+            "note": "models extra",
+        }
+    ]
+    low = apps.install_app(
+        "comfyui",
+        record_path=tmp_path / "low.json",
+        install_root=tmp_path / "low",
+        catalog=catalog,
+        resources={"free_disk_gb": 1, "ram_gb": 64},
+    )
+    assert low["ok"] is True
+    assert low["installed"] is True
+    assert low["warning"]
+    assert "You can still install." in low["warning"]
+    assert "below" in low["warning"]
+    assert (tmp_path / "low" / "comfyui").is_dir()
+    plenty = apps.install_app(
+        "comfyui",
+        record_path=tmp_path / "ok.json",
+        install_root=tmp_path / "ok",
+        catalog=catalog,
+        resources={"free_disk_gb": 100, "ram_gb": 64},
+    )
+    assert plenty["ok"] is True
+    assert plenty["installed"] is True
+    assert plenty["warning"] == ""
+    assert apps.resource_warning(catalog[0], {"free_disk_gb": None, "ram_gb": None}) == ""
+
+
 def test_ui_refuses_a_successful_install_without_the_server_flag():
     js = JS.read_text(encoding="utf-8")
     assert 'fetch("/api/apps/" + action' in js

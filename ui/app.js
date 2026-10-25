@@ -151,6 +151,15 @@ async function refreshAgentLink() {
   } catch (e) { /* status is optional until the gateway is current */ }
 }
 async function installAgent() {
+  const row = $("#agentCatalogRow");
+  try {
+    const pre = await fetch("/api/apps", { cache: "no-store", headers: authHeaders() });
+    if (pre.ok && row) {
+      const doc = await pre.json();
+      const warn = resourceWarningText(Number(row.dataset.diskMin), Number(row.dataset.ramMin), doc.resources);
+      if (warn) toast(warn);
+    }
+  } catch (e) { /* a missing reading does not block install */ }
   for (const btn of agentInstallButtons()) {
     btn.disabled = true;
     btn.textContent = "Installing…";
@@ -210,7 +219,74 @@ function selectApp(row) {
   if ($("#appsSelState")) $("#appsSelState").textContent = state ? state.textContent : "Not available yet";
   appsMessage("");
 }
+function gbText(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return "";
+  if (Math.abs(num - Math.round(num)) < 1e-9) return String(Math.round(num));
+  return String(Math.round(num * 100) / 100);
+}
+function knownGb(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+function resourceWarningText(diskMin, ramMin, resources) {
+  if (!resources || typeof resources !== "object") return "";
+  const parts = [];
+  const free = knownGb(resources.free_disk_gb);
+  const ram = knownGb(resources.ram_gb);
+  if (Number.isFinite(diskMin) && diskMin > 0 && free !== null && free < diskMin) {
+    parts.push("Host SSD has about " + gbText(free) + " GB free, below the " + gbText(diskMin) + " GB minimum.");
+  }
+  if (Number.isFinite(ramMin) && ramMin > 0 && ram !== null && ram < ramMin) {
+    parts.push("This machine has about " + gbText(ram) + " GB RAM, below the " + gbText(ramMin) + " GB minimum.");
+  }
+  if (!parts.length) return "";
+  return parts.join(" ") + " You can still install.";
+}
+function freeVramLabel(gpu) {
+  if (!gpu || gpu.available !== true || !Array.isArray(gpu.gpus) || !gpu.gpus.length) {
+    return "VRAM is unavailable";
+  }
+  let freeMib = 0;
+  for (const g of gpu.gpus) {
+    const total = Number(g.memory_total_mib);
+    const used = Number(g.memory_used_mib);
+    if (!Number.isFinite(total) || !Number.isFinite(used)) return "VRAM is unavailable";
+    freeMib += Math.max(0, total - used);
+  }
+  const gb = freeMib / 1024;
+  const shown = gb >= 10 ? String(Math.round(gb)) : String(Math.round(gb * 10) / 10);
+  return "Free VRAM: " + shown + " GB";
+}
+function paintResourceWarnings(resources) {
+  $$(".appsRow").forEach((row) => {
+    const text = resourceWarningText(Number(row.dataset.diskMin), Number(row.dataset.ramMin), resources);
+    let el = row.querySelector("[data-resource-warn]");
+    if (!text) {
+      if (el) el.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement("small");
+      el.className = "appWarn";
+      el.setAttribute("data-resource-warn", "");
+      const name = row.querySelector(".appName");
+      if (name) name.appendChild(el);
+    }
+    el.textContent = text;
+  });
+}
+async function refreshFreeVram() {
+  let label = "VRAM is unavailable";
+  try {
+    const r = await fetch("/api/system", { cache: "no-store", headers: authHeaders() });
+    if (r.ok) label = freeVramLabel((await r.json()).gpu);
+  } catch (e) { /* nvidia-smi missing: leave VRAM unavailable */ }
+  $$("[data-free-vram]").forEach((el) => { el.textContent = label; });
+}
 async function refreshApps() {
+  refreshFreeVram().catch(() => {});
   const r = await fetch("/api/apps", { cache: "no-store", headers: authHeaders() });
   if (!r.ok) return;
   const j = await r.json();
@@ -226,6 +302,7 @@ async function refreshApps() {
     if (sub) sub.textContent = a.installed ? "Installed" : "Not installed";
     if (a.installed) installedCount += 1;
   });
+  paintResourceWarnings(j.resources);
   const empty = $("#appsInstalledEmpty");
   if (empty) empty.hidden = installedCount > 0;
   if (!selectedAppId) return;
