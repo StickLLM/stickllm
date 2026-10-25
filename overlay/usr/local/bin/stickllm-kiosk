@@ -567,10 +567,22 @@ cog_cmd() {
   printf 'cog -P --enable-mediasource %q' "$URL"
 }
 
+# Keep a normal Chromium window so the tab strip stays on screen.
+# Fullscreen and app windows hide tabs, and the HDMI console then has no way
+# back to StickLLM except closing the browser.
+ensure_browser_tabs() {
+  [[ "${BROWSER:-}" == "cog" ]] && return 0
+  local dir
+  for dir in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
+    mkdir -p "$dir" 2>/dev/null || continue
+    printf '%s\n' '{"FullscreenAllowed":false}' >"$dir/stickllm-tabs.json" 2>/dev/null || true
+  done
+}
+
 chromium_args() {
   local bin="$1"
   printf '%q' "$bin"
-  printf ' --kiosk --ozone-platform=wayland --no-first-run --disable-infobars'
+  printf ' --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars'
   printf ' --disable-session-crashed-bubble --check-for-update-interval=31536000'
   printf ' --user-data-dir=%q --disk-cache-dir=%q %q' "$PROFILE" "$PROFILE/cache" "$URL"
 }
@@ -635,7 +647,7 @@ try_launch() {
   if [[ "$browser" == "cog" ]]; then
     app="cog -P --enable-mediasource $URL"
   else
-    app="$browser --kiosk --ozone-platform=wayland --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
+    app="$browser --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
   fi
 
   # drop_root=1 → runuser as KIOSK_USER (required for cage).
@@ -695,7 +707,7 @@ try_launch() {
       else
         # shellcheck disable=SC2086
         _run 1 cage -s -- $browser \
-          --kiosk \
+          --start-maximized \
           --ozone-platform=wayland \
           --disable-gpu \
           --no-sandbox \
@@ -719,7 +731,7 @@ try_launch() {
         else
           # shellcheck disable=SC2086
           _run 1 cage -s -- $browser \
-            --kiosk \
+            --start-maximized \
             --ozone-platform=wayland \
             --disable-gpu \
             --no-sandbox \
@@ -743,7 +755,7 @@ try_launch() {
       else
         _br_bin="$(command -v "$browser" || true)"
         [[ -n "$_br_bin" ]] || _br_bin="$browser"
-        app="${_br_bin} --kiosk --ozone-platform=wayland --disable-gpu --no-sandbox --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
+        app="${_br_bin} --start-maximized --ozone-platform=wayland --disable-gpu --no-sandbox --no-first-run --disable-infobars --disable-session-crashed-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
       fi
       write_weston_ini "$app"
       chown "${KIOSK_USER}:${KIOSK_USER}" "$WESTON_INI" 2>/dev/null || true
@@ -853,6 +865,7 @@ fi
 
 BROWSER="$(pick_browser_bin || true)"
 [[ -n "${BROWSER:-}" ]] || hold_error "no cog/chromium installed"
+ensure_browser_tabs
 
 # seatd before UI wait so the socket is warm when we launch cage/weston
 ensure_seatd || fail_note "STICKLLM_KIOSK_SEATD_WARN seatd not confirmed"

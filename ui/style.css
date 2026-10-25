@@ -56,6 +56,12 @@ svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke
 .navBtn{display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 10px;border-radius:8px;color:var(--ink2);cursor:pointer;text-align:left;text-decoration:none;font:inherit}
 .navBtn:hover{background:var(--panel);color:var(--ink)}
 .navBtn svg{width:18px;height:18px}
+.sideApps{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+.sideAppsLabel{margin:8px 10px 2px;font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.appName{display:flex;flex-direction:column;min-width:0;gap:1px}
+.appName small{font-size:11px;font-weight:450;color:var(--muted)}
+.navBtn.appSoon{cursor:default;opacity:.72}
+.navBtn.appSoon:hover{background:none;color:var(--ink2)}
 
 /* Buttons */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--line);background:var(--panel2);padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:550;font-size:14px;white-space:nowrap}

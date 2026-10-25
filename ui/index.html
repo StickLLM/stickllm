@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
-<link rel="stylesheet" href="style.css?v=agent2" />
+<link rel="stylesheet" href="style.css?v=apps1" />
 </head>
 <body>
 <div class="app" id="app">
@@ -31,7 +31,12 @@
       <button class="navBtn" data-open="models"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>Models</button>
       <button class="navBtn" data-open="storage"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Storage &amp; Vault</button>
       <button class="navBtn" data-open="general"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
-      <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 4.6L19 8.2l-3.5 3.4.8 4.9L12 14.2 7.7 16.5l.8-4.9L5 8.2l4.8-.6z"/></svg><span id="agentLinkLabel">Agent</span></a>
+      <nav class="sideApps" aria-label="Apps">
+        <p class="sideAppsLabel">Apps</p>
+        <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 4.6L19 8.2l-3.5 3.4.8 4.9L12 14.2 7.7 16.5l.8-4.9L5 8.2l4.8-.6z"/></svg><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
+        <a class="navBtn appSoon" id="comfyLink" aria-disabled="true" title="Comfy is not installed. When it is, it will open in its own browser tab."><span class="appName"><span>Comfy</span><small>Not installed</small></span></a>
+        <a class="navBtn appSoon" id="writerLink" aria-disabled="true" title="A word processor is not installed yet. When it is, it will open in its own browser tab."><span class="appName"><span>Word processor</span><small>Coming later</small></span></a>
+      </nav>
     </div>
   </aside>
 
@@ -474,6 +479,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=agent2"></script>
+<script src="app.js?v=apps1"></script>
 </body>
 </html>

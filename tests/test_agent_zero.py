@@ -326,7 +326,86 @@ def test_unpaired_agent_port_is_refused(tmp_path):
         with urllib.request.urlopen(page_req, timeout=5) as resp:
             html = resp.read().decode()
         assert "Unlock vault to use Agent" in html
+        assert 'href="https://127.0.0.1/"' in html
+        assert "Back to StickLLM" in html
+        assert ":5443" not in html
+        assert 'href="/"' not in html
         assert "/agent/" not in html
+
+        lan_req = urllib.request.Request(
+            f"http://127.0.0.1:{agent_port}/",
+            headers={"Cookie": f"stickllm_pair={token}", "Host": "192.168.72.70:5443"},
+        )
+        with urllib.request.urlopen(lan_req, timeout=5) as resp:
+            lan_html = resp.read().decode()
+        assert 'href="https://192.168.72.70/"' in lan_html
+        assert ":5443" not in lan_html
+        assert 'href="/"' not in lan_html
     finally:
         httpd.shutdown()
         agent_httpd.shutdown()
+
+
+def test_interstitial_links_home_not_agent_port():
+    agent = _load(AGENT, "stickllm_agent_home_link")
+    assert agent.stickllm_home_url("192.168.72.70:5443") == "https://192.168.72.70/"
+    assert agent.stickllm_home_url("[2001:db8::1]:5443") == "https://[2001:db8::1]/"
+    assert ":5443" not in agent.stickllm_home_url("192.168.72.70:5443")
+    locked = {"state": "locked", "message": "Unlock vault to use Agent"}
+    html = agent.status_html(locked, home="https://192.168.72.70/")
+    assert "Unlock vault to use Agent" in html
+    assert html.count('href="https://192.168.72.70/"') >= 2
+    assert "Back to StickLLM" in html
+    assert ":5443" not in html
+    assert 'href="/"' not in html
+    rejected = agent.status_html(locked, home="https://192.168.72.70:5443/")
+    assert ":5443" not in rejected
+    assert 'href="https://127.0.0.1/"' in rejected
+    missing = {
+        "state": "needs_install",
+        "message": "Agent Zero is not installed yet",
+        "needs_install": True,
+    }
+    page = agent.status_html(missing, home="https://192.168.72.70/")
+    assert "Agent Zero is not installed yet" in page
+    assert 'href="https://192.168.72.70/"' in page
+    assert 'action="/install"' in page
+    assert ":5443" not in page
+
+
+def test_agent_sidebar_opens_a_new_tab():
+    html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+    assert 'id="agentLink"' in html
+    assert 'target="_blank"' in html
+    assert "noopener" in html
+    assert 'id="comfyLink"' in html
+    assert 'id="writerLink"' in html
+    assert "Not installed" in html
+    assert "Word processor" in html
+    assert "Coming later" in html
+    for slot in ("comfyLink", "writerLink"):
+        start = html.index(f'id="{slot}"')
+        tag = html[html.rfind("<a", 0, start) : html.index(">", start) + 1]
+        assert "href=" not in tag
+    js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+    assert 'link.target = "_blank"' in js
+    assert "noopener" in js
+    assert 'label.textContent = "Agent"' in js
+
+
+def test_console_browser_keeps_a_tab_strip():
+    text = (ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-kiosk").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        assert "--kiosk" not in line
+        assert "--app=" not in line
+        assert " --app " not in f" {line} "
+    assert "FullscreenAllowed" in text
+    assert "ensure_browser_tabs" in text
+    policy = json.loads(
+        (
+            ROOT / "overlay" / "etc" / "chromium" / "policies" / "managed" / "stickllm-tabs.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert policy["FullscreenAllowed"] is False

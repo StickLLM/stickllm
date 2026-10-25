@@ -89,14 +89,18 @@ async function refreshAgentLink() {
       link.target = "_blank";
       link.rel = "noopener noreferrer";
     }
-    if (label) {
-      if (!s.vault_unlocked) label.textContent = "Unlock vault to use Agent";
-      else if (!s.settings_mounted) label.textContent = "Unlock settings to use Agent";
-      else if (s.state === "no_ssd") label.textContent = "Mount a drive for Agent Zero";
-      else if (s.needs_install) label.textContent = "Install Agent Zero";
-      else if (s.state === "installing") label.textContent = "Installing Agent Zero";
-      else label.textContent = "Agent";
-    }
+    const note = $("#agentLinkState");
+    let detail = "Opens in a new tab";
+    if (!s.vault_unlocked) detail = "Unlock vault on this page";
+    else if (!s.settings_mounted) detail = "Unlock settings on this page";
+    else if (s.state === "no_ssd") detail = "Needs a host drive";
+    else if (s.needs_install || s.state === "needs_install") detail = "Not installed";
+    else if (s.state === "installing") detail = "Installing";
+    else if (s.state === "pull_failed") detail = "Install failed";
+    else if (s.state === "starting") detail = "Starting";
+    else if (s.state === "low_space") detail = "Host drive is low on space";
+    if (label) label.textContent = "Agent";
+    if (note) note.textContent = detail;
     const msg = $("#agentInstallMsg");
     const btn = $("#agentInstallBtn");
     const log = $("#agentPullLog");

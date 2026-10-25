@@ -542,8 +542,66 @@ def status_document(
     }
 
 
-def status_html(doc: dict) -> str:
+def host_from_header(host_header: str) -> str:
+    """Hostname from a Host header, without a port."""
+    raw = (host_header or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end > 1:
+            return raw[: end + 1]
+        return ""
+    if ":" in raw:
+        host, sep, port = raw.rpartition(":")
+        if sep and port.isdigit():
+            return host
+    return raw
+
+
+def _safe_http_host(host: str) -> bool:
+    if not host or host in {"0.0.0.0", "[::]", "::"}:
+        return False
+    if host.startswith("[") and host.endswith("]") and len(host) > 2:
+        inner = host[1:-1]
+        return ":" in inner and all(ch in "0123456789abcdefABCDEF:." for ch in inner)
+    if len(host) > 253:
+        return False
+    labels = host.split(".")
+    if not labels or any(not label or len(label) > 63 for label in labels):
+        return False
+    for label in labels:
+        if label.startswith("-") or label.endswith("-"):
+            return False
+        if not all(ch.isalnum() or ch == "-" for ch in label):
+            return False
+    return True
+
+
+def stickllm_home_url(host_header: str = "", fallback: str = "127.0.0.1") -> str:
+    """StickLLM UI origin (https port 443). Never the Agent port."""
+    host = host_from_header(host_header)
+    if not _safe_http_host(host):
+        host = fallback if _safe_http_host(fallback) else "127.0.0.1"
+    return f"https://{host}/"
+
+
+def _home_href(home: str | None) -> str:
+    if isinstance(home, str):
+        text = home.strip()
+        if (
+            text.startswith("https://")
+            and text.endswith("/")
+            and ":5443" not in text
+            and not any(ch in text for ch in " \t\r\n\"'<>\\")
+        ):
+            return text
+    return "https://127.0.0.1/"
+
+
+def status_html(doc: dict, home: str | None = None) -> str:
     message = str(doc.get("message") or "Agent")
+    href = _html(_home_href(home))
     refresh = ""
     if doc.get("state") in ("installing", "starting"):
         refresh = '<meta http-equiv="refresh" content="2">'
@@ -558,13 +616,30 @@ def status_html(doc: dict) -> str:
         )
     log = str(doc.get("pull_log") or "")
     log_html = f"<pre>{_html(log)}</pre>" if log else ""
+    heading = f"<h1>{_html(message)}</h1>"
+    if doc.get("state") in ("locked", "settings_missing"):
+        heading = (
+            f'<h1><a href="{href}">{_html(message)}</a></h1>'
+            "<p>Vault unlock is on the StickLLM page.</p>"
+        )
+    bar = (
+        '<header style="display:flex;align-items:center;justify-content:space-between;'
+        "gap:16px;padding:12px 16px;background:#141414;color:#f5f5f5;"
+        'font:600 15px/1.2 sans-serif">'
+        "<span>StickLLM</span>"
+        f'<a href="{href}" style="display:inline-block;padding:10px 14px;border-radius:8px;'
+        'background:#f5f5f5;color:#141414;text-decoration:none">Back to StickLLM</a>'
+        "</header>"
+    )
     return (
         "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        f"{refresh}<title>StickLLM Agent</title></head><body>"
-        f"<h1>{_html(message)}</h1>"
-        f"{install}{log_html}"
-        "<p><a href=\"/\">Back to StickLLM</a></p>"
-        "</body></html>\n"
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"{refresh}<title>StickLLM Agent</title></head>"
+        '<body style="margin:0;font-family:sans-serif;background:#fff;color:#141414">'
+        f"{bar}<main style=\"padding:24px\">"
+        f"{heading}{install}{log_html}"
+        f'<p><a href="{href}">Back to StickLLM</a></p>'
+        "</main></body></html>\n"
     )
 
 

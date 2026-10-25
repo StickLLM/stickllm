@@ -1378,6 +1378,15 @@ class Handler(SimpleHTTPRequestHandler):
             host = discover_lan_ip() or "127.0.0.1"
         return f"https://{host}:{AGENT_TLS_PORT}/"
 
+    def _stickllm_home_url(self) -> str:
+        """UI origin for interstitial back links. Never this Agent port."""
+        try:
+            mod = agent_lib()
+        except Exception:
+            return "https://127.0.0.1/"
+        fallback = discover_lan_ip() or "127.0.0.1"
+        return mod.stickllm_home_url(self.headers.get("Host") or "", fallback)
+
     def _is_agent_server(self) -> bool:
         return bool(getattr(self.server, "stickllm_agent_gateway", False))
 
@@ -1411,7 +1420,7 @@ class Handler(SimpleHTTPRequestHandler):
                 )
                 page["state"] = "installing"
                 page["message"] = "Installing Agent Zero"
-                body = mod.status_html(page).encode("utf-8")
+                body = mod.status_html(page, home=self._stickllm_home_url()).encode("utf-8")
             except Exception:
                 body = b"Installing Agent Zero\n"
             self._send(200, body, "text/html; charset=utf-8")
@@ -1445,7 +1454,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if not status.get("running"):
             if method == "GET" and not upgrade:
-                body = mod.status_html(status).encode("utf-8")
+                body = mod.status_html(status, home=self._stickllm_home_url()).encode("utf-8")
                 self._send(200, body, "text/html; charset=utf-8")
                 return
             self._json(503, {"ok": False, "error": status.get("message") or "Agent is not running"})
