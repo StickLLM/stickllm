@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""StickLLM UI + chat gateway: web lookup, pair auth, control proxy (LAN :80)."""
+"""StickLLM UI + chat gateway: web lookup, pair auth, control proxy (LAN :80).
+
+Agent Zero is not under /agent. A second TLS listener on :5443 proxies 1:1 to
+127.0.0.1:5099, including websockets, behind the same pairing check.
+"""
 from __future__ import annotations
 
 import base64
@@ -31,6 +35,8 @@ HOST = os.environ.get("STICKLLM_BIND", "0.0.0.0")
 PORT = int(os.environ.get("STICKLLM_PORT", "80"))
 # Mic pages need a secure origin. HTTP :80 stays the pair/chat listener.
 TLS_PORT = int(os.environ.get("STICKLLM_TLS_PORT", "443"))
+# Agent Zero's own origin. Not a raw publish of the loopback UI port.
+AGENT_TLS_PORT = int(os.environ.get("STICKLLM_AGENT_TLS_PORT", "5443"))
 UA = "StickLLM/0.3 (+local privacy USB; StickLLM UI only)"
 RUN_DIR = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 AUTH_PATH = RUN_DIR / "auth.json"
@@ -1359,10 +1365,21 @@ class Handler(SimpleHTTPRequestHandler):
                 upstream_up=_agent_port_open(),
                 saved=mod.read_status(),
             )
+            doc["agent_url"] = self._agent_public_url()
+            doc["gateway_port"] = AGENT_TLS_PORT
         except Exception:
             self._json(500, {"ok": False, "error": "agent status failed"})
             return
         self._json(200, doc)
+
+    def _agent_public_url(self) -> str:
+        host = (self.headers.get("Host") or "").split(":")[0].strip()
+        if not host or host == "0.0.0.0":
+            host = discover_lan_ip() or "127.0.0.1"
+        return f"https://{host}:{AGENT_TLS_PORT}/"
+
+    def _is_agent_server(self) -> bool:
+        return bool(getattr(self.server, "stickllm_agent_gateway", False))
 
     def _agent_install(self) -> None:
         n = int(self.headers.get("Content-Length") or 0)
@@ -1383,40 +1400,62 @@ class Handler(SimpleHTTPRequestHandler):
         except OSError:
             self._json(500, {"ok": False, "error": "Could not start the installer"})
             return
-        self._json(200, {"ok": True, "message": "Install started in this server's vault."})
+        if self._is_agent_server():
+            try:
+                mod = agent_lib()
+                page = mod.status_document(
+                    vault_open=vault_unlocked(),
+                    settings_open=mod.settings_mounted(),
+                    upstream_up=_agent_port_open(),
+                    saved=mod.read_status(),
+                )
+                page["state"] = "installing"
+                page["message"] = "Installing Agent Zero"
+                body = mod.status_html(page).encode("utf-8")
+            except Exception:
+                body = b"Installing Agent Zero\n"
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+        self._json(200, {"ok": True, "message": "Install started. The image is pulled onto the host drive."})
 
-    def _proxy_agent(self, method: str) -> None:
-        if self._agent_refused():
-            return
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        try:
-            mod = agent_lib()
-        except Exception:
-            self._json(500, {"ok": False, "error": "agent helper missing"})
-            return
-        status = mod.status_document(
+    def _agent_status_doc(self) -> dict:
+        mod = agent_lib()
+        return mod.status_document(
             vault_open=vault_unlocked(),
             settings_open=mod.settings_mounted(),
             upstream_up=_agent_port_open(),
             saved=mod.read_status(),
         )
-        page = path in ("/agent", "/agent/")
+
+    def _serve_agent_gateway(self, method: str) -> None:
+        """1:1 proxy to the loopback UI. No path or body rewriting."""
+        if self._agent_refused():
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path or "/"
         upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
-        if not status["vault_unlocked"] or not status["settings_mounted"] or not status["running"]:
-            if page and method == "GET" and not upgrade:
+        try:
+            mod = agent_lib()
+            status = self._agent_status_doc()
+        except Exception:
+            self._json(500, {"ok": False, "error": "agent helper missing"})
+            return
+        if method == "POST" and path in ("/install", "/api/agent/install"):
+            self._agent_install()
+            return
+        if not status.get("running"):
+            if method == "GET" and not upgrade:
                 body = mod.status_html(status).encode("utf-8")
                 self._send(200, body, "text/html; charset=utf-8")
                 return
-            self._json(503, {"ok": False, "error": status["message"]})
+            self._json(503, {"ok": False, "error": status.get("message") or "Agent is not running"})
             return
-        upstream = mod.upstream_path(path)
         if upgrade and method == "GET":
-            self._relay_websocket(mod, upstream, parsed.query)
+            self._relay_websocket(path, parsed.query)
             return
-        self._relay_http(mod, method, upstream, parsed.query)
+        self._relay_http(method, path, parsed.query)
 
-    def _relay_http(self, mod, method: str, upstream: str, query: str) -> None:
+    def _relay_http(self, method: str, upstream: str, query: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
         target = upstream + (("?" + query) if query else "")
@@ -1435,30 +1474,19 @@ class Handler(SimpleHTTPRequestHandler):
             return
         finally:
             conn.close()
-        ctype = ""
-        for key, value in resp.getheaders():
-            if key.lower() == "content-type":
-                ctype = value
-        if mod.should_rewrite(ctype):
-            data = mod.rewrite_bytes(data)
         self._skip_stick_headers = True
         self.send_response(resp.status)
         for key, value in resp.getheaders():
             low = key.lower()
-            if low in ("transfer-encoding", "connection", "content-length", "content-security-policy"):
+            if low in ("transfer-encoding", "connection", "content-length"):
                 continue
-            if low == "location":
-                value = mod.rewrite_location(value)
-            elif low == "set-cookie":
-                value = mod.rewrite_cookie(value)
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         if method != "HEAD" and data:
             self.wfile.write(data)
 
-    def _relay_websocket(self, mod, upstream: str, query: str) -> None:
+    def _relay_websocket(self, upstream: str, query: str) -> None:
         target = upstream + (("?" + query) if query else "")
         try:
             sock = socket.create_connection(("127.0.0.1", 5099), timeout=10)
@@ -1519,28 +1547,32 @@ class Handler(SimpleHTTPRequestHandler):
             pass
 
     def do_HEAD(self) -> None:  # noqa: N802
-        path = urllib.parse.urlparse(self.path).path
-        if path == "/agent" or path.startswith("/agent/"):
-            self._proxy_agent("HEAD")
+        if self._is_agent_server():
+            self._serve_agent_gateway("HEAD")
             return
         super().do_HEAD()
 
     def do_PUT(self) -> None:  # noqa: N802
-        self._agent_method("PUT")
+        if self._is_agent_server():
+            self._serve_agent_gateway("PUT")
+            return
+        self._json(405, {"error": "method not allowed"})
 
     def do_DELETE(self) -> None:  # noqa: N802
-        self._agent_method("DELETE")
+        if self._is_agent_server():
+            self._serve_agent_gateway("DELETE")
+            return
+        self._json(405, {"error": "method not allowed"})
 
     def do_PATCH(self) -> None:  # noqa: N802
-        self._agent_method("PATCH")
+        if self._is_agent_server():
+            self._serve_agent_gateway("PATCH")
+            return
+        self._json(405, {"error": "method not allowed"})
 
     def do_OPTIONS(self) -> None:  # noqa: N802
-        self._agent_method("OPTIONS")
-
-    def _agent_method(self, method: str) -> None:
-        path = urllib.parse.urlparse(self.path).path
-        if path == "/agent" or path.startswith("/agent/"):
-            self._proxy_agent(method)
+        if self._is_agent_server():
+            self._serve_agent_gateway("OPTIONS")
             return
         self._json(405, {"error": "method not allowed"})
 
@@ -1601,6 +1633,9 @@ class Handler(SimpleHTTPRequestHandler):
         return True
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._is_agent_server():
+            self._serve_agent_gateway("GET")
+            return
         path = urllib.parse.urlparse(self.path).path
         if path in ("/health", "/api/health"):
             auth = load_auth()
@@ -1739,18 +1774,15 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/agent/status":
             self._agent_status()
             return
-        if path == "/agent" or path.startswith("/agent/"):
-            self._proxy_agent("GET")
-            return
         return super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._is_agent_server():
+            self._serve_agent_gateway("POST")
+            return
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/agent/install":
             self._agent_install()
-            return
-        if path == "/agent" or path.startswith("/agent/"):
-            self._proxy_agent("POST")
             return
         n = int(self.headers.get("Content-Length") or 0)
         # Base64 of a 50 MB file is about 67 MB. Refuse anything larger up front.
@@ -2479,6 +2511,33 @@ def start_tls_server() -> int | None:
         return None
 
 
+def start_agent_tls_server() -> int | None:
+    """Paired TLS proxy for Agent Zero. Does not publish 5099 on the LAN."""
+    httpd = None
+    try:
+        ips = _tls_ips()
+        cert, key = _ensure_tls_cert(ips)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
+        httpd = _ReuseHTTPServer((HOST, AGENT_TLS_PORT), Handler)
+        httpd.stickllm_agent_gateway = True
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        threading.Thread(target=httpd.serve_forever, name="stickllm-agent-tls", daemon=True).start()
+        lan = discover_lan_ip() or next((ip for ip in ips if not ip.startswith("127.")), "")
+        shown = f"https://{lan}:{AGENT_TLS_PORT}/" if lan else f"https://127.0.0.1:{AGENT_TLS_PORT}/"
+        print(f"stickllm-gateway agent TLS on {shown}", flush=True)
+        return AGENT_TLS_PORT
+    except Exception as exc:
+        if httpd is not None:
+            try:
+                httpd.server_close()
+            except Exception:
+                pass
+        print(f"stickllm-gateway agent TLS off ({exc})", flush=True)
+        return None
+
+
 def main() -> int:
     os.chdir(UI_ROOT)
     try:
@@ -2486,6 +2545,7 @@ def main() -> int:
     except Exception:
         pass
     start_tls_server()
+    start_agent_tls_server()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"stickllm-gateway on http://{HOST}:{PORT} → {LLAMA} control={CONTROL}", flush=True)
     httpd.serve_forever()

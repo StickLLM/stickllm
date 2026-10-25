@@ -71,18 +71,63 @@ function clearPairSession() {
   token = ""; localStorage.removeItem(TOKEN_KEY);
   rememberPairCookie();
 }
+function agentPageUrl(status) {
+  if (status && status.agent_url) return status.agent_url;
+  const host = location.hostname || "127.0.0.1";
+  return "https://" + host + ":5443/";
+}
 async function refreshAgentLink() {
   const label = $("#agentLinkLabel");
-  if (!label) return;
+  const link = $("#agentLink");
+  if (!label && !link) return;
   try {
     const r = await fetch("/api/agent/status", { cache: "no-store", headers: authHeaders() });
     if (!r.ok) return;
     const s = await r.json();
-    if (!s.vault_unlocked) label.textContent = "Unlock vault to use Agent";
-    else if (!s.settings_mounted) label.textContent = "Unlock settings to use Agent";
-    else label.textContent = "Agent";
+    if (link) {
+      link.href = agentPageUrl(s);
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    if (label) {
+      if (!s.vault_unlocked) label.textContent = "Unlock vault to use Agent";
+      else if (!s.settings_mounted) label.textContent = "Unlock settings to use Agent";
+      else if (s.state === "no_ssd") label.textContent = "Mount a drive for Agent Zero";
+      else if (s.needs_install) label.textContent = "Install Agent Zero";
+      else if (s.state === "installing") label.textContent = "Installing Agent Zero";
+      else label.textContent = "Agent";
+    }
+    const msg = $("#agentInstallMsg");
+    const btn = $("#agentInstallBtn");
+    const log = $("#agentPullLog");
+    if (msg) msg.textContent = s.message || "";
+    if (btn) {
+      const show = !!(s.needs_install || s.state === "installing" || s.state === "pull_failed");
+      btn.hidden = !show;
+      btn.disabled = s.state === "installing";
+      btn.textContent = s.state === "installing" ? "Installing…" : "Install Agent Zero";
+    }
+    if (log) {
+      const text = s.pull_log || "";
+      log.hidden = !text;
+      log.textContent = text;
+    }
   } catch (e) { /* status is optional until the gateway is current */ }
 }
+async function installAgent() {
+  const btn = $("#agentInstallBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/agent/install", { method: "POST", headers: authHeaders() });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
+    toast(j.message || "Installing Agent Zero");
+  } catch (e) {
+    toast("Install failed: " + e.message);
+  }
+  refreshAgentLink();
+}
+if ($("#agentInstallBtn")) $("#agentInstallBtn").onclick = () => installAgent();
 async function pairStatus() {
   const r = await fetch("/api/pair/status", { cache: "no-store" });
   return r.json();

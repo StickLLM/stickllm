@@ -56,5 +56,9 @@ vulkan-tools
 # Encrypted vault (Phase C feature; LUKS2 tools present for SSH-tested vault work)
 cryptsetup
 cryptsetup-bin
-# Agent Zero runtime. The agent image is pulled into the vault, not baked here.
+# Agent Zero runtime. The agent image is pulled onto the host SSD, not baked here.
 docker.io
+# apparmor_parser so Docker can load the docker-default profile.
+apparmor
+# stickllm-agent installs its own nftables rules. dockerd is started with --iptables=false.
+nftables

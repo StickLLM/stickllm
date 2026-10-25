@@ -1,6 +1,7 @@
 #!/bin/bash
 # Start Agent Zero only after the server vault is mounted.
-# The image is pulled into the vault. It is not part of the ISO.
+# The image is pulled onto the mounted host SSD, next to models. It is not
+# part of the ISO and it is not stored in the vault.
 # Do not print API keys, vault passcodes, or chat text.
 set -euo pipefail
 
@@ -8,10 +9,14 @@ PYBIN="$(command -v python3 || command -v python || true)"
 LIB="/usr/local/lib/stickllm_agent.py"
 VAULT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
 ADDON="${VAULT}/addons/agent-zero"
-SOCK="${ADDON}/docker.sock"
+SOCK="/run/stickllm/agent-docker.sock"
 PIDFILE="/run/stickllm/agent-dockerd.pid"
+RELAY_PIDFILE="/run/stickllm/agent-llama-relay.pid"
+PULL_LOG="/run/stickllm/agent-pull.log"
 CONTAINER="stickllm-agent-zero"
+NETWORK="stickllm-agent"
 ENTRY="/usr/local/bin/stickllm-agent-entrypoint"
+DOCKER_DIR=""
 
 if [[ -z "${PYBIN}" || ! -f "$LIB" ]]; then
   echo "stickllm-agent: python helper missing" >&2
@@ -25,6 +30,17 @@ docker_cli() {
 refuse_locked() {
   "$PYBIN" "$LIB" write-status --state locked --image_present false >/dev/null || true
   echo "vault locked: docker not started" >&2
+}
+
+resolve_docker_dir() {
+  local dir
+  if ! dir="$("$PYBIN" "$LIB" docker-dir)"; then
+    "$PYBIN" "$LIB" write-status --state no_ssd --image_present false --low_space false >/dev/null || true
+    echo "Mount a drive for Agent Zero" >&2
+    return 1
+  fi
+  DOCKER_DIR="$dir"
+  mkdir -p "$DOCKER_DIR"
 }
 
 cmd_gate() {
@@ -41,8 +57,12 @@ ensure_dockerd() {
     refuse_locked
     exit 0
   fi
+  if [[ -z "${DOCKER_DIR}" ]]; then
+    echo "Mount a drive for Agent Zero" >&2
+    exit 0
+  fi
   "$PYBIN" "$LIB" prepare-vault
-  mkdir -p /run/stickllm
+  mkdir -p /run/stickllm "$DOCKER_DIR"
   if [[ -S "$SOCK" ]] && docker_cli info >/dev/null 2>&1; then
     return 0
   fi
@@ -50,9 +70,9 @@ ensure_dockerd() {
     echo "stickllm-agent: dockerd is not installed" >&2
     exit 1
   fi
-  # data-root is the unlocked vault. iptables stay untouched so no new LAN forwards.
+  # data-root is the host SSD folder. iptables stay off; nftables rules are ours.
   dockerd \
-    --data-root "${VAULT}/docker" \
+    --data-root "${DOCKER_DIR}" \
     --host "unix://${SOCK}" \
     --pidfile "$PIDFILE" \
     --iptables=false \
@@ -76,21 +96,107 @@ image_present() {
   docker_cli image inspect "$ref" >/dev/null 2>&1
 }
 
+ensure_network() {
+  local sub
+  if docker_cli network inspect "$NETWORK" >/dev/null 2>&1; then
+    sub="$(docker_cli network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$NETWORK" 2>/dev/null || true)"
+    if [[ "$sub" == "172.30.0.0/24" ]]; then
+      return 0
+    fi
+    docker_cli network rm "$NETWORK" >/dev/null 2>&1 || true
+  fi
+  docker_cli network create \
+    --driver bridge \
+    --subnet 172.30.0.0/24 \
+    --gateway 172.30.0.1 \
+    -o com.docker.network.bridge.name=stickllm-a0 \
+    "$NETWORK" >/dev/null
+}
+
+stop_relay() {
+  if [[ -f "$RELAY_PIDFILE" ]]; then
+    local pid
+    pid="$(tr -cd '0-9' <"$RELAY_PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$RELAY_PIDFILE"
+  fi
+}
+
+ensure_relay() {
+  # Bridge address only. llama-server stays on 127.0.0.1:8080.
+  local i
+  for i in $(seq 1 25); do
+    local pid=""
+    if [[ -f "$RELAY_PIDFILE" ]]; then
+      pid="$(tr -cd '0-9' <"$RELAY_PIDFILE" || true)"
+    fi
+    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      "$PYBIN" "$LIB" llama-relay >/var/log/stickllm-agent-relay.log 2>&1 &
+      echo $! >"$RELAY_PIDFILE"
+    fi
+    if "$PYBIN" - <<'PY'
+import socket
+s = socket.socket()
+s.settimeout(0.2)
+try:
+    s.connect(("172.30.0.1", 8080))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+    then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "stickllm-agent: llama relay did not bind 172.30.0.1:8080" >&2
+  return 1
+}
+
+ensure_nft() {
+  if ! "$PYBIN" "$LIB" nft-apply; then
+    echo "stickllm-agent: nftables rules were not installed" >&2
+    exit 1
+  fi
+}
+
 cmd_install() {
   if ! "$PYBIN" "$LIB" docker-may-start; then
     refuse_locked
     exit 0
   fi
+  mkdir -p /run/stickllm
+  exec 9>/run/stickllm/agent-install.lock
+  if ! flock -n 9; then
+    echo "install already running" >&2
+    exit 0
+  fi
+  if ! resolve_docker_dir; then
+    exit 0
+  fi
   if ! "$PYBIN" "$LIB" pull-allowed >/dev/null; then
     "$PYBIN" "$LIB" write-status --state low_space --low_space true --image_present false >/dev/null || true
-    echo "vault free space is under 15 GB: image pull stopped" >&2
+    echo "host SSD has under 12 GB free: image pull stopped" >&2
     exit 0
   fi
   ensure_dockerd
   local ref
   ref="$("$PYBIN" "$LIB" image-ref)"
-  if ! image_present; then
-    docker_cli pull "$ref"
+  mkdir -p /run/stickllm
+  : >"$PULL_LOG"
+  "$PYBIN" "$LIB" write-status --state installing --image_present false --low_space false >/dev/null || true
+  if image_present; then
+    echo "image already present" | tee -a "$PULL_LOG"
+  else
+    if ! docker_cli pull "$ref" 2>&1 | tee -a "$PULL_LOG"; then
+      "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
+      echo "agent image pull failed" >&2
+      exit 1
+    fi
   fi
   "$PYBIN" "$LIB" write-status --state pulled --image_present true --low_space false >/dev/null || true
   cmd_run_container
@@ -113,22 +219,33 @@ cmd_run_container() {
     echo "USB settings partition is not mounted: agent not started" >&2
     exit 0
   fi
+  if ! resolve_docker_dir; then
+    exit 0
+  fi
   ensure_dockerd
   if ! image_present; then
     "$PYBIN" "$LIB" write-status --state needs_install --image_present false --low_space false >/dev/null || true
-    echo "agent image is not in this vault" >&2
+    echo "agent image is not installed" >&2
     exit 0
   fi
   "$PYBIN" "$LIB" prepare-portable
-  local ref
+  ensure_network
+  ensure_nft
+  ensure_relay
+  local ref origins
   ref="$("$PYBIN" "$LIB" image-ref)"
+  origins="$("$PYBIN" "$LIB" allowed-origins)"
   "$PYBIN" "$LIB" write-status --state running --image_present true --low_space false >/dev/null || true
   stop_container
-  # Host network so llama-server on 127.0.0.1:8080 is reachable.
-  # The entrypoint binds the UI to 127.0.0.1:5099 and does not start sshd.
-  # No host disks except the vault addon and the portable settings dir.
+  # Own bridge: llama relay and the internet only. UI is published on loopback.
+  # Kokoro and Whisper stay at the image defaults. No host disks except the
+  # vault addon and the portable settings dir.
   docker_cli run --name "$CONTAINER" \
-    --network host \
+    --network "$NETWORK" \
+    --add-host llama:host-gateway \
+    --dns 1.1.1.1 \
+    --dns 9.9.9.9 \
+    -p 127.0.0.1:5099:5099 \
     --cap-drop ALL \
     --cap-add CHOWN \
     --cap-add DAC_OVERRIDE \
@@ -136,10 +253,11 @@ cmd_run_container() {
     --cap-add SETUID \
     --cap-add SETGID \
     --cap-add KILL \
-    --security-opt no-new-privileges:true \
+    --security-opt no-new-privileges=true \
     --pids-limit 1024 \
     -e NVIDIA_VISIBLE_DEVICES=void \
     -e CUDA_VISIBLE_DEVICES= \
+    -e "ALLOWED_ORIGINS=${origins}" \
     -e HF_HOME=/a0/usr/.cache/huggingface \
     -e SENTENCE_TRANSFORMERS_HOME=/a0/usr/.cache/sentence-transformers \
     -e A0_SET_update_check_enabled=false \
@@ -169,11 +287,14 @@ cmd_run() {
     refuse_locked
     exit 0
   fi
+  # Unlock starts a container that is already installed. It does not pull.
   cmd_run_container
 }
 
 cmd_stop() {
   stop_container || true
+  stop_relay || true
+  "$PYBIN" "$LIB" nft-delete >/dev/null 2>&1 || true
   if [[ -f "$PIDFILE" ]]; then
     local pid
     pid="$(tr -cd '0-9' <"$PIDFILE" || true)"

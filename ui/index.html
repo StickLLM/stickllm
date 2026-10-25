@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
-<link rel="stylesheet" href="style.css?v=agent1" />
+<link rel="stylesheet" href="style.css?v=agent2" />
 </head>
 <body>
 <div class="app" id="app">
@@ -31,7 +31,7 @@
       <button class="navBtn" data-open="models"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>Models</button>
       <button class="navBtn" data-open="storage"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Storage &amp; Vault</button>
       <button class="navBtn" data-open="general"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
-      <a class="navBtn" id="agentLink" href="/agent"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 4.6L19 8.2l-3.5 3.4.8 4.9L12 14.2 7.7 16.5l.8-4.9L5 8.2l4.8-.6z"/></svg><span id="agentLinkLabel">Agent</span></a>
+      <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 4.6L19 8.2l-3.5 3.4.8 4.9L12 14.2 7.7 16.5l.8-4.9L5 8.2l4.8-.6z"/></svg><span id="agentLinkLabel">Agent</span></a>
     </div>
   </aside>
 
@@ -361,6 +361,11 @@
     <div class="row"><div><b>Stick storage</b><small>USB DATA partition</small></div><span class="mono">28 GiB free</span></div>
     <div class="row"><div><b>Memory</b><small>System RAM</small></div><span class="mono">64 GB</span></div>
   </div>
+  <h3>Agent Zero</h3>
+  <div class="group">
+    <div class="row"><div><b>Agent Zero</b><small id="agentInstallMsg">Unlock the vault, then install. The image stays on the host drive.</small></div><button class="btn sm" id="agentInstallBtn" type="button" hidden>Install Agent Zero</button></div>
+    <pre id="agentPullLog" class="mono" hidden></pre>
+  </div>
   <h3>Updates</h3>
   <div class="group">
     <div class="row"><div><b>StickLLM (live)</b><small>Updates not available in TEST MODE � F9 or P = new PAIR CODE � Ctrl+Shift+P same � greyed = not wired</small></div><button class="btn sm" id="checkUpd" disabled title="Coming soon">Check for updates</button></div>
@@ -469,6 +474,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=agent1"></script>
+<script src="app.js?v=agent2"></script>
 </body>
 </html>

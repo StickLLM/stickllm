@@ -1,12 +1,12 @@
 #!/bin/bash
-# Inside the Agent Zero container. Bind the UI to loopback :5099 and do not
-# start sshd (the host sshd owns port 22). No host drives are mounted here.
+# Inside the Agent Zero container. Listen on 0.0.0.0:5099 in this netns so the
+# host can publish 127.0.0.1:5099 only. Do not start sshd (the host sshd owns
+# port 22). No host drives are mounted here.
 set -eu
 
 if [ -f /exe/self_update_manager.py ]; then
   sed -i \
     -e 's/--port=80/--port=5099/g' \
-    -e 's/--host=0.0.0.0/--host=127.0.0.1/g' \
     -e 's#http://127.0.0.1:80/api/health#http://127.0.0.1:5099/api/health#g' \
     /exe/self_update_manager.py
 fi

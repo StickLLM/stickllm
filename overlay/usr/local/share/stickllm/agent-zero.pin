@@ -1,4 +1,4 @@
-# Official Agent Zero image. Pulled into the unlocked server vault.
+# Official Agent Zero image. Pulled onto the mounted host SSD, next to models.
 # Not baked into the ISO. Digests recorded from registry.docker.io on 2026-10-24.
 image=agent0ai/agent-zero
 version=v2.14

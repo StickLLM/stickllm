@@ -26,12 +26,26 @@ if [[ -d "$SRC/usr/local/bin" ]]; then
     installed=1
   done
   shopt -u nullglob
-  # ELF binary. Do not run sed on it: stripping CR would corrupt the file.
-  if [[ -f "$SRC/usr/local/bin/whisper-server" ]]; then
-    install -m 755 "$SRC/usr/local/bin/whisper-server" /usr/local/bin/whisper-server
-    echo "installed /usr/local/bin/whisper-server"
+fi
+
+if [[ -d "$SRC/usr/local/lib" ]]; then
+  mkdir -p /usr/local/lib
+  shopt -s nullglob
+  for f in "$SRC/usr/local/lib"/stickllm_*.py; do
+    [[ -f "$f" ]] || continue
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    install -m 644 "$f" "/usr/local/lib/$(basename "$f")"
+    echo "installed /usr/local/lib/$(basename "$f")"
     installed=1
-  fi
+  done
+  shopt -u nullglob
+fi
+
+# ELF binary. Do not run sed on it: stripping CR would corrupt the file.
+if [[ -f "$SRC/usr/local/bin/whisper-server" ]]; then
+  install -m 755 "$SRC/usr/local/bin/whisper-server" /usr/local/bin/whisper-server
+  echo "installed /usr/local/bin/whisper-server"
+  installed=1
 fi
 
 units_changed=0

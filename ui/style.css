@@ -21,6 +21,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:15px/1
 button,input,textarea{font:inherit;color:inherit}
 svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
 .mono{font-family:var(--mono);font-size:.9em}
+#agentPullLog{white-space:pre-wrap;max-height:9em;overflow:auto;margin:8px 0;font-size:12px}
 .muted{color:var(--muted)}.small{font-size:13px}.grow{flex:1}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
 [hidden]{display:none!important}
