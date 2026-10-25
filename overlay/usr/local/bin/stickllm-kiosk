@@ -618,13 +618,41 @@ ensure_browser_tabs() {
   done
 }
 
+# SHA-256 of the stick TLS key, base64. Empty when the cert is not written yet.
+stick_cert_spki() {
+  local cert="${STICKLLM_TLS_CERT:-$RUN/tls/cert.pem}"
+  [[ -s "$cert" ]] || return 0
+  openssl x509 -in "$cert" -pubkey -noout 2>/dev/null \
+    | openssl pkey -pubin -outform der 2>/dev/null \
+    | openssl dgst -sha256 -binary 2>/dev/null \
+    | openssl base64 -A 2>/dev/null \
+    | tr -d '\r\n' || true
+}
+
+# Console-only trust for the stick's self-signed cert. Remote browsers are
+# unchanged. --allow-insecure-localhost covers https://127.0.0.1 and :5443
+# (net_error -202). The SPKI list pins that same key if the page uses it.
+chromium_trust_args() {
+  local hash
+  printf '%s\n' "--allow-insecure-localhost"
+  hash="$(stick_cert_spki)"
+  if [[ -n "$hash" ]]; then
+    printf '%s\n' "--ignore-certificate-errors-spki-list=${hash}"
+  fi
+}
+
 # Address bar stays. Tabs stay. No --kiosk, --app, or --no-sandbox.
 chromium_args() {
-  local bin="$1"
+  local bin="$1" flag
   printf '%q' "$bin"
   printf ' --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars'
   printf ' --disable-session-crashed-bubble --hide-crash-restore-bubble'
   printf ' --check-for-update-interval=31536000'
+  if [[ "$bin" != "cog" ]]; then
+    while IFS= read -r flag; do
+      [[ -n "$flag" ]] && printf ' %q' "$flag"
+    done < <(chromium_trust_args)
+  fi
   printf ' --user-data-dir=%q --disk-cache-dir=%q %q' "$PROFILE" "$PROFILE/cache" "$URL"
 }
 
@@ -728,10 +756,20 @@ try_launch() {
   fail_note "STICKLLM_KIOSK_TRY label=$label drm=$drm renderer=$renderer comp=$comp browser=$browser timeout=$run_timeout"
   paint "  Trying $label…"
 
+  local -a trust_args=()
+  local trust_inline="" flag
+  if [[ "$browser" != "cog" ]]; then
+    while IFS= read -r flag; do
+      [[ -n "$flag" ]] || continue
+      trust_args+=("$flag")
+      trust_inline+=" ${flag}"
+    done < <(chromium_trust_args)
+  fi
+
   if [[ "$browser" == "cog" ]]; then
     app="cog -P --enable-mediasource $URL"
   else
-    app="$browser --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
+    app="$browser --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000${trust_inline} --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
   fi
 
   # drop_root=1 → runuser as KIOSK_USER (required for cage).
@@ -799,6 +837,7 @@ try_launch() {
           --disable-session-crashed-bubble \
           --hide-crash-restore-bubble \
           --check-for-update-interval=31536000 \
+          "${trust_args[@]}" \
           --user-data-dir="$PROFILE" \
           --disk-cache-dir="$PROFILE/cache" \
           "$URL" 2>&1 | kiosk_fail_filter
@@ -823,6 +862,7 @@ try_launch() {
           --disable-session-crashed-bubble \
           --hide-crash-restore-bubble \
           --check-for-update-interval=31536000 \
+            "${trust_args[@]}" \
             --user-data-dir="$PROFILE" \
             --disk-cache-dir="$PROFILE/cache" \
             "$URL" 2>&1 | kiosk_fail_filter
@@ -839,7 +879,7 @@ try_launch() {
       else
         _br_bin="$(command -v "$browser" || true)"
         [[ -n "$_br_bin" ]] || _br_bin="$browser"
-        app="${_br_bin} --start-maximized --ozone-platform=wayland --disable-gpu --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
+        app="${_br_bin} --start-maximized --ozone-platform=wayland --disable-gpu --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000${trust_inline} --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
         # weston itself stays root for drm-backend. The browser must not.
         if [[ "$KIOSK_USER" != "root" ]]; then
           app="runuser -u ${KIOSK_USER} --preserve-environment -- env HOME=${KIOSK_HOME} USER=${KIOSK_USER} LOGNAME=${KIOSK_USER} ${app}"

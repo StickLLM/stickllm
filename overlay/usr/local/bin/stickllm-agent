@@ -154,14 +154,22 @@ PY
     sleep 0.2
   done
   echo "stickllm-agent: llama relay did not bind 172.30.0.1:8080" >&2
+  "$PYBIN" "$LIB" write-status --state error --image_present true --message "llama relay did not bind 172.30.0.1:8080" >/dev/null || true
   return 1
 }
 
 ensure_nft() {
-  if ! "$PYBIN" "$LIB" nft-apply; then
-    echo "stickllm-agent: nftables rules were not installed" >&2
+  local err
+  err="$("$PYBIN" "$LIB" nft-apply 2>&1)" || {
+    printf '%s\n' "stickllm-agent: nftables rules were not installed" "$err" >&2
+    if [[ -z "${err//[[:space:]]/}" ]]; then
+      err="nftables rules were not installed"
+    fi
+    # image_present stays true so the Agent tile remains and shows this
+    # instead of "Agent is starting" while systemd restarts the unit.
+    "$PYBIN" "$LIB" write-status --state error --image_present true --message "$err" >/dev/null || true
     exit 1
-  fi
+  }
 }
 
 cmd_install() {

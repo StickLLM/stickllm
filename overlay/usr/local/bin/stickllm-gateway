@@ -1423,6 +1423,15 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(200, doc)
 
     def _agent_public_url(self) -> str:
+        # Console browsers are already on the stick. Open the loopback HTTP UI
+        # so they do not handshake the self-signed :5443 certificate. 5099 is
+        # published on 127.0.0.1 only. LAN clients keep the paired TLS port.
+        if self._is_loopback():
+            try:
+                port = int(agent_lib().AGENT_PORT)
+            except Exception:
+                port = 5099
+            return f"http://127.0.0.1:{port}/"
         host = (self.headers.get("Host") or "").split(":")[0].strip()
         if not host or host == "0.0.0.0":
             host = discover_lan_ip() or "127.0.0.1"

@@ -357,6 +357,10 @@ def nft_ruleset(
         "  }\n"
         "  chain input {\n"
         "    type filter hook input priority 0; policy accept;\n"
+        # The host health check connects to the bridge address via lo.
+        # Packets from any other interface are still dropped, so the relay
+        # is not reachable from the LAN. The container uses the bridge.
+        '    iifname "lo" accept\n'
         f'    iifname != "{bridge}" ip daddr {gateway} tcp dport {llama_port} drop\n'
         "  }\n"
         "  chain postrouting {\n"
@@ -367,8 +371,26 @@ def nft_ruleset(
     )
 
 
+def nft_apply_text() -> str:
+    """Ruleset script for ``nft -f``.
+
+    Debian 12 ships nftables 1.0.6, which rejects ``destroy table`` (added in
+    1.0.8) and then refuses the rest of the file. ``add`` plus ``delete`` is
+    the older idempotent prelude: it creates the table when missing, then
+    drops it so the definition below is a clean load.
+    """
+    return (
+        f"add table inet {NFT_TABLE}\n"
+        f"delete table inet {NFT_TABLE}\n"
+        + nft_ruleset()
+    )
+
+
 def nft_apply() -> int:
-    text = f"destroy table inet {NFT_TABLE}\n" + nft_ruleset()
+    # A second start still has the table. ``add table`` fails with "File
+    # exists" on 1.0.6 unless it was removed first. "No such file" is success.
+    nft_delete()
+    text = nft_apply_text()
     proc = subprocess.run(
         ["nft", "-f", "-"],
         input=text,
@@ -508,6 +530,13 @@ def status_document(
     elif pull_failed:
         message = "Agent Zero image pull failed"
         state = "pull_failed"
+    elif not image_present and saved.get("state") != "error":
+        message = NEEDS_INSTALL_MESSAGE
+        state = "needs_install"
+    elif not upstream_up and saved.get("state") == "error":
+        detail = str(saved.get("message") or "").strip()
+        message = detail or "Agent failed to start"
+        state = "error"
     elif not image_present:
         message = NEEDS_INSTALL_MESSAGE
         state = "needs_install"
@@ -523,7 +552,7 @@ def status_document(
         and ssd
         and not image_present
         and not low_space
-        and state != "installing"
+        and state not in ("installing", "error")
     )
     return {
         "ok": True,
@@ -603,7 +632,7 @@ def status_html(doc: dict, home: str | None = None) -> str:
     message = str(doc.get("message") or "Agent")
     href = _html(_home_href(home))
     refresh = ""
-    if doc.get("state") in ("installing", "starting"):
+    if doc.get("state") in ("installing", "starting", "error"):
         refresh = '<meta http-equiv="refresh" content="2">'
     install = ""
     if doc.get("needs_install") or doc.get("state") == "pull_failed":
@@ -617,6 +646,10 @@ def status_html(doc: dict, home: str | None = None) -> str:
     log = str(doc.get("pull_log") or "")
     log_html = f"<pre>{_html(log)}</pre>" if log else ""
     heading = f"<h1>{_html(message)}</h1>"
+    if doc.get("state") == "error":
+        heading = "<h1>Agent failed to start</h1>"
+        if message:
+            log_html = f"<pre>{_html(message)}</pre>" + log_html
     if doc.get("state") in ("locked", "settings_missing"):
         heading = (
             f'<h1><a href="{href}">{_html(message)}</a></h1>'

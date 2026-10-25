@@ -76,10 +76,13 @@ function clearPairSession() {
 function agentPageUrl(status) {
   if (status && status.agent_url) return status.agent_url;
   const host = location.hostname || "127.0.0.1";
+  if (host === "127.0.0.1" || host === "localhost" || host === "::1") {
+    return "http://127.0.0.1:5099/";
+  }
   return "https://" + host + ":5443/";
 }
 function agentIsInstalled(s) {
-  return !!(s && (s.image_present || s.state === "running" || s.state === "starting"));
+  return !!(s && (s.image_present || s.state === "running" || s.state === "starting" || s.state === "error"));
 }
 function agentInstallButtons() {
   return ["agentInstallBtn", "agentCatalogInstall"].map((id) => $("#" + id)).filter(Boolean);
@@ -129,9 +132,13 @@ async function refreshAgentLink() {
     else if (s.state === "installing") detail = "Installing";
     else if (s.state === "pull_failed") detail = "Install failed";
     else if (s.state === "starting") detail = "Starting";
+    else if (s.state === "error") detail = (s.message || "Failed to start").replace(/\s+/g, " ").trim() || "Failed to start";
     else if (s.state === "low_space") detail = "Host drive is low on space";
     if (label) label.textContent = "Agent";
     if (note) note.textContent = detail;
+    if (link) link.title = s.state === "error" ? detail : "";
+    const deskIcon = $("#agentDeskIcon");
+    if (deskIcon) deskIcon.title = s.state === "error" ? detail : "Agent";
     const message = s.message || "";
     for (const msg of [$("#agentInstallMsg"), $("#agentCatalogMsg")]) {
       if (msg) msg.textContent = message;
@@ -142,7 +149,7 @@ async function refreshAgentLink() {
       btn.disabled = s.state === "installing";
       btn.textContent = s.state === "installing" ? "Installing…" : "Install Agent Zero";
     }
-    const text = s.pull_log || "";
+    const text = s.state === "error" ? (s.message || detail) : (s.pull_log || "");
     for (const log of [$("#agentPullLog"), $("#agentCatalogPull")]) {
       if (!log) continue;
       log.hidden = !text;
