@@ -36,6 +36,13 @@ refuse_locked() {
 
 resolve_docker_dir() {
   local dir
+  # Commit 3db2ac0 stored the image at /var/lib/stickllm/vault/docker.
+  # That directory is not detected and is not a data-root. Migrating it
+  # could disturb the working host-SSD data-root, so an image found only
+  # there is re-pulled. dockerd is never pointed back at the vault.
+  if [[ -d /var/lib/stickllm/vault/docker ]]; then
+    echo "old vault docker dir is present and unused; image is re-pulled onto the host SSD" >&2
+  fi
   if ! dir="$("$PYBIN" "$LIB" docker-dir)"; then
     "$PYBIN" "$LIB" write-status --state no_ssd --image_present false --low_space false >/dev/null || true
     echo "Mount a drive for Agent Zero" >&2

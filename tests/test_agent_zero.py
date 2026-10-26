@@ -140,6 +140,8 @@ def test_run_does_not_install_and_checks_the_ssd_folder():
     assert "vault free space" not in text
     assert "15 GB" not in text
     assert '${VAULT}/docker' not in text
+    assert "/var/lib/stickllm/vault/docker" in text
+    assert "never pointed back at the vault" in text
     assert "--data-root \"${DOCKER_DIR}\"" in text
     assert 'SOCK="/run/stickllm/agent-docker.sock"' in text
     assert "apparmor=unconfined" not in text
