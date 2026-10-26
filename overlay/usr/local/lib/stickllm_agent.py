@@ -624,15 +624,25 @@ def apps_prompt_text() -> str:
     return "\n".join(lines) + "\n"
 
 
+APP_PLAY_RULE = (
+    "Use open_app / app_state / app_act for StickLLM apps. "
+    "Never use your own browser or external sites for them. "
+    "At most 30 actions, then summarise."
+)
+
+
 def apps_skill_text() -> str:
     body = apps_prompt_text().split("## StickLLM apps\n", 1)[1]
     return (
         "---\n"
         "name: stickllm-apps\n"
-        "description: Open StickLLM apps on the user's screen with open_app. "
-        "URL ids are minesweeper, solitaire, tetris, notepad, calculator, files, "
-        "media, and monitor. The desktop label minesweep is URL id minesweeper.\n"
+        "description: Play StickLLM apps on the user's screen with open_app, "
+        "app_state, and app_act. URL ids are minesweeper, solitaire, tetris, "
+        "notepad, calculator, files, media, and monitor. The desktop label "
+        "minesweep is URL id minesweeper.\n"
         "---\n\n"
+        + APP_PLAY_RULE
+        + "\n\n"
         + OPEN_APP_RULE
         + "\n\n"
         + body
@@ -734,7 +744,11 @@ def ensure_open_app_plugin() -> None:
     files = {
         root / "plugin.yaml": open_app_plugin_yaml(),
         root / "tools" / "open_app.py": open_app_tool_source(),
+        root / "tools" / "app_state.py": app_state_tool_source(),
+        root / "tools" / "app_act.py": app_act_tool_source(),
         root / "prompts" / "agent.system.tool.open_app.md": open_app_tool_prompt(),
+        root / "prompts" / "agent.system.tool.app_state.md": app_state_tool_prompt(),
+        root / "prompts" / "agent.system.tool.app_act.md": app_act_tool_prompt(),
         root / "skills" / "stickllm-apps" / "SKILL.md": apps_skill_text(),
     }
     for path, text in files.items():
@@ -929,6 +943,93 @@ def open_app_page_ready(root: Path, app_id: str) -> bool:
     return target.is_file()
 
 
+def app_state_tool_prompt() -> str:
+    return (
+        "### app_state\n"
+        "Read the visible StickLLM app tab. Returns JSON from window.stickllmApp.state().\n"
+        "Call open_app first so the tab is on screen.\n"
+        'Example: {"tool_name":"app_state","tool_args":{"id":"minesweeper"}}\n'
+    )
+
+
+def app_act_tool_prompt() -> str:
+    return (
+        "### app_act\n"
+        "Act in the visible StickLLM app tab. Do not use the browser tool.\n"
+        "Minesweeper: {\"reveal\":[row,col]} or {\"flag\":[row,col]}.\n"
+        "Solitaire: {\"move\":\"t3->f1\"} or {\"draw\":true}.\n"
+        "Notepad: {\"set_text\":\"...\"} or {\"save_as\":\"notes.txt\"}.\n"
+        "Calculator: {\"expr\":\"12+3=\"}.\n"
+        "At most 30 actions, then summarise.\n"
+        'Example: {"tool_name":"app_act","tool_args":{"id":"minesweeper","action":{"reveal":[0,0]}}}\n'
+    )
+
+
+def _relay_tool_source(class_name: str, path: str, with_action: bool) -> str:
+    action_lines = ""
+    if with_action:
+        action_lines = """
+        action = self.args.get("action") if isinstance(self.args, dict) else None
+        if not isinstance(action, dict):
+            return Response(message="app_act failed: action must be an object", break_loop=False)
+        payload["action"] = action
+"""
+    return f'''from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from helpers.tool import Response, Tool
+
+_TOKEN_FILE = Path("/stickllm-open-app.token")
+_URL = "http://172.30.0.1:8082{path}"
+
+
+class {class_name}(Tool):
+    async def execute(self, id: str = "", **kwargs):
+        app_id = self.args.get("id") if isinstance(self.args, dict) else None
+        if not isinstance(app_id, str) or not app_id.strip():
+            app_id = id if isinstance(id, str) else ""
+        app_id = str(app_id or "").strip()
+        try:
+            token = _TOKEN_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            return Response(message="{class_name} failed: control token is missing", break_loop=False)
+        if not token:
+            return Response(message="{class_name} failed: control token is missing", break_loop=False)
+        payload = {{"id": app_id}}
+{action_lines}        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            _URL,
+            data=body,
+            headers={{
+                "Authorization": "Bearer " + token,
+                "Content-Type": "application/json",
+            }},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=8) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            return Response(message=f"{class_name} failed: HTTP {{exc.code}} {{detail}}", break_loop=False)
+        except Exception as exc:
+            return Response(message=f"{class_name} failed: {{exc}}", break_loop=False)
+        return Response(message=raw.strip() or "ok", break_loop=False)
+'''
+
+
+def app_state_tool_source() -> str:
+    return _relay_tool_source("AppState", "/state", False)
+
+
+def app_act_tool_source() -> str:
+    return _relay_tool_source("AppAct", "/act", True)
+
+
 def notify_gateway_open_app(app_id: str, token: str, url: str | None = None) -> dict:
     """Tell the UI gateway, on loopback, to push the open-tab event."""
     target = url or os.environ.get("STICKLLM_OPEN_APP_NOTIFY", "http://127.0.0.1/api/ui/open-app")
@@ -947,6 +1048,33 @@ def notify_gateway_open_app(app_id: str, token: str, url: str | None = None) -> 
     data = json.loads(raw.decode("utf-8") or "{}")
     if not isinstance(data, dict) or not data.get("ok"):
         raise OSError("ui did not accept open_app")
+    return data
+
+
+def gateway_app_call(kind: str, app_id: str, token: str, action: dict | None = None, url: str | None = None) -> dict:
+    """Ask the loopback gateway to relay state or an action to the visible tab."""
+    target = url or os.environ.get("STICKLLM_OPEN_APP_NOTIFY", "http://127.0.0.1/api/ui/open-app")
+    if target.endswith("open-app"):
+        base = target[: -len("open-app")]
+    else:
+        base = target.rsplit("/", 1)[0] + "/"
+    endpoint = base + ("app-act" if kind == "app_act" else "app-state")
+    body_obj: dict = {"id": app_id}
+    if action is not None:
+        body_obj["action"] = action
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body_obj).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=8) as resp:
+        data = json.loads(resp.read().decode("utf-8") or "{}")
+    if not isinstance(data, dict):
+        raise OSError("ui returned a bad app reply")
     return data
 
 
@@ -983,6 +1111,7 @@ def open_app_server(
     root: Path | None = None,
     token_file: Path | None = None,
     notify=None,
+    relay=None,
 ) -> ThreadingHTTPServer:
     """Token-authenticated open_app control. Refuses every interface address."""
     if listen_host in ("0.0.0.0", "::", ""):
@@ -1027,11 +1156,11 @@ def open_app_server(
         def do_POST(self) -> None:  # noqa: N802
             path = urllib.parse.urlsplit(self.path).path
             length = int(self.headers.get("Content-Length") or 0)
-            if length < 0 or length > 2048:
+            if length < 0 or length > 8192:
                 self._send(413, {"ok": False, "error": "too_large"})
                 return
             raw = self.rfile.read(length) if length else b""
-            if path != "/open":
+            if path not in ("/open", "/state", "/act"):
                 self._send(404, {"ok": False, "error": "not_found"})
                 return
             if not self._authorized():
@@ -1051,6 +1180,28 @@ def open_app_server(
                 return
             if not open_app_page_ready(apps, app_id):
                 self._send(404, {"ok": False, "error": "not_found"})
+                return
+            if path in ("/state", "/act"):
+                action = req.get("action")
+                if path == "/act" and not isinstance(action, dict):
+                    self._send(400, {"ok": False, "error": "bad_action"})
+                    return
+                try:
+                    if relay is None:
+                        result = gateway_app_call(
+                            "app_act" if path == "/act" else "app_state",
+                            app_id,
+                            self._token(),
+                            action if path == "/act" else None,
+                        )
+                    else:
+                        result = relay(path, app_id, action)
+                except Exception:
+                    self._send(502, {"ok": False, "error": "ui_unavailable"})
+                    return
+                if not isinstance(result, dict):
+                    result = {"ok": False, "error": "bad_reply"}
+                self._send(200 if result.get("ok") else 502, result)
                 return
             peer = self.client_address[0] if self.client_address else ""
             opened = {

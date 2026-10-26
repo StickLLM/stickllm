@@ -860,6 +860,18 @@ def test_apps_prompt_names_url_ids(tmp_path):
     ).read_text(encoding="utf-8")
     assert note in skill
     assert rule in skill
+    assert "Use open_app / app_state / app_act for StickLLM apps." in skill
+    assert "At most 30 actions, then summarise." in skill
+    state_tool = (
+        vault / "addons" / "agent-zero" / "state" / "plugins" / "stickllm_apps" / "tools" / "app_state.py"
+    ).read_text(encoding="utf-8")
+    act_tool = (
+        vault / "addons" / "agent-zero" / "state" / "plugins" / "stickllm_apps" / "tools" / "app_act.py"
+    ).read_text(encoding="utf-8")
+    assert "class AppState" in state_tool
+    assert "http://172.30.0.1:8082/state" in state_tool
+    assert "class AppAct" in act_tool
+    assert "http://172.30.0.1:8082/act" in act_tool
     assert "URL id minesweeper" in skill or "minesweeper" in skill
     assert "minesweep" in skill
     tool = (
@@ -1316,3 +1328,166 @@ def test_ui_events_cookie_ticket_and_subscribers(tmp_path):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def test_app_act_roundtrip_and_bridge(tmp_path):
+    token = "gateway-open-token-0123456789ab"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    ui = tmp_path / "ui"
+    page = ui / "apps" / "minesweeper"
+    page.mkdir(parents=True)
+    (page / "index.html").write_text("<!DOCTYPE html><title>Mines</title>", encoding="utf-8")
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_OPEN_APP_TOKEN_FILE": str(token_file),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }
+    saved = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    gateway = _load(GATEWAY, "stickllm_gateway_app_act", env)
+    local = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    local.daemon_threads = True
+    port = local.server_address[1]
+    threading.Thread(target=local.serve_forever, daemon=True).start()
+
+    def call(path, *, method="GET", auth_header=None, body=None, timeout=8):
+        data = None if body is None else json.dumps(body).encode()
+        headers = {}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if auth_header:
+            headers["Authorization"] = auth_header
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode() or "{}")
+
+    sock = None
+    try:
+        code, body = call(
+            "/api/ui/app-act",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper", "action": {"reveal": [0, 0]}},
+            timeout=3,
+        )
+        assert code == 409
+        assert body["error"] == "no_subscriber"
+
+        def listen():
+            nonlocal sock
+            sock = socket.create_connection(("127.0.0.1", port), timeout=3)
+            sock.sendall(b"GET /api/ui/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n")
+            sock.settimeout(8)
+            data = b""
+            while b"event: app_act" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+            rest = data[data.find(b"event: app_act"):]
+            line = rest.split(b"data: ", 1)[1].split(b"\n", 1)[0]
+            payload = json.loads(line.decode())
+            call(
+                "/api/ui/app-reply",
+                method="POST",
+                body={
+                    "id": "minesweeper",
+                    "req": payload["req"],
+                    "kind": "app_act",
+                    "ok": True,
+                    "state": {"grid": "#1"},
+                },
+            )
+
+        threading.Thread(target=listen, daemon=True).start()
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            try:
+                log = (run / "kiosk.log").read_text(encoding="utf-8")
+            except OSError:
+                log = ""
+            if "STICKLLM_UI_EVENTS connect ip=127.0.0.1" in log:
+                break
+            time.sleep(0.05)
+        code, body = call(
+            "/api/ui/app-act",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper", "action": {"reveal": [0, 0]}},
+        )
+        assert code == 200
+        assert body["ok"] is True
+        assert body["state"]["grid"] == "#1"
+        log = (run / "kiosk.log").read_text(encoding="utf-8")
+        assert "STICKLLM_APP phase=act id=minesweeper ok=true" in log
+    finally:
+        if sock is not None:
+            sock.close()
+        local.shutdown()
+        local.server_close()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    agent = _load(AGENT, "stickllm_agent_app_act_bridge")
+    apps = tmp_path / "bridge-apps"
+    (apps / "minesweeper").mkdir(parents=True)
+    (apps / "minesweeper" / "index.html").write_text("mines", encoding="utf-8")
+    seen = {}
+
+    def relay(path, app_id, action):
+        seen["path"] = path
+        seen["id"] = app_id
+        seen["action"] = action
+        return {"ok": True, "id": app_id, "state": {"grid": "#1"}}
+
+    bridge = agent.open_app_server(
+        "127.0.0.1",
+        0,
+        root=apps,
+        token_file=token_file,
+        relay=relay,
+    )
+    bridge.daemon_threads = True
+    threading.Thread(target=bridge.serve_forever, daemon=True).start()
+    bport = bridge.server_address[1]
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{bport}/state",
+            data=json.dumps({"id": "minesweeper"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=3)
+            raise AssertionError("bridge state accepted a missing token")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 401
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{bport}/act",
+            data=json.dumps({"id": "minesweeper", "action": {"reveal": [0, 0]}}).encode(),
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            body = json.loads(resp.read().decode())
+        assert body["ok"] is True
+        assert seen == {"path": "/act", "id": "minesweeper", "action": {"reveal": [0, 0]}}
+    finally:
+        bridge.shutdown()
+        bridge.server_close()

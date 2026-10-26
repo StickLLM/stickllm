@@ -108,6 +108,8 @@ class _UiOpenBus:
         self._loaded: dict | None = None
         self._seen: dict | None = None
         self._subscribers = 0
+        self._events: list[dict] = []
+        self._pending: dict[str, dict] = {}
 
     def connect(self, ip: str) -> int:
         with self._cond:
@@ -132,14 +134,57 @@ class _UiOpenBus:
             "window": f"stickllm-{app_id}",
             "published_at": time.time(),
         }
+        event["kind"] = "open_app"
         with self._cond:
             self._seq += 1
             event["seq"] = self._seq
             self._last = dict(event)
+            self._events.append(dict(event))
+            del self._events[:-40]
             subscribers = self._subscribers
             self._cond.notify_all()
         self._log(app_id, "published", subscribers)
         return event
+
+    def request_app(self, kind: str, app_id: str, action: dict | None = None, timeout: float = 6.0) -> dict:
+        req_id = secrets.token_hex(8)
+        holder = {"done": threading.Event(), "result": None}
+        event = {
+            "kind": kind,
+            "id": app_id,
+            "req": req_id,
+            "published_at": time.time(),
+        }
+        if action is not None:
+            event["action"] = action
+        with self._cond:
+            self._pending[req_id] = holder
+            self._seq += 1
+            event["seq"] = self._seq
+            self._events.append(dict(event))
+            del self._events[:-40]
+            self._cond.notify_all()
+        if not holder["done"].wait(timeout):
+            with self._cond:
+                self._pending.pop(req_id, None)
+            phase = "act" if kind == "app_act" else "state"
+            self._write_log(f"STICKLLM_APP phase={phase} id={app_id} ok=false\n")
+            return {"ok": False, "error": "timeout", "id": app_id, "req": req_id}
+        result = holder["result"] if isinstance(holder["result"], dict) else {"ok": False, "error": "bad_reply"}
+        return result
+
+    def reply_app(self, req_id: str, result: dict) -> bool:
+        with self._cond:
+            holder = self._pending.pop(str(req_id), None)
+        if holder is None:
+            return False
+        holder["result"] = result
+        ok = bool(result.get("ok"))
+        app_id = str(result.get("id") or "")
+        phase = "act" if result.get("kind") == "app_act" else "state"
+        self._write_log(f"STICKLLM_APP phase={phase} id={app_id} ok={'true' if ok else 'false'}\n")
+        holder["done"].set()
+        return True
 
     def note_load(self, app_id: str, client: str) -> None:
         with self._cond:
@@ -215,9 +260,17 @@ class _UiOpenBus:
         deadline = time.time() + timeout
         with self._cond:
             while True:
-                last = self._last
-                if last and int(last.get("seq") or 0) > seq:
-                    return dict(last)
+                nxt = None
+                for event in self._events:
+                    if int(event.get("seq") or 0) > seq:
+                        nxt = dict(event)
+                        break
+                if nxt is None:
+                    last = self._last
+                    if last and int(last.get("seq") or 0) > seq:
+                        nxt = dict(last)
+                if nxt is not None:
+                    return nxt
                 remain = deadline - time.time()
                 if remain <= 0:
                     return None
@@ -1868,16 +1921,22 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.flush()
 
             def send_event(event: dict) -> None:
-                payload = json.dumps(
-                    {
+                kind = str(event.get("kind") or "open_app")
+                if kind == "open_app":
+                    payload = {
                         "id": event["id"],
                         "path": event["path"],
                         "window": event["window"],
                         "seq": event.get("seq"),
-                    },
-                    ensure_ascii=True,
-                ).encode("ascii")
-                send_chunk(b"event: open_app\ndata: " + payload + b"\n\n")
+                    }
+                elif kind in ("app_state", "app_act"):
+                    payload = {"id": event["id"], "req": event["req"], "seq": event.get("seq")}
+                    if "action" in event:
+                        payload["action"] = event["action"]
+                else:
+                    return
+                raw = json.dumps(payload, ensure_ascii=True).encode("ascii")
+                send_chunk(b"event: " + kind.encode("ascii") + b"\ndata: " + raw + b"\n\n")
 
             seq, replay = UI_OPEN.catch_up()
             if replay:
@@ -2342,6 +2401,14 @@ class Handler(SimpleHTTPRequestHandler):
             self._agent_install()
             return
         n = int(self.headers.get("Content-Length") or 0)
+        if path == "/api/ui/app-reply" and n > 65536:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        if path in ("/api/ui/app-state", "/api/ui/app-act") and n > 8192:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
         if path in ("/api/ui/open-app", "/api/ui/open-app-seen", "/api/ui/events-ticket") and n > 2048:
             self.close_connection = True
             self._json(413, {"ok": False, "error": "too_large"})
@@ -2396,6 +2463,67 @@ class Handler(SimpleHTTPRequestHandler):
                     "window": event["window"],
                 },
             )
+            return
+
+        if path in ("/api/ui/app-state", "/api/ui/app-act"):
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._open_app_control_ok():
+                return
+            app_id = req.get("id")
+            try:
+                if not agent_lib().open_app_id_ok(app_id):
+                    self._json(400, {"ok": False, "error": "bad_id"})
+                    return
+            except Exception:
+                self._json(400, {"ok": False, "error": "bad_id"})
+                return
+            if UI_OPEN.subscriber_count() < 1:
+                self._json(409, {"ok": False, "error": "no_subscriber"})
+                return
+            kind = "app_act" if path.endswith("app-act") else "app_state"
+            action = req.get("action")
+            if kind == "app_act" and not isinstance(action, dict):
+                self._json(400, {"ok": False, "error": "bad_action"})
+                return
+            result = UI_OPEN.request_app(
+                kind,
+                str(app_id),
+                action if kind == "app_act" else None,
+            )
+            code = 200 if result.get("ok") else 504
+            self._json(code, result)
+            return
+
+        if path == "/api/ui/app-reply":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._ui_stream_allowed():
+                return
+            app_id = req.get("id")
+            try:
+                if not agent_lib().open_app_id_ok(app_id):
+                    self._json(400, {"ok": False, "error": "bad_id"})
+                    return
+            except Exception:
+                self._json(400, {"ok": False, "error": "bad_id"})
+                return
+            reply = {
+                "ok": bool(req.get("ok")),
+                "id": str(app_id),
+                "req": str(req.get("req") or ""),
+                "kind": str(req.get("kind") or ""),
+            }
+            if "state" in req:
+                reply["state"] = req.get("state")
+            if req.get("error"):
+                reply["error"] = str(req.get("error"))[:300]
+            if not UI_OPEN.reply_app(str(req.get("req") or ""), reply):
+                self._json(404, {"ok": False, "error": "unknown_req"})
+                return
+            self._json(200, {"ok": True})
             return
 
         if path == "/api/ui/open-app-seen":
