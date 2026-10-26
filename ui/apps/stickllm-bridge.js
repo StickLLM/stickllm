@@ -51,7 +51,9 @@
     }
   }
 
-  const events = new EventSource("/api/ui/events");
+  // ?app= tells the gateway this screen has the app open, so app_state /
+  // app_act go here and fail fast ("app_not_open") when no page has it.
+  const events = new EventSource("/api/ui/events?app=" + encodeURIComponent(id));
   events.addEventListener("app_state", function (ev) { handle("app_state", ev); });
   events.addEventListener("app_act", function (ev) { handle("app_act", ev); });
 })();

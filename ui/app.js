@@ -4909,13 +4909,15 @@ function showOpenAppToast(id) {
 function openStickApp(id) {
   if (!/^[a-z]+$/.test(id)) return false;
   const url = "/apps/" + id + "/?stickllm_open=1";
-  const kiosk = isLocalMode || detectLocalHost();
-  if (kiosk) {
-    const opened = window.open(url, "stickllm-" + id);
-    if (opened) {
-      reportOpenApp(id, "opened");
-      return true;
-    }
+  // The gateway sends open_app only to the screen driving Agent (a LAN
+  // browser that used Agent in the last 2 minutes, else the kiosk), so try a
+  // real window everywhere. A LAN browser blocks this pop-up unless the user
+  // allowed pop-ups for StickLLM; then the toast's Open button does it.
+  let opened = null;
+  try { opened = window.open(url, "stickllm-" + id); } catch (e) { opened = null; }
+  if (opened) {
+    reportOpenApp(id, "opened");
+    return true;
   }
   if (showOpenAppToast(id)) reportOpenApp(id, "toast-shown");
   else reportOpenApp(id, "blocked");

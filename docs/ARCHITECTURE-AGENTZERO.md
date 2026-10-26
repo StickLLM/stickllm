@@ -39,9 +39,18 @@ The kiosk opens StickLLM at `http://127.0.0.1/` and opens an app window itself. 
 1. Agent Zero calls `open_app`, `app_state`, or `app_act`.
 2. Those tools post to `http://172.30.0.1:8082` with the open-app token (`/stickllm-open-app.token`, file `/mnt/stickllm-settings/agent-zero/open-app.token`).
 3. The bridge notifies the gateway.
-4. The gateway `_UiOpenBus` publishes on `SSE /api/ui/events`.
-5. The kiosk auto-opens a named window `stickllm-<id>`. A remote browser shows a toast with an Open button instead of a popup.
-6. The visible tab answers `app_state` and `app_act` when `window.stickllmApp` is present. The reply is `POST /api/ui/app-reply`.
+4. The gateway `_UiOpenBus` publishes on `SSE /api/ui/events`, but only to one screen, the target (see below).
+5. The target's newest StickLLM tab calls `window.open` for a named window `stickllm-<id>`. If the browser blocks the pop-up, a toast with an Open button appears instead.
+6. The target's app page answers `app_state` and `app_act` when `window.stickllmApp` is present. The reply is `POST /api/ui/app-reply`; a reply from any other screen is refused (`404 unknown_req`).
+
+**Which screen is the target.** The gateway remembers the LAN IP of the browser that last used Agent on `:5443` (`_AgentClients`). It counts as "driving Agent" while it has an Agent websocket open, or for `AGENT_TARGET_WINDOW` = 120 s after its last Agent request. Loopback is never recorded.
+- If such a LAN browser exists, it is the target and the kiosk gets nothing (`reason=agent_lan`). If that browser has no StickLLM tab open, the event still goes only to it (`reason=no_ui_tab`); the app is never moved to the kiosk.
+- Otherwise the kiosk is the target (`reason=no_lan_agent`).
+- `kiosk.log` records it: `STICKLLM_OPEN_APP phase=published id=… subscribers=N target=<ip|kiosk> reason=…`, and `STICKLLM_APP phase=state|act id=… ok=… [error=…] target=…`.
+
+**No hang when the app is not open.** App pages subscribe with `/api/ui/events?app=<id>` (`stickllm-bridge.js`). Before sending `app_state` or `app_act`, the gateway checks that the target has that app page open. If not, it answers at once with `409 {"error":"app_not_open","message":…}`, telling Agent Zero to call `open_app` first and, if nothing opened, to ask the user to allow pop-ups or click Open on the toast. There is no kiosk fallback, because that is exactly the bug this design fixes (the game showed up on the stick's screen while the user watched their own browser). If the page is open but does not answer, the call fails after 6 s with `error: "timeout"`.
+
+On a LAN browser, allow pop-ups for the StickLLM address (for example `https://192.168.72.70`), or every open_app becomes a toast.
 
 `window.stickllmApp` is `{ describe(), state(), act(action) }` and returns JSON. Minesweeper, Solitaire, Tetris, Notepad, and Calculator have adapters. Files, Media, and Monitor open with `open_app` only; `app_state` on them answers `no_adapter`. The Solitaire adapter matches each card to a pile by screen position, because the cards are children of `.cardTable`, not of `.pile`. An illegal Solitaire move is undone and returns `ok: false`.
 

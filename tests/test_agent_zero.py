@@ -1487,11 +1487,33 @@ def test_app_act_roundtrip_and_bridge(tmp_path):
         )
         assert code == 409
         assert body["error"] == "no_subscriber"
+        main_ui = socket.create_connection(("127.0.0.1", port), timeout=3)
+        main_ui.sendall(b"GET /api/ui/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n")
+        deadline = time.time() + 3
+        while time.time() < deadline and "STICKLLM_UI_EVENTS connect" not in (
+            (run / "kiosk.log").read_text(encoding="utf-8") if (run / "kiosk.log").exists() else ""
+        ):
+            time.sleep(0.05)
+        started = time.time()
+        code, body = call(
+            "/api/ui/app-act",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper", "action": {"reveal": [0, 0]}},
+            timeout=3,
+        )
+        assert time.time() - started < 2
+        assert code == 409
+        assert body["error"] == "app_not_open"
+        assert "open_app" in body["message"]
+        main_ui.close()
 
         def listen():
             nonlocal sock
             sock = socket.create_connection(("127.0.0.1", port), timeout=3)
-            sock.sendall(b"GET /api/ui/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n")
+            sock.sendall(
+                b"GET /api/ui/events?app=minesweeper HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"
+            )
             sock.settimeout(8)
             data = b""
             while b"event: app_act" not in data:
@@ -1521,7 +1543,7 @@ def test_app_act_roundtrip_and_bridge(tmp_path):
                 log = (run / "kiosk.log").read_text(encoding="utf-8")
             except OSError:
                 log = ""
-            if "STICKLLM_UI_EVENTS connect ip=127.0.0.1" in log:
+            if "STICKLLM_UI_EVENTS connect ip=127.0.0.1 app=minesweeper" in log:
                 break
             time.sleep(0.05)
         code, body = call(
@@ -1534,7 +1556,7 @@ def test_app_act_roundtrip_and_bridge(tmp_path):
         assert body["ok"] is True
         assert body["state"]["grid"] == "#1"
         log = (run / "kiosk.log").read_text(encoding="utf-8")
-        assert "STICKLLM_APP phase=act id=minesweeper ok=true" in log
+        assert "STICKLLM_APP phase=act id=minesweeper ok=true target=kiosk" in log
     finally:
         if sock is not None:
             sock.close()
@@ -1698,3 +1720,241 @@ def test_gateway_app_call_passes_on_gateway_error_reason():
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_agent_clients_pick_the_lan_browser_driving_agent():
+    gateway = _load(GATEWAY, "stickllm_gateway_agent_clients")
+    clients = gateway._AgentClients()
+    assert clients.target() == ""
+    clients.note("127.0.0.1", now=1000.0)
+    clients.note("::1", now=1000.0)
+    assert clients.target(now=1001.0) == ""
+    clients.note("192.168.72.76", now=1000.0)
+    assert clients.target(now=1000.0 + gateway.AGENT_TARGET_WINDOW) == "192.168.72.76"
+    assert clients.target(now=1001.0 + gateway.AGENT_TARGET_WINDOW) == ""
+    clients.note("192.168.72.80", now=1010.0)
+    assert clients.target(now=1011.0) == "192.168.72.80"
+    clients.websocket("192.168.72.76", +1)
+    later = time.time() + 10 * gateway.AGENT_TARGET_WINDOW
+    assert clients.target(now=later) == "192.168.72.76"
+    clients.websocket("192.168.72.76", -1)
+    assert clients.target(now=later) == ""
+    assert gateway.ui_peer_key("127.0.0.1") == "kiosk"
+    assert gateway.ui_peer_key("192.168.72.76") == "192.168.72.76"
+
+
+def test_open_app_and_app_calls_go_only_to_the_agent_browser(tmp_path):
+    token = "gateway-open-token-0123456789ab"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    pair = "paired-browser-token"
+    (run / "auth.json").write_text(
+        json.dumps(
+            {
+                "require_pair": True,
+                "paired": True,
+                "token_hash": hashlib.sha256(pair.encode()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    ui = tmp_path / "ui"
+    page = ui / "apps" / "minesweeper"
+    page.mkdir(parents=True)
+    (page / "index.html").write_text("<!DOCTYPE html><title>Mines</title>", encoding="utf-8")
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_OPEN_APP_TOKEN_FILE": str(token_file),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }
+    saved = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    gateway = _load(GATEWAY, "stickllm_gateway_targeting", env)
+    desk = "192.168.72.76"
+
+    class LanHandler(gateway.Handler):
+        def _is_loopback(self) -> bool:
+            return False
+
+        def _ui_client_ip(self) -> str:
+            return desk
+
+    lan = gateway.ThreadingHTTPServer(("127.0.0.1", 0), LanHandler)
+    local = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    lan_port = lan.server_address[1]
+    local_port = local.server_address[1]
+    for httpd in (lan, local):
+        httpd.daemon_threads = True
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def call(port, path, *, method="GET", auth_header=None, body=None, cookie=None, timeout=8):
+        data = None if body is None else json.dumps(body).encode()
+        headers = {}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if auth_header:
+            headers["Authorization"] = auth_header
+        if cookie:
+            headers["Cookie"] = cookie
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=data, headers=headers, method=method
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode() or "{}")
+
+    def hold(port, path, cookie=None):
+        sock = socket.create_connection(("127.0.0.1", port), timeout=3)
+        req = f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n"
+        if cookie:
+            req += f"Cookie: {cookie}\r\n"
+        sock.sendall((req + "\r\n").encode())
+        sock.settimeout(2)
+        data = b""
+        while b"\r\n\r\n" not in data:
+            data += sock.recv(2048)
+        assert b"200" in data.split(b"\r\n", 1)[0]
+        return sock
+
+    def read_for(sock, marker: bytes, seconds: float) -> bytes:
+        sock.settimeout(0.2)
+        data = b""
+        end = time.time() + seconds
+        while marker not in data and time.time() < end:
+            try:
+                chunk = sock.recv(4096)
+            except (TimeoutError, socket.timeout):
+                continue
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    def wait_log(text: str, count: int = 1) -> str:
+        end = time.time() + 3
+        log = ""
+        while time.time() < end:
+            log = (run / "kiosk.log").read_text(encoding="utf-8") if (run / "kiosk.log").exists() else ""
+            if log.count(text) >= count:
+                break
+            time.sleep(0.05)
+        return log
+
+    def open_app():
+        return call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper"},
+        )
+
+    cookie = f"stickllm_pair={pair}"
+    socks = []
+    try:
+        kiosk_ui = hold(local_port, "/api/ui/events")
+        desk_ui = hold(lan_port, "/api/ui/events", cookie)
+        socks += [kiosk_ui, desk_ui]
+        wait_log(f"STICKLLM_UI_EVENTS connect ip={desk}")
+
+        # Nobody used Agent from the LAN: the kiosk opens it, the desktop does not.
+        code, body = open_app()
+        assert code == 200 and body["screen"] == "kiosk" and body["reason"] == "no_lan_agent"
+        assert b"event: open_app" in read_for(kiosk_ui, b"event: open_app", 2)
+        assert b"event: open_app" not in read_for(desk_ui, b"event: open_app", 0.8)
+        log = wait_log("reason=no_lan_agent")
+        assert "phase=published id=minesweeper path=/apps/minesweeper/ subscribers=2 target=kiosk reason=no_lan_agent" in log
+
+        # The desktop used Agent on :5443: only the desktop gets the event.
+        gateway.AGENT_CLIENTS.note(desk)
+        code, body = open_app()
+        assert code == 200 and body["screen"] == "browser" and body["reason"] == "agent_lan"
+        assert b"event: open_app" in read_for(desk_ui, b"event: open_app", 2)
+        assert b"event: open_app" not in read_for(kiosk_ui, b"event: open_app", 0.8)
+        log = wait_log(f"target={desk} reason=agent_lan")
+        assert f"target={desk} reason=agent_lan" in log
+
+        # Kiosk has the app open, the desktop does not: fail fast, no kiosk fallback.
+        kiosk_app = hold(local_port, "/api/ui/events?app=minesweeper")
+        socks.append(kiosk_app)
+        wait_log("connect ip=127.0.0.1 app=minesweeper")
+        started = time.time()
+        code, body = call(
+            local_port,
+            "/api/ui/app-state",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper"},
+            timeout=4,
+        )
+        assert time.time() - started < 2
+        assert code == 409
+        assert body["error"] == "app_not_open" and body["screen"] == "browser"
+        assert desk not in body["message"]
+        assert f"STICKLLM_APP phase=state id=minesweeper ok=false error=app_not_open target={desk}" in wait_log(
+            "error=app_not_open"
+        )
+
+        # The desktop opens the app page: it alone gets the request and answers.
+        desk_app = hold(lan_port, "/api/ui/events?app=minesweeper", cookie)
+        socks.append(desk_app)
+        wait_log(f"connect ip={desk} app=minesweeper")
+        result = {}
+
+        def ask():
+            result["resp"] = call(
+                local_port,
+                "/api/ui/app-state",
+                method="POST",
+                auth_header="Bearer " + token,
+                body={"id": "minesweeper"},
+            )
+
+        asker = threading.Thread(target=ask, daemon=True)
+        asker.start()
+        data = read_for(desk_app, b"event: app_state", 3)
+        assert b"event: app_state" in data
+        assert b"event: app_state" not in read_for(kiosk_app, b"event: app_state", 0.5)
+        rest = data[data.find(b"event: app_state"):]
+        payload = json.loads(rest.split(b"data: ", 1)[1].split(b"\n", 1)[0].decode())
+        reply = {"id": "minesweeper", "req": payload["req"], "kind": "app_state", "ok": True, "state": {"grid": "#1"}}
+        code, _ = call(local_port, "/api/ui/app-reply", method="POST", body=reply)
+        assert code == 404
+        code, _ = call(lan_port, "/api/ui/app-reply", method="POST", body=reply, cookie=cookie)
+        assert code == 200
+        asker.join(5)
+        code, body = result["resp"]
+        assert code == 200 and body["state"]["grid"] == "#1"
+        assert f"STICKLLM_APP phase=state id=minesweeper ok=true target={desk}" in wait_log("ok=true")
+    finally:
+        for sock in socks:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        lan.shutdown()
+        local.shutdown()
+        lan.server_close()
+        local.server_close()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_app_pages_subscribe_with_their_id_and_remote_tries_a_window():
+    bridge = (ROOT / "ui" / "apps" / "stickllm-bridge.js").read_text(encoding="utf-8")
+    assert 'new EventSource("/api/ui/events?app=" + encodeURIComponent(id))' in bridge
+    app = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+    start = app.index("function openStickApp(id)")
+    body = app[start:app.index("function startOpenAppEvents", start)]
+    assert "window.open(url" in body
+    assert "if (kiosk)" not in body
+    assert "showOpenAppToast(id)" in body

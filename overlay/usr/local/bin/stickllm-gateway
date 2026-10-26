@@ -98,6 +98,78 @@ def csp_for_path(path: str) -> str:
     return CSP
 
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def ui_peer_key(ip: str) -> str:
+    """The stick's own screen is "kiosk"; a LAN browser is its IP."""
+    ip = str(ip or "")
+    return "kiosk" if ip in _LOOPBACK_HOSTS else ip
+
+
+def _target_log(target: str) -> str:
+    if not target:
+        return ""
+    safe = target if re.fullmatch(r"[0-9A-Fa-f:.]+|kiosk", target) else "-"
+    return f" target={safe}"
+
+
+# A LAN browser that used Agent on :5443 this recently (or still has an Agent
+# websocket open) is the screen open_app / app_state / app_act go to.
+AGENT_TARGET_WINDOW = 120.0
+
+
+class _AgentClients:
+    """Which LAN browser is driving Agent Zero right now. Loopback is never recorded."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seen: dict[str, float] = {}
+        self._ws: dict[str, int] = {}
+
+    def note(self, ip: str, now: float | None = None) -> None:
+        if not ip or ip in _LOOPBACK_HOSTS:
+            return
+        with self._lock:
+            self._seen[ip] = time.time() if now is None else now
+
+    def websocket(self, ip: str, delta: int) -> None:
+        if not ip or ip in _LOOPBACK_HOSTS:
+            return
+        with self._lock:
+            count = self._ws.get(ip, 0) + int(delta)
+            if count > 0:
+                self._ws[ip] = count
+            else:
+                self._ws.pop(ip, None)
+            self._seen[ip] = time.time()
+
+    def target(self, now: float | None = None) -> str:
+        current = time.time() if now is None else now
+        best, best_at = "", -1.0
+        with self._lock:
+            for ip, at in list(self._seen.items()):
+                live = self._ws.get(ip, 0) > 0 or current - at <= AGENT_TARGET_WINDOW
+                if not live:
+                    if current - at > 24 * 3600:
+                        self._seen.pop(ip, None)
+                    continue
+                if at > best_at:
+                    best, best_at = ip, at
+        return best
+
+
+AGENT_CLIENTS = _AgentClients()
+
+
+def ui_target(now: float | None = None) -> tuple[str, str]:
+    """(screen, reason): the LAN browser driving Agent, else the kiosk."""
+    lan = AGENT_CLIENTS.target(now)
+    if lan:
+        return lan, "agent_lan"
+    return "kiosk", "no_lan_agent"
+
+
 class _UiOpenBus:
     """Fan out open-app events to the kiosk and paired browsers on the UI SSE."""
 
@@ -110,24 +182,45 @@ class _UiOpenBus:
         self._subscribers = 0
         self._events: list[dict] = []
         self._pending: dict[str, dict] = {}
+        # One entry per open stream: {"key": "kiosk" | LAN IP, "app": "" | app id}.
+        # app is set by an app page (stickllm-bridge.js, ?app=<id>).
+        self._conns: dict[int, dict] = {}
+        self._conn_seq = 0
 
-    def connect(self, ip: str) -> int:
+    def connect(self, ip: str, app: str = "", key: str | None = None) -> int:
         with self._cond:
             self._subscribers += 1
-            count = self._subscribers
-        self._log_events("connect", ip)
-        return count
+            self._conn_seq += 1
+            conn = self._conn_seq
+            self._conns[conn] = {"key": ui_peer_key(ip) if key is None else key, "app": app}
+        self._log_events("connect", ip, app)
+        return conn
 
-    def disconnect(self, ip: str) -> None:
+    def disconnect(self, ip: str, conn: int | None = None) -> None:
         with self._cond:
             self._subscribers = max(0, self._subscribers - 1)
-        self._log_events("disconnect", ip)
+            info = self._conns.pop(conn, None) if conn is not None else None
+        self._log_events("disconnect", ip, (info or {}).get("app", ""))
+
+    def conn_alive(self, conn: int) -> bool:
+        with self._cond:
+            return conn in self._conns
+
+    def ui_conn_for(self, key: str) -> int | None:
+        """Newest main StickLLM tab stream (not an app page) for this screen."""
+        with self._cond:
+            found = [cid for cid, c in self._conns.items() if c["key"] == key and not c["app"]]
+        return max(found) if found else None
+
+    def has_app_page(self, key: str, app_id: str) -> bool:
+        with self._cond:
+            return any(c["key"] == key and c["app"] == app_id for c in self._conns.values())
 
     def subscriber_count(self) -> int:
         with self._cond:
             return self._subscribers
 
-    def publish(self, app_id: str) -> dict:
+    def publish(self, app_id: str, target: str = "", conn: int | None = None, reason: str = "") -> dict:
         event = {
             "id": app_id,
             "path": f"/apps/{app_id}/",
@@ -135,6 +228,9 @@ class _UiOpenBus:
             "published_at": time.time(),
         }
         event["kind"] = "open_app"
+        # Only the screen that is driving Agent gets the event ("" = everyone).
+        event["target"] = target
+        event["conn"] = conn
         with self._cond:
             self._seq += 1
             event["seq"] = self._seq
@@ -143,17 +239,25 @@ class _UiOpenBus:
             del self._events[:-40]
             subscribers = self._subscribers
             self._cond.notify_all()
-        self._log(app_id, "published", subscribers)
+        self._log(app_id, "published", subscribers, target=target, reason=reason)
         return event
 
-    def request_app(self, kind: str, app_id: str, action: dict | None = None, timeout: float = 6.0) -> dict:
+    def request_app(
+        self,
+        kind: str,
+        app_id: str,
+        action: dict | None = None,
+        timeout: float = 6.0,
+        target: str = "",
+    ) -> dict:
         req_id = secrets.token_hex(8)
-        holder = {"done": threading.Event(), "result": None}
+        holder = {"done": threading.Event(), "result": None, "target": target}
         event = {
             "kind": kind,
             "id": app_id,
             "req": req_id,
             "published_at": time.time(),
+            "target": target,
         }
         if action is not None:
             event["action"] = action
@@ -168,21 +272,34 @@ class _UiOpenBus:
             with self._cond:
                 self._pending.pop(req_id, None)
             phase = "act" if kind == "app_act" else "state"
-            self._write_log(f"STICKLLM_APP phase={phase} id={app_id} ok=false\n")
-            return {"ok": False, "error": "timeout", "id": app_id, "req": req_id}
+            self._write_log(
+                f"STICKLLM_APP phase={phase} id={app_id} ok=false error=timeout{_target_log(target)}\n"
+            )
+            return {
+                "ok": False,
+                "error": "timeout",
+                "id": app_id,
+                "req": req_id,
+                "message": "The app page did not answer in time. Make sure its tab is in front, then try again.",
+            }
         result = holder["result"] if isinstance(holder["result"], dict) else {"ok": False, "error": "bad_reply"}
         return result
 
-    def reply_app(self, req_id: str, result: dict) -> bool:
+    def reply_app(self, req_id: str, result: dict, key: str | None = None) -> bool:
         with self._cond:
-            holder = self._pending.pop(str(req_id), None)
-        if holder is None:
-            return False
+            holder = self._pending.get(str(req_id))
+            # A reply only counts from the screen the request was sent to.
+            if holder is None or (key is not None and holder.get("target") and holder["target"] != key):
+                return False
+            self._pending.pop(str(req_id), None)
         holder["result"] = result
         ok = bool(result.get("ok"))
         app_id = str(result.get("id") or "")
         phase = "act" if result.get("kind") == "app_act" else "state"
-        self._write_log(f"STICKLLM_APP phase={phase} id={app_id} ok={'true' if ok else 'false'}\n")
+        self._write_log(
+            f"STICKLLM_APP phase={phase} id={app_id} ok={'true' if ok else 'false'}"
+            f"{_target_log(holder.get('target') or '')}\n"
+        )
         holder["done"].set()
         return True
 
@@ -276,15 +393,26 @@ class _UiOpenBus:
                     return None
                 self._cond.wait(min(remain, 1.0))
 
-    def _log(self, app_id: str, phase: str, subscribers: int | None = None) -> None:
+    def _log(
+        self,
+        app_id: str,
+        phase: str,
+        subscribers: int | None = None,
+        target: str = "",
+        reason: str = "",
+    ) -> None:
         extra = f" subscribers={int(subscribers)}" if subscribers is not None else ""
+        extra += _target_log(target)
+        if reason:
+            extra += f" reason={reason}"
         self._write_log(
             f"STICKLLM_OPEN_APP phase={phase} id={app_id} path=/apps/{app_id}/{extra}\n"
         )
 
-    def _log_events(self, phase: str, ip: str) -> None:
+    def _log_events(self, phase: str, ip: str, app: str = "") -> None:
         safe_ip = ip if re.fullmatch(r"[0-9A-Fa-f:.]+", ip or "") else "-"
-        self._write_log(f"STICKLLM_UI_EVENTS {phase} ip={safe_ip}\n")
+        extra = f" app={app}" if app and re.fullmatch(r"[a-z]{1,32}", app) else ""
+        self._write_log(f"STICKLLM_UI_EVENTS {phase} ip={safe_ip}{extra}\n")
 
     def _write_log(self, line: str) -> None:
         try:
@@ -2021,11 +2149,23 @@ class Handler(SimpleHTTPRequestHandler):
             return False
         return True
 
+    def _ui_client_ip(self) -> str:
+        return (self.client_address[0] if self.client_address else "") or ""
+
+    def _ui_screen_key(self) -> str:
+        """"kiosk" for the stick's own screen, else the LAN browser's IP."""
+        return "kiosk" if self._is_loopback() else (self._ui_client_ip() or "-")
+
     def _stream_ui_events(self) -> None:
         if not self._ui_stream_allowed():
             return
-        ip = (self.client_address[0] if self.client_address else "") or "-"
-        UI_OPEN.connect(ip)
+        ip = self._ui_client_ip() or "-"
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        app = str((query.get("app") or [""])[0])
+        if not re.fullmatch(r"[a-z]{1,32}", app):
+            app = ""
+        key = self._ui_screen_key()
+        conn = UI_OPEN.connect(ip, app, key)
         try:
             try:
                 self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -2045,7 +2185,17 @@ class Handler(SimpleHTTPRequestHandler):
 
             def send_event(event: dict) -> None:
                 kind = str(event.get("kind") or "open_app")
+                target = str(event.get("target") or "")
+                if target and target != key:
+                    return
                 if kind == "open_app":
+                    if app:
+                        return
+                    # One StickLLM tab per screen opens the app: the newest one,
+                    # unless it went away before the event was sent.
+                    want = event.get("conn")
+                    if want and want != conn and UI_OPEN.conn_alive(int(want)):
+                        return
                     payload = {
                         "id": event["id"],
                         "path": event["path"],
@@ -2074,7 +2224,7 @@ class Handler(SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
         finally:
-            UI_OPEN.disconnect(ip)
+            UI_OPEN.disconnect(ip, conn)
 
     def _proxy_files(self, method: str) -> None:
         if not self._desktop_allowed():
@@ -2158,6 +2308,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self._agent_refused():
             return
+        if not self._is_loopback():
+            AGENT_CLIENTS.note(self._ui_client_ip())
         upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
         try:
             mod = agent_lib()
@@ -2290,12 +2442,17 @@ class Handler(SimpleHTTPRequestHandler):
             except OSError:
                 pass
 
+        peer = "" if self._is_loopback() else self._ui_client_ip()
+        AGENT_CLIENTS.websocket(peer, +1)
         left = threading.Thread(target=_pump, args=(self.connection, sock), daemon=True)
         right = threading.Thread(target=_pump, args=(sock, self.connection), daemon=True)
         left.start()
         right.start()
-        left.join()
-        right.join()
+        try:
+            left.join()
+            right.join()
+        finally:
+            AGENT_CLIENTS.websocket(peer, -1)
         try:
             sock.close()
         except OSError:
@@ -2623,7 +2780,13 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 self._json(400, {"ok": False, "error": "bad_id"})
                 return
-            event = UI_OPEN.publish(str(app_id))
+            target, reason = ui_target()
+            conn = UI_OPEN.ui_conn_for(target)
+            if target != "kiosk" and conn is None:
+                # The browser driving Agent has no StickLLM tab open. Do not
+                # put the app on the kiosk instead; app_state explains why.
+                reason = "no_ui_tab"
+            event = UI_OPEN.publish(str(app_id), target=target, conn=conn, reason=reason)
             self._json(
                 200,
                 {
@@ -2631,6 +2794,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "id": event["id"],
                     "path": event["path"],
                     "window": event["window"],
+                    "screen": "kiosk" if target == "kiosk" else "browser",
+                    "reason": reason,
                 },
             )
             return
@@ -2657,10 +2822,36 @@ class Handler(SimpleHTTPRequestHandler):
             if kind == "app_act" and not isinstance(action, dict):
                 self._json(400, {"ok": False, "error": "bad_action"})
                 return
+            target, _reason = ui_target()
+            if not UI_OPEN.has_app_page(target, str(app_id)):
+                # Fail fast instead of waiting for a reply that cannot come.
+                # Never fall back to the other screen: that is how a game ends
+                # up on the kiosk while the user watches their own browser.
+                phase = "act" if kind == "app_act" else "state"
+                UI_OPEN._write_log(
+                    f"STICKLLM_APP phase={phase} id={app_id} ok=false error=app_not_open{_target_log(target)}\n"
+                )
+                where = "the stick's screen" if target == "kiosk" else "the user's browser"
+                self._json(
+                    409,
+                    {
+                        "ok": False,
+                        "error": "app_not_open",
+                        "id": str(app_id),
+                        "screen": "kiosk" if target == "kiosk" else "browser",
+                        "message": (
+                            f"{app_id} is not open on {where}. Call open_app with id {app_id} first. "
+                            "If nothing opened, ask the user to keep a StickLLM tab open, allow pop-ups "
+                            "for StickLLM, or click Open on the StickLLM toast, then try again."
+                        ),
+                    },
+                )
+                return
             result = UI_OPEN.request_app(
                 kind,
                 str(app_id),
                 action if kind == "app_act" else None,
+                target=target,
             )
             code = 200 if result.get("ok") else 504
             self._json(code, result)
@@ -2690,7 +2881,7 @@ class Handler(SimpleHTTPRequestHandler):
                 reply["state"] = req.get("state")
             if req.get("error"):
                 reply["error"] = str(req.get("error"))[:300]
-            if not UI_OPEN.reply_app(str(req.get("req") or ""), reply):
+            if not UI_OPEN.reply_app(str(req.get("req") or ""), reply, self._ui_screen_key()):
                 self._json(404, {"ok": False, "error": "unknown_req"})
                 return
             self._json(200, {"ok": True})
