@@ -209,6 +209,44 @@ def test_background_daemons_do_not_keep_the_install_lock():
     daemon = text.split("ensure_dockerd()", 1)[1].split("\nimage_present()", 1)[0]
     assert '9>&- 2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" 9>&- &' in daemon
 
+def test_install_and_container_run_in_their_own_units():
+    """A process started by the gateway lives in the stickllm-ui cgroup.
+
+    Restarting stickllm-ui then killed dockerd and Agent Zero, and
+    stickllm-agent.service read inactive while the installer ran the container.
+    """
+    units = ROOT / "overlay" / "etc" / "systemd" / "system"
+    unit = (units / "stickllm-agent-install.service").read_text(encoding="utf-8")
+    assert "Type=oneshot" in unit
+    assert "ExecStart=/usr/local/bin/stickllm-agent install" in unit
+    assert "ConditionPathIsMountPoint=/var/lib/stickllm/vault" in unit
+    assert "[Install]" not in unit, "the installer is started on demand only"
+    agent_unit = (units / "stickllm-agent.service").read_text(encoding="utf-8")
+    assert "ExecStart=/usr/local/bin/stickllm-agent run" in agent_unit
+    hook = (ROOT / "live-build" / "hooks" / "normal" / "0100-stickllm-setup.hook.chroot").read_text(
+        encoding="utf-8"
+    )
+    assert "systemctl enable stickllm-agent.service" in hook
+    build = (ROOT / "scripts" / "lib" / "docker-build-live.sh").read_text(encoding="utf-8")
+    assert "etc/systemd/system/stickllm-agent-install.service" in build
+
+    gateway = GATEWAY.read_text(encoding="utf-8")
+    body = gateway.split("def _agent_install(self)", 1)[1].split("\n    def ", 1)[0]
+    assert '["systemctl", "start", "--no-block", "stickllm-agent-install.service"]' in body
+    assert body.index("stickllm-agent-install.service") < body.index("subprocess.Popen(")
+
+    text = _script()
+    install = text.split("cmd_install()", 1)[1].split("\nuse_systemd()", 1)[0]
+    tail = install.split("--state pulled", 1)[1]
+    assert tail.index("use_systemd") < tail.index("stop_dockerd")
+    assert tail.index("stop_dockerd") < tail.index("systemctl restart stickllm-agent.service")
+    assert tail.index("systemctl restart stickllm-agent.service") < tail.index("cmd_run_container")
+    start = text.split("cmd_start()", 1)[1].split("\nusage()", 1)[0]
+    assert "use_systemd" in start and "systemctl start stickllm-agent.service" in start
+    helper = text.split("use_systemd()", 1)[1].split("\n}", 1)[0]
+    assert "STICKLLM_AGENT_NO_SYSTEMD" in helper and "/run/systemd/system" in helper
+
+
 def test_agent_page_is_not_rewritten_under_agent():
     agent = _load(AGENT, "stickllm_agent_norewrite")
     assert not hasattr(agent, "rewrite_text")

@@ -444,7 +444,25 @@ cmd_install() {
     docker_cli tag "$previous" stickllm-agent-zero:rollback
   fi
   "$PYBIN" "$LIB" write-status --state pulled --image_present true --low_space false >/dev/null || true
+  if use_systemd; then
+    # Hand the container to stickllm-agent.service. It survives a stickllm-ui
+    # restart and systemctl reports it. A dockerd this install started lives
+    # in the installer's cgroup, so stop it; the service starts its own.
+    if ! systemctl is-active --quiet stickllm-agent.service; then
+      stop_dockerd
+    fi
+    exec 9>&-
+    systemctl restart stickllm-agent.service
+    exit 0
+  fi
   cmd_run_container
+}
+
+# stickllm-agent.service owns dockerd and the container when systemd runs.
+use_systemd() {
+  [[ -z "${STICKLLM_AGENT_NO_SYSTEMD:-}" ]] || return 1
+  [[ -d /run/systemd/system ]] || return 1
+  command -v systemctl >/dev/null 2>&1
 }
 
 stop_container() {
@@ -563,7 +581,7 @@ cmd_start() {
     refuse_locked
     exit 0
   fi
-  if [[ -z "${STICKLLM_AGENT_NO_SYSTEMD:-}" ]] && command -v systemctl >/dev/null 2>&1; then
+  if use_systemd; then
     systemctl start stickllm-agent.service
     exit 0
   fi

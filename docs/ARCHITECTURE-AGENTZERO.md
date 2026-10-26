@@ -15,6 +15,10 @@ The `stickllm-agentzero` branch runs Agent Zero beside StickLLM. The image is no
 
 The container has `no-new-privileges` and `NVIDIA_VISIBLE_DEVICES=void`. It does not take GPU memory from llama. Host is `172.30.0.1`. The container is `172.30.0.2`. nftables allows that bridge to reach only `172.30.0.1` tcp `8080`, `8081`, and `8082`.
 
+## Units
+
+`stickllm-agent.service` owns `dockerd`, the bridges, and the container (`stickllm-agent run`). It is enabled, but skipped at boot until the vault is mounted. Unlock runs `stickllm-agent start`, which is `systemctl start stickllm-agent.service`. The Apps page install runs `systemctl start --no-block stickllm-agent-install.service` (oneshot `stickllm-agent install`). After the smoke test the installer stops any `dockerd` it started and runs `systemctl restart stickllm-agent.service`. Nothing Agent Zero needs stays in the `stickllm-ui` cgroup, so restarting the UI (the vault unlock does this) leaves Agent Zero running, and `systemctl status stickllm-agent` shows it. The gateway falls back to running `stickllm-agent install` directly only when `systemctl` fails.
+
 ## Ports
 
 | Port | Who |

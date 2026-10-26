@@ -1742,16 +1742,33 @@ class Handler(SimpleHTTPRequestHandler):
         if not vault_unlocked():
             self._json(403, {"ok": False, "error": "Unlock vault to use Agent"})
             return
+        # Own unit, not this process: anything started here lives in the
+        # stickllm-ui cgroup and dies when the UI restarts.
         try:
-            subprocess.Popen(
-                ["/usr/local/bin/stickllm-agent", "install"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
+            started = (
+                subprocess.run(
+                    ["systemctl", "start", "--no-block", "stickllm-agent-install.service"],
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                ).returncode
+                == 0
             )
-        except OSError:
-            self._json(500, {"ok": False, "error": "Could not start the installer"})
-            return
+        except (OSError, subprocess.SubprocessError):
+            started = False
+        if not started:
+            # No systemd (tests, chroot). The installer still hands the
+            # container to stickllm-agent.service when systemctl exists.
+            try:
+                subprocess.Popen(
+                    ["/usr/local/bin/stickllm-agent", "install"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError:
+                self._json(500, {"ok": False, "error": "Could not start the installer"})
+                return
         if self._is_agent_server():
             try:
                 mod = agent_lib()
