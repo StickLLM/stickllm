@@ -57,7 +57,6 @@ LLAMA_BASE = f"http://{LLAMA_BRIDGE_HOST}:{LLAMA_BRIDGE_PORT}/v1"
 # Directory ids under ui/apps. The desktop label for minesweeper is minesweep.
 APPS_URL_IDS = (
     "minesweeper",
-    "solitaire",
     "tetris",
     "notepad",
     "calculator",
@@ -67,7 +66,7 @@ APPS_URL_IDS = (
 )
 APPS_NOTE = (
     "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
-    "(minesweeper, solitaire, tetris, notepad, calculator, files, media, monitor)."
+    "(minesweeper, tetris, notepad, calculator, files, media, monitor)."
 )
 OPEN_APP_RULE = (
     "When the user says open/start/show an app, use open_app, not the browser tool."
@@ -637,7 +636,7 @@ def apps_skill_text() -> str:
         "---\n"
         "name: stickllm-apps\n"
         "description: Play StickLLM apps on the user's screen with open_app, "
-        "app_state, and app_act. URL ids are minesweeper, solitaire, tetris, "
+        "app_state, and app_act. URL ids are minesweeper, tetris, "
         "notepad, calculator, files, media, and monitor. The desktop label "
         "minesweep is URL id minesweeper.\n"
         "---\n\n"

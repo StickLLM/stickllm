@@ -850,7 +850,7 @@ def test_apps_prompt_names_url_ids(tmp_path):
     ).read_text(encoding="utf-8")
     note = (
         "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
-        "(minesweeper, solitaire, tetris, notepad, calculator, files, media, monitor)."
+        "(minesweeper, tetris, notepad, calculator, files, media, monitor)."
     )
     rule = "When the user says open/start/show an app, use open_app, not the browser tool."
     assert note in prompt
@@ -905,9 +905,10 @@ def test_apps_prompt_names_url_ids(tmp_path):
 def test_open_app_allowlist_and_token(tmp_path):
     agent = _load(AGENT, "stickllm_agent_open_app")
     assert agent.open_app_id_ok("minesweeper") is True
-    for good in ("files", "media", "monitor", "calculator", "solitaire", "tetris", "notepad"):
+    for good in ("files", "media", "monitor", "calculator", "tetris", "notepad"):
         assert agent.open_app_id_ok(good) is True
     for bad in (
+        "solitaire",
         "minesweep",
         "Minesweeper",
         "../minesweeper",
