@@ -17,8 +17,12 @@ import os
 import shutil
 from pathlib import Path
 
-RECORD_PATH = Path(os.environ.get("STICKLLM_APPS_RECORD", "/var/lib/stickllm/apps-installed.json"))
-INSTALL_ROOT = Path(os.environ.get("STICKLLM_APPS_ROOT", "/var/lib/stickllm/apps"))
+# /var/lib/stickllm/apps is on the live overlay and disappears at reboot.
+# Catalog installs go to a durable disk instead. STICKLLM_APPS_ROOT and
+# STICKLLM_APPS_RECORD still override that for tests and a manual path.
+DATA_MNT = Path(os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data"))
+VAULT_MNT = Path(os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault"))
+RAM_INSTALL_ROOT = Path("/var/lib/stickllm/apps")
 
 # installer is None until that app has a real installer. A truthy value is only
 # a flag for tests of the uninstall scope. This module never runs a command.
@@ -449,6 +453,82 @@ def resource_warning(app: dict, resources: dict | None = None) -> str:
     return " ".join(parts) + " You can still install."
 
 
+def _path_mounted(path: Path) -> bool:
+    """True when path is a real mount. A plain directory does not count."""
+    mounts = os.environ.get("STICKLLM_MOUNTS_FILE", "").strip()
+    if mounts:
+        try:
+            text = Path(mounts).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        target = str(path)
+        for line in text.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].replace("\\040", " ") == target:
+                return True
+        return False
+    try:
+        return os.path.ismount(path)
+    except OSError:
+        return False
+
+
+def _ssd_apps_dir() -> Path | None:
+    """Host-SSD apps folder beside the recorded models directory, if any."""
+    import importlib.util
+
+    path = Path(__file__).resolve().with_name("stickllm_files.py")
+    spec = importlib.util.spec_from_file_location("stickllm_files_apps_root", path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    found = mod.ssd_apps_dir()
+    return found if isinstance(found, Path) else None
+
+
+def persistent_install_root() -> Path | None:
+    """Durable catalog directory. Never the RAM overlay under /var/lib/stickllm/apps.
+
+    Order: the host SSD apps folder beside models, then the USB DATA partition,
+    then the unlocked vault. docs/APPS.md names DATA and the vault; the host
+    SSD folder is the same durable disk the file manager already calls SSD apps.
+    """
+    override = os.environ.get("STICKLLM_APPS_ROOT", "").strip()
+    if override:
+        return Path(override)
+    ssd = _ssd_apps_dir()
+    if ssd is not None and ssd != RAM_INSTALL_ROOT:
+        return ssd
+    if _path_mounted(DATA_MNT):
+        return DATA_MNT / "apps"
+    if _path_mounted(VAULT_MNT):
+        return VAULT_MNT / "apps"
+    return None
+
+
+def resolve_store(
+    record_path: Path | None = None,
+    install_root: Path | None = None,
+) -> tuple[Path, Path | None]:
+    """Record file and install directory. The directory is None when no disk is mounted."""
+    if install_root is not None:
+        root: Path | None = Path(install_root)
+    else:
+        root = persistent_install_root()
+    if record_path is not None:
+        path = Path(record_path)
+    else:
+        override = os.environ.get("STICKLLM_APPS_RECORD", "").strip()
+        if override:
+            path = Path(override)
+        elif root is not None:
+            path = Path(root).parent / "apps-installed.json"
+        else:
+            path = Path("/run/stickllm/apps-installed.json")
+    return path, root
+
+
 def load_record(path: Path) -> dict:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -524,7 +604,7 @@ def _public_app(app: dict, record: dict) -> dict:
 
 
 def catalog_document(record_path: Path | None = None, catalog: tuple | list | None = None) -> dict:
-    path = RECORD_PATH if record_path is None else Path(record_path)
+    path, _root = resolve_store(record_path, None)
     rows = CATALOG if catalog is None else catalog
     record = load_record(path)
     apps = [_public_app(app, record) for app in rows]
@@ -567,9 +647,24 @@ def install_app(
     catalog: tuple | list | None = None,
     resources: dict | None = None,
 ) -> dict:
-    """Install one catalog app. Apps with no installer stay not installed."""
-    path = RECORD_PATH if record_path is None else Path(record_path)
-    root = INSTALL_ROOT if install_root is None else Path(install_root)
+    """Install one catalog app. Apps with no installer stay not installed.
+
+    The directory is the host SSD, USB DATA, or the unlocked vault.
+    /var/lib/stickllm/apps is not used: that path is the live overlay.
+    """
+    path, root = resolve_store(record_path, install_root)
+    if root is None:
+        return _fail(
+            "No data partition or unlocked vault is available. Nothing was installed.",
+            error="no_durable_disk",
+            state="not_installed",
+        )
+    if Path(root) == RAM_INSTALL_ROOT and not os.environ.get("STICKLLM_APPS_ROOT", "").strip():
+        return _fail(
+            "Refusing to install onto the live overlay. Nothing was installed.",
+            error="no_durable_disk",
+            state="not_installed",
+        )
     rows = CATALOG if catalog is None else catalog
     app = find_app(str(app_id or ""), rows)
     if app is None:
@@ -607,6 +702,8 @@ def install_app(
         "message": message,
         "warning": warning,
         "deleted": [],
+        "root": str(root),
+        "record": str(path),
     }
 
 
@@ -629,8 +726,13 @@ def uninstall_app(
     catalog: tuple | list | None = None,
 ) -> dict:
     """Remove one app this page installed. Other files are left alone."""
-    path = RECORD_PATH if record_path is None else Path(record_path)
-    root = INSTALL_ROOT if install_root is None else Path(install_root)
+    path, root = resolve_store(record_path, install_root)
+    if root is None:
+        return _fail(
+            "No data partition or unlocked vault is available. Nothing was removed.",
+            error="no_durable_disk",
+            state="not_installed",
+        )
     rows = CATALOG if catalog is None else catalog
     app = find_app(str(app_id or ""), rows)
     if app is None:

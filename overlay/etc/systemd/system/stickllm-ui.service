@@ -21,7 +21,10 @@ RestartSec=2
 ProtectSystem=full
 ProtectHome=true
 # "-" = optional if absent at unit load; console-setup also mkdirs these.
-ReadWritePaths=/run/stickllm -/var/lib/stickllm /tmp
+# Host SSD and USB DATA are the durable app install disks. The vault mount
+# stays writable because it is under /var/lib/stickllm. /var/lib/stickllm/apps
+# itself is the live overlay and is not an install target.
+ReadWritePaths=/run/stickllm -/var/lib/stickllm /tmp -/mnt/stickllm-host -/mnt/stickllm-data
 NoNewPrivileges=true
 
 [Install]

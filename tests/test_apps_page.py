@@ -369,3 +369,73 @@ def test_ui_refuses_a_successful_install_without_the_server_flag():
     source = APPS.read_text(encoding="utf-8")
     assert "subprocess" not in source
     assert "os.system" not in source
+    assert "persistent_install_root" in source
+    assert 'INSTALL_ROOT = Path(os.environ.get("STICKLLM_APPS_ROOT"' not in source
+
+
+def _marker_catalog():
+    return (
+        {
+            "id": "persist-probe",
+            "name": "Persist probe",
+            "installer": "marker",
+        },
+    )
+
+
+def test_install_lands_on_the_host_ssd_apps_dir(tmp_path, monkeypatch):
+    host = tmp_path / "host"
+    models = host / "disk" / "models"
+    models.mkdir(parents=True)
+    mounts = tmp_path / "mounts"
+    mounts.write_text(f"ext4 {host} ext4 rw 0 0\n", encoding="utf-8")
+    models_file = tmp_path / "models-dir.json"
+    models_file.write_text(json.dumps({"path": str(models)}), encoding="utf-8")
+    monkeypatch.setenv("STICKLLM_HOST_MNT", str(host))
+    monkeypatch.setenv("STICKLLM_MOUNTS_FILE", str(mounts))
+    monkeypatch.setenv("STICKLLM_MODELS_DIR_FILE", str(models_file))
+    monkeypatch.setenv("STICKLLM_VAULT_MNT", str(tmp_path / "vault"))
+    monkeypatch.setenv("STICKLLM_DATA_MNT", str(tmp_path / "data"))
+    monkeypatch.delenv("STICKLLM_APPS_ROOT", raising=False)
+    monkeypatch.delenv("STICKLLM_APPS_RECORD", raising=False)
+    monkeypatch.delenv("STICKLLM_SSD_APPS", raising=False)
+    monkeypatch.delenv("STICKLLM_MODELS_DIR", raising=False)
+    apps = _load()
+    result = apps.install_app("persist-probe", catalog=_marker_catalog())
+    assert result["ok"] is True
+    assert result["root"] == str(host / "disk" / "apps")
+    assert (host / "disk" / "apps" / "persist-probe").is_dir()
+    record = json.loads((host / "disk" / "apps-installed.json").read_text(encoding="utf-8"))
+    assert record["persist-probe"]["installed_by"] == "apps"
+    assert not str(result["root"]).endswith("/var/lib/stickllm/apps")
+
+
+def test_install_falls_back_to_data_then_vault_and_refuses_ram(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    vault = tmp_path / "vault"
+    data.mkdir()
+    vault.mkdir()
+    mounts = tmp_path / "mounts"
+    mounts.write_text(f"ext4 {data} ext4 rw 0 0\n", encoding="utf-8")
+    missing_models = tmp_path / "no-models.json"
+    monkeypatch.setenv("STICKLLM_HOST_MNT", str(tmp_path / "host"))
+    monkeypatch.setenv("STICKLLM_MOUNTS_FILE", str(mounts))
+    monkeypatch.setenv("STICKLLM_MODELS_DIR_FILE", str(missing_models))
+    monkeypatch.setenv("STICKLLM_DATA_MNT", str(data))
+    monkeypatch.setenv("STICKLLM_VAULT_MNT", str(vault))
+    monkeypatch.delenv("STICKLLM_APPS_ROOT", raising=False)
+    monkeypatch.delenv("STICKLLM_APPS_RECORD", raising=False)
+    monkeypatch.delenv("STICKLLM_SSD_APPS", raising=False)
+    monkeypatch.delenv("STICKLLM_MODELS_DIR", raising=False)
+    apps = _load()
+    on_data = apps.install_app("persist-probe", catalog=_marker_catalog())
+    assert on_data["ok"] is True
+    assert on_data["root"] == str(data / "apps")
+    mounts.write_text(f"ext4 {vault} ext4 rw 0 0\n", encoding="utf-8")
+    on_vault = apps.install_app("persist-probe", catalog=_marker_catalog())
+    assert on_vault["root"] == str(vault / "apps")
+    mounts.write_text("", encoding="utf-8")
+    refused = apps.install_app("persist-probe", catalog=_marker_catalog())
+    assert refused["ok"] is False
+    assert refused["error"] == "no_durable_disk"
+    assert not (Path("/var/lib/stickllm/apps") / "persist-probe").exists()
