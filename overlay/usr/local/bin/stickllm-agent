@@ -25,6 +25,37 @@ if [[ -z "${PYBIN}" || ! -f "$LIB" ]]; then
   exit 1
 fi
 
+# The Apps page installer is started by stickllm-gateway. stickllm-ui runs
+# with ProtectSystem/ProtectHome, so it has a private mount namespace.
+# dockerd mounts each container rootfs itself, but the system containerd and
+# runc run in the host namespace. A dockerd started from the gateway left them
+# an empty rootfs: "stat /bin/sh: no such file or directory" and "reading
+# from a closed fifo". Run in PID 1's mount namespace so dockerd, containerd
+# and runc see the same mounts.
+mount_ns() {
+  readlink "/proc/$1/ns/mnt" 2>/dev/null || true
+}
+
+enter_host_mount_ns() {
+  [[ "$(id -u)" -eq 0 ]] || return 0
+  [[ -z "${STICKLLM_AGENT_HOST_NS:-}" ]] || return 0
+  local self host
+  self="$(mount_ns self)"
+  host="$(mount_ns 1)"
+  if [[ -z "$self" || -z "$host" || "$self" == "$host" ]]; then
+    return 0
+  fi
+  if command -v nsenter >/dev/null 2>&1 && nsenter --mount=/proc/1/ns/mnt -- true >/dev/null 2>&1; then
+    export STICKLLM_AGENT_HOST_NS=1
+    exec nsenter --mount=/proc/1/ns/mnt -- "$(readlink -f "$0")" "$@"
+  fi
+  echo "stickllm-agent: could not enter the host mount namespace" >&2
+}
+
+case "${1:-}" in
+  start|run|stop|install) enter_host_mount_ns "$@" ;;
+esac
+
 docker_cli() {
   DOCKER_HOST="unix://${SOCK}" docker "$@"
 }
@@ -76,6 +107,34 @@ dockerd_persist_log() {
   printf '%s\n' "$dest"
 }
 
+# dockerd may not be a child of this shell, so poll the pid instead of wait(1).
+stop_dockerd() {
+  if [[ -f "$PIDFILE" ]]; then
+    local pid i
+    pid="$(tr -cd '0-9' <"$PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      for i in $(seq 1 60); do
+        kill -0 "$pid" >/dev/null 2>&1 || break
+        sleep 0.5
+      done
+    fi
+    rm -f "$PIDFILE"
+  fi
+  if [[ -S "$SOCK" ]]; then
+    rm -f "$SOCK" || true
+  fi
+}
+
+# True when the running dockerd shares this mount namespace (the host one).
+dockerd_in_this_ns() {
+  local pid
+  [[ -f "$PIDFILE" ]] || return 0
+  pid="$(tr -cd '0-9' <"$PIDFILE" || true)"
+  [[ -n "${pid}" ]] || return 0
+  [[ "$(mount_ns "$pid")" == "$(mount_ns self)" ]]
+}
+
 ensure_dockerd() {
   # Gate again immediately before the daemon. A locked vault never reaches dockerd.
   if ! "$PYBIN" "$LIB" docker-may-start; then
@@ -91,12 +150,18 @@ ensure_dockerd() {
   local persist_log
   persist_log="$(dockerd_persist_log)"
   if [[ -S "$SOCK" ]] && docker_cli info >/dev/null 2>&1; then
-    # The daemon is already up. Copy the runtime log once if this boot has
-    # not yet written the durable file.
-    if [[ -f /run/stickllm/agent-dockerd.log && ! -s "$persist_log" ]]; then
-      cp -f /run/stickllm/agent-dockerd.log "$persist_log"
+    if dockerd_in_this_ns; then
+      # The daemon is already up. Copy the runtime log once if this boot has
+      # not yet written the durable file.
+      if [[ -f /run/stickllm/agent-dockerd.log && ! -s "$persist_log" ]]; then
+        cp -f /run/stickllm/agent-dockerd.log "$persist_log"
+      fi
+      return 0
     fi
-    return 0
+    # Started from the gateway's private mount namespace by an older script.
+    # containerd cannot see its rootfs mounts, so start it again here.
+    echo "stickllm-agent: restarting dockerd in the host mount namespace" >&2
+    stop_dockerd
   fi
   if ! command -v dockerd >/dev/null 2>&1; then
     echo "stickllm-agent: dockerd is not installed" >&2
@@ -113,7 +178,7 @@ ensure_dockerd() {
     --iptables=false \
     --ip6tables=false \
     --live-restore=false \
-    2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" &
+    9>&- 2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" 9>&- &
   local i
   for i in $(seq 1 60); do
     if docker_cli info >/dev/null 2>&1; then
@@ -200,7 +265,7 @@ ensure_relay() {
       pid="$(tr -cd '0-9' <"$RELAY_PIDFILE" || true)"
     fi
     if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-      "$PYBIN" "$LIB" llama-relay >/var/log/stickllm-agent-relay.log 2>&1 &
+      "$PYBIN" "$LIB" llama-relay >/var/log/stickllm-agent-relay.log 2>&1 9>&- &
       echo $! >"$RELAY_PIDFILE"
     fi
     if "$PYBIN" - <<'PY'
@@ -233,7 +298,7 @@ ensure_apps() {
       pid="$(tr -cd '0-9' <"$APPS_PIDFILE" || true)"
     fi
     if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-      "$PYBIN" "$LIB" apps-bridge >/var/log/stickllm-agent-apps.log 2>&1 &
+      "$PYBIN" "$LIB" apps-bridge >/var/log/stickllm-agent-apps.log 2>&1 9>&- &
       echo $! >"$APPS_PIDFILE"
     fi
     if "$PYBIN" - <<'PY'
@@ -267,7 +332,7 @@ ensure_open_app() {
       pid="$(tr -cd '0-9' <"$OPEN_APP_PIDFILE" || true)"
     fi
     if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-      "$PYBIN" "$LIB" open-app-bridge >/var/log/stickllm-agent-open-app.log 2>&1 &
+      "$PYBIN" "$LIB" open-app-bridge >/var/log/stickllm-agent-open-app.log 2>&1 9>&- &
       echo $! >"$OPEN_APP_PIDFILE"
     fi
     if "$PYBIN" - <<'PY'
@@ -334,10 +399,19 @@ cmd_install() {
     exit 0
   fi
   mkdir -p /run/stickllm
+  # Daemons started below close fd 9 (9>&-) so they do not keep this lock.
   exec 9>/run/stickllm/agent-install.lock
   if ! flock -n 9; then
-    echo "install already running" >&2
-    exit 0
+    # An older script let dockerd inherit the lock. If no other install is
+    # running and that dockerd is in the wrong mount namespace, stop it.
+    if ! pgrep -f 'stickllm-agent install' | grep -qvx "$$" && ! dockerd_in_this_ns; then
+      echo "stickllm-agent: stopping a dockerd that holds the install lock" >&2
+      stop_dockerd
+    fi
+    if ! flock -w 30 9; then
+      echo "install already running" >&2
+      exit 0
+    fi
   fi
   if ! resolve_docker_dir; then
     exit 0
@@ -480,18 +554,7 @@ cmd_stop() {
   stop_apps || true
   stop_open_app || true
   "$PYBIN" "$LIB" nft-delete >/dev/null 2>&1 || true
-  if [[ -f "$PIDFILE" ]]; then
-    local pid
-    pid="$(tr -cd '0-9' <"$PIDFILE" || true)"
-    if [[ -n "${pid}" ]]; then
-      kill "$pid" >/dev/null 2>&1 || true
-      wait "$pid" >/dev/null 2>&1 || true
-    fi
-    rm -f "$PIDFILE"
-  fi
-  if [[ -S "$SOCK" ]]; then
-    rm -f "$SOCK" || true
-  fi
+  stop_dockerd || true
   "$PYBIN" "$LIB" write-status --state stopped >/dev/null || true
 }
 

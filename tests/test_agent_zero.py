@@ -167,6 +167,48 @@ def test_run_does_not_install_and_checks_the_ssd_folder():
     assert "/var/log/stickllm-dockerd.log" not in text
 
 
+def test_dockerd_runs_in_the_host_mount_namespace():
+    """The gateway has a private mount namespace (ProtectSystem/ProtectHome).
+
+    dockerd mounts the container rootfs, but containerd and runc run in the
+    host namespace. A dockerd started from the gateway gave runc an empty
+    rootfs and the smoke test failed with "stat /bin/sh".
+    """
+    text = _script()
+    ui = (ROOT / "overlay" / "etc" / "systemd" / "system" / "stickllm-ui.service").read_text(
+        encoding="utf-8"
+    )
+    assert "ProtectSystem=" in ui
+    gateway = GATEWAY.read_text(encoding="utf-8")
+    assert '["/usr/local/bin/stickllm-agent", "install"]' in gateway
+    assert "exec nsenter --mount=/proc/1/ns/mnt --" in text
+    assert 'readlink "/proc/$1/ns/mnt"' in text
+    guard = text.split("\ncase \"${1:-}\" in\n  start|run|stop|install) enter_host_mount_ns", 1)
+    assert len(guard) == 2, "enter_host_mount_ns must run before any command"
+    head = guard[0]
+    assert "\ndocker_cli()" not in head
+    assert "\n  dockerd" not in head
+    daemon = text.split("ensure_dockerd()", 1)[1].split("\nimage_present()", 1)[0]
+    # A daemon left in the gateway namespace is restarted before it is used.
+    assert daemon.index("dockerd_in_this_ns") < daemon.index("stop_dockerd")
+    assert daemon.index("stop_dockerd") < daemon.index("\n  dockerd")
+    stop = text.split("cmd_stop()", 1)[1].split("\ncmd_start()", 1)[0]
+    assert "stop_dockerd" in stop
+    # The smoke test stays before the previous image is retagged.
+    install = text.split("cmd_install()", 1)[1].split("\nstop_container()", 1)[0]
+    assert install.index("smoke_image") < install.index("stickllm-agent-zero:rollback")
+
+def test_background_daemons_do_not_keep_the_install_lock():
+    """dockerd once inherited fd 9, so every later install said "already running"."""
+    text = _script()
+    assert "exec 9>/run/stickllm/agent-install.lock" in text
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if stripped.endswith("&") and not stripped.endswith("&&"):
+            assert "9>&-" in stripped, stripped
+    daemon = text.split("ensure_dockerd()", 1)[1].split("\nimage_present()", 1)[0]
+    assert '9>&- 2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" 9>&- &' in daemon
+
 def test_agent_page_is_not_rewritten_under_agent():
     agent = _load(AGENT, "stickllm_agent_norewrite")
     assert not hasattr(agent, "rewrite_text")

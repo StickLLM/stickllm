@@ -53,6 +53,12 @@ Unlock is the vault passcode. The same passcode opens the USB settings partition
 
 Docker data-root is the host SSD folder beside the models directory (`<models parent>/stickllm-docker`). `dockerd` is not the system `docker.service`. Its log is `/run/stickllm/agent-dockerd.log` and a copy that survives reboot at `<data-root parent>/stickllm-logs/agent-dockerd.log`.
 
+`stickllm-agent` runs `dockerd` in the host mount namespace (PID 1's). The Apps page install is started by `stickllm-gateway`, and `stickllm-ui` has a private mount namespace (`ProtectSystem=full`, `ProtectHome=true`). `dockerd` mounts each container rootfs itself, while the system `containerd` and `runc` run in the host namespace. A `dockerd` started inside the gateway namespace pulls fine, but every container gets an empty rootfs (`stat /bin/sh: no such file or directory`, `reading from a closed fifo`). `stickllm-agent` therefore re-execs itself with `nsenter --mount=/proc/1/ns/mnt`, and restarts a `dockerd` it finds in another mount namespace.
+
+The data-root path length is not the limit. mount(2) reads at most one 4096-byte page of options, but overlay2 passes the short `l/<id>` links (about 3.2 KB for the 23-layer image under `.../home/<user>/.lmstudio/stickllm-docker`) and falls back to relative paths past one page. `docker inspect` shows full `diff` paths in `LowerDir` (4242 bytes here), which is not the mount string.
+
+Background daemons close fd 9 (`9>&-`), so `dockerd` and the bridges never keep `/run/stickllm/agent-install.lock`. A leaked lock made every later install exit at once with `install already running`.
+
 The older layout `/var/lib/stickllm/vault/docker` (commit `3db2ac0`) is not detected. The image is re-pulled onto the host SSD. Do not point dockerd back at the vault.
 
 Catalog installs do not use `/var/lib/stickllm/apps`. That path is the live overlay and is wiped at reboot. `persistent_install_root()` writes, in order:
