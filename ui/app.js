@@ -3029,7 +3029,8 @@ function formatPairCode(code) {
 }
 function showPairCodeOnStick(code) {
   const c = String(code || "").trim();
-  if (!/^\d{4,8}$/.test(c)) return;
+  // The pair code is only ever painted on the stick's own screen.
+  if (!detectLocalHost() || !/^\d{4,8}$/.test(c)) return;
   if ($("#pairCodeShow")) $("#pairCodeShow").textContent = formatPairCode(c);
   pushSystemMsg(
     `New PAIR CODE: ${c} — open the LAN URL on phone/desktop and enter this code. Previous paired browsers were unpaired.`
@@ -3041,7 +3042,7 @@ function pairDigits(raw) {
 }
 /** Paint the F9 banner from the latest code. Does not consume remint id. */
 function paintF9PairCode(connect) {
-  if (!(isLocalMode || detectLocalHost()) || !$("#pairCodeShow")) return "";
+  if (!detectLocalHost() || !$("#pairCodeShow")) return "";
   const c = connect || {};
   const digits = pairDigits(c.remint_code) || pairDigits(c.pair_code);
   if (!digits) return "";
@@ -3051,7 +3052,7 @@ function paintF9PairCode(connect) {
 }
 /** Stick kiosk: chat line when a LAN browser mints a new code. */
 function announceRemintFromConnect(connect) {
-  if (!(isLocalMode || detectLocalHost())) return;
+  if (!detectLocalHost()) return;
   const c = connect || {};
   const rid = String(c.remint_id || "").trim();
   const digits = paintF9PairCode(c);
@@ -3080,6 +3081,12 @@ async function remintPairCode() {
 async function issuePairHotkey() {
   // Keyboard-first path for HDMI kiosk (no mouse): open Pairing + mint/show code.
   openSettings("devices");
+  if (!detectLocalHost()) {
+    // Kiosk only: a LAN browser can neither see nor make a pair code.
+    applyPairKioskUi();
+    toast("Make a new pair code on the stick's own screen (press F9 there)");
+    return;
+  }
   try {
     const j = await remintPairCode();
     clearPairSession();
@@ -3120,6 +3127,43 @@ async function issueSshHotkey() {
   } catch (e) { toast(e.message); }
 }
 $("#remint").onclick = () => { issuePairHotkey(); };
+/** LAN browsers: no code, no New code. Both live on the kiosk only. */
+function applyPairKioskUi() {
+  if (detectLocalHost()) return;
+  const btn = $("#remint");
+  if (btn) { btn.hidden = true; btn.disabled = true; }
+  const label = $("#sec-devices .code small");
+  if (label) label.textContent = "Pair code (shown only on the stick's screen; press F9 there)";
+  const show = $("#pairCodeShow");
+  if (show) show.textContent = "(see stick screen)";
+}
+applyPairKioskUi();
+/** One pairing for StickLLM and Agent: a paired LAN tab gets a one-time
+ *  link that signs this browser in to the Agent port (its own cookie). */
+async function openAgentPaired(e) {
+  const a = e.target && e.target.closest ? e.target.closest("#agentLink, #agentDeskIcon") : null;
+  if (!a || detectLocalHost() || !token) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const fallback = a.href;
+  const w = window.open("", "_blank");
+  let url = fallback;
+  try {
+    const r = await fetch("/api/agent/handoff", {
+      method: "POST", cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }), body: "{}",
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.url) url = j.url;
+  } catch (_) {}
+  if (w) {
+    try { w.opener = null; } catch (_) {}
+    w.location.href = url;
+  } else {
+    window.location.href = url;
+  }
+}
+document.addEventListener("click", (e) => { openAgentPaired(e); }, true);
 if ($("#showSsh")) $("#showSsh").onclick = () => { issueSshHotkey(); };
 $("#pairForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -3275,14 +3319,14 @@ async function refreshStatus() {
     const url = j.connect?.url || (j.connect?.ip ? `http://${j.connect.ip}/` : location.origin + "/");
     if ($("#lanUrl2")) $("#lanUrl2").textContent = url;
     const code = j.connect?.pair_code;
-    if (isLocalMode && $("#pairCodeShow")) {
+    if (detectLocalHost() && $("#pairCodeShow")) {
       const digits = paintF9PairCode(j.connect);
       if (!digits) {
         const c = String(code || "");
         const shown = String($("#pairCodeShow").textContent || "").replace(/\s/g, "");
         if (c && !/^\d{4,8}$/.test(shown)) $("#pairCodeShow").textContent = c;
       }
-    } else if (!isLocalMode && $("#pairCodeShow")) {
+    } else if ($("#pairCodeShow")) {
       const shown = String($("#pairCodeShow").textContent || "").replace(/\s/g, "");
       if (!/^\d{4,8}$/.test(shown)) $("#pairCodeShow").textContent = "(see stick screen)";
     }
