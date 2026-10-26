@@ -53,6 +53,22 @@ cmd_gate() {
   exit 2
 }
 
+# /run is wiped every boot. The copy next to the docker data-root is on the
+# host data disk, so a reboot still leaves the log.
+dockerd_persist_log() {
+  local dest dir size
+  dest="$(dirname "$DOCKER_DIR")/stickllm-logs/agent-dockerd.log"
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  if [[ -f "$dest" ]]; then
+    size="$(stat -c%s "$dest" 2>/dev/null || echo 0)"
+    if [[ "$size" -gt 2097152 ]]; then
+      mv "$dest" "${dest}.1"
+    fi
+  fi
+  printf '%s\n' "$dest"
+}
+
 ensure_dockerd() {
   # Gate again immediately before the daemon. A locked vault never reaches dockerd.
   if ! "$PYBIN" "$LIB" docker-may-start; then
@@ -65,7 +81,14 @@ ensure_dockerd() {
   fi
   "$PYBIN" "$LIB" prepare-vault
   mkdir -p /run/stickllm "$DOCKER_DIR"
+  local persist_log
+  persist_log="$(dockerd_persist_log)"
   if [[ -S "$SOCK" ]] && docker_cli info >/dev/null 2>&1; then
+    # The daemon is already up. Copy the runtime log once if this boot has
+    # not yet written the durable file.
+    if [[ -f /run/stickllm/agent-dockerd.log && ! -s "$persist_log" ]]; then
+      cp -f /run/stickllm/agent-dockerd.log "$persist_log"
+    fi
     return 0
   fi
   if ! command -v dockerd >/dev/null 2>&1; then
@@ -74,7 +97,7 @@ ensure_dockerd() {
   fi
   # data-root is the host SSD folder. iptables stay off; nftables rules are ours.
   # This dockerd is not the docker.service unit, so journalctl -u docker stays
-  # empty. Keep its stdout on the stickllm runtime log instead.
+  # empty. /run is wiped on reboot; tee also appends the durable copy.
   mkdir -p /run/stickllm
   dockerd \
     --data-root "${DOCKER_DIR}" \
@@ -83,7 +106,7 @@ ensure_dockerd() {
     --iptables=false \
     --ip6tables=false \
     --live-restore=false \
-    >>/run/stickllm/agent-dockerd.log 2>&1 &
+    2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" &
   local i
   for i in $(seq 1 60); do
     if docker_cli info >/dev/null 2>&1; then
