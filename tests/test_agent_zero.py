@@ -1550,6 +1550,8 @@ def test_app_act_roundtrip_and_bridge(tmp_path):
     apps = tmp_path / "bridge-apps"
     (apps / "minesweeper").mkdir(parents=True)
     (apps / "minesweeper" / "index.html").write_text("mines", encoding="utf-8")
+    (apps / "tetris").mkdir(parents=True)
+    (apps / "tetris" / "index.html").write_text("tetris", encoding="utf-8")
     seen = {}
 
     def relay(path, app_id, action):
@@ -1590,6 +1592,22 @@ def test_app_act_roundtrip_and_bridge(tmp_path):
             body = json.loads(resp.read().decode())
         assert body["ok"] is True
         assert seen == {"path": "/act", "id": "minesweeper", "action": {"reveal": [0, 0]}}
+        # Apps without an adapter answer no_adapter at once instead of timing out.
+        seen.clear()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{bport}/state",
+            data=json.dumps({"id": "tetris"}).encode(),
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=3)
+            raise AssertionError("bridge relayed state for an app without an adapter")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 409
+            err = json.loads(exc.read().decode())
+        assert err["error"] == "no_adapter" and "open_app only" in err["hint"]
+        assert seen == {}
     finally:
         bridge.shutdown()
         bridge.server_close()
@@ -1622,3 +1640,40 @@ def test_playable_apps_have_adapters_and_solitaire_maps_cards_by_position():
     assert ".s2c1r100 .cardFront{background-image:url(JH." in css
     assert ".s3c1r101 .cardFront{background-image:url(QD." in css
     assert ".s4c1r102 .cardFront{background-image:url(KC." in css
+
+
+def test_gateway_app_call_passes_on_gateway_error_reason():
+    import http.server
+    agent = _load(AGENT, "stickllm_agent_app_call_err")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self.path.endswith("app-act"):
+                code, body = 504, {"ok": False, "error": "illegal_move", "id": "solitaire"}
+            else:
+                code, body = 502, {}
+            raw = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/api/ui/open-app"
+    try:
+        out = agent.gateway_app_call("app_act", "solitaire", "tok", {"move": "t1->f1"}, url=url)
+        assert out == {"ok": False, "error": "illegal_move", "id": "solitaire"}
+        try:
+            agent.gateway_app_call("app_state", "solitaire", "tok", None, url=url)
+            raise AssertionError("an error without a reason must still raise")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 502
+    finally:
+        srv.shutdown()
+        srv.server_close()

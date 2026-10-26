@@ -1094,8 +1094,20 @@ def gateway_app_call(kind: str, app_id: str, token: str, action: dict | None = N
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=8) as resp:
-        data = json.loads(resp.read().decode("utf-8") or "{}")
+    try:
+        with urllib.request.urlopen(request, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        # The gateway answers 4xx/5xx with a JSON reason (illegal_move,
+        # no_adapter, timeout, no_subscriber). Pass it on so the agent sees it.
+        try:
+            data = json.loads(exc.read().decode("utf-8") or "{}")
+        except (UnicodeError, ValueError, OSError):
+            raise exc from None
+        if not isinstance(data, dict) or not data.get("error"):
+            raise exc from None
+        data["ok"] = False
+        return data
     if not isinstance(data, dict):
         raise OSError("ui returned a bad app reply")
     return data
@@ -1205,6 +1217,14 @@ def open_app_server(
                 self._send(404, {"ok": False, "error": "not_found"})
                 return
             if path in ("/state", "/act"):
+                if app_id not in APPS_PLAYABLE_IDS:
+                    self._send(409, {
+                        "ok": False,
+                        "error": "no_adapter",
+                        "id": app_id,
+                        "hint": APPS_PLAYABLE_NOTE,
+                    })
+                    return
                 action = req.get("action")
                 if path == "/act" and not isinstance(action, dict):
                     self._send(400, {"ok": False, "error": "bad_action"})
