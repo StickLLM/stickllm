@@ -155,6 +155,8 @@ def test_run_does_not_install_and_checks_the_ssd_folder():
     assert body.index("docker-may-start") < body.index("ensure_dockerd")
     daemon = text.split("ensure_dockerd()", 1)[1].split("\nimage_present()", 1)[0]
     assert daemon.index("docker-may-start") < daemon.index("\n  dockerd")
+    assert "/run/stickllm/agent-dockerd.log" in daemon
+    assert "/var/log/stickllm-dockerd.log" not in daemon
 
 
 def test_agent_page_is_not_rewritten_under_agent():

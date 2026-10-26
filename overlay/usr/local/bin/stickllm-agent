@@ -73,6 +73,9 @@ ensure_dockerd() {
     exit 1
   fi
   # data-root is the host SSD folder. iptables stay off; nftables rules are ours.
+  # This dockerd is not the docker.service unit, so journalctl -u docker stays
+  # empty. Keep its stdout on the stickllm runtime log instead.
+  mkdir -p /run/stickllm
   dockerd \
     --data-root "${DOCKER_DIR}" \
     --host "unix://${SOCK}" \
@@ -80,7 +83,7 @@ ensure_dockerd() {
     --iptables=false \
     --ip6tables=false \
     --live-restore=false \
-    >/var/log/stickllm-dockerd.log 2>&1 &
+    >>/run/stickllm/agent-dockerd.log 2>&1 &
   local i
   for i in $(seq 1 60); do
     if docker_cli info >/dev/null 2>&1; then
