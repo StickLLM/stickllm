@@ -163,6 +163,8 @@ It is grouped by topic, not by date. Secrets are left out on purpose: no passwor
 - **open_app played on the kiosk instead of the user's PC:** every `/api/ui/events` subscriber got every event. The kiosk always auto-opened and its app page answered `app_state`/`app_act`, while the desktop only showed a toast.
   - Fix: events go only to the target screen, which is the LAN browser that used Agent on `:5443` in the last 120 s (or has an Agent websocket open), else the kiosk. Remote tabs now try `window.open` and fall back to the toast.
   - `app_state`/`app_act` fail fast with `409 app_not_open` when the target has no page for that app, and never fall back to the kiosk. See ARCHITECTURE-AGENTZERO.md, open_app.
+- **open_app still failed on the PC with pop-ups "allowed":** kiosk.log showed every open_app go to the PC (`target=192.168.72.76`) but always `result=toast-shown`, and no `?app=solitaire` page ever subscribed. `window.open` from an event (no click) in a background tab was still refused, and the toast sat in the hidden tab.
+  - Fix: when `window.open` fails, the app opens inside the StickLLM tab (iframe named `stickllm-<id>`, result `embedded`), and the hidden tab flashes its title and shows a notification if allowed. `/apps/*` allow `frame-ancestors 'self'`.
 - **Remote PC rejected by A0** ("Origin … not allowed"): ALLOWED_ORIGINS lacked `:5443` (`ecf0975`).
 - **Unlock and Agent page loop:** the back link on :5443 went to `/` on the same port.
   - Added a "Back to StickLLM" bar, and the Agent link now opens in a new tab (`a4d3a82`).

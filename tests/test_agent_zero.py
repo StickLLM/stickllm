@@ -1393,7 +1393,7 @@ def test_ui_events_cookie_ticket_and_subscribers(tmp_path):
         assert code == 200
         log = (run / "kiosk.log").read_text(encoding="utf-8")
         assert "STICKLLM_OPEN_APP phase=published id=minesweeper path=/apps/minesweeper/ subscribers=2" in log
-        for result in ("toast-shown", "opened", "blocked"):
+        for result in ("toast-shown", "opened", "embedded", "blocked"):
             code, body = call(
                 lan_port,
                 "/api/ui/open-app-seen",
@@ -1958,3 +1958,32 @@ def test_app_pages_subscribe_with_their_id_and_remote_tries_a_window():
     assert "window.open(url" in body
     assert "if (kiosk)" not in body
     assert "showOpenAppToast(id)" in body
+    # Pop-up blocked: the app opens inside the StickLLM tab, before the toast.
+    assert body.index("window.open(url") < body.index("showAppInPage(id, url)") < body.index("showOpenAppToast(id)")
+    assert 'reportOpenApp(id, "embedded")' in body
+    assert "cueHiddenTab(id)" in body
+    panel = app[app.index("function showAppInPage(id, url)"):start]
+    # The bridge answers hidden pages only when named stickllm-<id>.
+    assert 'const name = "stickllm-" + id;' in panel and "frame.name = name;" in panel
+    assert 'window.name === "stickllm-" + id' in bridge
+    cue = app[app.index("function cueHiddenTab(id)"):start]
+    assert "document.title" in cue and "new Notification(" in cue and "window.focus()" in cue
+
+
+def test_app_pages_may_be_framed_by_stickllm_only(tmp_path, monkeypatch):
+    for key, value in {
+        "STICKLLM_UI": str(tmp_path / "ui"),
+        "STICKLLM_RUN": str(tmp_path / "run"),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }.items():
+        monkeypatch.setenv(key, value)
+    gw = _load(GATEWAY, "stickllm_gateway_frames")
+    for path in ("/apps/solitaire/", "/apps/solitaire/index.html?stickllm_open=1", "/apps/calculator/", "/apps/stickllm-bridge.js"):
+        policy = gw.csp_for_path(path)
+        assert "frame-ancestors 'self'" in policy, path
+        assert "frame-ancestors 'none'" not in policy, path
+    for path in ("/", "/index.html", "/app.js", "/api/ui/events", "/appsx/"):
+        assert "frame-ancestors 'none'" in gw.csp_for_path(path), path
+    assert gw.csp_for_path("/apps/solitaire/") == gw.CSP_VENDORED.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+    assert "embedded" in gw.OPEN_APP_SEEN_RESULTS

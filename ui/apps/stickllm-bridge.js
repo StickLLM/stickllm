@@ -25,6 +25,8 @@
     let data = {};
     try { data = JSON.parse(ev.data || "{}"); } catch (e) { return; }
     if (!data || data.id !== id || !data.req) return;
+    // Pages opened by open_app are named "stickllm-<id>": a window, or the
+    // iframe in the StickLLM tab's app panel. Those answer even when hidden.
     const named = window.name === "stickllm-" + id;
     if (document.visibilityState === "hidden" && !named) return;
     const api = window.stickllmApp;

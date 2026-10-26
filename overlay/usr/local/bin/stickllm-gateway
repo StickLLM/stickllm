@@ -91,11 +91,23 @@ mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("text/javascript", ".mjs")
 
 
+# What the StickLLM tab did with open_app: its own window, an in-page app
+# panel (pop-up blocked), a toast with an Open button, or nothing.
+OPEN_APP_SEEN_RESULTS = frozenset({"opened", "embedded", "toast-shown", "blocked"})
+
+
 def csp_for_path(path: str) -> str:
     bare = urllib.parse.urlparse(path or "").path
     if any(bare == prefix or bare.startswith(prefix + "/") for prefix in VENDORED_APPS):
-        return CSP_VENDORED
-    return CSP
+        policy = CSP_VENDORED
+    else:
+        policy = CSP
+    # App pages may be framed by the StickLLM tab itself (same origin only),
+    # so open_app works in a LAN browser that blocks pop-ups. Everything else
+    # still refuses to be framed.
+    if bare.startswith("/apps/"):
+        policy = policy.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+    return policy
 
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
@@ -317,7 +329,7 @@ class _UiOpenBus:
         self._log(app_id, "loaded")
 
     def note_seen(self, app_id: str, opened: bool, result: str | None = None) -> str | None:
-        if result not in {"opened", "toast-shown", "blocked"}:
+        if result not in OPEN_APP_SEEN_RESULTS:
             result = "opened" if opened else "blocked"
         with self._cond:
             last = self._last
@@ -327,7 +339,7 @@ class _UiOpenBus:
                 "id": app_id,
                 "seq": last["seq"],
                 "at": time.time(),
-                "opened": result == "opened",
+                "opened": result in ("opened", "embedded"),
                 "result": result,
             }
         self._write_log(
@@ -2841,8 +2853,8 @@ class Handler(SimpleHTTPRequestHandler):
                         "screen": "kiosk" if target == "kiosk" else "browser",
                         "message": (
                             f"{app_id} is not open on {where}. Call open_app with id {app_id} first. "
-                            "If nothing opened, ask the user to keep a StickLLM tab open, allow pop-ups "
-                            "for StickLLM, or click Open on the StickLLM toast, then try again."
+                            "If nothing opened, ask the user to keep a StickLLM tab open (the app "
+                            "opens inside that tab when pop-ups are blocked) and reload it, then try again."
                         ),
                     },
                 )
@@ -2902,12 +2914,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": "bad_id"})
                 return
             result = req.get("result")
-            if result is not None and result not in {"opened", "toast-shown", "blocked"}:
+            if result is not None and result not in OPEN_APP_SEEN_RESULTS:
                 self._json(400, {"ok": False, "error": "bad_result"})
                 return
             if result is None:
                 result = "opened" if req.get("opened") else "blocked"
-            UI_OPEN.note_seen(str(app_id), result == "opened", str(result))
+            UI_OPEN.note_seen(str(app_id), result in ("opened", "embedded"), str(result))
             self._json(200, {"ok": True, "result": result})
             return
 

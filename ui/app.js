@@ -4906,17 +4906,141 @@ function showOpenAppToast(id) {
   }, 30000);
   return true;
 }
+// In-page app panel: a same-origin iframe inside this StickLLM tab. Used when
+// the browser blocks window.open (a LAN browser gets open_app from an event,
+// with no click, so pop-ups are usually blocked). The iframe is named
+// "stickllm-<id>", so stickllm-bridge.js inside it subscribes with ?app=<id>
+// and answers app_state / app_act even while this tab is in the background.
+function closeAppPanel() {
+  const p = document.getElementById("stickAppPanel");
+  if (!p) return;
+  const frame = p.querySelector("iframe");
+  if (frame) frame.remove();
+  p.dataset.app = "";
+  p.hidden = true;
+}
+function appPanel() {
+  let p = document.getElementById("stickAppPanel");
+  if (p) return p;
+  p = document.createElement("section");
+  p.id = "stickAppPanel";
+  p.className = "stick-app-panel";
+  p.hidden = true;
+  p.setAttribute("aria-label", "App opened by Agent Zero");
+  const bar = document.createElement("div");
+  bar.className = "stick-app-bar";
+  const title = document.createElement("span");
+  title.className = "stick-app-title";
+  const alerts = document.createElement("button");
+  alerts.type = "button";
+  alerts.className = "stick-app-alerts";
+  alerts.textContent = "Notify me";
+  alerts.title = "Show a desktop notification when Agent Zero opens an app while this tab is in the background";
+  alerts.hidden = !("Notification" in window) || Notification.permission !== "default";
+  alerts.onclick = () => {
+    try {
+      Notification.requestPermission().then(() => { alerts.hidden = Notification.permission !== "default"; });
+    } catch (e) { alerts.hidden = true; }
+  };
+  const pop = document.createElement("button");
+  pop.type = "button";
+  pop.textContent = "Open in window";
+  pop.onclick = () => {
+    const id = p.dataset.app;
+    if (!id) return;
+    const w = window.open("/apps/" + id + "/?stickllm_open=1", "stickllm-" + id);
+    if (w) {
+      // One page per app, so app_act is not applied twice.
+      closeAppPanel();
+      reportOpenApp(id, "opened");
+    }
+  };
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "Close";
+  close.onclick = closeAppPanel;
+  bar.append(title, alerts, pop, close);
+  p.append(bar);
+  document.body.append(p);
+  return p;
+}
+function showAppInPage(id, url) {
+  if (!document.body) return false;
+  const p = appPanel();
+  const name = "stickllm-" + id;
+  let frame = p.querySelector("iframe");
+  if (!frame || frame.name !== name) {
+    if (frame) frame.remove();
+    frame = document.createElement("iframe");
+    frame.className = "stick-app-frame";
+    frame.name = name;
+    frame.title = appLabel(id);
+    frame.src = url + "&stickllm_embed=1";
+    p.append(frame);
+  }
+  p.dataset.app = id;
+  p.querySelector(".stick-app-title").textContent = "Agent Zero: " + appLabel(id);
+  p.hidden = false;
+  return true;
+}
+// Visible cue when Agent Zero opens an app while this tab is in the
+// background: flash the tab title and, if allowed, show a notification whose
+// click brings this tab forward.
+const tabCue = { timer: null, base: "", note: null };
+function stopTabCue() {
+  if (document.visibilityState === "hidden") return;
+  clearInterval(tabCue.timer);
+  tabCue.timer = null;
+  if (tabCue.base) document.title = tabCue.base;
+  tabCue.base = "";
+  if (tabCue.note) { try { tabCue.note.close(); } catch (e) {} tabCue.note = null; }
+}
+document.addEventListener("visibilitychange", stopTabCue);
+function cueHiddenTab(id) {
+  if (document.visibilityState !== "hidden") return false;
+  const label = appLabel(id);
+  if (!tabCue.base) tabCue.base = document.title;
+  clearInterval(tabCue.timer);
+  let on = false;
+  tabCue.timer = setInterval(() => {
+    on = !on;
+    document.title = on ? "\u25B6 " + label + " opened \u2013 StickLLM" : tabCue.base;
+  }, 1000);
+  if ("Notification" in window && Notification.permission === "granted") {
+    try {
+      const n = new Notification("Agent Zero opened " + label, {
+        body: "Click to show it in the StickLLM tab.",
+        tag: "stickllm-open-app",
+      });
+      n.onclick = () => { try { window.focus(); } catch (e) {} n.close(); };
+      tabCue.note = n;
+    } catch (e) {}
+  }
+  return true;
+}
 function openStickApp(id) {
   if (!/^[a-z]+$/.test(id)) return false;
   const url = "/apps/" + id + "/?stickllm_open=1";
   // The gateway sends open_app only to the screen driving Agent (a LAN
-  // browser that used Agent in the last 2 minutes, else the kiosk), so try a
-  // real window everywhere. A LAN browser blocks this pop-up unless the user
-  // allowed pop-ups for StickLLM; then the toast's Open button does it.
+  // browser that used Agent in the last 2 minutes, else the kiosk).
+  const panel = document.getElementById("stickAppPanel");
+  if (panel && !panel.hidden && panel.dataset.app === id) {
+    // Already open inside this tab: keep the game, don't open a second page.
+    cueHiddenTab(id);
+    reportOpenApp(id, "embedded");
+    return true;
+  }
+  // Try a real window first (kiosk, or a LAN browser that allows pop-ups).
   let opened = null;
   try { opened = window.open(url, "stickllm-" + id); } catch (e) { opened = null; }
   if (opened) {
     reportOpenApp(id, "opened");
+    return true;
+  }
+  // Pop-up blocked: open the app inside this tab, no pop-up needed.
+  if (showAppInPage(id, url)) {
+    cueHiddenTab(id);
+    reportOpenApp(id, "embedded");
     return true;
   }
   if (showOpenAppToast(id)) reportOpenApp(id, "toast-shown");
