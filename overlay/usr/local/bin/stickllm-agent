@@ -101,6 +101,13 @@ image_present() {
   docker_cli image inspect "$ref" >/dev/null 2>&1
 }
 
+# The new image must answer /bin/sh and contain bash and python3 before the
+# installer starts it or touches the previous image.
+smoke_image() {
+  local ref="$1"
+  docker_cli run --rm --entrypoint /bin/sh "$ref" -c 'test -x /bin/bash && test -x /usr/bin/python3'
+}
+
 ensure_network() {
   local sub
   if docker_cli network inspect "$NETWORK" >/dev/null 2>&1; then
@@ -311,19 +318,26 @@ cmd_install() {
     exit 0
   fi
   ensure_dockerd
-  local ref
+  local ref previous
   ref="$("$PYBIN" "$LIB" image-ref)"
+  # Remember the image that is already installed. Pull and smoke the pinned
+  # ref before that id is retagged. The previous id is kept and is not removed.
+  previous="$(docker_cli image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)"
   mkdir -p /run/stickllm
   : >"$PULL_LOG"
   "$PYBIN" "$LIB" write-status --state installing --image_present false --low_space false >/dev/null || true
-  if image_present; then
-    echo "image already present" | tee -a "$PULL_LOG"
-  else
-    if ! docker_cli pull "$ref" 2>&1 | tee -a "$PULL_LOG"; then
-      "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
-      echo "agent image pull failed" >&2
-      exit 1
-    fi
+  if ! docker_cli pull "$ref" 2>&1 | tee -a "$PULL_LOG"; then
+    "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
+    echo "agent image pull failed" >&2
+    exit 1
+  fi
+  if ! smoke_image "$ref"; then
+    echo "agent image smoke test failed; previous image left in place" | tee -a "$PULL_LOG" >&2
+    "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
+    exit 1
+  fi
+  if [[ -n "$previous" ]]; then
+    docker_cli tag "$previous" stickllm-agent-zero:rollback
   fi
   "$PYBIN" "$LIB" write-status --state pulled --image_present true --low_space false >/dev/null || true
   cmd_run_container

@@ -129,6 +129,11 @@ def test_run_does_not_install_and_checks_the_ssd_folder():
     assert "Unlock starts a container that is already installed" in run
     install = text.split("cmd_install()", 1)[1].split("\nstop_container()", 1)[0]
     assert "docker_cli pull" in install
+    assert "smoke_image" in install
+    assert install.index("docker_cli pull") < install.index("smoke_image")
+    assert install.index("smoke_image") < install.index("stickllm-agent-zero:rollback")
+    assert "docker_cli rmi" not in install
+    assert "docker rmi" not in install
     assert "pull-allowed" in install
     assert "Mount a drive for Agent Zero" in text
     assert "host SSD has under 12 GB free" in text
