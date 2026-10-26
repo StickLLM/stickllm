@@ -1150,3 +1150,147 @@ def test_open_app_event_stays_off_the_lan(tmp_path):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def test_ui_events_cookie_ticket_and_subscribers(tmp_path):
+    token = "gateway-open-token-0123456789ab"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    pair = "paired-browser-token"
+    auth = {
+        "require_pair": True,
+        "paired": True,
+        "token_hash": hashlib.sha256(pair.encode()).hexdigest(),
+    }
+    (run / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+    ui = tmp_path / "ui"
+    page = ui / "apps" / "minesweeper"
+    page.mkdir(parents=True)
+    (page / "index.html").write_text("<!DOCTYPE html><title>Mines</title>", encoding="utf-8")
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_OPEN_APP_TOKEN_FILE": str(token_file),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }
+    saved = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    gateway = _load(GATEWAY, "stickllm_gateway_ui_events", env)
+    assert gateway.ui_events_ticket_ok(pair, auth) is False
+    expired = gateway.mint_ui_events_ticket(auth, now=time.time() - 500)
+    assert gateway.ui_events_ticket_ok(expired, auth) is False
+
+    class LanHandler(gateway.Handler):
+        def _is_loopback(self) -> bool:
+            return False
+
+    lan = gateway.ThreadingHTTPServer(("127.0.0.1", 0), LanHandler)
+    local = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    lan_port = lan.server_address[1]
+    local_port = local.server_address[1]
+    for httpd in (lan, local):
+        httpd.daemon_threads = True
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def call(port, path, *, method="GET", auth_header=None, body=None, cookie=None):
+        data = None if body is None else json.dumps(body).encode()
+        headers = {}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if auth_header:
+            headers["Authorization"] = auth_header
+        if cookie:
+            headers["Cookie"] = cookie
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                raw = resp.read().decode()
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = raw
+                return resp.status, parsed
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode()
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {"raw": raw}
+            return exc.code, parsed
+
+    def hold(path, headers):
+        sock = socket.create_connection(("127.0.0.1", lan_port), timeout=3)
+        req = f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n"
+        for key, value in headers.items():
+            req += f"{key}: {value}\r\n"
+        sock.sendall((req + "\r\n").encode())
+        sock.settimeout(2)
+        data = b""
+        while b"\r\n\r\n" not in data:
+            data += sock.recv(2048)
+        return sock, data
+
+    socks = []
+    try:
+        code, body = call(lan_port, "/api/ui/events")
+        assert code == 401
+        assert body["error"] == "pair_required"
+        code, body = call(lan_port, "/api/ui/events?t=" + pair)
+        assert code == 401
+        code, body = call(
+            lan_port,
+            "/api/ui/events-ticket",
+            method="POST",
+            auth_header="Bearer " + pair,
+            body={},
+        )
+        assert code == 200
+        ticket = body["t"]
+        assert ticket and ticket != pair and pair not in ticket
+        assert gateway.ui_events_ticket_ok(ticket, auth) is True
+        sock_cookie, head_cookie = hold("/api/ui/events", {"Cookie": f"stickllm_pair={pair}"})
+        sock_ticket, head_ticket = hold("/api/ui/events?t=" + ticket, {})
+        socks.extend((sock_cookie, sock_ticket))
+        assert b"200" in head_cookie and b"text/event-stream" in head_cookie
+        assert b"200" in head_ticket and b"text/event-stream" in head_ticket
+        deadline = time.time() + 3
+        log = ""
+        while time.time() < deadline:
+            log = (run / "kiosk.log").read_text(encoding="utf-8")
+            if log.count("STICKLLM_UI_EVENTS connect ip=127.0.0.1") >= 2:
+                break
+            time.sleep(0.05)
+        assert log.count("STICKLLM_UI_EVENTS connect ip=127.0.0.1") >= 2
+        code, body = call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper"},
+        )
+        assert code == 200
+        log = (run / "kiosk.log").read_text(encoding="utf-8")
+        assert "STICKLLM_OPEN_APP phase=published id=minesweeper path=/apps/minesweeper/ subscribers=2" in log
+    finally:
+        for sock in socks:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        lan.shutdown()
+        local.shutdown()
+        lan.server_close()
+        local.server_close()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value

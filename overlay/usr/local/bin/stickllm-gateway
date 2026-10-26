@@ -107,6 +107,23 @@ class _UiOpenBus:
         self._last: dict | None = None
         self._loaded: dict | None = None
         self._seen: dict | None = None
+        self._subscribers = 0
+
+    def connect(self, ip: str) -> int:
+        with self._cond:
+            self._subscribers += 1
+            count = self._subscribers
+        self._log_events("connect", ip)
+        return count
+
+    def disconnect(self, ip: str) -> None:
+        with self._cond:
+            self._subscribers = max(0, self._subscribers - 1)
+        self._log_events("disconnect", ip)
+
+    def subscriber_count(self) -> int:
+        with self._cond:
+            return self._subscribers
 
     def publish(self, app_id: str) -> dict:
         event = {
@@ -119,8 +136,9 @@ class _UiOpenBus:
             self._seq += 1
             event["seq"] = self._seq
             self._last = dict(event)
+            subscribers = self._subscribers
             self._cond.notify_all()
-        self._log(app_id, "published")
+        self._log(app_id, "published", subscribers)
         return event
 
     def note_load(self, app_id: str, client: str) -> None:
@@ -196,14 +214,22 @@ class _UiOpenBus:
                     return None
                 self._cond.wait(min(remain, 1.0))
 
-    def _log(self, app_id: str, phase: str) -> None:
+    def _log(self, app_id: str, phase: str, subscribers: int | None = None) -> None:
+        extra = f" subscribers={int(subscribers)}" if subscribers is not None else ""
+        self._write_log(
+            f"STICKLLM_OPEN_APP phase={phase} id={app_id} path=/apps/{app_id}/{extra}\n"
+        )
+
+    def _log_events(self, phase: str, ip: str) -> None:
+        safe_ip = ip if re.fullmatch(r"[0-9A-Fa-f:.]+", ip or "") else "-"
+        self._write_log(f"STICKLLM_UI_EVENTS {phase} ip={safe_ip}\n")
+
+    def _write_log(self, line: str) -> None:
         try:
             path = RUN_DIR / "kiosk.log"
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    f"STICKLLM_OPEN_APP phase={phase} id={app_id} path=/apps/{app_id}/\n"
-                )
+                handle.write(line)
         except OSError:
             pass
 
@@ -488,6 +514,52 @@ def token_ok(header: str | None, doc: dict) -> bool:
     if not stored or not doc.get("paired"):
         return False
     return hmac.compare_digest(th, stored)
+
+
+UI_EVENTS_TICKET_TTL = 120
+
+
+def ui_events_secret(doc: dict) -> bytes | None:
+    """HMAC key for short-lived SSE tickets. Not the pair token."""
+    if not isinstance(doc, dict) or not doc.get("paired"):
+        return None
+    stored = str(doc.get("token_hash") or "")
+    if len(stored) != 64:
+        return None
+    return hmac.new(b"stickllm-ui-events-v1", stored.encode("ascii"), hashlib.sha256).digest()
+
+
+def mint_ui_events_ticket(doc: dict, now: float | None = None, ttl: int = UI_EVENTS_TICKET_TTL) -> str:
+    secret = ui_events_secret(doc)
+    if secret is None:
+        return ""
+    exp = int((now if now is not None else time.time()) + max(1, int(ttl)))
+    sig = hmac.new(secret, str(exp).encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def ui_events_ticket_ok(ticket: object, doc: dict, now: float | None = None) -> bool:
+    """Accept a short-lived signed ticket. Never the long-lived pair token."""
+    if not isinstance(ticket, str):
+        return False
+    if token_ok("Bearer " + ticket, doc):
+        return False
+    if len(ticket) > 96 or ticket.count(".") != 1:
+        return False
+    exp_s, sig = ticket.split(".", 1)
+    if not exp_s.isdigit() or len(sig) != 64:
+        return False
+    if any(ch not in "0123456789abcdef" for ch in sig):
+        return False
+    secret = ui_events_secret(doc)
+    if secret is None:
+        return False
+    current = int(now if now is not None else time.time())
+    exp = int(exp_s)
+    if exp < current or exp > current + 300:
+        return False
+    expected = hmac.new(secret, exp_s.encode("ascii"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
 
 
 
@@ -1505,7 +1577,12 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         import sys
 
-        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+        redacted = []
+        for arg in args:
+            if isinstance(arg, str):
+                arg = re.sub(r"([?&]t=)[^&\s]+", r"\1redacted", arg)
+            redacted.append(arg)
+        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % tuple(redacted)))
 
     def end_headers(self) -> None:
         # Proxied Agent Zero responses keep their own headers. StickLLM's CSP
@@ -1729,12 +1806,21 @@ class Handler(SimpleHTTPRequestHandler):
         self._send(200, data, ctype)
 
     def _ui_stream_allowed(self) -> bool:
-        """Kiosk loopback, or a browser that already paired. Unpaired LAN is refused."""
+        """Kiosk loopback, pair cookie/bearer, or a short-lived ?t= ticket.
+
+        EventSource cannot send Authorization. The pair cookie is accepted.
+        A signed ticket from POST /api/ui/events-ticket is the other path.
+        The long-lived pair token is never valid in the URL.
+        """
         doc, ok = self._auth()
-        if doc.get("require_pair") and not ok:
-            self._json(401, {"ok": False, "error": "pair_required"})
-            return False
-        return True
+        if ok or not doc.get("require_pair"):
+            return True
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        ticket = (query.get("t") or [""])[0]
+        if ui_events_ticket_ok(ticket, doc):
+            return True
+        self._json(401, {"ok": False, "error": "pair_required"})
+        return False
 
     def _open_app_control_ok(self) -> bool:
         """Loopback plus the stick open-app token. The pair token is not enough."""
@@ -1753,36 +1839,38 @@ class Handler(SimpleHTTPRequestHandler):
     def _stream_ui_events(self) -> None:
         if not self._ui_stream_allowed():
             return
+        ip = (self.client_address[0] if self.client_address else "") or "-"
+        UI_OPEN.connect(ip)
         try:
-            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        except OSError:
-            pass
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Content-Encoding", "identity")
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
+            try:
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Content-Encoding", "identity")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
 
-        def send_chunk(payload: bytes) -> None:
-            self.wfile.write(b"%X\r\n" % len(payload) + payload + b"\r\n")
-            self.wfile.flush()
+            def send_chunk(payload: bytes) -> None:
+                self.wfile.write(b"%X\r\n" % len(payload) + payload + b"\r\n")
+                self.wfile.flush()
 
-        def send_event(event: dict) -> None:
-            payload = json.dumps(
-                {
-                    "id": event["id"],
-                    "path": event["path"],
-                    "window": event["window"],
-                    "seq": event.get("seq"),
-                },
-                ensure_ascii=True,
-            ).encode("ascii")
-            send_chunk(b"event: open_app\ndata: " + payload + b"\n\n")
+            def send_event(event: dict) -> None:
+                payload = json.dumps(
+                    {
+                        "id": event["id"],
+                        "path": event["path"],
+                        "window": event["window"],
+                        "seq": event.get("seq"),
+                    },
+                    ensure_ascii=True,
+                ).encode("ascii")
+                send_chunk(b"event: open_app\ndata: " + payload + b"\n\n")
 
-        seq, replay = UI_OPEN.catch_up()
-        try:
+            seq, replay = UI_OPEN.catch_up()
             if replay:
                 send_event(replay)
             while True:
@@ -1794,6 +1882,8 @@ class Handler(SimpleHTTPRequestHandler):
                 send_event(event)
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
+        finally:
+            UI_OPEN.disconnect(ip)
 
     def _proxy_files(self, method: str) -> None:
         if not self._desktop_allowed():
@@ -2243,7 +2333,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._agent_install()
             return
         n = int(self.headers.get("Content-Length") or 0)
-        if path in ("/api/ui/open-app", "/api/ui/open-app-seen") and n > 2048:
+        if path in ("/api/ui/open-app", "/api/ui/open-app-seen", "/api/ui/events-ticket") and n > 2048:
             self.close_connection = True
             self._json(413, {"ok": False, "error": "too_large"})
             return
@@ -2315,6 +2405,20 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             UI_OPEN.note_seen(str(app_id), bool(req.get("opened")))
             self._json(200, {"ok": True})
+            return
+
+        if path == "/api/ui/events-ticket":
+            if not self._ui_stream_allowed():
+                return
+            doc = load_auth()
+            ticket = mint_ui_events_ticket(doc)
+            if not ticket:
+                if self._is_loopback() or not doc.get("require_pair"):
+                    self._json(200, {"ok": True, "t": ""})
+                    return
+                self._json(401, {"ok": False, "error": "pair_required"})
+                return
+            self._json(200, {"ok": True, "t": ticket, "ttl": UI_EVENTS_TICKET_TTL})
             return
 
         if path == "/api/session-mode":

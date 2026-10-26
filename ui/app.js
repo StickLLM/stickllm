@@ -3139,6 +3139,7 @@ $("#pairForm").onsubmit = async (e) => {
     err.hidden = true; $("#pairIn").value = "";
     toast("Browser paired"); closeSettings();
     startAppStatus();
+    startOpenAppEvents();
   } catch (ex) { err.hidden = false; err.textContent = ex.message; }
 };
 
@@ -4833,14 +4834,77 @@ function openStickApp(id) {
   return !!opened;
 }
 function startOpenAppEvents() {
-  if (startOpenAppEvents.started || typeof EventSource !== "function") return;
-  startOpenAppEvents.started = true;
-  const events = new EventSource("/api/ui/events");
-  events.addEventListener("open_app", (ev) => {
-    let data = {};
-    try { data = JSON.parse(ev.data || "{}"); } catch (e) { return; }
-    if (data && data.id) openStickApp(String(data.id));
+  if (typeof EventSource !== "function") return;
+  if (startOpenAppEvents.armed) {
+    if (typeof startOpenAppEvents.resubscribe === "function") startOpenAppEvents.resubscribe();
+    return;
+  }
+  startOpenAppEvents.armed = true;
+  let es = null;
+  let delay = 1000;
+  let timer = null;
+  let gen = 0;
+
+  function teardown() {
+    if (!es) return;
+    es.onerror = null;
+    es.onopen = null;
+    try { es.close(); } catch (e) { /* already closed */ }
+    es = null;
+  }
+
+  async function connect() {
+    const mine = ++gen;
+    clearTimeout(timer);
+    teardown();
+    rememberPairCookie();
+    let url = "/api/ui/events";
+    try {
+      const opts = {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: "{}",
+        cache: "no-store",
+      };
+      if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opts.signal = AbortSignal.timeout(4000);
+      const r = await fetch("/api/ui/events-ticket", opts);
+      if (mine !== gen) return;
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.t) url = "/api/ui/events?t=" + encodeURIComponent(j.t);
+      }
+    } catch (e) { /* cookie or loopback can still subscribe */ }
+    if (mine !== gen) return;
+    es = new EventSource(url);
+    es.onopen = () => { delay = 1000; };
+    es.addEventListener("open_app", (ev) => {
+      let data = {};
+      try { data = JSON.parse(ev.data || "{}"); } catch (err) { return; }
+      if (data && data.id) openStickApp(String(data.id));
+    });
+    es.onerror = () => {
+      if (mine !== gen) return;
+      teardown();
+      const wait = delay;
+      delay = Math.min(delay * 2, 15000);
+      clearTimeout(timer);
+      timer = setTimeout(connect, wait);
+    };
+  }
+
+  function resubscribe() {
+    if (document.visibilityState === "hidden") return;
+    if (es && es.readyState !== EventSource.CLOSED) return;
+    delay = 1000;
+    connect();
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") resubscribe();
   });
+  window.addEventListener("focus", resubscribe);
+  startOpenAppEvents.resubscribe = resubscribe;
+  connect();
 }
 
 })();
