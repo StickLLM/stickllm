@@ -838,6 +838,74 @@ def agent_handoff_redeem(ticket: object, doc: dict, now: float | None = None) ->
     return True
 
 
+# App pages opened by open_app (the in-page panel's iframe or a pop-out
+# window). They must not depend on the script-set stickllm_pair cookie: any
+# StickLLM tab on the same host (http:// or https://, either port) shares that
+# cookie jar and can overwrite or clear it. The paired tab instead asks for a
+# one-time ticket, puts it in the app URL, and the first page load swaps it for
+# an HttpOnly cookie derived from the pairing (scripts cannot touch it, and a
+# remint kills it). It opens /apps/* and the app's own event stream and
+# replies, nothing else; it is never the pair token.
+APPS_SESSION_COOKIE = "stickllm_apps"
+APP_TICKET_TTL = 60
+_APP_TICKET_USED: dict[str, int] = {}
+_APP_TICKET_LOCK = threading.Lock()
+
+
+def apps_session_value(doc: dict) -> str:
+    secret = _pairing_secret(doc, b"stickllm-apps-session-v1")
+    if secret is None:
+        return ""
+    return hmac.new(secret, b"apps-session", hashlib.sha256).hexdigest()
+
+
+def apps_session_ok(value: object, doc: dict) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    expected = apps_session_value(doc)
+    return bool(expected) and hmac.compare_digest(value, expected)
+
+
+def mint_app_ticket(doc: dict, now: float | None = None, ttl: int = APP_TICKET_TTL) -> str:
+    secret = _pairing_secret(doc, b"stickllm-apps-ticket-v1")
+    if secret is None:
+        return ""
+    exp = int((now if now is not None else time.time()) + max(1, int(ttl)))
+    nonce = secrets.token_hex(16)
+    msg = f"{exp}.{nonce}"
+    sig = hmac.new(secret, msg.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{msg}.{sig}"
+
+
+def app_ticket_redeem(ticket: object, doc: dict, now: float | None = None) -> bool:
+    """Accept a fresh app ticket once. Never the pair token."""
+    if not isinstance(ticket, str) or len(ticket) > 128 or ticket.count(".") != 2:
+        return False
+    exp_s, nonce, sig = ticket.split(".")
+    if not exp_s.isdigit() or len(nonce) != 32 or len(sig) != 64:
+        return False
+    if any(ch not in "0123456789abcdef" for ch in nonce + sig):
+        return False
+    secret = _pairing_secret(doc, b"stickllm-apps-ticket-v1")
+    if secret is None:
+        return False
+    current = int(now if now is not None else time.time())
+    exp = int(exp_s)
+    if exp < current or exp > current + APP_TICKET_TTL + 5:
+        return False
+    expected = hmac.new(secret, f"{exp_s}.{nonce}".encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return False
+    with _APP_TICKET_LOCK:
+        for old, old_exp in list(_APP_TICKET_USED.items()):
+            if old_exp < current:
+                _APP_TICKET_USED.pop(old, None)
+        if nonce in _APP_TICKET_USED:
+            return False
+        _APP_TICKET_USED[nonce] = exp
+    return True
+
+
 def read_text_safe(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8").strip()
@@ -2075,15 +2143,67 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._json(200 if result.get("ok") else 409, result)
 
+    def _apps_cookie_ok(self, doc: dict) -> bool:
+        return apps_session_ok(self._cookie(APPS_SESSION_COOKIE), doc)
+
+    def _pair_cookie_state(self, doc: dict) -> str:
+        """For logs only: absent / valid / stale. Never the value."""
+        value = self._cookie("stickllm_pair")
+        if not value:
+            return "absent"
+        return "valid" if token_ok("Bearer " + value, doc) else "stale"
+
     def _desktop_allowed(self) -> bool:
-        """Loopback, or a browser that already paired. New tabs send the cookie."""
+        """Loopback, a paired browser, or an app page opened with a ticket."""
         doc, ok = self._auth()
-        if doc.get("require_pair") and not ok:
+        if doc.get("require_pair") and not ok and not self._apps_cookie_ok(doc):
+            path = urllib.parse.urlparse(self.path).path
+            if path.startswith("/apps/"):
+                UI_OPEN._write_log(
+                    f"STICKLLM_APPS_AUTH denied ip={self._ui_client_ip()} "
+                    f"pair_cookie={self._pair_cookie_state(doc)} "
+                    f"apps_cookie={'present' if self._cookie(APPS_SESSION_COOKIE) else 'absent'}\n"
+                )
             self._json(401, {"ok": False, "error": "pair_required"})
             return False
         return True
 
+    def _app_ticket_redirect(self, path: str) -> bool:
+        """GET /apps/<id>/?...&t=<ticket>: swap the one-time ticket for the
+        HttpOnly apps cookie and redirect to the same URL without it."""
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        tickets = [v for k, v in query if k == "t"]
+        if not tickets:
+            return False
+        parts = [part for part in path.split("/") if part]
+        if len(parts) < 2 or parts[0] != "apps" or any(part in {".", ".."} for part in parts):
+            return False
+        doc = load_auth()
+        if not app_ticket_redeem(tickets[0], doc):
+            UI_OPEN._write_log(f"STICKLLM_APPS_AUTH ticket=rejected ip={self._ui_client_ip()}\n")
+            return False
+        value = apps_session_value(doc)
+        if not value:
+            return False
+        rest = urllib.parse.urlencode([(k, v) for k, v in query if k != "t"])
+        location = urllib.parse.quote(path, safe="/-._~") + (("?" + rest) if rest else "")
+        secure = "; Secure" if isinstance(self.connection, ssl.SSLSocket) else ""
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header(
+            "Set-Cookie",
+            f"{APPS_SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Strict{secure}",
+        )
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        UI_OPEN._write_log(f"STICKLLM_APPS_AUTH ticket=redeemed ip={self._ui_client_ip()} app={parts[1]}\n")
+        return True
+
     def _serve_desktop(self, path: str) -> None:
+        if self.command == "GET" and self._app_ticket_redirect(path):
+            return
         if not self._desktop_allowed():
             return
         parts = [part for part in path.split("/") if part]
@@ -2140,7 +2260,14 @@ class Handler(SimpleHTTPRequestHandler):
         doc, ok = self._auth()
         if ok or not doc.get("require_pair"):
             return True
-        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        # An app page opened with an app ticket: only its own stream and replies.
+        app_page = parsed.path == "/api/ui/app-reply" or (
+            parsed.path == "/api/ui/events" and bool(query.get("app"))
+        )
+        if app_page and self._apps_cookie_ok(doc):
+            return True
         ticket = (query.get("t") or [""])[0]
         if ui_events_ticket_ok(ticket, doc):
             return True
@@ -2748,7 +2875,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.close_connection = True
             self._json(413, {"ok": False, "error": "too_large"})
             return
-        if path in ("/api/ui/open-app", "/api/ui/open-app-seen", "/api/ui/events-ticket") and n > 2048:
+        if path in ("/api/ui/open-app", "/api/ui/open-app-seen", "/api/ui/events-ticket", "/api/ui/app-ticket") and n > 2048:
             self.close_connection = True
             self._json(413, {"ok": False, "error": "too_large"})
             return
@@ -2921,6 +3048,26 @@ class Handler(SimpleHTTPRequestHandler):
                 result = "opened" if req.get("opened") else "blocked"
             UI_OPEN.note_seen(str(app_id), result in ("opened", "embedded"), str(result))
             self._json(200, {"ok": True, "result": result})
+            return
+
+        if path == "/api/ui/app-ticket":
+            # Paired StickLLM tab -> one-time ticket for an app page URL.
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"ok": False, "error": "ui_only"})
+                return
+            doc, ok = self._auth()
+            if self._is_loopback() or not doc.get("require_pair"):
+                self._json(200, {"ok": True, "t": ""})
+                return
+            ticket = mint_app_ticket(doc) if ok else ""
+            UI_OPEN._write_log(
+                f"STICKLLM_APPS_AUTH ticket={'minted' if ticket else 'refused'} "
+                f"ip={self._ui_client_ip()} pair_cookie={self._pair_cookie_state(doc)}\n"
+            )
+            if not ticket:
+                self._json(401, {"ok": False, "error": "pair_required"})
+                return
+            self._json(200, {"ok": True, "t": ticket, "ttl": APP_TICKET_TTL})
             return
 
         if path == "/api/ui/events-ticket":

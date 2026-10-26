@@ -1958,11 +1958,20 @@ def test_app_pages_subscribe_with_their_id_and_remote_tries_a_window():
     assert "window.open(url" in body
     assert "if (kiosk)" not in body
     assert "showOpenAppToast(id)" in body
-    # Pop-up blocked: the app opens inside the StickLLM tab, before the toast.
-    assert body.index("window.open(url") < body.index("showAppInPage(id, url)") < body.index("showOpenAppToast(id)")
-    assert 'reportOpenApp(id, "embedded")' in body
-    assert "cueHiddenTab(id)" in body
-    panel = app[app.index("function showAppInPage(id, url)"):start]
+    # Kiosk: its own window. LAN browser: never window.open from the event;
+    # the app opens inside the StickLLM tab (pop-out is a click in the panel).
+    kiosk, remote = body.split("if (detectLocalHost()) {", 1)[1].split("\n  }\n", 1)
+    assert "window.open(url" in kiosk
+    assert "window.open" not in remote
+    assert remote.index("showAppInPage(id)") < remote.index("showOpenAppToast(id)")
+    assert 'reportOpenApp(id, "embedded")' in remote
+    assert "cueHiddenTab(id)" in remote
+    panel = app[app.index("function showAppInPage(id)"):start]
+    assert 'appPageUrl(id, "&stickllm_embed=1")' in panel
+    pop = app[app.index("pop.onclick"):app.index("function showAppInPage(id)")]
+    assert 'window.open("", "stickllm-" + id)' in pop and "appPageUrl(id)" in pop
+    ticket = app[app.index("async function appPageUrl("):start]
+    assert '"/api/ui/app-ticket"' in ticket and "if (detectLocalHost()) return url;" in ticket
     # The bridge answers hidden pages only when named stickllm-<id>.
     assert 'const name = "stickllm-" + id;' in panel and "frame.name = name;" in panel
     assert 'window.name === "stickllm-" + id' in bridge

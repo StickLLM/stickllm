@@ -220,6 +220,119 @@ def test_handoff_tickets_expire_and_die_with_the_pairing(tmp_path):
     assert gateway.mint_agent_handoff({"paired": False}) == ""
 
 
+def _raw(port, path, method="GET", headers=None, body=None, stream=False):
+    """No redirect following; for streams, return after the status line."""
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    conn.request(method, path, body=body, headers=headers or {})
+    resp = conn.getresponse()
+    if stream:
+        status, hdrs = resp.status, dict(resp.getheaders())
+        conn.close()
+        return status, hdrs, ""
+    data = resp.read().decode()
+    conn.close()
+    return resp.status, dict(resp.getheaders()), data
+
+
+def test_app_pages_open_with_a_one_time_ticket_not_the_shared_cookie(tmp_path):
+    run, env = _setup(tmp_path)
+    page = tmp_path / "ui" / "apps" / "solitaire"
+    page.mkdir(parents=True)
+    (page / "index.html").write_text("<!DOCTYPE html><title>Solitaire</title>", encoding="utf-8")
+    (page / "game.js").write_text("1;", encoding="utf-8")
+    gateway = _load(env, "stickllm_gateway_pair_apps")
+    srv = _Servers(gateway, loopback=False)
+    try:
+        port = srv.main_port
+        # Unpaired, or a bad/missing ticket: no app page.
+        for path in ("/apps/solitaire/", "/apps/solitaire/?stickllm_open=1&t=1.2.3",
+                     "/apps/solitaire/?t=" + TOKEN):
+            code, _h, body = _raw(port, path)
+            assert code == 401 and json.loads(body)["error"] == "pair_required", path
+        # Only a paired StickLLM tab can mint a ticket.
+        code, _h, _b = _raw(port, "/api/ui/app-ticket", "POST", {"Authorization": "Bearer " + TOKEN}, b"{}")
+        assert code == 403
+        for headers in (UI, {**UI, "Authorization": "Bearer nope"}, {**UI, "Cookie": "stickllm_pair=nope"}):
+            code, _h, _b = _raw(port, "/api/ui/app-ticket", "POST", headers, b"{}")
+            assert code == 401
+        code, _h, body = _raw(port, "/api/ui/app-ticket", "POST", PAIRED_UI, b'{"id":"solitaire"}')
+        assert code == 200, body
+        ticket = json.loads(body)["t"]
+        assert ticket and TOKEN not in ticket
+
+        # First load swaps the ticket for an HttpOnly cookie and drops it from the URL.
+        path = "/apps/solitaire/?stickllm_open=1&stickllm_embed=1&t=" + ticket
+        code, headers, _b = _raw(port, path)
+        assert code == 303
+        assert headers["Location"] == "/apps/solitaire/?stickllm_open=1&stickllm_embed=1"
+        set_cookie = headers.get("Set-Cookie") or ""
+        assert set_cookie.startswith("stickllm_apps=")
+        for attr in ("HttpOnly", "SameSite=Strict", "Path=/"):
+            assert attr in set_cookie
+        value = set_cookie.split(";", 1)[0].split("=", 1)[1]
+        assert len(value) == 64 and TOKEN not in value
+        # One-time.
+        code, headers, _b = _raw(port, path)
+        assert code == 401 and "Set-Cookie" not in headers
+
+        apps = {"Cookie": "stickllm_apps=" + value}
+        code, _h, body = _raw(port, "/apps/solitaire/?stickllm_open=1", headers=apps)
+        assert code == 200 and "Solitaire" in body
+        code, _h, _b = _raw(port, "/apps/solitaire/game.js", headers=apps)
+        assert code == 200
+        # The app page's own stream works; it is not a pair token anywhere else.
+        code, _h, _b = _raw(port, "/api/ui/events?app=solitaire", headers=apps, stream=True)
+        assert code == 200
+        code, _h, _b = _raw(port, "/api/ui/events", headers=apps, stream=True)
+        assert code == 401
+        for p, m in (("/api/storage", "GET"), ("/api/ui/events-ticket", "POST"), ("/api/ui/app-ticket", "POST"),
+                     ("/api/agent/handoff", "POST")):
+            code, _h, _b = _raw(port, p, m, {**UI, **apps, "Content-Type": "application/json"}, b"{}" if m == "POST" else None)
+            assert code == 401, p
+        code, _h, _b = _raw(port, "/apps/solitaire/", headers={"Cookie": "stickllm_apps=" + "0" * 64})
+        assert code == 401
+
+        # A paired tab's own cookie still opens app pages directly.
+        code, _h, _b = _raw(port, "/apps/solitaire/", headers={"Cookie": "stickllm_pair=" + TOKEN})
+        assert code == 200
+
+        # Remint: the apps cookie dies with the pairing.
+        auth = json.loads((run / "auth.json").read_text(encoding="utf-8"))
+        auth["token_hash"] = hashlib.sha256(b"new-token").hexdigest()
+        (run / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+        code, _h, _b = _raw(port, "/apps/solitaire/", headers=apps)
+        assert code == 401
+
+        log = (run / "kiosk.log").read_text(encoding="utf-8")
+        assert "STICKLLM_APPS_AUTH ticket=minted ip=127.0.0.1 pair_cookie=absent" in log
+        assert "STICKLLM_APPS_AUTH ticket=redeemed ip=127.0.0.1 app=solitaire" in log
+        assert "STICKLLM_APPS_AUTH denied ip=127.0.0.1 pair_cookie=absent apps_cookie=present" in log
+        assert TOKEN not in log and value not in log and ticket not in log
+    finally:
+        srv.close()
+
+
+def test_app_tickets_expire_and_die_with_the_pairing(tmp_path):
+    _run, env = _setup(tmp_path)
+    gateway = _load(env, "stickllm_gateway_pair_app_ticket")
+    auth = {"paired": True, "token_hash": hashlib.sha256(TOKEN.encode()).hexdigest()}
+    assert gateway.app_ticket_redeem(gateway.mint_app_ticket(auth, now=time.time() - 120), auth) is False
+    assert gateway.app_ticket_redeem(gateway.mint_agent_handoff(auth), auth) is False
+    ticket = gateway.mint_app_ticket(auth)
+    assert gateway.agent_handoff_redeem(ticket, auth) is False
+    reminted = {"paired": True, "token_hash": hashlib.sha256(b"other").hexdigest()}
+    assert gateway.app_ticket_redeem(ticket, reminted) is False
+    assert gateway.app_ticket_redeem(ticket, auth) is True
+    assert gateway.app_ticket_redeem(ticket, auth) is False
+    value = gateway.apps_session_value(auth)
+    assert value != gateway.agent_session_value(auth)
+    assert gateway.apps_session_ok(value, auth) and not gateway.apps_session_ok(value, reminted)
+    assert gateway.agent_session_ok(value, auth) is False
+    assert gateway.mint_app_ticket({"paired": False}) == ""
+
+
 def test_ui_keeps_pair_code_and_new_code_on_the_kiosk():
     js = APP_JS.read_text(encoding="utf-8").replace("\r\n", "\n")
     assert "(isLocalMode || detectLocalHost())" not in js

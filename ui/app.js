@@ -4948,12 +4948,16 @@ function appPanel() {
   pop.onclick = () => {
     const id = p.dataset.app;
     if (!id) return;
-    const w = window.open("/apps/" + id + "/?stickllm_open=1", "stickllm-" + id);
-    if (w) {
+    // Open the window inside the click (no pop-up permission needed), then
+    // point it at the app once the one-time ticket is back.
+    const w = window.open("", "stickllm-" + id);
+    if (!w) return;
+    appPageUrl(id).then((src) => {
+      w.location.replace(src);
       // One page per app, so app_act is not applied twice.
       closeAppPanel();
       reportOpenApp(id, "opened");
-    }
+    }).catch(() => { try { w.close(); } catch (e) {} });
   };
   const close = document.createElement("button");
   close.type = "button";
@@ -4964,7 +4968,7 @@ function appPanel() {
   document.body.append(p);
   return p;
 }
-function showAppInPage(id, url) {
+function showAppInPage(id) {
   if (!document.body) return false;
   const p = appPanel();
   const name = "stickllm-" + id;
@@ -4975,8 +4979,14 @@ function showAppInPage(id, url) {
     frame.className = "stick-app-frame";
     frame.name = name;
     frame.title = appLabel(id);
-    frame.src = url + "&stickllm_embed=1";
     p.append(frame);
+    appPageUrl(id, "&stickllm_embed=1").then((src) => {
+      if (frame.isConnected) frame.src = src;
+    }).catch(() => {
+      if (!frame.isConnected) return;
+      frame.remove();
+      p.querySelector(".stick-app-title").textContent = appLabel(id) + ": pair this browser again (Settings), then retry";
+    });
   }
   p.dataset.app = id;
   p.querySelector(".stick-app-title").textContent = "Agent Zero: " + appLabel(id);
@@ -5018,27 +5028,49 @@ function cueHiddenTab(id) {
   }
   return true;
 }
+// App page URL for this browser. A LAN browser adds a one-time ticket that
+// the gateway swaps for an HttpOnly apps cookie on the first load, so the app
+// page never depends on the shared, script-set stickllm_pair cookie.
+async function appPageUrl(id, extra = "") {
+  const url = "/apps/" + id + "/?stickllm_open=1" + extra;
+  if (detectLocalHost()) return url;
+  const r = await fetch("/api/ui/app-ticket", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ id }),
+    cache: "no-store",
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || "pair_required");
+  return j.t ? url + "&t=" + encodeURIComponent(j.t) : url;
+}
 function openStickApp(id) {
   if (!/^[a-z]+$/.test(id)) return false;
   const url = "/apps/" + id + "/?stickllm_open=1";
   // The gateway sends open_app only to the screen driving Agent (a LAN
   // browser that used Agent in the last 2 minutes, else the kiosk).
+  if (detectLocalHost()) {
+    // Kiosk: its own window, as before.
+    let opened = null;
+    try { opened = window.open(url, "stickllm-" + id); } catch (e) { opened = null; }
+    if (opened) {
+      reportOpenApp(id, "opened");
+      return true;
+    }
+    if (showOpenAppToast(id)) reportOpenApp(id, "toast-shown");
+    else reportOpenApp(id, "blocked");
+    return false;
+  }
+  // LAN browser: always inside this StickLLM tab, so no pop-up permission is
+  // needed. "Open in window" in the panel pops it out on a click.
   const panel = document.getElementById("stickAppPanel");
-  if (panel && !panel.hidden && panel.dataset.app === id) {
-    // Already open inside this tab: keep the game, don't open a second page.
+  if (panel && !panel.hidden && panel.dataset.app === id && panel.querySelector("iframe")) {
+    // Already open here: keep the game, don't open a second page.
     cueHiddenTab(id);
     reportOpenApp(id, "embedded");
     return true;
   }
-  // Try a real window first (kiosk, or a LAN browser that allows pop-ups).
-  let opened = null;
-  try { opened = window.open(url, "stickllm-" + id); } catch (e) { opened = null; }
-  if (opened) {
-    reportOpenApp(id, "opened");
-    return true;
-  }
-  // Pop-up blocked: open the app inside this tab, no pop-up needed.
-  if (showAppInPage(id, url)) {
+  if (showAppInPage(id)) {
     cueHiddenTab(id);
     reportOpenApp(id, "embedded");
     return true;
