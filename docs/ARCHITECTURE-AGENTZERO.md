@@ -43,7 +43,11 @@ The kiosk opens StickLLM at `http://127.0.0.1/` and opens an app window itself. 
 5. The kiosk auto-opens a named window `stickllm-<id>`. A remote browser shows a toast with an Open button instead of a popup.
 6. The visible tab answers `app_state` and `app_act` when `window.stickllmApp` is present. The reply is `POST /api/ui/app-reply`.
 
-`window.stickllmApp` is `{ describe(), state(), act(action) }` and returns JSON. Minesweeper, Solitaire, Notepad, and Calculator have adapters. Tetris, Files, Media, and Monitor open with `open_app` only; `app_state` on them answers `no_adapter`. The Solitaire adapter matches each card to a pile by screen position, because the cards are children of `.cardTable`, not of `.pile`. An illegal Solitaire move is undone and returns `ok: false`.
+`window.stickllmApp` is `{ describe(), state(), act(action) }` and returns JSON. Minesweeper, Solitaire, Tetris, Notepad, and Calculator have adapters. Files, Media, and Monitor open with `open_app` only; `app_state` on them answers `no_adapter`. The Solitaire adapter matches each card to a pile by screen position, because the cards are children of `.cardTable`, not of `.pile`. An illegal Solitaire move is undone and returns `ok: false`.
+
+The Tetris adapter wraps the vendored game's globals (`update`, `play`, `lose`) and leaves the game script unchanged. Agent Zero's first `app_act` switches Tetris to turn mode: gravity stops and the piece waits for the next action, so a slow local model can play one move at a time. `{"mode":"realtime"}` turns gravity back on, and a game started with the Space key is a normal real-time game. `{"place":{"col":c,"rot":r}}` rotates, shifts the piece so its leftmost cell is in column `c`, and hard-drops it in one call; `{"place":"suggested"}` uses `state.suggest`, a one-piece heuristic (height, lines, holes, bumpiness). `state` also has `board`, `view`, `current`, `next`, `rotations`, `score`, `lines`, and `status` (`ready`, `playing`, `paused`, `game_over`).
+
+Agent Zero keeps the tool prompts of an old chat. After the app list changes, start a new chat.
 
 Agent Zero tools are `open_app(id)`, `app_state(id)`, and `app_act(id, action)`. The skill is `/mnt/stickllm-settings/agent-zero/skills/stickllm-apps/SKILL.md`, mounted at `/a0/usr/skills/stickllm-apps/SKILL.md`. It says to use those tools, not the container's own browser, and to stop after 30 actions.
 

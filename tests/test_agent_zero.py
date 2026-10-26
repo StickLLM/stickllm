@@ -1550,8 +1550,8 @@ def test_app_act_roundtrip_and_bridge(tmp_path):
     apps = tmp_path / "bridge-apps"
     (apps / "minesweeper").mkdir(parents=True)
     (apps / "minesweeper" / "index.html").write_text("mines", encoding="utf-8")
-    (apps / "tetris").mkdir(parents=True)
-    (apps / "tetris" / "index.html").write_text("tetris", encoding="utf-8")
+    (apps / "monitor").mkdir(parents=True)
+    (apps / "monitor" / "index.html").write_text("monitor", encoding="utf-8")
     seen = {}
 
     def relay(path, app_id, action):
@@ -1596,7 +1596,7 @@ def test_app_act_roundtrip_and_bridge(tmp_path):
         seen.clear()
         req = urllib.request.Request(
             f"http://127.0.0.1:{bport}/state",
-            data=json.dumps({"id": "tetris"}).encode(),
+            data=json.dumps({"id": "monitor"}).encode(),
             headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
             method="POST",
         )
@@ -1640,6 +1640,27 @@ def test_playable_apps_have_adapters_and_solitaire_maps_cards_by_position():
     assert ".s2c1r100 .cardFront{background-image:url(JH." in css
     assert ".s3c1r101 .cardFront{background-image:url(QD." in css
     assert ".s4c1r102 .cardFront{background-image:url(KC." in css
+
+
+def test_tetris_adapter_plays_turn_by_turn_and_suggests_a_placement():
+    agent = _load(AGENT, "stickllm_agent_tetris")
+    assert "tetris" in agent.APPS_PLAYABLE_IDS
+    assert "files, media, and monitor open with open_app only" in agent.APPS_PLAYABLE_NOTE
+    assert "start a new Agent Zero chat" in agent.APPS_PLAYABLE_NOTE
+    skill = agent.apps_skill_text()
+    for text in ('{"place":"suggested"}', '{"place":{"col":3,"rot":1}}', '{"new_game":true}', "Turn mode"):
+        assert text in agent.APP_ACTIONS_TEXT and text in skill
+    tetris = ROOT / "ui" / "apps" / "tetris"
+    page = (tetris / "index.html").read_text(encoding="utf-8")
+    # The vendored game script stays as-is; the adapter only wraps its globals.
+    assert page.index("stickllm-adapter.js") > page.rindex("function play()")
+    adapter = (tetris / "stickllm-adapter.js").read_text(encoding="utf-8")
+    assert "\r" not in adapter
+    for text in ('"place"', '"suggested"', '"hard_drop"', '"pause"', '"resume"', '"realtime"',
+                 "suggest", "holes_after", "game_over", "col_out_of_range", "window.update"):
+        assert text in adapter
+    assert "http://" not in adapter and "https://" not in adapter
+    assert "stickllm-adapter.js" in (tetris / "SOURCES.txt").read_text(encoding="utf-8")
 
 
 def test_gateway_app_call_passes_on_gateway_error_reason():

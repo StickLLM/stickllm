@@ -71,10 +71,11 @@ APPS_NOTE = (
 )
 # Apps whose page sets window.stickllmApp, so app_state and app_act work.
 # The rest open with open_app only.
-APPS_PLAYABLE_IDS = ("minesweeper", "solitaire", "notepad", "calculator")
+APPS_PLAYABLE_IDS = ("minesweeper", "solitaire", "tetris", "notepad", "calculator")
 APPS_PLAYABLE_NOTE = (
-    "app_state and app_act work for minesweeper, solitaire, notepad, and calculator. "
-    "tetris, files, media, and monitor open with open_app only."
+    "app_state and app_act work for minesweeper, solitaire, tetris, notepad, and calculator. "
+    "files, media, and monitor open with open_app only. "
+    "If an app was just added, start a new Agent Zero chat so old context does not hide it."
 )
 OPEN_APP_RULE = (
     "When the user says open/start/show an app, use open_app, not the browser tool."
@@ -643,6 +644,15 @@ APP_ACTIONS_TEXT = (
     "Piles are stock, waste, f1-f4 (foundations), t1-t7 (tableau). "
     "Cards are rank A 2-9 T J Q K plus suit S H D C; # is face down; the last card is on top. "
     "An illegal move returns ok false and changes nothing.\n"
+    "Tetris: {\"new_game\":true}, then {\"place\":\"suggested\"} or "
+    "{\"place\":{\"col\":3,\"rot\":1}} (rotate, shift so the piece's leftmost cell is in col, hard drop). "
+    "Also {\"left\":2}, {\"right\":1}, {\"rotate\":1}, {\"soft_drop\":1}, {\"hard_drop\":true}, "
+    "{\"pause\":true}, {\"resume\":true}. "
+    "Turn mode: after your first action the piece does not fall on its own, so take your time. "
+    "{\"mode\":\"realtime\"} turns gravity back on. "
+    "state has board (20 rows x 10 cols, # settled), view (@ = falling piece), current, next, "
+    "rotations (cols each rotation can use), and suggest (a good placement). "
+    "Cols are 0-9.\n"
     "Notepad: {\"set_text\":\"...\"} or {\"save_as\":\"notes.txt\"}.\n"
     "Calculator: {\"expr\":\"12+3=\"}.\n"
 )
