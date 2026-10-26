@@ -200,12 +200,12 @@ It is grouped by topic, not by date. Secrets are left out on purpose: no passwor
 ## 9. Open TODOs and known issues
 
 - **Rebuild the A0 ISO.** The fixes since `stickllm-agentzero-v0.2.iso` (`a4d3a82` … `df7b4ce`) exist only as hotfixes on the running stick and in git. A freshly flashed v0.2 stick does not have them.
-- **A0 "watch mode":** drive the visible tab through `window.stickllmApp` hooks. Not built.
+- **A0 app hooks:** `window.stickllmApp` describe/state/act, built in `bb11ab4`. Agent Zero plays a StickLLM app in the visible tab with `open_app`, `app_state`, and `app_act`.
 - **Catalog apps** (ONLYOFFICE, ComfyUI, Immich, …) have no installers yet. The requirement figures are "approx." until measured. Only A0's disk use (4 GB) is measured.
 - **Attachments:** ODS/ODT/ODP are not converted to text. Scanned PDFs need a vision model or OCR.
 - **The mic needs HTTPS** (a secure context), including over RDP.
 - **Voice:** tiny.en accuracy is weak. Talk-over barge-in is not supported.
-- **Agent Zero needs reinstalling on each new stick.** The v0.1 in-vault image is not detected.
+- **Agent Zero needs reinstalling on each new stick.** `/var/lib/stickllm/vault/docker` from `3db2ac0` is not detected. The image is re-pulled onto the host SSD data-root. Do not point dockerd back at the vault.
 - **v0.4.2 publishing:** commit `d573118` is on the pushed branch `fix/multi-gpu-layer-fit`, and the ISO is for Drive upload. Confirm the tag and release state before publishing.
 - **Uncommitted worktree changes:**
   - The `tests/fixtures/*` (docx/xlsx/pptx/zip/docm) files are modified.

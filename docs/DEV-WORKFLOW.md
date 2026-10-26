@@ -3,6 +3,17 @@
 Goal: ship features without rebuilding (or patching) an ISO for every tweak.
 Hardware validation stays on real sticks (example: 3090 desktop + ASUS laptop).
 
+The working branch for Agent Zero is `stickllm-agentzero`. Do not fast-forward `main` until that line is accepted. Work on `C:\Users\peter\stickllm-vault-wt`. Never use OneDrive.
+
+## Agent Zero fork
+
+1. Change the fork and test it on the stick with `sudo -n stickllm-hotfix`.
+2. Rebuild one clean ISO into `build-agentzero\` (not `out\`, not OneDrive).
+3. Nink tests that ISO on hardware.
+4. Push the fork after that test. Do not flash unless Nink asks.
+
+Keep the current Agent Zero ISO and the previous two (`n-2`) under `build-agentzero\`. Do not delete those restore copies to make room. Name the build `stickllm-agentzero-v0.3.iso`. Details of the running system: [ARCHITECTURE-AGENTZERO.md](ARCHITECTURE-AGENTZERO.md).
+
 ## Rules
 
 1. **Feature commits on a feature branch** — iterate with normal git commits.

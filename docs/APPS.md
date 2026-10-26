@@ -3,9 +3,12 @@
 **First-pass list. Not shipping. Subject to change.**
 
 Optional companion apps for StickLLM — usable by a human in the browser/UI and by an
-agent via each app’s API or tool layer. Install target: StickLLM USB **DATA** partition
-and/or the encrypted SSD **vault** ([VAULT.md](VAULT.md)). Nothing here is baked into
-the current ISO unless noted below.
+agent via each app’s API or tool layer. Installs go to a durable disk, not the live
+overlay. `persistent_install_root()` in `overlay/usr/local/lib/stickllm_apps.py` chooses,
+in order, the host SSD apps folder beside the models directory, the USB DATA partition
+(`/mnt/stickllm-data/apps`, record `/mnt/stickllm-data/apps-installed.json`), then the
+unlocked vault (`/var/lib/stickllm/vault/apps`). `/var/lib/stickllm/apps` is RAM on the
+live OS and is not used. Nothing here is baked into the current ISO unless noted below.
 
 **Chat voice** is part of the StickLLM UI, not a companion download: whisper.cpp
 tiny.en for the mic, KittenTTS mini 0.8 for read-aloud. Pins live in
@@ -104,7 +107,7 @@ Before install, StickLLM checks free host-SSD space and total RAM. Below the min
 
 ## Notes
 
-- Apps would be **downloadable** to USB DATA or vault — not required for StickLLM chat.
+- Apps install onto the host SSD apps folder, USB DATA (`/mnt/stickllm-data/apps`), or the unlocked vault. Not `/var/lib/stickllm/apps`.
 - Prefer projects with a clear local/API surface so a human UI and an agent can share the same backend.
 - License column is for awareness when evaluating ship/bake decisions; third-party terms stay with each upstream project.
 - Tracking: [ISSUES.md](../ISSUES.md) **ISS-022**. Roadmap checkboxes: [FEATURES.md](../FEATURES.md).
