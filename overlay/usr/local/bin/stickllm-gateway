@@ -154,17 +154,24 @@ class _UiOpenBus:
             }
         self._log(app_id, "loaded")
 
-    def note_seen(self, app_id: str, opened: bool) -> None:
+    def note_seen(self, app_id: str, opened: bool, result: str | None = None) -> str | None:
+        if result not in {"opened", "toast-shown", "blocked"}:
+            result = "opened" if opened else "blocked"
         with self._cond:
             last = self._last
             if not last or last.get("id") != app_id:
-                return
+                return None
             self._seen = {
                 "id": app_id,
                 "seq": last["seq"],
                 "at": time.time(),
-                "opened": bool(opened),
+                "opened": result == "opened",
+                "result": result,
             }
+        self._write_log(
+            f"STICKLLM_OPEN_APP phase=seen id={app_id} path=/apps/{app_id}/ result={result}\n"
+        )
+        return result
 
     def snapshot(self) -> dict:
         with self._cond:
@@ -188,6 +195,8 @@ class _UiOpenBus:
         if seen.get("seq") == last.get("seq"):
             out["seen_at"] = seen.get("at")
             out["opened"] = seen.get("opened")
+            if seen.get("result"):
+                out["result"] = seen.get("result")
         return out
 
     def catch_up(self) -> tuple[int, dict | None]:
@@ -2403,8 +2412,14 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 self._json(400, {"ok": False, "error": "bad_id"})
                 return
-            UI_OPEN.note_seen(str(app_id), bool(req.get("opened")))
-            self._json(200, {"ok": True})
+            result = req.get("result")
+            if result is not None and result not in {"opened", "toast-shown", "blocked"}:
+                self._json(400, {"ok": False, "error": "bad_result"})
+                return
+            if result is None:
+                result = "opened" if req.get("opened") else "blocked"
+            UI_OPEN.note_seen(str(app_id), result == "opened", str(result))
+            self._json(200, {"ok": True, "result": result})
             return
 
         if path == "/api/ui/events-ticket":

@@ -1279,6 +1279,28 @@ def test_ui_events_cookie_ticket_and_subscribers(tmp_path):
         assert code == 200
         log = (run / "kiosk.log").read_text(encoding="utf-8")
         assert "STICKLLM_OPEN_APP phase=published id=minesweeper path=/apps/minesweeper/ subscribers=2" in log
+        for result in ("toast-shown", "opened", "blocked"):
+            code, body = call(
+                lan_port,
+                "/api/ui/open-app-seen",
+                method="POST",
+                cookie=f"stickllm_pair={pair}",
+                body={"id": "minesweeper", "result": result},
+            )
+            assert code == 200
+            assert body["result"] == result
+        code, body = call(
+            lan_port,
+            "/api/ui/open-app-seen",
+            method="POST",
+            cookie=f"stickllm_pair={pair}",
+            body={"id": "minesweeper", "result": "nope"},
+        )
+        assert code == 400
+        log = (run / "kiosk.log").read_text(encoding="utf-8")
+        assert "STICKLLM_OPEN_APP phase=seen id=minesweeper path=/apps/minesweeper/ result=toast-shown" in log
+        assert "result=opened" in log
+        assert "result=blocked" in log
     finally:
         for sock in socks:
             try:

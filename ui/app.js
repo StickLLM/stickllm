@@ -4812,26 +4812,70 @@ ensurePaired(false).then((ok) => {
 if (detectLocalHost()) startOpenAppEvents();
 
 // window.stickllmApp hooks are later.
-function openStickApp(id) {
-  if (!/^[a-z]+$/.test(id)) return false;
-  const name = "stickllm-" + id;
-  const url = "/apps/" + id + "/?stickllm_open=1";
-  const opened = window.open(url, name);
-  if (!opened) {
-    const link = document.createElement("a");
-    link.href = url;
-    link.target = name;
-    link.hidden = true;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  }
+const APP_LABELS = {
+  minesweeper: "Minesweeper",
+  solitaire: "Solitaire",
+  notepad: "Notepad",
+  calculator: "Calculator",
+  tetris: "Tetris",
+  files: "Files",
+  media: "Media",
+  monitor: "Monitor",
+};
+let openToastTimer = null;
+function appLabel(id) {
+  return APP_LABELS[id] || id;
+}
+function reportOpenApp(id, result) {
   fetch("/api/ui/open-app-seen", {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ id, opened: !!opened }),
+    body: JSON.stringify({ id, result, opened: result === "opened" }),
   }).catch(() => {});
-  return !!opened;
+}
+function showOpenAppToast(id) {
+  const t = $("#toast");
+  if (!t) return false;
+  t.hidden = false;
+  t.replaceChildren();
+  const text = document.createElement("span");
+  text.textContent = "Agent Zero opened " + appLabel(id) + " — ";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "Open";
+  btn.onclick = (e) => {
+    e.preventDefault();
+    const opened = window.open("/apps/" + id + "/?stickllm_open=1", "stickllm-" + id);
+    if (opened) {
+      reportOpenApp(id, "opened");
+      t.hidden = true;
+      t.replaceChildren();
+      return;
+    }
+    reportOpenApp(id, "blocked");
+  };
+  t.append(text, btn);
+  clearTimeout(openToastTimer);
+  openToastTimer = setTimeout(() => {
+    t.hidden = true;
+    t.replaceChildren();
+  }, 30000);
+  return true;
+}
+function openStickApp(id) {
+  if (!/^[a-z]+$/.test(id)) return false;
+  const url = "/apps/" + id + "/?stickllm_open=1";
+  const kiosk = isLocalMode || detectLocalHost();
+  if (kiosk) {
+    const opened = window.open(url, "stickllm-" + id);
+    if (opened) {
+      reportOpenApp(id, "opened");
+      return true;
+    }
+  }
+  if (showOpenAppToast(id)) reportOpenApp(id, "toast-shown");
+  else reportOpenApp(id, "blocked");
+  return false;
 }
 function startOpenAppEvents() {
   if (typeof EventSource !== "function") return;

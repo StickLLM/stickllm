@@ -350,6 +350,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 .cfBody p{color:var(--ink2);font-size:14px;margin:0 0 14px}
 .recovery{font-family:var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap;font-size:13px;color:var(--accent)}
 .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:10px;font-size:14px;z-index:80;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.toast button{margin-left:4px;background:transparent;color:inherit;border:0;padding:0;font:inherit;font-weight:700;text-decoration:underline;cursor:pointer}
 .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:29}
 
 /* Responsive */
