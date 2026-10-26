@@ -507,6 +507,7 @@ def test_console_browser_keeps_a_tab_strip():
         ).read_text(encoding="utf-8")
     )
     assert policy["FullscreenAllowed"] is False
+    assert "http://127.0.0.1" in policy["PopupsAllowedForUrls"]
 
 
 def _nft_check(text: str) -> None:
@@ -793,19 +794,24 @@ def test_apps_bridge_serves_only_static_apps(tmp_path):
     rules = agent.nft_ruleset()
     assert 'iifname "lo" accept' in rules
     assert rules.index('iifname "lo" accept') < rules.index('iifname "stickllm-a0" drop')
-    assert "tcp dport { 8080, 8081 }" in rules
-    assert 'iifname "stickllm-a0" ip daddr 172.30.0.1 tcp dport { 8080, 8081 } accept' in rules
+    assert "tcp dport { 8080, 8081, 8082 }" in rules
+    assert 'iifname "stickllm-a0" ip daddr 172.30.0.1 tcp dport { 8080, 8081, 8082 } accept' in rules
     assert "192.168.0.0/16 drop" in rules
     assert "5099" not in rules
     assert "0.0.0.0:8081" not in rules
     assert "0.0.0.0:8080" not in rules
+    assert "0.0.0.0:8082" not in rules
     script = _script()
     assert "apps-bridge" in script
     assert "ensure_apps" in script
     assert "0.0.0.0:8081" not in script
+    assert "0.0.0.0:8082" not in script
+    assert "open-app-bridge" in script
+    assert "/stickllm-open-app.token:ro" in script
     assert "-p 127.0.0.1:5099:5099" in script
     run = script.split("docker_cli run --name", 1)[1].split("--entrypoint", 1)[0]
     assert ":8081" not in run
+    assert ":8082" not in run
     assert "/opt/stickllm/ui" not in run
     assert 'iifname "lo" accept' in agent.nft_apply_text()
 
@@ -842,14 +848,305 @@ def test_apps_prompt_names_url_ids(tmp_path):
     ).read_text(encoding="utf-8")
     note = (
         "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
-        "(minesweeper, solitaire, tetris, notepad, calculator)."
+        "(minesweeper, solitaire, tetris, notepad, calculator, files, media, monitor)."
     )
+    rule = "When the user says open/start/show an app, use open_app, not the browser tool."
     assert note in prompt
+    assert rule in prompt
     assert "http://172.30.0.1:8081/apps/minesweeper/" in prompt
     assert "minesweep" in prompt
     skill = (
         settings / "agent-zero" / "skills" / "stickllm-apps" / "SKILL.md"
     ).read_text(encoding="utf-8")
     assert note in skill
+    assert rule in skill
     assert "URL id minesweeper" in skill or "minesweeper" in skill
     assert "minesweep" in skill
+    tool = (
+        vault
+        / "addons"
+        / "agent-zero"
+        / "state"
+        / "plugins"
+        / "stickllm_apps"
+        / "tools"
+        / "open_app.py"
+    ).read_text(encoding="utf-8")
+    prompt_tool = (
+        vault
+        / "addons"
+        / "agent-zero"
+        / "state"
+        / "plugins"
+        / "stickllm_apps"
+        / "prompts"
+        / "agent.system.tool.open_app.md"
+    ).read_text(encoding="utf-8")
+    assert "class OpenApp" in tool
+    assert "http://172.30.0.1:8082/open" in tool
+    assert rule in prompt_tool
+    assert "browser.py" not in tool
+
+
+def test_open_app_allowlist_and_token(tmp_path):
+    agent = _load(AGENT, "stickllm_agent_open_app")
+    assert agent.open_app_id_ok("minesweeper") is True
+    for good in ("files", "media", "monitor", "calculator", "solitaire", "tetris", "notepad"):
+        assert agent.open_app_id_ok(good) is True
+    for bad in (
+        "minesweep",
+        "Minesweeper",
+        "../minesweeper",
+        "minesweeper/../files",
+        "http://127.0.0.1/apps/minesweeper/",
+        "https://example.test",
+        "onlyoffice",
+        "",
+        "minesweeper\n",
+        " notepad",
+        "files/../../etc/passwd",
+        None,
+    ):
+        assert agent.open_app_id_ok(bad) is False
+    token = "correct-token-value-0123456789"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    assert agent.open_app_token_ok(None, token) is False
+    assert agent.open_app_token_ok("", token) is False
+    assert agent.open_app_token_ok("Bearer " + ("x" * len(token)), token) is False
+    assert agent.open_app_token_ok("Bearer " + token, token) is True
+    assert agent.open_app_token_ok(token, "") is False
+    apps = tmp_path / "apps"
+    (apps / "minesweeper").mkdir(parents=True)
+    (apps / "minesweeper" / "index.html").write_text("mines", encoding="utf-8")
+    assert agent.open_app_page_ready(apps, "minesweeper") is True
+    assert agent.open_app_page_ready(apps, "monitor") is False
+    opened: list[str] = []
+    httpd = agent.open_app_server(
+        "127.0.0.1",
+        0,
+        root=apps,
+        token_file=token_file,
+        notify=lambda app_id: opened.append(app_id),
+    )
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    def post(app_id, auth=None):
+        data = json.dumps({"id": app_id}).encode()
+        headers = {"Content-Type": "application/json"}
+        if auth is not None:
+            headers["Authorization"] = auth
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/open",
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode())
+
+    try:
+        code, _body = post("minesweeper")
+        assert code == 401
+        code, _body = post("minesweeper", "Bearer " + ("x" * len(token)))
+        assert code == 401
+        code, _body = post("minesweep", "Bearer " + token)
+        assert code == 400
+        code, _body = post("http://evil.test/apps/minesweeper/", "Bearer " + token)
+        assert code == 400
+        code, _body = post("../minesweeper", "Bearer " + token)
+        assert code == 400
+        code, _body = post("monitor", "Bearer " + token)
+        assert code == 404
+        code, body = post("minesweeper", "Bearer " + token)
+        assert code == 200
+        assert body["path"] == "/apps/minesweeper/"
+        assert body["window"] == "stickllm-minesweeper"
+        assert opened == ["minesweeper"]
+        data = json.dumps({"id": "minesweeper", "dry_run": True}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/open",
+            data=data,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer " + token},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            dry = json.loads(resp.read().decode())
+            assert resp.status == 200
+        assert dry["ok"] is True
+        assert opened == ["minesweeper"]
+        try:
+            agent.open_app_server(
+                "0.0.0.0",
+                0,
+                root=apps,
+                token_file=token_file,
+                notify=lambda _app_id: None,
+            )
+        except SystemExit as exc:
+            assert "all interfaces" in str(exc)
+        else:
+            raise AssertionError("open app control accepted 0.0.0.0")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_open_app_event_stays_off_the_lan(tmp_path):
+    token = "gateway-open-token-0123456789ab"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    pair = "paired-browser-token"
+    (run / "auth.json").write_text(
+        json.dumps(
+            {
+                "require_pair": True,
+                "paired": True,
+                "token_hash": hashlib.sha256(pair.encode()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    ui = tmp_path / "ui"
+    page = ui / "apps" / "minesweeper"
+    page.mkdir(parents=True)
+    (page / "index.html").write_text("<!DOCTYPE html><title>Mines</title>", encoding="utf-8")
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_OPEN_APP_TOKEN_FILE": str(token_file),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }
+    saved = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    gateway = _load(GATEWAY, "stickllm_gateway_open_app", env)
+
+    class LanHandler(gateway.Handler):
+        def _is_loopback(self) -> bool:
+            return False
+
+    lan = gateway.ThreadingHTTPServer(("127.0.0.1", 0), LanHandler)
+    local = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    lan_port = lan.server_address[1]
+    local_port = local.server_address[1]
+    for httpd in (lan, local):
+        httpd.daemon_threads = True
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def call(port, path, *, method="GET", auth=None, body=None, cookie=None):
+        data = None if body is None else json.dumps(body).encode()
+        headers = {}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if auth:
+            headers["Authorization"] = auth
+        if cookie:
+            headers["Cookie"] = cookie
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                raw = resp.read().decode()
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = raw
+                return resp.status, parsed
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode()
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {"raw": raw}
+            return exc.code, parsed
+
+    try:
+        code, body = call(
+            lan_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth="Bearer " + token,
+            body={"id": "minesweeper"},
+        )
+        assert code == 403
+        assert body["error"] == "loopback_only"
+        code, body = call(lan_port, "/api/ui/events")
+        assert code == 401
+        assert body["error"] == "pair_required"
+        code, _body = call(local_port, "/api/ui/open-app", method="POST", body={"id": "minesweeper"})
+        assert code == 401
+        code, _body = call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth="Bearer wrong-token-value-0123456789",
+            body={"id": "nope"},
+        )
+        assert code == 401
+        code, body = call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth="Bearer " + token,
+            body={"id": "nope"},
+        )
+        assert code == 400
+        code, body = call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth="Bearer " + token,
+            body={"id": "minesweeper"},
+        )
+        assert code == 200
+        assert body["window"] == "stickllm-minesweeper"
+        code, body = call(local_port, "/api/ui/open-app")
+        assert code == 200
+        assert body["id"] == "minesweeper"
+        code, snap = call(
+            lan_port,
+            "/apps/minesweeper/?stickllm_open=1",
+            cookie=f"stickllm_pair={pair}",
+        )
+        assert code == 200
+        assert "Mines" in snap
+        code, body = call(local_port, "/api/ui/open-app")
+        assert body.get("loaded_from") == "127.0.0.1"
+        sock = socket.create_connection(("127.0.0.1", local_port), timeout=3)
+        sock.sendall(b"GET /api/ui/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        sock.settimeout(2)
+        data = b""
+        try:
+            while b"open_app" not in data and len(data) < 12000:
+                chunk = sock.recv(2048)
+                if not chunk:
+                    break
+                data += chunk
+        except (TimeoutError, socket.timeout):
+            pass
+        finally:
+            sock.close()
+        assert b"event: open_app" in data
+        assert b"minesweeper" in data
+    finally:
+        lan.shutdown()
+        local.shutdown()
+        lan.server_close()
+        local.server_close()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value

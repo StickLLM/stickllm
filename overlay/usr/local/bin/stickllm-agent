@@ -13,6 +13,7 @@ SOCK="/run/stickllm/agent-docker.sock"
 PIDFILE="/run/stickllm/agent-dockerd.pid"
 RELAY_PIDFILE="/run/stickllm/agent-llama-relay.pid"
 APPS_PIDFILE="/run/stickllm/agent-apps-bridge.pid"
+OPEN_APP_PIDFILE="/run/stickllm/agent-open-app.pid"
 PULL_LOG="/run/stickllm/agent-pull.log"
 CONTAINER="stickllm-agent-zero"
 NETWORK="stickllm-agent"
@@ -138,6 +139,18 @@ stop_apps() {
   fi
 }
 
+stop_open_app() {
+  if [[ -f "$OPEN_APP_PIDFILE" ]]; then
+    local pid
+    pid="$(tr -cd '0-9' <"$OPEN_APP_PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$OPEN_APP_PIDFILE"
+  fi
+}
+
 ensure_relay() {
   # Bridge address only. llama-server stays on 127.0.0.1:8080.
   local i
@@ -201,6 +214,40 @@ PY
   done
   echo "stickllm-agent: apps bridge did not bind 172.30.0.1:8081" >&2
   "$PYBIN" "$LIB" write-status --state error --image_present true --message "apps bridge did not bind 172.30.0.1:8081" >/dev/null || true
+  return 1
+}
+
+ensure_open_app() {
+  # Control port on the bridge and on loopback. Not 0.0.0.0 and not the LAN.
+  "$PYBIN" "$LIB" ensure-open-app-token >/dev/null
+  local i
+  for i in $(seq 1 25); do
+    local pid=""
+    if [[ -f "$OPEN_APP_PIDFILE" ]]; then
+      pid="$(tr -cd '0-9' <"$OPEN_APP_PIDFILE" || true)"
+    fi
+    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      "$PYBIN" "$LIB" open-app-bridge >/var/log/stickllm-agent-open-app.log 2>&1 &
+      echo $! >"$OPEN_APP_PIDFILE"
+    fi
+    if "$PYBIN" - <<'PY'
+import socket
+s = socket.socket()
+s.settimeout(0.2)
+try:
+    s.connect(("172.30.0.1", 8082))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+    then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "stickllm-agent: open app control did not bind 172.30.0.1:8082" >&2
+  "$PYBIN" "$LIB" write-status --state error --image_present true --message "open app control did not bind 172.30.0.1:8082" >/dev/null || true
   return 1
 }
 
@@ -315,6 +362,7 @@ cmd_run_container() {
   ensure_nft
   ensure_relay
   ensure_apps
+  ensure_open_app
   local ref origins
   ref="$("$PYBIN" "$LIB" image-ref)"
   origins="$("$PYBIN" "$LIB" allowed-origins)"
@@ -363,6 +411,7 @@ cmd_run_container() {
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/instruments:/a0/usr/instruments" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/skills:/a0/usr/skills" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/model-config:/a0/usr/plugins/_model_config" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/open-app.token:/stickllm-open-app.token:ro" \
     -v "${ENTRY}:/stickllm-entrypoint.sh:ro" \
     --entrypoint /bin/bash \
     "$ref" \
@@ -382,6 +431,7 @@ cmd_stop() {
   stop_container || true
   stop_relay || true
   stop_apps || true
+  stop_open_app || true
   "$PYBIN" "$LIB" nft-delete >/dev/null 2>&1 || true
   if [[ -f "$PIDFILE" ]]; then
     local pid

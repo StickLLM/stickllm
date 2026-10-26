@@ -60,4 +60,46 @@ if [ -f /etc/searxng/settings.yml ] && ! grep -q 'bind_address:' /etc/searxng/se
 fi
 
 mkdir -p /a0/usr/workdir /a0/usr/memory /a0/usr/logs /a0/usr/.cache
+
+# Prove the bridge control port from this container. Do not print the token.
+# A real open (no dry_run) is the open_app tool, so this check does not pop a tab.
+python3 - <<'PY' || true
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+out = Path("/a0/usr/open-app-container-check.json")
+token = ""
+try:
+    token = Path("/stickllm-open-app.token").read_text(encoding="utf-8").strip()
+except OSError:
+    token = ""
+url = "http://172.30.0.1:8082/open"
+
+def post(app_id, auth, dry=False):
+    body = {"id": app_id}
+    if dry:
+        body["dry_run"] = True
+    data = json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    if auth:
+        headers["Authorization"] = "Bearer " + auth
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception:
+        return 0
+
+report = {
+    "missing_token": post("minesweeper", ""),
+    "bad_id": post("nope", token),
+    "dry_run": post("minesweeper", token, dry=True) if token else 0,
+}
+out.write_text(json.dumps(report) + "\n", encoding="utf-8")
+PY
+
 exec /exe/initialize.sh main

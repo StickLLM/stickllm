@@ -98,6 +98,119 @@ def csp_for_path(path: str) -> str:
     return CSP
 
 
+class _UiOpenBus:
+    """Fan out open-app events to the kiosk and paired browsers on the UI SSE."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._seq = 0
+        self._last: dict | None = None
+        self._loaded: dict | None = None
+        self._seen: dict | None = None
+
+    def publish(self, app_id: str) -> dict:
+        event = {
+            "id": app_id,
+            "path": f"/apps/{app_id}/",
+            "window": f"stickllm-{app_id}",
+            "published_at": time.time(),
+        }
+        with self._cond:
+            self._seq += 1
+            event["seq"] = self._seq
+            self._last = dict(event)
+            self._cond.notify_all()
+        self._log(app_id, "published")
+        return event
+
+    def note_load(self, app_id: str, client: str) -> None:
+        with self._cond:
+            last = self._last
+            if not last or last.get("id") != app_id:
+                return
+            self._loaded = {
+                "id": app_id,
+                "seq": last["seq"],
+                "at": time.time(),
+                "from": client,
+            }
+        self._log(app_id, "loaded")
+
+    def note_seen(self, app_id: str, opened: bool) -> None:
+        with self._cond:
+            last = self._last
+            if not last or last.get("id") != app_id:
+                return
+            self._seen = {
+                "id": app_id,
+                "seq": last["seq"],
+                "at": time.time(),
+                "opened": bool(opened),
+            }
+
+    def snapshot(self) -> dict:
+        with self._cond:
+            last = dict(self._last or {})
+            loaded = dict(self._loaded or {})
+            seen = dict(self._seen or {})
+        if not last:
+            return {"ok": True, "pending": False}
+        out = {
+            "ok": True,
+            "pending": True,
+            "id": last.get("id"),
+            "path": last.get("path"),
+            "window": last.get("window"),
+            "published_at": last.get("published_at"),
+            "seq": last.get("seq"),
+        }
+        if loaded.get("seq") == last.get("seq"):
+            out["loaded_at"] = loaded.get("at")
+            out["loaded_from"] = loaded.get("from")
+        if seen.get("seq") == last.get("seq"):
+            out["seen_at"] = seen.get("at")
+            out["opened"] = seen.get("opened")
+        return out
+
+    def catch_up(self) -> tuple[int, dict | None]:
+        """Replay an open that is still in flight. Skip an old one on a fresh page."""
+        with self._cond:
+            last = self._last
+            if not last:
+                return 0, None
+            seq = int(last["seq"])
+            age = time.time() - float(last["published_at"])
+            if age <= 5:
+                return seq, dict(last)
+            return seq, None
+
+    def wait_after(self, seq: int, timeout: float = 15.0) -> dict | None:
+        deadline = time.time() + timeout
+        with self._cond:
+            while True:
+                last = self._last
+                if last and int(last.get("seq") or 0) > seq:
+                    return dict(last)
+                remain = deadline - time.time()
+                if remain <= 0:
+                    return None
+                self._cond.wait(min(remain, 1.0))
+
+    def _log(self, app_id: str, phase: str) -> None:
+        try:
+            path = RUN_DIR / "kiosk.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"STICKLLM_OPEN_APP phase={phase} id={app_id} path=/apps/{app_id}/\n"
+                )
+        except OSError:
+            pass
+
+
+UI_OPEN = _UiOpenBus()
+
+
 class _LlamaCancel:
     """Close the in-flight llama HTTP connection so one question can replace another.
 
@@ -1610,7 +1723,77 @@ class Handler(SimpleHTTPRequestHandler):
             ".woff2": "font/woff2",
             ".wasm": "application/wasm",
         }.get(suffix, "application/octet-stream")
+        if target.name == "index.html" and len(parts) >= 2 and parts[0] == "apps":
+            client = self.client_address[0] if self.client_address else ""
+            UI_OPEN.note_load(parts[1], client)
         self._send(200, data, ctype)
+
+    def _ui_stream_allowed(self) -> bool:
+        """Kiosk loopback, or a browser that already paired. Unpaired LAN is refused."""
+        doc, ok = self._auth()
+        if doc.get("require_pair") and not ok:
+            self._json(401, {"ok": False, "error": "pair_required"})
+            return False
+        return True
+
+    def _open_app_control_ok(self) -> bool:
+        """Loopback plus the stick open-app token. The pair token is not enough."""
+        if not self._is_loopback():
+            self._json(403, {"ok": False, "error": "loopback_only"})
+            return False
+        try:
+            expected = agent_lib().read_open_app_token()
+        except Exception:
+            expected = ""
+        if not agent_lib().open_app_token_ok(self.headers.get("Authorization"), expected):
+            self._json(401, {"ok": False, "error": "unauthorized"})
+            return False
+        return True
+
+    def _stream_ui_events(self) -> None:
+        if not self._ui_stream_allowed():
+            return
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Content-Encoding", "identity")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        def send_chunk(payload: bytes) -> None:
+            self.wfile.write(b"%X\r\n" % len(payload) + payload + b"\r\n")
+            self.wfile.flush()
+
+        def send_event(event: dict) -> None:
+            payload = json.dumps(
+                {
+                    "id": event["id"],
+                    "path": event["path"],
+                    "window": event["window"],
+                    "seq": event.get("seq"),
+                },
+                ensure_ascii=True,
+            ).encode("ascii")
+            send_chunk(b"event: open_app\ndata: " + payload + b"\n\n")
+
+        seq, replay = UI_OPEN.catch_up()
+        try:
+            if replay:
+                send_event(replay)
+            while True:
+                event = UI_OPEN.wait_after(seq, timeout=15)
+                if event is None:
+                    send_chunk(b": keepalive\n\n")
+                    continue
+                seq = int(event.get("seq") or seq)
+                send_event(event)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def _proxy_files(self, method: str) -> None:
         if not self._desktop_allowed():
@@ -2032,6 +2215,14 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/system":
             self._system_status()
             return
+        if path == "/api/ui/events":
+            self._stream_ui_events()
+            return
+        if path == "/api/ui/open-app":
+            if not self._ui_stream_allowed():
+                return
+            self._json(200, UI_OPEN.snapshot())
+            return
         if path.startswith("/api/files"):
             self._proxy_files("GET")
             return
@@ -2052,6 +2243,10 @@ class Handler(SimpleHTTPRequestHandler):
             self._agent_install()
             return
         n = int(self.headers.get("Content-Length") or 0)
+        if path in ("/api/ui/open-app", "/api/ui/open-app-seen") and n > 2048:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
         # Base64 of a 50 MB file is about 67 MB. Refuse anything larger up front.
         if path == "/api/attachments/convert" and n > 70 * 1024 * 1024:
             self.close_connection = True
@@ -2075,6 +2270,51 @@ class Handler(SimpleHTTPRequestHandler):
         if path in ("/api/apps/install", "/api/apps/uninstall"):
             action = "install" if path.endswith("/install") else "uninstall"
             self._apps_mutate(action, req if isinstance(req, dict) else {})
+            return
+
+        if path == "/api/ui/open-app":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._open_app_control_ok():
+                return
+            app_id = req.get("id")
+            try:
+                lib = agent_lib()
+                if not lib.open_app_id_ok(app_id):
+                    self._json(400, {"ok": False, "error": "bad_id"})
+                    return
+            except Exception:
+                self._json(400, {"ok": False, "error": "bad_id"})
+                return
+            event = UI_OPEN.publish(str(app_id))
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "id": event["id"],
+                    "path": event["path"],
+                    "window": event["window"],
+                },
+            )
+            return
+
+        if path == "/api/ui/open-app-seen":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._ui_stream_allowed():
+                return
+            app_id = req.get("id")
+            try:
+                if not agent_lib().open_app_id_ok(app_id):
+                    self._json(400, {"ok": False, "error": "bad_id"})
+                    return
+            except Exception:
+                self._json(400, {"ok": False, "error": "bad_id"})
+                return
+            UI_OPEN.note_seen(str(app_id), bool(req.get("opened")))
+            self._json(200, {"ok": True})
             return
 
         if path == "/api/session-mode":

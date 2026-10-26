@@ -614,7 +614,7 @@ ensure_browser_tabs() {
   local dir
   for dir in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
     mkdir -p "$dir" 2>/dev/null || continue
-    printf '%s\n' '{"FullscreenAllowed":false}' >"$dir/stickllm-tabs.json" 2>/dev/null || true
+    printf '%s\n' '{"FullscreenAllowed":false,"PopupsAllowedForUrls":["http://127.0.0.1","http://127.0.0.1:80","http://localhost","http://localhost:80"]}' >"$dir/stickllm-tabs.json" 2>/dev/null || true
   done
 }
 

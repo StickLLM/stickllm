@@ -12,13 +12,16 @@ API keys, vault passcodes, or chat text.
 """
 from __future__ import annotations
 
+import hmac
 import ipaddress
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,14 +49,28 @@ LLAMA_BRIDGE_HOST = "172.30.0.1"
 LLAMA_BRIDGE_PORT = 8080
 # Static StickLLM apps only. Same bridge address as the llama relay, never 0.0.0.0.
 APPS_BRIDGE_PORT = 8081
+# open_app control. Bridge and loopback only, never 0.0.0.0 and never the LAN.
+OPEN_APP_PORT = 8082
 LLAMA_BRIDGE_SUBNET = "172.30.0.0/24"
 LLAMA_BRIDGE_IFACE = "stickllm-a0"
 LLAMA_BASE = f"http://{LLAMA_BRIDGE_HOST}:{LLAMA_BRIDGE_PORT}/v1"
 # Directory ids under ui/apps. The desktop label for minesweeper is minesweep.
-APPS_URL_IDS = ("minesweeper", "solitaire", "tetris", "notepad", "calculator")
+APPS_URL_IDS = (
+    "minesweeper",
+    "solitaire",
+    "tetris",
+    "notepad",
+    "calculator",
+    "files",
+    "media",
+    "monitor",
+)
 APPS_NOTE = (
     "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
-    "(minesweeper, solitaire, tetris, notepad, calculator)."
+    "(minesweeper, solitaire, tetris, notepad, calculator, files, media, monitor)."
+)
+OPEN_APP_RULE = (
+    "When the user says open/start/show an app, use open_app, not the browser tool."
 )
 # Pinned agent0ai/agent-zero v2.14 lists this chat provider in
 # conf/model_providers.yaml. It speaks OpenAI /v1 through litellm hosted_vllm.
@@ -387,6 +404,7 @@ def nft_ruleset(
     gateway: str = LLAMA_BRIDGE_HOST,
     llama_port: int = LLAMA_BRIDGE_PORT,
     apps_port: int = APPS_BRIDGE_PORT,
+    open_app_port: int = OPEN_APP_PORT,
 ) -> str:
     """Forward rules owned by stickllm-agent. dockerd is started with --iptables=false.
 
@@ -394,12 +412,12 @@ def nft_ruleset(
     traffic can stay on the bridge. Other addresses in 192.168.0.0/16,
     10.0.0.0/8, and 172.16.0.0/12 are dropped. Internet is allowed.
 
-    From the bridge, the host accepts only the llama relay and the static
-    apps server. Loopback still reaches the relay for the host health check.
-    LAN clients cannot open those ports, and the container cannot open any
-    other host port.
+    From the bridge, the host accepts only the llama relay, the static apps
+    server, and the open-app control port. Loopback still reaches the relay
+    for the host health check. LAN clients cannot open those ports, and the
+    container cannot open any other host port.
     """
-    ports = f"{{ {int(llama_port)}, {int(apps_port)} }}"
+    ports = f"{{ {int(llama_port)}, {int(apps_port)}, {int(open_app_port)} }}"
     return (
         f"table inet {NFT_TABLE} {{\n"
         "  chain forward {\n"
@@ -595,6 +613,11 @@ def apps_prompt_text() -> str:
     ]
     for app_id in APPS_URL_IDS:
         lines.append(f"- {app_id}: http://172.30.0.1:8081/apps/{app_id}/")
+    lines.append(OPEN_APP_RULE)
+    lines.append(
+        "open_app takes an id only. The desktop label minesweep is id minesweeper. "
+        "Do not pass a URL, a path, or any id outside this list."
+    )
     lines.append(
         "Fetch only these static pages. Do not use other host ports or LAN addresses."
     )
@@ -606,11 +629,125 @@ def apps_skill_text() -> str:
     return (
         "---\n"
         "name: stickllm-apps\n"
-        "description: StickLLM local apps. URL ids are minesweeper, solitaire, "
-        "tetris, notepad, and calculator. The desktop label minesweep is URL id minesweeper.\n"
+        "description: Open StickLLM apps on the user's screen with open_app. "
+        "URL ids are minesweeper, solitaire, tetris, notepad, calculator, files, "
+        "media, and monitor. The desktop label minesweep is URL id minesweeper.\n"
         "---\n\n"
+        + OPEN_APP_RULE
+        + "\n\n"
         + body
     )
+
+
+def open_app_tool_prompt() -> str:
+    ids = ", ".join(APPS_URL_IDS)
+    return (
+        "### open_app\n"
+        "Open or focus a StickLLM app in the user's browser tab.\n\n"
+        + OPEN_APP_RULE
+        + "\n\n"
+        "The headless browser tool stays for your own page work. It does not "
+        "show an app on the user's screen.\n"
+        f"Allowed ids only: {ids}.\n"
+        "The desktop label minesweep is id minesweeper.\n"
+        "Pass the id and nothing else. Reject URLs and paths yourself by not sending them.\n\n"
+        'Example: {"tool_name":"open_app","tool_args":{"id":"minesweeper"}}\n'
+    )
+
+
+def open_app_plugin_yaml() -> str:
+    return (
+        "name: stickllm_apps\n"
+        "title: StickLLM apps\n"
+        "description: Open a StickLLM app on the user's screen.\n"
+        "version: 1.0.0\n"
+        "settings_sections: []\n"
+        "per_project_config: false\n"
+        "per_agent_config: false\n"
+        "always_enabled: true\n"
+    )
+
+
+def open_app_tool_source() -> str:
+    """Plugin tool loaded from /a0/usr/plugins. The token stays in a mounted file."""
+    return '''from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from helpers.tool import Response, Tool
+
+_TOKEN_FILE = Path("/stickllm-open-app.token")
+_OPEN_URL = "http://172.30.0.1:8082/open"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+class OpenApp(Tool):
+    async def execute(self, id: str = "", **kwargs):
+        app_id = self.args.get("id") if isinstance(self.args, dict) else None
+        if not isinstance(app_id, str) or not app_id.strip():
+            app_id = id if isinstance(id, str) else ""
+        app_id = str(app_id or "").strip()
+        try:
+            token = _TOKEN_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            return Response(message="open_app failed: control token is missing", break_loop=False)
+        if not token:
+            return Response(message="open_app failed: control token is missing", break_loop=False)
+        body = json.dumps({"id": app_id}).encode("utf-8")
+        request = urllib.request.Request(
+            _OPEN_URL,
+            data=body,
+            headers={
+                "Authorization": "Bearer " + token,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            with opener.open(request, timeout=2) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            return Response(
+                message=f"open_app failed: HTTP {exc.code} {detail}",
+                break_loop=False,
+            )
+        except Exception as exc:
+            return Response(message=f"open_app failed: {exc}", break_loop=False)
+        return Response(message=raw.strip() or "opened", break_loop=False)
+'''
+
+
+def ensure_open_app_plugin() -> None:
+    """Write the v2.14 plugin under the usr mount. No token is stored here."""
+    if not vault_mounted():
+        return
+    root = ADDON / "state" / "plugins" / "stickllm_apps"
+    files = {
+        root / "plugin.yaml": open_app_plugin_yaml(),
+        root / "tools" / "open_app.py": open_app_tool_source(),
+        root / "prompts" / "agent.system.tool.open_app.md": open_app_tool_prompt(),
+        root / "skills" / "stickllm-apps" / "SKILL.md": apps_skill_text(),
+    }
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        current = ""
+        if path.is_file():
+            current = path.read_text(encoding="utf-8", errors="replace")
+        if current != text:
+            path.write_text(text, encoding="utf-8")
+            try:
+                os.chmod(path, 0o644)
+            except OSError:
+                pass
 
 
 def ensure_apps_instructions() -> None:
@@ -640,6 +777,7 @@ def ensure_apps_instructions() -> None:
             current = skill_path.read_text(encoding="utf-8", errors="replace")
         if current != text:
             skill_path.write_text(text, encoding="utf-8")
+    ensure_open_app_plugin()
 
 
 def apps_server(listen_host: str, listen_port: int, root: Path | None = None) -> ThreadingHTTPServer:
@@ -711,6 +849,281 @@ def run_apps_bridge(listen_host: str, listen_port: int, root: Path | None = None
             srv.server_close()
         except OSError:
             pass
+
+
+def open_app_token_file() -> Path:
+    raw = os.environ.get("STICKLLM_OPEN_APP_TOKEN_FILE", "").strip()
+    if raw:
+        return Path(raw)
+    settings = Path(os.environ.get("STICKLLM_SETTINGS_MNT", str(SETTINGS_MNT)))
+    return settings / "agent-zero" / "open-app.token"
+
+
+def ensure_open_app_token(path: Path | None = None) -> Path:
+    """Create the stick token if needed. Never print it."""
+    dest = path or open_app_token_file()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    current = ""
+    if dest.is_file():
+        current = dest.read_text(encoding="utf-8", errors="replace").strip()
+    if len(current) < 24 or any(ch.isspace() for ch in current):
+        current = secrets.token_urlsafe(32)
+        dest.write_text(current + "\n", encoding="utf-8")
+    try:
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
+    return dest
+
+
+def read_open_app_token(path: Path | None = None) -> str:
+    dest = path or open_app_token_file()
+    try:
+        return dest.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def open_app_token_ok(presented: str | None, expected: str) -> bool:
+    """True only when the bearer matches. Missing and wrong tokens are refused."""
+    if not expected or not presented:
+        return False
+    got = str(presented).strip()
+    if got.lower().startswith("bearer "):
+        got = got[7:].strip()
+    if not got or len(got) != len(expected):
+        return False
+    return hmac.compare_digest(got, expected)
+
+
+def open_app_id_ok(app_id: object) -> bool:
+    """Allowlist of real app ids. Rejects labels, URLs, and path traversal."""
+    if not isinstance(app_id, str):
+        return False
+    if app_id not in APPS_URL_IDS:
+        return False
+    if not app_id.isascii() or not app_id.isalpha() or not app_id.islower():
+        return False
+    return True
+
+
+def open_app_window(app_id: str) -> str:
+    return "stickllm-" + app_id
+
+
+def open_app_path(app_id: str) -> str:
+    return f"/apps/{app_id}/"
+
+
+def open_app_page_ready(root: Path, app_id: str) -> bool:
+    """True when the id is allowlisted and that app's index.html is on disk."""
+    if not open_app_id_ok(app_id):
+        return False
+    try:
+        base = root.resolve()
+        target = (base / app_id / "index.html").resolve()
+    except OSError:
+        return False
+    if base not in target.parents:
+        return False
+    return target.is_file()
+
+
+def notify_gateway_open_app(app_id: str, token: str, url: str | None = None) -> dict:
+    """Tell the UI gateway, on loopback, to push the open-tab event."""
+    target = url or os.environ.get("STICKLLM_OPEN_APP_NOTIFY", "http://127.0.0.1/api/ui/open-app")
+    body = json.dumps({"id": app_id}).encode("utf-8")
+    request = urllib.request.Request(
+        target,
+        data=body,
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=1.5) as resp:
+        raw = resp.read()
+    data = json.loads(raw.decode("utf-8") or "{}")
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise OSError("ui did not accept open_app")
+    return data
+
+
+_OPEN_APP_LAST: dict = {}
+_OPEN_APP_LOCK = threading.Lock()
+_OPEN_APP_CHECKS: list[dict] = []
+
+
+def record_open_app_check(peer: str, code: int, obj: dict) -> None:
+    """Public result of a control call. Never includes the token."""
+    item = {
+        "code": int(code),
+        "from": peer,
+        "error": str(obj.get("error") or ""),
+        "id": str(obj.get("id") or "") if obj.get("ok") else "",
+        "dry_run": bool(obj.get("dry_run")),
+    }
+    with _OPEN_APP_LOCK:
+        _OPEN_APP_CHECKS.append(item)
+        del _OPEN_APP_CHECKS[:-8]
+        snapshot = list(_OPEN_APP_CHECKS)
+    try:
+        path = Path("/run/stickllm/open-app-check.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"events": snapshot}) + "\n", encoding="utf-8")
+        os.chmod(path, 0o644)
+    except OSError:
+        return
+
+
+def open_app_server(
+    listen_host: str,
+    listen_port: int,
+    root: Path | None = None,
+    token_file: Path | None = None,
+    notify=None,
+) -> ThreadingHTTPServer:
+    """Token-authenticated open_app control. Refuses every interface address."""
+    if listen_host in ("0.0.0.0", "::", ""):
+        raise SystemExit("open app control must not listen on all interfaces")
+    apps = root or apps_ui_root()
+    token_path = token_file or open_app_token_file()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _send(self, code: int, obj: dict) -> None:
+            if urllib.parse.urlsplit(self.path).path == "/open":
+                peer = self.client_address[0] if self.client_address else ""
+                record_open_app_check(peer, code, obj)
+            body = (json.dumps(obj) + "\n").encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if self.command != "HEAD" and body:
+                self.wfile.write(body)
+
+        def _token(self) -> str:
+            return read_open_app_token(token_path)
+
+        def _authorized(self) -> bool:
+            return open_app_token_ok(self.headers.get("Authorization"), self._token())
+
+        def do_GET(self) -> None:  # noqa: N802
+            path = urllib.parse.urlsplit(self.path).path
+            if path != "/last":
+                self._send(404, {"ok": False, "error": "not_found"})
+                return
+            if not self._authorized():
+                self._send(401, {"ok": False, "error": "unauthorized"})
+                return
+            with _OPEN_APP_LOCK:
+                last = dict(_OPEN_APP_LAST)
+            self._send(200, {"ok": True, "last": last})
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = urllib.parse.urlsplit(self.path).path
+            length = int(self.headers.get("Content-Length") or 0)
+            if length < 0 or length > 2048:
+                self._send(413, {"ok": False, "error": "too_large"})
+                return
+            raw = self.rfile.read(length) if length else b""
+            if path != "/open":
+                self._send(404, {"ok": False, "error": "not_found"})
+                return
+            if not self._authorized():
+                self._send(401, {"ok": False, "error": "unauthorized"})
+                return
+            try:
+                req = json.loads(raw.decode("utf-8") or "{}")
+            except (UnicodeError, json.JSONDecodeError):
+                self._send(400, {"ok": False, "error": "bad_json"})
+                return
+            if not isinstance(req, dict):
+                self._send(400, {"ok": False, "error": "bad_json"})
+                return
+            app_id = req.get("id")
+            if not open_app_id_ok(app_id):
+                self._send(400, {"ok": False, "error": "bad_id"})
+                return
+            if not open_app_page_ready(apps, app_id):
+                self._send(404, {"ok": False, "error": "not_found"})
+                return
+            peer = self.client_address[0] if self.client_address else ""
+            opened = {
+                "ok": True,
+                "id": app_id,
+                "path": open_app_path(app_id),
+                "window": open_app_window(app_id),
+                "from": peer,
+            }
+            # dry_run checks the token and id without telling the UI to open a tab.
+            if req.get("dry_run") is True:
+                opened["dry_run"] = True
+                with _OPEN_APP_LOCK:
+                    _OPEN_APP_LAST.clear()
+                    _OPEN_APP_LAST.update(opened)
+                self._send(200, opened)
+                return
+            try:
+                if notify is None:
+                    notify_gateway_open_app(app_id, self._token())
+                else:
+                    notify(app_id)
+            except Exception:
+                self._send(502, {"ok": False, "error": "ui_unavailable"})
+                return
+            with _OPEN_APP_LOCK:
+                _OPEN_APP_LAST.clear()
+                _OPEN_APP_LAST.update(opened)
+            self._send(200, opened)
+
+        def do_PUT(self) -> None:  # noqa: N802
+            self._send(404, {"ok": False, "error": "not_found"})
+
+        do_DELETE = do_PUT
+        do_PATCH = do_PUT
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+        def version_string(self) -> str:
+            return "StickLLM"
+
+    return ThreadingHTTPServer((listen_host, int(listen_port)), Handler)
+
+
+def run_open_app_bridge(
+    hosts: tuple[str, ...] = (LLAMA_BRIDGE_HOST, "127.0.0.1"),
+    listen_port: int = OPEN_APP_PORT,
+) -> None:
+    """Listen on the bridge and on loopback. Do not bind all interfaces."""
+    for host in hosts:
+        if host in ("0.0.0.0", "::", ""):
+            raise SystemExit("open app control must not listen on all interfaces")
+    servers = [open_app_server(host, listen_port) for host in hosts]
+    threads: list[threading.Thread] = []
+    for srv in servers[:-1]:
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        threads.append(thread)
+    try:
+        servers[-1].serve_forever()
+    except OSError:
+        return
+    finally:
+        for srv in servers:
+            try:
+                srv.shutdown()
+            except OSError:
+                pass
+            try:
+                srv.server_close()
+            except OSError:
+                pass
 
 
 def read_status() -> dict:
@@ -1315,6 +1728,12 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "apps-bridge":
         run_apps_bridge(LLAMA_BRIDGE_HOST, APPS_BRIDGE_PORT)
+        return 0
+    if cmd == "ensure-open-app-token":
+        ensure_open_app_token()
+        return 0
+    if cmd == "open-app-bridge":
+        run_open_app_bridge()
         return 0
     if cmd == "image-ref":
         print(image_ref())

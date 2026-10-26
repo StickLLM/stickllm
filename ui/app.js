@@ -4806,6 +4806,41 @@ function startAppStatus() {
 ensurePaired(false).then((ok) => {
   if (!ok) return;
   startAppStatus();
+  startOpenAppEvents();
 });
+if (detectLocalHost()) startOpenAppEvents();
+
+// window.stickllmApp hooks are later.
+function openStickApp(id) {
+  if (!/^[a-z]+$/.test(id)) return false;
+  const name = "stickllm-" + id;
+  const url = "/apps/" + id + "/?stickllm_open=1";
+  const opened = window.open(url, name);
+  if (!opened) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = name;
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+  fetch("/api/ui/open-app-seen", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ id, opened: !!opened }),
+  }).catch(() => {});
+  return !!opened;
+}
+function startOpenAppEvents() {
+  if (startOpenAppEvents.started || typeof EventSource !== "function") return;
+  startOpenAppEvents.started = true;
+  const events = new EventSource("/api/ui/events");
+  events.addEventListener("open_app", (ev) => {
+    let data = {};
+    try { data = JSON.parse(ev.data || "{}"); } catch (e) { return; }
+    if (data && data.id) openStickApp(String(data.id));
+  });
+}
 
 })();
