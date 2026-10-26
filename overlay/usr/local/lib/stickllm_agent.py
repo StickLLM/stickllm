@@ -57,6 +57,7 @@ LLAMA_BASE = f"http://{LLAMA_BRIDGE_HOST}:{LLAMA_BRIDGE_PORT}/v1"
 # Directory ids under ui/apps. The desktop label for minesweeper is minesweep.
 APPS_URL_IDS = (
     "minesweeper",
+    "solitaire",
     "tetris",
     "notepad",
     "calculator",
@@ -66,7 +67,14 @@ APPS_URL_IDS = (
 )
 APPS_NOTE = (
     "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
-    "(minesweeper, tetris, notepad, calculator, files, media, monitor)."
+    "(minesweeper, solitaire, tetris, notepad, calculator, files, media, monitor)."
+)
+# Apps whose page sets window.stickllmApp, so app_state and app_act work.
+# The rest open with open_app only.
+APPS_PLAYABLE_IDS = ("minesweeper", "solitaire", "notepad", "calculator")
+APPS_PLAYABLE_NOTE = (
+    "app_state and app_act work for minesweeper, solitaire, notepad, and calculator. "
+    "tetris, files, media, and monitor open with open_app only."
 )
 OPEN_APP_RULE = (
     "When the user says open/start/show an app, use open_app, not the browser tool."
@@ -628,6 +636,16 @@ APP_PLAY_RULE = (
     "Never use your own browser or external sites for them. "
     "At most 30 actions, then summarise."
 )
+APP_ACTIONS_TEXT = (
+    "Minesweeper: {\"reveal\":[row,col]} or {\"flag\":[row,col]}.\n"
+    "Solitaire: {\"move\":\"t3->f1\"}, {\"move\":\"t2->t5\",\"card\":\"9H\"}, "
+    "{\"draw\":true}, {\"click\":\"t4\"}, {\"undo\":true}, or {\"new_game\":true}. "
+    "Piles are stock, waste, f1-f4 (foundations), t1-t7 (tableau). "
+    "Cards are rank A 2-9 T J Q K plus suit S H D C; # is face down; the last card is on top. "
+    "An illegal move returns ok false and changes nothing.\n"
+    "Notepad: {\"set_text\":\"...\"} or {\"save_as\":\"notes.txt\"}.\n"
+    "Calculator: {\"expr\":\"12+3=\"}.\n"
+)
 
 
 def apps_skill_text() -> str:
@@ -636,7 +654,7 @@ def apps_skill_text() -> str:
         "---\n"
         "name: stickllm-apps\n"
         "description: Play StickLLM apps on the user's screen with open_app, "
-        "app_state, and app_act. URL ids are minesweeper, tetris, "
+        "app_state, and app_act. URL ids are minesweeper, solitaire, tetris, "
         "notepad, calculator, files, media, and monitor. The desktop label "
         "minesweep is URL id minesweeper.\n"
         "---\n\n"
@@ -644,6 +662,11 @@ def apps_skill_text() -> str:
         + "\n\n"
         + OPEN_APP_RULE
         + "\n\n"
+        + APPS_PLAYABLE_NOTE
+        + "\n\n"
+        + "Actions for app_act:\n"
+        + APP_ACTIONS_TEXT
+        + "\n"
         + body
     )
 
@@ -947,6 +970,8 @@ def app_state_tool_prompt() -> str:
         "### app_state\n"
         "Read the visible StickLLM app tab. Returns JSON from window.stickllmApp.state().\n"
         "Call open_app first so the tab is on screen.\n"
+        + APPS_PLAYABLE_NOTE
+        + "\n"
         'Example: {"tool_name":"app_state","tool_args":{"id":"minesweeper"}}\n'
     )
 
@@ -955,11 +980,10 @@ def app_act_tool_prompt() -> str:
     return (
         "### app_act\n"
         "Act in the visible StickLLM app tab. Do not use the browser tool.\n"
-        "Minesweeper: {\"reveal\":[row,col]} or {\"flag\":[row,col]}.\n"
-        "Solitaire: {\"move\":\"t3->f1\"} or {\"draw\":true}.\n"
-        "Notepad: {\"set_text\":\"...\"} or {\"save_as\":\"notes.txt\"}.\n"
-        "Calculator: {\"expr\":\"12+3=\"}.\n"
-        "At most 30 actions, then summarise.\n"
+        + APPS_PLAYABLE_NOTE
+        + "\n"
+        + APP_ACTIONS_TEXT
+        + "At most 30 actions, then summarise.\n"
         'Example: {"tool_name":"app_act","tool_args":{"id":"minesweeper","action":{"reveal":[0,0]}}}\n'
     )
 

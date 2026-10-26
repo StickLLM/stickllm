@@ -938,10 +938,11 @@ def test_apps_prompt_names_url_ids(tmp_path):
     ).read_text(encoding="utf-8")
     note = (
         "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
-        "(minesweeper, tetris, notepad, calculator, files, media, monitor)."
+        "(minesweeper, solitaire, tetris, notepad, calculator, files, media, monitor)."
     )
     rule = "When the user says open/start/show an app, use open_app, not the browser tool."
     assert note in prompt
+    assert "http://172.30.0.1:8081/apps/solitaire/" in prompt
     assert rule in prompt
     assert "http://172.30.0.1:8081/apps/minesweeper/" in prompt
     assert "minesweep" in prompt
@@ -952,6 +953,15 @@ def test_apps_prompt_names_url_ids(tmp_path):
     assert rule in skill
     assert "Use open_app / app_state / app_act for StickLLM apps." in skill
     assert "At most 30 actions, then summarise." in skill
+    assert "URL ids are minesweeper, solitaire, tetris" in skill
+    assert agent.APPS_PLAYABLE_NOTE in skill
+    assert '{"move":"t3->f1"}' in skill
+    assert '{"draw":true}' in skill
+    act_prompt = (
+        vault / "addons" / "agent-zero" / "state" / "plugins" / "stickllm_apps" / "prompts" / "agent.system.tool.app_act.md"
+    ).read_text(encoding="utf-8")
+    assert '{"move":"t3->f1"}' in act_prompt
+    assert agent.APPS_PLAYABLE_NOTE in act_prompt
     state_tool = (
         vault / "addons" / "agent-zero" / "state" / "plugins" / "stickllm_apps" / "tools" / "app_state.py"
     ).read_text(encoding="utf-8")
@@ -993,10 +1003,11 @@ def test_apps_prompt_names_url_ids(tmp_path):
 def test_open_app_allowlist_and_token(tmp_path):
     agent = _load(AGENT, "stickllm_agent_open_app")
     assert agent.open_app_id_ok("minesweeper") is True
-    for good in ("files", "media", "monitor", "calculator", "tetris", "notepad"):
+    for good in ("files", "media", "monitor", "calculator", "solitaire", "tetris", "notepad"):
         assert agent.open_app_id_ok(good) is True
     for bad in (
-        "solitaire",
+        "Solitaire",
+        "../solitaire",
         "minesweep",
         "Minesweeper",
         "../minesweeper",
@@ -1582,3 +1593,32 @@ def test_app_act_roundtrip_and_bridge(tmp_path):
     finally:
         bridge.shutdown()
         bridge.server_close()
+
+def test_playable_apps_have_adapters_and_solitaire_maps_cards_by_position():
+    agent = _load(AGENT, "stickllm_agent_playable")
+    apps = ROOT / "ui" / "apps"
+    for app_id in agent.APPS_PLAYABLE_IDS:
+        assert agent.open_app_id_ok(app_id) is True
+        page = (apps / app_id / "index.html").read_text(encoding="utf-8")
+        assert '<script src="stickllm-adapter.js"></script>' in page
+        assert '<script src="/apps/stickllm-bridge.js"></script>' in page
+        adapter = (apps / app_id / "stickllm-adapter.js").read_text(encoding="utf-8")
+        assert "window.stickllmApp" in adapter
+        assert f'id: "{app_id}"' in adapter
+    for app_id in agent.APPS_URL_IDS:
+        assert (apps / app_id / "index.html").is_file()
+        if app_id not in agent.APPS_PLAYABLE_IDS:
+            assert not (apps / app_id / "stickllm-adapter.js").exists()
+            assert app_id in agent.APPS_PLAYABLE_NOTE
+    sol = (apps / "solitaire" / "stickllm-adapter.js").read_text(encoding="utf-8")
+    # Cards live under .cardTable, not inside .pile, so piles come from geometry.
+    assert '".cardTable .card"' in sol
+    assert "getBoundingClientRect" in sol
+    assert '{ 1: "S", 2: "H", 3: "D", 4: "C" }' in sol
+    assert '100: "J", 101: "Q", 102: "K"' in sol
+    assert '"undoButton"' in sol and "illegal_move" in sol
+    css = next((apps / "solitaire").glob("SolitaireLib.*.css")).read_text(encoding="utf-8")
+    assert ".s1c1r1 .cardFront{background-image:url(AS." in css
+    assert ".s2c1r100 .cardFront{background-image:url(JH." in css
+    assert ".s3c1r101 .cardFront{background-image:url(QD." in css
+    assert ".s4c1r102 .cardFront{background-image:url(KC." in css

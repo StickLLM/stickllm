@@ -43,11 +43,11 @@ The kiosk opens StickLLM at `http://127.0.0.1/` and opens an app window itself. 
 5. The kiosk auto-opens a named window `stickllm-<id>`. A remote browser shows a toast with an Open button instead of a popup.
 6. The visible tab answers `app_state` and `app_act` when `window.stickllmApp` is present. The reply is `POST /api/ui/app-reply`.
 
-`window.stickllmApp` is `{ describe(), state(), act(action) }` and returns JSON. Minesweeper, Notepad, and Calculator have adapters. Solitaire is not on the allowlist.
+`window.stickllmApp` is `{ describe(), state(), act(action) }` and returns JSON. Minesweeper, Solitaire, Notepad, and Calculator have adapters. Tetris, Files, Media, and Monitor open with `open_app` only; `app_state` on them answers `no_adapter`. The Solitaire adapter matches each card to a pile by screen position, because the cards are children of `.cardTable`, not of `.pile`. An illegal Solitaire move is undone and returns `ok: false`.
 
 Agent Zero tools are `open_app(id)`, `app_state(id)`, and `app_act(id, action)`. The skill is `/mnt/stickllm-settings/agent-zero/skills/stickllm-apps/SKILL.md`, mounted at `/a0/usr/skills/stickllm-apps/SKILL.md`. It says to use those tools, not the container's own browser, and to stop after 30 actions.
 
-URL ids: `minesweeper`, `tetris`, `notepad`, `calculator`, `files`, `media`, `monitor`. The desktop label minesweep is the id `minesweeper`.
+URL ids: `minesweeper`, `solitaire`, `tetris`, `notepad`, `calculator`, `files`, `media`, `monitor`. The desktop label minesweep is the id `minesweeper`.
 
 ## Vault
 
