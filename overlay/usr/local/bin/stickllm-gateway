@@ -126,9 +126,13 @@ def _target_log(target: str) -> str:
     return f" target={safe}"
 
 
-# A LAN browser that used Agent on :5443 this recently (or still has an Agent
-# websocket open) is the screen open_app / app_state / app_act go to.
-AGENT_TARGET_WINDOW = 120.0
+# A LAN browser that SENT A CHAT MESSAGE to Agent on :5443 this recently is
+# the screen open_app goes to; otherwise the kiosk. An Agent tab merely left
+# open (it polls and keeps a websocket) does not count: that is how open_app
+# from a kiosk chat went to a background desktop tab. The kiosk talks to Agent
+# on 127.0.0.1:5099 directly, so its own messages are never seen here.
+AGENT_TARGET_WINDOW = 300.0
+AGENT_PROMPT_PATHS = ("/message_async", "/message")
 
 
 class _AgentClients:
@@ -138,6 +142,14 @@ class _AgentClients:
         self._lock = threading.Lock()
         self._seen: dict[str, float] = {}
         self._ws: dict[str, int] = {}
+        self._prompted: dict[str, float] = {}
+
+    def prompt(self, ip: str, now: float | None = None) -> None:
+        """A chat message from this LAN browser."""
+        if not ip or ip in _LOOPBACK_HOSTS:
+            return
+        with self._lock:
+            self._prompted[ip] = time.time() if now is None else now
 
     def note(self, ip: str, now: float | None = None) -> None:
         if not ip or ip in _LOOPBACK_HOSTS:
@@ -160,11 +172,10 @@ class _AgentClients:
         current = time.time() if now is None else now
         best, best_at = "", -1.0
         with self._lock:
-            for ip, at in list(self._seen.items()):
-                live = self._ws.get(ip, 0) > 0 or current - at <= AGENT_TARGET_WINDOW
-                if not live:
+            for ip, at in list(self._prompted.items()):
+                if current - at > AGENT_TARGET_WINDOW:
                     if current - at > 24 * 3600:
-                        self._seen.pop(ip, None)
+                        self._prompted.pop(ip, None)
                     continue
                 if at > best_at:
                     best, best_at = ip, at
@@ -175,7 +186,7 @@ AGENT_CLIENTS = _AgentClients()
 
 
 def ui_target(now: float | None = None) -> tuple[str, str]:
-    """(screen, reason): the LAN browser driving Agent, else the kiosk."""
+    """(screen, reason): the LAN browser that just chatted with Agent, else the kiosk."""
     lan = AGENT_CLIENTS.target(now)
     if lan:
         return lan, "agent_lan"
@@ -198,6 +209,8 @@ class _UiOpenBus:
         # app is set by an app page (stickllm-bridge.js, ?app=<id>).
         self._conns: dict[int, dict] = {}
         self._conn_seq = 0
+        # app id -> screen open_app last sent it to (app_state / app_act go there).
+        self._app_screen: dict[str, str] = {}
 
     def connect(self, ip: str, app: str = "", key: str | None = None) -> int:
         with self._cond:
@@ -228,6 +241,12 @@ class _UiOpenBus:
         with self._cond:
             return any(c["key"] == key and c["app"] == app_id for c in self._conns.values())
 
+    def screen_for_app(self, app_id: str) -> str:
+        """The screen open_app last put this app on, if its page is still open."""
+        with self._cond:
+            screen = self._app_screen.get(app_id, "")
+        return screen if screen and self.has_app_page(screen, app_id) else ""
+
     def subscriber_count(self) -> int:
         with self._cond:
             return self._subscribers
@@ -246,6 +265,8 @@ class _UiOpenBus:
         with self._cond:
             self._seq += 1
             event["seq"] = self._seq
+            if target:
+                self._app_screen[app_id] = target
             self._last = dict(event)
             self._events.append(dict(event))
             del self._events[:-40]
@@ -838,18 +859,14 @@ def agent_handoff_redeem(ticket: object, doc: dict, now: float | None = None) ->
     return True
 
 
-# App pages opened by open_app (the in-page panel's iframe or a pop-out
-# window). They must not depend on the script-set stickllm_pair cookie: any
-# StickLLM tab on the same host (http:// or https://, either port) shares that
-# cookie jar and can overwrite or clear it. The paired tab instead asks for a
-# one-time ticket, puts it in the app URL, and the first page load swaps it for
-# an HttpOnly cookie derived from the pairing (scripts cannot touch it, and a
-# remint kills it). It opens /apps/* and the app's own event stream and
-# replies, nothing else; it is never the pair token.
+# App pages (/apps/<id>/, opened by a desktop icon or by open_app) must not
+# depend on the script-set stickllm_pair cookie: every StickLLM tab on the host
+# (http:// or https://, either port) shares that cookie jar and a tab without
+# the token clears or overwrites it. The paired StickLLM tab therefore asks the
+# gateway (Bearer) to set an HttpOnly cookie derived from the pairing; scripts
+# cannot touch it and a remint kills it. It opens /apps/* and the app's own
+# event stream and replies, nothing else, and it is never the pair token.
 APPS_SESSION_COOKIE = "stickllm_apps"
-APP_TICKET_TTL = 60
-_APP_TICKET_USED: dict[str, int] = {}
-_APP_TICKET_LOCK = threading.Lock()
 
 
 def apps_session_value(doc: dict) -> str:
@@ -864,46 +881,6 @@ def apps_session_ok(value: object, doc: dict) -> bool:
         return False
     expected = apps_session_value(doc)
     return bool(expected) and hmac.compare_digest(value, expected)
-
-
-def mint_app_ticket(doc: dict, now: float | None = None, ttl: int = APP_TICKET_TTL) -> str:
-    secret = _pairing_secret(doc, b"stickllm-apps-ticket-v1")
-    if secret is None:
-        return ""
-    exp = int((now if now is not None else time.time()) + max(1, int(ttl)))
-    nonce = secrets.token_hex(16)
-    msg = f"{exp}.{nonce}"
-    sig = hmac.new(secret, msg.encode("ascii"), hashlib.sha256).hexdigest()
-    return f"{msg}.{sig}"
-
-
-def app_ticket_redeem(ticket: object, doc: dict, now: float | None = None) -> bool:
-    """Accept a fresh app ticket once. Never the pair token."""
-    if not isinstance(ticket, str) or len(ticket) > 128 or ticket.count(".") != 2:
-        return False
-    exp_s, nonce, sig = ticket.split(".")
-    if not exp_s.isdigit() or len(nonce) != 32 or len(sig) != 64:
-        return False
-    if any(ch not in "0123456789abcdef" for ch in nonce + sig):
-        return False
-    secret = _pairing_secret(doc, b"stickllm-apps-ticket-v1")
-    if secret is None:
-        return False
-    current = int(now if now is not None else time.time())
-    exp = int(exp_s)
-    if exp < current or exp > current + APP_TICKET_TTL + 5:
-        return False
-    expected = hmac.new(secret, f"{exp_s}.{nonce}".encode("ascii"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected):
-        return False
-    with _APP_TICKET_LOCK:
-        for old, old_exp in list(_APP_TICKET_USED.items()):
-            if old_exp < current:
-                _APP_TICKET_USED.pop(old, None)
-        if nonce in _APP_TICKET_USED:
-            return False
-        _APP_TICKET_USED[nonce] = exp
-    return True
 
 
 def read_text_safe(path: Path) -> str:
@@ -2154,7 +2131,7 @@ class Handler(SimpleHTTPRequestHandler):
         return "valid" if token_ok("Bearer " + value, doc) else "stale"
 
     def _desktop_allowed(self) -> bool:
-        """Loopback, a paired browser, or an app page opened with a ticket."""
+        """Loopback, a paired browser, or the paired browser's HttpOnly apps cookie."""
         doc, ok = self._auth()
         if doc.get("require_pair") and not ok and not self._apps_cookie_ok(doc):
             path = urllib.parse.urlparse(self.path).path
@@ -2168,42 +2145,7 @@ class Handler(SimpleHTTPRequestHandler):
             return False
         return True
 
-    def _app_ticket_redirect(self, path: str) -> bool:
-        """GET /apps/<id>/?...&t=<ticket>: swap the one-time ticket for the
-        HttpOnly apps cookie and redirect to the same URL without it."""
-        parsed = urllib.parse.urlparse(self.path)
-        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        tickets = [v for k, v in query if k == "t"]
-        if not tickets:
-            return False
-        parts = [part for part in path.split("/") if part]
-        if len(parts) < 2 or parts[0] != "apps" or any(part in {".", ".."} for part in parts):
-            return False
-        doc = load_auth()
-        if not app_ticket_redeem(tickets[0], doc):
-            UI_OPEN._write_log(f"STICKLLM_APPS_AUTH ticket=rejected ip={self._ui_client_ip()}\n")
-            return False
-        value = apps_session_value(doc)
-        if not value:
-            return False
-        rest = urllib.parse.urlencode([(k, v) for k, v in query if k != "t"])
-        location = urllib.parse.quote(path, safe="/-._~") + (("?" + rest) if rest else "")
-        secure = "; Secure" if isinstance(self.connection, ssl.SSLSocket) else ""
-        self.send_response(303)
-        self.send_header("Location", location)
-        self.send_header(
-            "Set-Cookie",
-            f"{APPS_SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Strict{secure}",
-        )
-        self.send_header("Content-Length", "0")
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        UI_OPEN._write_log(f"STICKLLM_APPS_AUTH ticket=redeemed ip={self._ui_client_ip()} app={parts[1]}\n")
-        return True
-
     def _serve_desktop(self, path: str) -> None:
-        if self.command == "GET" and self._app_ticket_redirect(path):
-            return
         if not self._desktop_allowed():
             return
         parts = [part for part in path.split("/") if part]
@@ -2262,7 +2204,7 @@ class Handler(SimpleHTTPRequestHandler):
             return True
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
-        # An app page opened with an app ticket: only its own stream and replies.
+        # An app page with the apps cookie: only its own stream and replies.
         app_page = parsed.path == "/api/ui/app-reply" or (
             parsed.path == "/api/ui/events" and bool(query.get("app"))
         )
@@ -2449,6 +2391,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if not self._is_loopback():
             AGENT_CLIENTS.note(self._ui_client_ip())
+            if method == "POST" and path in AGENT_PROMPT_PATHS:
+                AGENT_CLIENTS.prompt(self._ui_client_ip())
         upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
         try:
             mod = agent_lib()
@@ -2875,7 +2819,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.close_connection = True
             self._json(413, {"ok": False, "error": "too_large"})
             return
-        if path in ("/api/ui/open-app", "/api/ui/open-app-seen", "/api/ui/events-ticket", "/api/ui/app-ticket") and n > 2048:
+        if path in ("/api/ui/open-app", "/api/ui/open-app-seen", "/api/ui/events-ticket", "/api/ui/apps-session") and n > 2048:
             self.close_connection = True
             self._json(413, {"ok": False, "error": "too_large"})
             return
@@ -2961,7 +2905,9 @@ class Handler(SimpleHTTPRequestHandler):
             if kind == "app_act" and not isinstance(action, dict):
                 self._json(400, {"ok": False, "error": "bad_action"})
                 return
-            target, _reason = ui_target()
+            # The screen open_app put the app on, while its page is open;
+            # otherwise the screen open_app would pick now.
+            target = UI_OPEN.screen_for_app(str(app_id)) or ui_target()[0]
             if not UI_OPEN.has_app_page(target, str(app_id)):
                 # Fail fast instead of waiting for a reply that cannot come.
                 # Never fall back to the other screen: that is how a game ends
@@ -3050,24 +2996,38 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(200, {"ok": True, "result": result})
             return
 
-        if path == "/api/ui/app-ticket":
-            # Paired StickLLM tab -> one-time ticket for an app page URL.
+        if path == "/api/ui/apps-session":
+            # Paired StickLLM tab -> HttpOnly cookie for app pages, so a click
+            # on an app (desktop icon or open_app) opens it in a new tab.
             if not stickllm_ui_client(self.headers):
                 self._json(403, {"ok": False, "error": "ui_only"})
                 return
             doc, ok = self._auth()
             if self._is_loopback() or not doc.get("require_pair"):
-                self._json(200, {"ok": True, "t": ""})
+                self._json(200, {"ok": True, "cookie": False})
                 return
-            ticket = mint_app_ticket(doc) if ok else ""
-            UI_OPEN._write_log(
-                f"STICKLLM_APPS_AUTH ticket={'minted' if ticket else 'refused'} "
-                f"ip={self._ui_client_ip()} pair_cookie={self._pair_cookie_state(doc)}\n"
-            )
-            if not ticket:
+            value = apps_session_value(doc) if ok else ""
+            had = self._apps_cookie_ok(doc)
+            if not had or not value:
+                UI_OPEN._write_log(
+                    f"STICKLLM_APPS_AUTH session={'set' if value else 'refused'} "
+                    f"ip={self._ui_client_ip()} pair_cookie={self._pair_cookie_state(doc)}\n"
+                )
+            if not value:
                 self._json(401, {"ok": False, "error": "pair_required"})
                 return
-            self._json(200, {"ok": True, "t": ticket, "ttl": APP_TICKET_TTL})
+            secure = "; Secure" if isinstance(self.connection, ssl.SSLSocket) else ""
+            body = json.dumps({"ok": True, "cookie": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header(
+                "Set-Cookie",
+                f"{APPS_SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Strict{secure}",
+            )
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path == "/api/ui/events-ticket":

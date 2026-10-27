@@ -1722,23 +1722,24 @@ def test_gateway_app_call_passes_on_gateway_error_reason():
         srv.server_close()
 
 
-def test_agent_clients_pick_the_lan_browser_driving_agent():
+def test_agent_clients_pick_the_lan_browser_that_just_chatted():
     gateway = _load(GATEWAY, "stickllm_gateway_agent_clients")
     clients = gateway._AgentClients()
     assert clients.target() == ""
-    clients.note("127.0.0.1", now=1000.0)
-    clients.note("::1", now=1000.0)
+    clients.prompt("127.0.0.1", now=1000.0)
+    clients.prompt("::1", now=1000.0)
     assert clients.target(now=1001.0) == ""
+    # An Agent tab left open (polls, websocket) is not "driving": kiosk wins.
     clients.note("192.168.72.76", now=1000.0)
+    clients.websocket("192.168.72.76", +1)
+    assert clients.target(now=1001.0) == ""
+    clients.websocket("192.168.72.76", -1)
+    clients.prompt("192.168.72.76", now=1000.0)
     assert clients.target(now=1000.0 + gateway.AGENT_TARGET_WINDOW) == "192.168.72.76"
     assert clients.target(now=1001.0 + gateway.AGENT_TARGET_WINDOW) == ""
-    clients.note("192.168.72.80", now=1010.0)
+    clients.prompt("192.168.72.80", now=1010.0)
     assert clients.target(now=1011.0) == "192.168.72.80"
-    clients.websocket("192.168.72.76", +1)
-    later = time.time() + 10 * gateway.AGENT_TARGET_WINDOW
-    assert clients.target(now=later) == "192.168.72.76"
-    clients.websocket("192.168.72.76", -1)
-    assert clients.target(now=later) == ""
+    assert "/message_async" in gateway.AGENT_PROMPT_PATHS
     assert gateway.ui_peer_key("127.0.0.1") == "kiosk"
     assert gateway.ui_peer_key("192.168.72.76") == "192.168.72.76"
 
@@ -1871,8 +1872,16 @@ def test_open_app_and_app_calls_go_only_to_the_agent_browser(tmp_path):
         log = wait_log("reason=no_lan_agent")
         assert "phase=published id=minesweeper path=/apps/minesweeper/ subscribers=2 target=kiosk reason=no_lan_agent" in log
 
-        # The desktop used Agent on :5443: only the desktop gets the event.
+        # An Agent tab merely open on the desktop: still the kiosk.
         gateway.AGENT_CLIENTS.note(desk)
+        gateway.AGENT_CLIENTS.websocket(desk, +1)
+        code, body = open_app()
+        assert code == 200 and body["screen"] == "kiosk" and body["reason"] == "no_lan_agent"
+        assert b"event: open_app" in read_for(kiosk_ui, b"event: open_app", 2)
+        gateway.AGENT_CLIENTS.websocket(desk, -1)
+
+        # The desktop sent a chat message on :5443: only the desktop gets the event.
+        gateway.AGENT_CLIENTS.prompt(desk)
         code, body = open_app()
         assert code == 200 and body["screen"] == "browser" and body["reason"] == "agent_lan"
         assert b"event: open_app" in read_for(desk_ui, b"event: open_app", 2)
@@ -1949,34 +1958,45 @@ def test_open_app_and_app_calls_go_only_to_the_agent_browser(tmp_path):
                 os.environ[key] = value
 
 
-def test_app_pages_subscribe_with_their_id_and_remote_tries_a_window():
+def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     bridge = (ROOT / "ui" / "apps" / "stickllm-bridge.js").read_text(encoding="utf-8")
     assert 'new EventSource("/api/ui/events?app=" + encodeURIComponent(id))' in bridge
     app = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+    index = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+    assert '<a class="deskIcon" data-starter="solitaire" href="/apps/solitaire/" target="stickllm-solitaire">' in index
     start = app.index("function openStickApp(id)")
     body = app[start:app.index("function startOpenAppEvents", start)]
-    assert "window.open(url" in body
-    assert "if (kiosk)" not in body
-    assert "showOpenAppToast(id)" in body
-    # Kiosk: its own window. LAN browser: never window.open from the event;
-    # the app opens inside the StickLLM tab (pop-out is a click in the panel).
-    kiosk, remote = body.split("if (detectLocalHost()) {", 1)[1].split("\n  }\n", 1)
-    assert "window.open(url" in kiosk
-    assert "window.open" not in remote
-    assert remote.index("showAppInPage(id)") < remote.index("showOpenAppToast(id)")
-    assert 'reportOpenApp(id, "embedded")' in remote
-    assert "cueHiddenTab(id)" in remote
-    panel = app[app.index("function showAppInPage(id)"):start]
-    assert 'appPageUrl(id, "&stickllm_embed=1")' in panel
-    pop = app[app.index("pop.onclick"):app.index("function showAppInPage(id)")]
-    assert 'window.open("", "stickllm-" + id)' in pop and "appPageUrl(id)" in pop
-    ticket = app[app.index("async function appPageUrl("):start]
-    assert '"/api/ui/app-ticket"' in ticket and "if (detectLocalHost()) return url;" in ticket
-    # The bridge answers hidden pages only when named stickllm-<id>.
-    assert 'const name = "stickllm-" + id;' in panel and "frame.name = name;" in panel
-    assert 'window.name === "stickllm-" + id' in bridge
+    # Kiosk and LAN browser: the desktop icon's own href and target (a new
+    # tab), then a toast with one click doing the same; never the panel.
+    assert "detectLocalHost" not in body
+    assert "showAppInPage" not in body and "window.open" not in body
+    assert body.index("openAppTab(id)") < body.index("showOpenAppToast(id)")
+    assert 'reportOpenApp(id, "opened")' in body and "cueHiddenTab(id)" in body
+    tab = app[app.index("function appTabLink(id)"):app.index("function openAppFromClick(id)")]
+    assert '#deskIcons a.deskIcon[data-starter="' in tab
+    assert 'icon.getAttribute("href")' in tab and 'icon.getAttribute("target")' in tab
+    assert "window.open(link.href, link.target)" in tab
+    click = app[app.index("function openAppFromClick(id)"):app.index("// In-page app panel")]
+    assert click.index("openAppTab(id)") < click.index("showAppInPage(id)")
+    toast = app[app.index("function showOpenAppToast(id)"):app.index("function hideOpenAppToast()")]
+    assert '"Open in new tab"' in toast and "openAppFromClick(id)" in toast
     cue = app[app.index("function cueHiddenTab(id)"):start]
     assert "document.title" in cue and "new Notification(" in cue and "window.focus()" in cue
+    assert "openAppFromClick(id)" in cue
+    # Fallback panel: its iframe never shares the app tab's target name.
+    panel = app[app.index("function showAppInPage(id)"):app.index("function cueHiddenTab(id)")]
+    assert 'const name = "stickllm-embed-" + id;' in panel and "frame.name = name;" in panel
+    assert 'pop.textContent = "Open in new tab"' in app and "Open in window" not in app
+    assert 'window.open("", "stickllm-' not in app
+    assert 'window.name === "stickllm-" + id || window.name === "stickllm-embed-" + id' in bridge
+    # The app tab tells the StickLLM tab to drop the fallback panel.
+    assert '"tab-ready"' in bridge and "window.top !== window" in bridge
+    assert 'm.type !== "tab-ready"' in app
+    # App pages get the HttpOnly apps cookie from the paired tab, not a URL ticket.
+    prime = app[app.index("function primeAppsSession("):app.index("function clearPairSession()")]
+    assert '"/api/ui/apps-session"' in prime and "detectLocalHost()" in prime
+    assert "app-ticket" not in app and "appPageUrl" not in app
+    assert "app.js?v=openapp4" in index
 
 
 def test_app_pages_may_be_framed_by_stickllm_only(tmp_path, monkeypatch):

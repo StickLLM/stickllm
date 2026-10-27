@@ -25,9 +25,10 @@
     let data = {};
     try { data = JSON.parse(ev.data || "{}"); } catch (e) { return; }
     if (!data || data.id !== id || !data.req) return;
-    // Pages opened by open_app are named "stickllm-<id>": a window, or the
-    // iframe in the StickLLM tab's app panel. Those answer even when hidden.
-    const named = window.name === "stickllm-" + id;
+    // App tabs (desktop icon or open_app) are named "stickllm-<id>"; the
+    // fallback panel's iframe is "stickllm-embed-<id>". Those answer even
+    // when hidden, so Agent Zero can play while you look at another tab.
+    const named = window.name === "stickllm-" + id || window.name === "stickllm-embed-" + id;
     if (document.visibilityState === "hidden" && !named) return;
     const api = window.stickllmApp;
     if (!api) {
@@ -58,4 +59,10 @@
   const events = new EventSource("/api/ui/events?app=" + encodeURIComponent(id));
   events.addEventListener("app_state", function (ev) { handle("app_state", ev); });
   events.addEventListener("app_act", function (ev) { handle("app_act", ev); });
+  // A top-level app tab is up: the StickLLM tab closes its fallback panel for
+  // this app, so only this page applies app_act.
+  events.addEventListener("open", function () {
+    if (window.top !== window || typeof BroadcastChannel !== "function") return;
+    try { new BroadcastChannel("stickllm-apps").postMessage({ type: "tab-ready", id: id }); } catch (e) {}
+  });
 })();

@@ -236,7 +236,7 @@ def _raw(port, path, method="GET", headers=None, body=None, stream=False):
     return resp.status, dict(resp.getheaders()), data
 
 
-def test_app_pages_open_with_a_one_time_ticket_not_the_shared_cookie(tmp_path):
+def test_app_pages_open_with_an_httponly_apps_cookie_not_the_shared_cookie(tmp_path):
     run, env = _setup(tmp_path)
     page = tmp_path / "ui" / "apps" / "solitaire"
     page.mkdir(parents=True)
@@ -246,39 +246,28 @@ def test_app_pages_open_with_a_one_time_ticket_not_the_shared_cookie(tmp_path):
     srv = _Servers(gateway, loopback=False)
     try:
         port = srv.main_port
-        # Unpaired, or a bad/missing ticket: no app page.
-        for path in ("/apps/solitaire/", "/apps/solitaire/?stickllm_open=1&t=1.2.3",
-                     "/apps/solitaire/?t=" + TOKEN):
+        # Unpaired: no app page (a ?t= in the URL means nothing).
+        for path in ("/apps/solitaire/", "/apps/solitaire/?t=" + TOKEN):
             code, _h, body = _raw(port, path)
             assert code == 401 and json.loads(body)["error"] == "pair_required", path
-        # Only a paired StickLLM tab can mint a ticket.
-        code, _h, _b = _raw(port, "/api/ui/app-ticket", "POST", {"Authorization": "Bearer " + TOKEN}, b"{}")
+        # Only a paired StickLLM tab gets the apps cookie.
+        code, _h, _b = _raw(port, "/api/ui/apps-session", "POST", {"Authorization": "Bearer " + TOKEN}, b"{}")
         assert code == 403
         for headers in (UI, {**UI, "Authorization": "Bearer nope"}, {**UI, "Cookie": "stickllm_pair=nope"}):
-            code, _h, _b = _raw(port, "/api/ui/app-ticket", "POST", headers, b"{}")
-            assert code == 401
-        code, _h, body = _raw(port, "/api/ui/app-ticket", "POST", PAIRED_UI, b'{"id":"solitaire"}')
-        assert code == 200, body
-        ticket = json.loads(body)["t"]
-        assert ticket and TOKEN not in ticket
-
-        # First load swaps the ticket for an HttpOnly cookie and drops it from the URL.
-        path = "/apps/solitaire/?stickllm_open=1&stickllm_embed=1&t=" + ticket
-        code, headers, _b = _raw(port, path)
-        assert code == 303
-        assert headers["Location"] == "/apps/solitaire/?stickllm_open=1&stickllm_embed=1"
+            code, h, _b = _raw(port, "/api/ui/apps-session", "POST", headers, b"{}")
+            assert code == 401 and "Set-Cookie" not in h
+        code, headers, body = _raw(port, "/api/ui/apps-session", "POST", PAIRED_UI, b"{}")
+        assert code == 200 and json.loads(body) == {"ok": True, "cookie": True}
         set_cookie = headers.get("Set-Cookie") or ""
         assert set_cookie.startswith("stickllm_apps=")
         for attr in ("HttpOnly", "SameSite=Strict", "Path=/"):
             assert attr in set_cookie
         value = set_cookie.split(";", 1)[0].split("=", 1)[1]
-        assert len(value) == 64 and TOKEN not in value
-        # One-time.
-        code, headers, _b = _raw(port, path)
-        assert code == 401 and "Set-Cookie" not in headers
+        assert len(value) == 64 and TOKEN not in value and TOKEN not in body
 
-        apps = {"Cookie": "stickllm_apps=" + value}
-        code, _h, body = _raw(port, "/apps/solitaire/?stickllm_open=1", headers=apps)
+        # Same URL as the desktop icon, even with a stale stickllm_pair cookie.
+        apps = {"Cookie": "stickllm_pair=stale; stickllm_apps=" + value}
+        code, _h, body = _raw(port, "/apps/solitaire/", headers=apps)
         assert code == 200 and "Solitaire" in body
         code, _h, _b = _raw(port, "/apps/solitaire/game.js", headers=apps)
         assert code == 200
@@ -287,7 +276,7 @@ def test_app_pages_open_with_a_one_time_ticket_not_the_shared_cookie(tmp_path):
         assert code == 200
         code, _h, _b = _raw(port, "/api/ui/events", headers=apps, stream=True)
         assert code == 401
-        for p, m in (("/api/storage", "GET"), ("/api/ui/events-ticket", "POST"), ("/api/ui/app-ticket", "POST"),
+        for p, m in (("/api/storage", "GET"), ("/api/ui/events-ticket", "POST"), ("/api/ui/apps-session", "POST"),
                      ("/api/agent/handoff", "POST")):
             code, _h, _b = _raw(port, p, m, {**UI, **apps, "Content-Type": "application/json"}, b"{}" if m == "POST" else None)
             assert code == 401, p
@@ -306,31 +295,25 @@ def test_app_pages_open_with_a_one_time_ticket_not_the_shared_cookie(tmp_path):
         assert code == 401
 
         log = (run / "kiosk.log").read_text(encoding="utf-8")
-        assert "STICKLLM_APPS_AUTH ticket=minted ip=127.0.0.1 pair_cookie=absent" in log
-        assert "STICKLLM_APPS_AUTH ticket=redeemed ip=127.0.0.1 app=solitaire" in log
-        assert "STICKLLM_APPS_AUTH denied ip=127.0.0.1 pair_cookie=absent apps_cookie=present" in log
-        assert TOKEN not in log and value not in log and ticket not in log
+        assert "STICKLLM_APPS_AUTH session=set ip=127.0.0.1 pair_cookie=absent" in log
+        assert "STICKLLM_APPS_AUTH session=refused ip=127.0.0.1" in log
+        assert "STICKLLM_APPS_AUTH denied ip=127.0.0.1 pair_cookie=stale apps_cookie=present" in log
+        assert TOKEN not in log and value not in log
     finally:
         srv.close()
 
 
-def test_app_tickets_expire_and_die_with_the_pairing(tmp_path):
+def test_apps_cookie_dies_with_the_pairing_and_is_not_an_agent_session(tmp_path):
     _run, env = _setup(tmp_path)
-    gateway = _load(env, "stickllm_gateway_pair_app_ticket")
+    gateway = _load(env, "stickllm_gateway_pair_app_cookie")
     auth = {"paired": True, "token_hash": hashlib.sha256(TOKEN.encode()).hexdigest()}
-    assert gateway.app_ticket_redeem(gateway.mint_app_ticket(auth, now=time.time() - 120), auth) is False
-    assert gateway.app_ticket_redeem(gateway.mint_agent_handoff(auth), auth) is False
-    ticket = gateway.mint_app_ticket(auth)
-    assert gateway.agent_handoff_redeem(ticket, auth) is False
     reminted = {"paired": True, "token_hash": hashlib.sha256(b"other").hexdigest()}
-    assert gateway.app_ticket_redeem(ticket, reminted) is False
-    assert gateway.app_ticket_redeem(ticket, auth) is True
-    assert gateway.app_ticket_redeem(ticket, auth) is False
     value = gateway.apps_session_value(auth)
     assert value != gateway.agent_session_value(auth)
     assert gateway.apps_session_ok(value, auth) and not gateway.apps_session_ok(value, reminted)
     assert gateway.agent_session_ok(value, auth) is False
-    assert gateway.mint_app_ticket({"paired": False}) == ""
+    assert gateway.apps_session_value({"paired": False}) == ""
+    assert not hasattr(gateway, "mint_app_ticket") and not hasattr(gateway, "app_ticket_redeem")
 
 
 def test_ui_keeps_pair_code_and_new_code_on_the_kiosk():

@@ -68,7 +68,38 @@ function rememberPairCookie() {
     return;
   }
   document.cookie = "stickllm_pair=" + encodeURIComponent(token) + "; Path=/; SameSite=Strict";
+  primeAppsSession();
 }
+// Paired LAN browser: the gateway sets an HttpOnly stickllm_apps cookie
+// (derived from the pairing), so app pages opened from a desktop icon or by
+// open_app never depend on the shared, script-set stickllm_pair cookie, which
+// any other StickLLM tab on this host can clear or overwrite.
+const appsSession = { at: 0, token: "", busy: null };
+function primeAppsSession(force = false) {
+  if (!token || detectLocalHost()) return Promise.resolve(true);
+  if (appsSession.busy) return appsSession.busy;
+  if (!force && appsSession.token === token && Date.now() - appsSession.at < 5 * 60 * 1000) {
+    return Promise.resolve(true);
+  }
+  const mine = token;
+  appsSession.busy = fetch("/api/ui/apps-session", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: "{}",
+    cache: "no-store",
+    credentials: "same-origin",
+  }).then((r) => {
+    if (r.ok) { appsSession.at = Date.now(); appsSession.token = mine; }
+    return r.ok;
+  }).catch(() => false).finally(() => { appsSession.busy = null; });
+  return appsSession.busy;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") primeAppsSession();
+});
+document.addEventListener("pointerdown", (e) => {
+  if (e.target && e.target.closest && e.target.closest("a.deskIcon[data-starter]")) primeAppsSession();
+}, true);
 function clearPairSession() {
   token = ""; localStorage.removeItem(TOKEN_KEY);
   rememberPairCookie();
@@ -4886,31 +4917,76 @@ function showOpenAppToast(id) {
   text.textContent = "Agent Zero opened " + appLabel(id) + " — ";
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.textContent = "Open";
+  btn.textContent = "Open in new tab";
   btn.onclick = (e) => {
     e.preventDefault();
-    const opened = window.open("/apps/" + id + "/?stickllm_open=1", "stickllm-" + id);
-    if (opened) {
-      reportOpenApp(id, "opened");
-      t.hidden = true;
-      t.replaceChildren();
-      return;
-    }
-    reportOpenApp(id, "blocked");
+    openAppFromClick(id);
   };
   t.append(text, btn);
   clearTimeout(openToastTimer);
-  openToastTimer = setTimeout(() => {
-    t.hidden = true;
-    t.replaceChildren();
-  }, 30000);
+  // Count the 30 s from when this tab is visible, so a background tab still
+  // has the button when the user comes back to it.
+  const arm = () => {
+    clearTimeout(openToastTimer);
+    openToastTimer = setTimeout(hideOpenAppToast, 30000);
+  };
+  if (document.visibilityState === "hidden") {
+    document.addEventListener("visibilitychange", function shown() {
+      if (document.visibilityState !== "visible") return;
+      document.removeEventListener("visibilitychange", shown);
+      arm();
+    });
+  } else {
+    arm();
+  }
   return true;
 }
-// In-page app panel: a same-origin iframe inside this StickLLM tab. Used when
-// the browser blocks window.open (a LAN browser gets open_app from an event,
-// with no click, so pop-ups are usually blocked). The iframe is named
-// "stickllm-<id>", so stickllm-bridge.js inside it subscribes with ?app=<id>
-// and answers app_state / app_act even while this tab is in the background.
+function hideOpenAppToast() {
+  clearTimeout(openToastTimer);
+  const t = $("#toast");
+  if (!t) return;
+  t.hidden = true;
+  t.replaceChildren();
+}
+// Opening an app on a LAN browser works exactly like clicking its desktop
+// icon (<a href="/apps/<id>/" target="stickllm-<id>">): the same URL and the
+// same named target, so Chrome opens it in a new tab (or reuses that app's
+// tab) and the page loads with the apps cookie. No window features, so it is
+// a tab, never a pop-up window.
+function appTabLink(id) {
+  const icon = document.querySelector('#deskIcons a.deskIcon[data-starter="' + id + '"]');
+  return {
+    href: (icon && icon.getAttribute("href")) || "/apps/" + id + "/",
+    target: (icon && icon.getAttribute("target")) || "stickllm-" + id,
+  };
+}
+function openAppTab(id) {
+  const link = appTabLink(id);
+  try { return window.open(link.href, link.target); } catch (e) { return null; }
+}
+// A click (toast button, notification, panel button): open the app tab.
+function openAppFromClick(id) {
+  hideOpenAppToast();
+  stopTabCue();
+  if (openAppTab(id)) {
+    reportOpenApp(id, "opened");
+    return true;
+  }
+  // Last resort: the browser refused a new tab even on a click (pop-ups and
+  // new tabs disabled by policy). Show the app inside this StickLLM tab.
+  if (showAppInPage(id)) {
+    reportOpenApp(id, "embedded");
+    return true;
+  }
+  reportOpenApp(id, "blocked");
+  return false;
+}
+// In-page app panel: a same-origin iframe inside this StickLLM tab. Last
+// resort only, when the browser will not open a new tab even on a click. The
+// iframe is named "stickllm-embed-<id>" (never "stickllm-<id>", the app tab's
+// target name, or a click on the desktop icon would load into the iframe);
+// stickllm-bridge.js answers app_state / app_act for both names while hidden.
+// It closes as soon as the app's own tab is up, so app_act is not applied twice.
 function closeAppPanel() {
   const p = document.getElementById("stickAppPanel");
   if (!p) return;
@@ -4944,20 +5020,13 @@ function appPanel() {
   };
   const pop = document.createElement("button");
   pop.type = "button";
-  pop.textContent = "Open in window";
+  pop.textContent = "Open in new tab";
   pop.onclick = () => {
     const id = p.dataset.app;
     if (!id) return;
-    // Open the window inside the click (no pop-up permission needed), then
-    // point it at the app once the one-time ticket is back.
-    const w = window.open("", "stickllm-" + id);
-    if (!w) return;
-    appPageUrl(id).then((src) => {
-      w.location.replace(src);
-      // One page per app, so app_act is not applied twice.
-      closeAppPanel();
-      reportOpenApp(id, "opened");
-    }).catch(() => { try { w.close(); } catch (e) {} });
+    // Same as the desktop icon. The panel stays until the tab's app page
+    // subscribes (stickllm-bridge.js says "tab-ready"), then it closes.
+    if (openAppTab(id)) reportOpenApp(id, "opened");
   };
   const close = document.createElement("button");
   close.type = "button";
@@ -4971,7 +5040,7 @@ function appPanel() {
 function showAppInPage(id) {
   if (!document.body) return false;
   const p = appPanel();
-  const name = "stickllm-" + id;
+  const name = "stickllm-embed-" + id;
   let frame = p.querySelector("iframe");
   if (!frame || frame.name !== name) {
     if (frame) frame.remove();
@@ -4980,18 +5049,26 @@ function showAppInPage(id) {
     frame.name = name;
     frame.title = appLabel(id);
     p.append(frame);
-    appPageUrl(id, "&stickllm_embed=1").then((src) => {
-      if (frame.isConnected) frame.src = src;
-    }).catch(() => {
-      if (!frame.isConnected) return;
-      frame.remove();
-      p.querySelector(".stick-app-title").textContent = appLabel(id) + ": pair this browser again (Settings), then retry";
+    primeAppsSession().then(() => {
+      if (frame.isConnected) frame.src = "/apps/" + id + "/?stickllm_embed=1";
     });
   }
   p.dataset.app = id;
   p.querySelector(".stick-app-title").textContent = "Agent Zero: " + appLabel(id);
   p.hidden = false;
   return true;
+}
+// The app's own tab is up (stickllm-bridge.js subscribed in a top-level
+// page): close the fallback panel for that app.
+if (typeof BroadcastChannel === "function") {
+  try {
+    new BroadcastChannel("stickllm-apps").onmessage = (ev) => {
+      const m = ev.data || {};
+      if (m.type !== "tab-ready") return;
+      const p = document.getElementById("stickAppPanel");
+      if (p && !p.hidden && p.dataset.app === m.id) closeAppPanel();
+    };
+  } catch (e) {}
 }
 // Visible cue when Agent Zero opens an app while this tab is in the
 // background: flash the tab title and, if allowed, show a notification whose
@@ -5019,62 +5096,36 @@ function cueHiddenTab(id) {
   if ("Notification" in window && Notification.permission === "granted") {
     try {
       const n = new Notification("Agent Zero opened " + label, {
-        body: "Click to show it in the StickLLM tab.",
+        body: "Click to open it in a new tab.",
         tag: "stickllm-open-app",
       });
-      n.onclick = () => { try { window.focus(); } catch (e) {} n.close(); };
+      n.onclick = () => {
+        try { window.focus(); } catch (e) {}
+        n.close();
+        // The click is a user gesture: same new-tab open as the toast button.
+        openAppFromClick(id);
+      };
       tabCue.note = n;
     } catch (e) {}
   }
   return true;
 }
-// App page URL for this browser. A LAN browser adds a one-time ticket that
-// the gateway swaps for an HttpOnly apps cookie on the first load, so the app
-// page never depends on the shared, script-set stickllm_pair cookie.
-async function appPageUrl(id, extra = "") {
-  const url = "/apps/" + id + "/?stickllm_open=1" + extra;
-  if (detectLocalHost()) return url;
-  const r = await fetch("/api/ui/app-ticket", {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ id }),
-    cache: "no-store",
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || "pair_required");
-  return j.t ? url + "&t=" + encodeURIComponent(j.t) : url;
-}
 function openStickApp(id) {
   if (!/^[a-z]+$/.test(id)) return false;
-  const url = "/apps/" + id + "/?stickllm_open=1";
-  // The gateway sends open_app only to the screen driving Agent (a LAN
-  // browser that used Agent in the last 2 minutes, else the kiosk).
-  if (detectLocalHost()) {
-    // Kiosk: its own window, as before.
-    let opened = null;
-    try { opened = window.open(url, "stickllm-" + id); } catch (e) { opened = null; }
-    if (opened) {
-      reportOpenApp(id, "opened");
-      return true;
-    }
-    if (showOpenAppToast(id)) reportOpenApp(id, "toast-shown");
-    else reportOpenApp(id, "blocked");
-    return false;
-  }
-  // LAN browser: always inside this StickLLM tab, so no pop-up permission is
-  // needed. "Open in window" in the panel pops it out on a click.
-  const panel = document.getElementById("stickAppPanel");
-  if (panel && !panel.hidden && panel.dataset.app === id && panel.querySelector("iframe")) {
-    // Already open here: keep the game, don't open a second page.
-    cueHiddenTab(id);
-    reportOpenApp(id, "embedded");
+  // The gateway sends open_app only to the screen whose user just chatted
+  // with Agent (a LAN browser that sent a message in the last 5 minutes,
+  // else the kiosk). Kiosk and LAN browser alike do exactly what a click on
+  // the app's desktop icon does: the same URL and named target, so a new tab
+  // (or that app's existing tab). The kiosk allows pop-ups for itself, so it
+  // opens at once; a LAN browser opens at once only if the user allowed
+  // pop-ups for StickLLM. Otherwise the toast (and, for a background tab, the
+  // title flash and notification) offers that same click.
+  primeAppsSession();
+  if (openAppTab(id)) {
+    reportOpenApp(id, "opened");
     return true;
   }
-  if (showAppInPage(id)) {
-    cueHiddenTab(id);
-    reportOpenApp(id, "embedded");
-    return true;
-  }
+  cueHiddenTab(id);
   if (showOpenAppToast(id)) reportOpenApp(id, "toast-shown");
   else reportOpenApp(id, "blocked");
   return false;
