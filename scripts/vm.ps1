@@ -1,5 +1,5 @@
 # StickLLM VirtualBox test VM helper (DESKTOP-65FCPD4). VM files live in C:\StickLLM-VM (not OneDrive).
-# Usage: .\scripts\vm.ps1 <start [grub#]|stop|kill|status|shot|web|restore [snap] [grub#]|snap <name>|snaps|keys <ssh-password>|ssh [cmd]|type <text>|key <enter|down|up|esc>|boot <1|2|3>>
+# Usage: .\scripts\vm.ps1 <start [grub#]|stop|kill|status|shot|web|restore [snap] [grub#]|snap <name>|snaps|keys <ssh-password>|ssh [cmd]|root <file.sh|cmd>|type <text>|key <enter|down|up|esc>|boot <1|2|3>>
 # Ports: 127.0.0.1:18080->80 (UI http), 127.0.0.1:18443->443 (UI https), 127.0.0.1:12222->22 (SSH). See docs/DEV-WORKFLOW.md.
 param([Parameter(Position=0)][string]$Cmd='status',[Parameter(Position=1,ValueFromRemainingArguments=$true)][string[]]$Rest)
 $ErrorActionPreference='Continue'
@@ -36,6 +36,19 @@ switch ($Cmd) {
   'key'     { Key $Rest[0] }
   'boot'    { # reset running VM into GRUB entry: 1=Server/Local 2=Terminal 3=Test-SSH
               & $vb controlvm $vm reset; Start-Sleep 2; Pick ([int]$Rest[0]) }
+  'root'    { # DEV ONLY: run a bash file (or command string) as root in the VM through the stickllm-hotfix
+              # sudo rule (Terminal mode). The runner exists only in the VM's RAM under /tmp; nothing ships in the image.
+              $body= if ($Rest -and (Test-Path -LiteralPath $Rest[0] -PathType Leaf -ErrorAction SilentlyContinue)) { [IO.File]::ReadAllText((Resolve-Path -LiteralPath $Rest[0])) } else { $Rest -join ' ' }
+              $tmp=Join-Path $env:TEMP ('vmroot-{0}' -f $PID); $out='/tmp/stickllm-vmtest-{0:x}.out' -f (Get-Date).Ticks; $bin=Join-Path $tmp 'usr\local\bin'; $sys=Join-Path $tmp 'etc\systemd\system'
+              New-Item -ItemType Directory -Force $bin,$sys | Out-Null; $enc=New-Object Text.UTF8Encoding $false
+              [IO.File]::WriteAllText((Join-Path $bin 'stickllm-vmtest'), ("#!/bin/bash`n# dev-only VM runner (scripts/vm.ps1 root)`nrm -f /tmp/stickllm-vmtest-*.out`nexec >$out 2>&1`n" + $body.Replace("`r",'') + "`n"), $enc)
+              [IO.File]::WriteAllText((Join-Path $sys 'stickllm-vmtest.service'), "[Unit]`nDescription=StickLLM VM test runner (dev only)`n[Service]`nType=oneshot`nExecStart=/bin/bash /usr/local/bin/stickllm-vmtest`n", $enc)
+              $o='-i',$key,'-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','BatchMode=yes'
+              try {
+                ssh @o -p 12222 stickllm@127.0.0.1 'rm -rf /tmp/stickllm-hotfix; mkdir -p /tmp/stickllm-hotfix'
+                scp @o -P 12222 -r (Join-Path $tmp 'usr') (Join-Path $tmp 'etc') stickllm@127.0.0.1:/tmp/stickllm-hotfix/
+                ssh @o -p 12222 stickllm@127.0.0.1 ("sudo -n stickllm-hotfix stickllm-vmtest.service >/dev/null 2>/tmp/stickllm-vmtest.err; rc=`$?; cat $out 2>/dev/null;" + ' [ $rc -eq 0 ] || { echo VMTEST_RC=$rc; tail -n 3 /tmp/stickllm-vmtest.err; }; rm -rf /tmp/stickllm-hotfix; exit $rc')
+              } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue } }
   'ssh'     { ssh -i $key -p 12222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 stickllm@127.0.0.1 @Rest }
   'web'     { foreach($u in 'http://127.0.0.1:18080/','https://127.0.0.1:18443/'){ curl.exe -sk -m 15 -o NUL -w ('{0} %{{http_code}}\n' -f $u) $u } }
   default   { Get-Content $PSCommandPath -TotalCount 3 }

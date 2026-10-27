@@ -117,6 +117,7 @@ Helper `scripts\vm.ps1`:
 .\scripts\vm.ps1 shot                      # PNG of the screen -> out\vmshots\ (READY screen shows SSH password)
 .\scripts\vm.ps1 keys <ssh-password>       # install vm_ed25519.pub for this boot (prints KEY_INSTALLED)
 .\scripts\vm.ps1 ssh 'sudo -n stickllm-vault status'
+.\scripts\vm.ps1 root C:\StickLLM-VM\check.sh   # DEV ONLY: run a bash file (or 'cmd string') as root, print output
 .\scripts\vm.ps1 web                       # HTTP codes for 18080 and 18443
 .\scripts\vm.ps1 snap <name>               # ACPI shutdown, then offline snapshot
 .\scripts\vm.ps1 stop | kill | status | snaps | key enter|down|up|esc | type <text> | boot <1|2|3>
@@ -128,8 +129,12 @@ Limits and gotchas:
 - The SSH password is random each boot, and `~/.ssh` is in RAM, so run `shot` then `keys` after every boot.
   GRUB entry 2 shows the password on the READY screen. Entries 1 and 3 sit on "Launching browser" (the kiosk
   doesn't render on vmsvga), but the UI still answers through the forwards.
-- `stickllm` sudo is limited to stickllm-* tools. For root, use the live user:
-  `echo stickllm | su -c 'sudo -n …' user`. Pass vault confirmations as env with
-  `su -w VARS` + `sudo --preserve-env=VARS`.
+- `stickllm` sudo is limited to stickllm-* tools, and since v0.5.1 the live `user` (tty2 console) has a
+  locked password and no sudo beyond the WiFi helpers, so the old `su ... user` root trick is gone.
+  For root in the VM use `vm.ps1 root <file.sh|'cmd'>` (dev only): it copies a throwaway
+  `stickllm-vmtest` script + oneshot unit into `/tmp/stickllm-hotfix/` and runs
+  `sudo -n stickllm-hotfix stickllm-vmtest.service` (the existing SSH-iterate rule, Terminal mode only).
+  Output goes to `/tmp/stickllm-vmtest.out` and is printed; the runner lives only in the VM's RAM and is
+  not in the image. Put vault confirmations (`STICKLLM_VAULT_*`) as `export` lines at the top of the file.
 - GRUB keys are sent blind (Down x12 then Up); if a boot lands in the wrong mode, use `boot <n>`.
 - No model is installed and inference is CPU-only, so it is not useful for speed tests. Dynamic VDIs grow on C:.
