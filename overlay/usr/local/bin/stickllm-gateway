@@ -1088,7 +1088,10 @@ def addon_handoff_redeem(ticket: object, doc: dict, app_id: str, now: float | No
 
 
 def _stickllm_cookie_name(name: str) -> bool:
-    return name.strip().lower().startswith("stickllm")
+    n = name.strip().lower()
+    if n.startswith("__secure-") or n.startswith("__host-"):
+        n = n.split("-", 1)[1]
+    return n.startswith("stickllm")
 
 
 def addon_request_cookie(raw: str) -> str:
@@ -1168,6 +1171,14 @@ class _LimitedReader:
 # cannot touch it and a remint kills it. It opens /apps/* and the app's own
 # event stream and replies, nothing else, and it is never the pair token.
 APPS_SESSION_COOKIE = "stickllm_apps"
+# Over TLS the gateway uses __Secure- names so an http:// tab on the same host
+# (same cookie jar, no Secure flag) can neither read nor clobber them. Either
+# name is accepted on read.
+APPS_SESSION_COOKIE_TLS = "__Secure-stickllm_apps"
+PAIR_COOKIE = "stickllm_pair"
+PAIR_COOKIE_TLS = "__Secure-stickllm_pair"
+PAIR_REQUEST_PATH = RUN_DIR / "pair-request.json"
+PAIR_REQUEST_MIN_GAP = 30
 
 
 def apps_session_value(doc: dict) -> str:
@@ -1452,6 +1463,14 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
             out["remint_id"] = rid
         if re.fullmatch(r"[0-9]{4,8}", remint_code):
             out["remint_code"] = remint_code
+        preq = read_json_safe(PAIR_REQUEST_PATH) or {}
+        if preq.get("id") and time.time() - float(preq.get("at") or 0) < 600:
+            out["pair_request"] = {
+                "id": str(preq.get("id")),
+                "at": int(preq.get("at") or 0),
+                "ip": str(preq.get("ip") or ""),
+                "needs_confirm": bool(preq.get("needs_confirm")) and bool(auth.get("paired")),
+            }
         # Test/Term: surface SSH password in Settings on the stick only.
         out.update(ssh_password_for_loopback())
     else:
@@ -1952,6 +1971,30 @@ def remint_rate_mark() -> None:
         os.chmod(REMINT_RATE_PATH, 0o600)
     except Exception:
         pass
+
+
+def pair_request_note(ip: str, paired: bool) -> tuple[bool, str, dict]:
+    """A LAN browser asks the kiosk to show a pair code (never returned here)."""
+    now = time.time()
+    prev = read_json_safe(PAIR_REQUEST_PATH) or {}
+    if now - float(prev.get("at") or 0) < PAIR_REQUEST_MIN_GAP:
+        wait = int(PAIR_REQUEST_MIN_GAP - (now - float(prev.get("at") or 0))) + 1
+        return False, f"Already asked — look at the stick screen (try again in {wait}s)", prev
+    doc = {
+        "id": secrets.token_hex(8),
+        "at": int(now),
+        "ip": ip,
+        # Stick already paired to another browser: the kiosk must confirm,
+        # because a new code unpairs that browser.
+        "needs_confirm": bool(paired),
+    }
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        PAIR_REQUEST_PATH.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+        os.chmod(PAIR_REQUEST_PATH, 0o600)
+    except Exception:
+        pass
+    return True, "", doc
 
 
 def remint_pair_code() -> tuple[str, str]:
@@ -2798,14 +2841,57 @@ class Handler(SimpleHTTPRequestHandler):
                              "message": message, "deleted": []})
 
     def _apps_cookie_ok(self, doc: dict) -> bool:
-        return apps_session_ok(self._cookie(APPS_SESSION_COOKIE), doc)
+        return any(
+            apps_session_ok(self._cookie(n), doc)
+            for n in (APPS_SESSION_COOKIE_TLS, APPS_SESSION_COOKIE)
+        )
+
+    def _is_tls(self) -> bool:
+        return isinstance(self.connection, ssl.SSLSocket)
+
+    def _pair_cookie_values(self) -> list[str]:
+        names = (PAIR_COOKIE_TLS, PAIR_COOKIE) if self._is_tls() else (PAIR_COOKIE,)
+        out: list[str] = []
+        for n in names:
+            out.extend(self._cookies(n))
+        return out
+
+    def _pair_cookie_ok(self, doc: dict) -> bool:
+        return any(token_ok("Bearer " + v, doc) for v in self._pair_cookie_values())
+
+    def _session_cookie_headers(self, doc: dict, pair_token: str = "", clear: bool = False) -> list[str]:
+        """HttpOnly pair + apps cookies for this scheme (server-set, scripts can't touch)."""
+        tls = self._is_tls()
+        pair_name = PAIR_COOKIE_TLS if tls else PAIR_COOKIE
+        apps_name = APPS_SESSION_COOKIE_TLS if tls else APPS_SESSION_COOKIE
+        attrs = "; Path=/; HttpOnly; SameSite=Strict" + ("; Secure" if tls else "")
+        if clear:
+            return [f"{pair_name}=; Max-Age=0{attrs}", f"{apps_name}=; Max-Age=0{attrs}"]
+        out: list[str] = []
+        if pair_token:
+            out.append(f"{pair_name}={urllib.parse.quote(pair_token, safe='')}{attrs}")
+        value = apps_session_value(doc)
+        if value:
+            out.append(f"{apps_name}={value}{attrs}")
+        return out
+
+    def _json_cookies(self, code: int, obj: dict, cookies: list[str]) -> None:
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for c in cookies:
+            self.send_header("Set-Cookie", c)
+        self.end_headers()
+        self.wfile.write(body)
 
     def _pair_cookie_state(self, doc: dict) -> str:
         """For logs only: absent / valid / stale. Never the value."""
-        value = self._cookie("stickllm_pair")
-        if not value:
+        values = self._pair_cookie_values()
+        if not values:
             return "absent"
-        return "valid" if token_ok("Bearer " + value, doc) else "stale"
+        return "valid" if self._pair_cookie_ok(doc) else "stale"
 
     def _desktop_allowed(self) -> bool:
         """Loopback, a paired browser, or the paired browser's HttpOnly apps cookie."""
@@ -2816,7 +2902,7 @@ class Handler(SimpleHTTPRequestHandler):
                 UI_OPEN._write_log(
                     f"STICKLLM_APPS_AUTH denied ip={self._ui_client_ip()} "
                     f"pair_cookie={self._pair_cookie_state(doc)} "
-                    f"apps_cookie={'present' if self._cookie(APPS_SESSION_COOKIE) else 'absent'}\n"
+                    f"apps_cookie={'present' if (self._cookie(APPS_SESSION_COOKIE) or self._cookie(APPS_SESSION_COOKIE_TLS)) else 'absent'}\n"
                 )
             self._json(401, {"ok": False, "error": "pair_required"})
             return False
@@ -3121,8 +3207,7 @@ class Handler(SimpleHTTPRequestHandler):
         doc = load_auth()
         if addon_session_ok(self._cookie(self._addon_cookie_name(app_id)), doc, app_id):
             return True
-        pair = self._cookie("stickllm_pair")
-        if pair and token_ok("Bearer " + pair, doc):
+        if self._pair_cookie_ok(doc) or self._apps_cookie_ok(doc):
             return True
         return not bool(doc.get("require_pair"))
 
@@ -3680,23 +3765,35 @@ class Handler(SimpleHTTPRequestHandler):
         return self._is_loopback()
 
     def _cookie(self, wanted: str) -> str:
-        cookie = self.headers.get("Cookie") or ""
-        for bit in cookie.split(";"):
-            name, _, value = bit.strip().partition("=")
-            if name == wanted and value:
-                return urllib.parse.unquote(value.strip())
-        return ""
+        vals = self._cookies(wanted)
+        return vals[0] if vals else ""
+
+    def _cookies(self, wanted: str) -> list[str]:
+        """All values for a cookie name (a jar can hold several, e.g. a stale
+        script-set one next to the HttpOnly one)."""
+        out: list[str] = []
+        for h in self.headers.get_all("Cookie") or []:
+            for bit in h.split(";"):
+                name, _, value = bit.strip().partition("=")
+                if name == wanted and value:
+                    out.append(urllib.parse.unquote(value.strip()))
+        return out
 
     def _presented_token(self) -> str | None:
         header = self.headers.get("Authorization")
         if header:
             return header
-        # Page loads cannot send the localStorage bearer. The UI copies it
-        # into this cookie after pairing. An unpaired browser has neither.
-        value = self._cookie("stickllm_pair")
-        if value:
-            return "Bearer " + value
-        return None
+        # Page loads cannot send the localStorage bearer. The gateway sets an
+        # HttpOnly pair cookie at pairing (and on apps-session). Prefer a value
+        # that validates when the jar holds more than one.
+        values = self._pair_cookie_values()
+        if not values:
+            return None
+        doc = load_auth()
+        for v in values:
+            if token_ok("Bearer " + v, doc):
+                return "Bearer " + v
+        return "Bearer " + values[0]
 
     def _auth(self) -> tuple[dict, bool]:
         doc = load_auth()
@@ -3816,11 +3913,15 @@ class Handler(SimpleHTTPRequestHandler):
                     },
                 )
                 return
+            _d, this_ok = self._auth()
             self._json(
                 200,
                 {
                     "require_pair": bool(auth.get("require_pair", True)),
+                    # "paired" = the stick has a paired browser (maybe another one).
                     "paired": bool(auth.get("paired")),
+                    # "this_paired" = this request (Bearer or HttpOnly cookie) is it.
+                    "this_paired": bool(this_ok),
                     "session_mode": get_session_mode(),
                 },
             )
@@ -4141,18 +4242,47 @@ class Handler(SimpleHTTPRequestHandler):
             if not value:
                 self._json(401, {"ok": False, "error": "pair_required"})
                 return
-            secure = "; Secure" if isinstance(self.connection, ssl.SSLSocket) else ""
-            body = json.dumps({"ok": True, "cookie": True}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header(
-                "Set-Cookie",
-                f"{APPS_SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Strict{secure}",
-            )
-            self.end_headers()
-            self.wfile.write(body)
+            bearer = (self.headers.get("Authorization") or "").split()
+            pair_tok = bearer[1] if len(bearer) == 2 and token_ok(" ".join(bearer), doc) else ""
+            self._json_cookies(200, {"ok": True, "cookie": True}, self._session_cookie_headers(doc, pair_tok))
+            return
+
+        if path == "/api/pair/forget":
+            # "Unpair this browser": drop this scheme's HttpOnly cookies.
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"ok": False, "error": "ui_only"})
+                return
+            self._json_cookies(200, {"ok": True}, self._session_cookie_headers({}, clear=True))
+            return
+
+        if path == "/api/pair/request":
+            # Not-paired LAN browser: ask the kiosk to show a pair code. The
+            # code is never returned here; remint stays kiosk-only.
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"ok": False, "error": "ui_only"})
+                return
+            if self._is_loopback():
+                self._json(400, {"ok": False, "error": "kiosk", "message": "Press F9 on this screen."})
+                return
+            blocked, reason = pair_rate_blocked()
+            if blocked:
+                self._json(429, {"ok": False, "error": "rate_limited", "message": reason})
+                return
+            auth = load_auth()
+            ok_req, reason, doc_req = pair_request_note(self._ui_client_ip(), bool(auth.get("paired")))
+            if not ok_req:
+                self._json(429, {"ok": False, "error": "rate_limited", "message": reason})
+                return
+            self._json(200, {
+                "ok": True,
+                "needs_confirm": bool(doc_req.get("needs_confirm")),
+                "message": (
+                    "Asked the stick. Someone at the stick screen must press Make new code "
+                    "(that unpairs the other browser), then enter the code here."
+                    if doc_req.get("needs_confirm")
+                    else "Look at the stick screen: it now shows the pair code. Enter it here."
+                ),
+            })
             return
 
         if path == "/api/ui/events-ticket":
@@ -4238,6 +4368,10 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(500, {"error": "remint_failed", "message": str(e)})
                 return
             remint_rate_mark()
+            try:
+                PAIR_REQUEST_PATH.unlink(missing_ok=True)
+            except Exception:
+                pass
             body: dict = {
                 "ok": True,
                 "remint_id": remint_id,
@@ -4305,13 +4439,18 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
             save_auth(auth)
             pair_rate_ok()
-            self._json(
+            try:
+                PAIR_REQUEST_PATH.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._json_cookies(
                 200,
                 {
                     "ok": True,
                     "token": token,
                     "message": "Paired. This StickLLM browser can chat until reboot.",
                 },
+                self._session_cookie_headers(auth, token),
             )
             return
 

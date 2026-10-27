@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=desk6" />
+<link rel="stylesheet" href="style.css?v=v052a" />
 </head>
 <body>
 <div class="app" id="app">
@@ -14,7 +14,7 @@
   <!-- Sidebar: conversations -->
   <aside class="sidebar" id="sidebar" aria-label="Conversations">
     <div class="sideHead">
-      <div class="brand"><span class="logo" aria-hidden="true"></span>StickLLM</div>
+      <div class="brand"><span class="logo" aria-hidden="true"></span>StickLLM<button type="button" class="pairLink" data-state="unknown" aria-label="Pairing" title="Pairing"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="plA" d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path class="plB" d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/><path class="plX" d="M4 4l16 16"/></svg></button></div>
       <button class="iconBtn" id="collapseBtn" aria-label="Collapse sidebar" title="Collapse sidebar (Ctrl+B)">
         <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
@@ -46,6 +46,7 @@
       <button class="iconBtn" id="menuBtn" aria-label="Open conversations" title="Conversations (Ctrl+B)">
         <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
+      <button type="button" class="pairLink topPair" data-state="unknown" aria-label="Pairing" title="Pairing"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="plA" d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path class="plB" d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/><path class="plX" d="M4 4l16 16"/></svg></button>
       <h1 class="chatTitle" id="chatTitle">New chat</h1>
       <div class="topRight">
         <button class="chip" id="statusChip" aria-haspopup="true" aria-expanded="false" title="Model and connection status">
@@ -690,6 +691,34 @@
     </div>
   </div>
 
+  <!-- 0.5.2: not paired (LAN browser) -->
+  <div class="modalWrap top2" id="notPaired" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="npTitle">
+      <div class="cfBody">
+        <h2 id="npTitle">Not paired — re-pair this browser</h2>
+        <p id="npMsg">This browser is not paired with the stick.</p>
+        <p class="sideHint">The pair code is only shown on the stick's own screen (press F9 there). You can ask the stick to show it:</p>
+        <div class="actions"><button class="btn" id="npAsk" type="button">Show a new code on the stick screen</button></div>
+        <form id="npForm" autocomplete="off">
+          <label class="field"><span>Pair code from the stick screen</span><input id="npCode" inputmode="numeric" maxlength="9" autocomplete="one-time-code" placeholder="123 456"></label>
+          <p class="err" id="npErr" hidden></p>
+          <div class="actions"><span class="grow"></span><button class="btn primary" id="npPair" type="submit">Pair</button></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 0.5.2: kiosk — a LAN browser asks for a code while another one is paired -->
+  <div class="modalWrap top2" id="kioskPairReq" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="kprTitle">
+      <div class="cfBody">
+        <h2 id="kprTitle">Pair request</h2>
+        <p id="kioskPairReqText"></p>
+        <div class="actions"><span class="grow"></span><button class="btn" id="kprNo" type="button">Ignore</button><button class="btn primary" id="kprYes" type="button">Make new code</button></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Confirm dialog -->
   <div class="modalWrap top2" id="confirm" hidden>
     <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="cfTitle">
@@ -713,6 +742,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=openapp6"></script>
+<script src="app.js?v=v052a"></script>
 </body>
 </html>

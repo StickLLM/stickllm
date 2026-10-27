@@ -79,12 +79,19 @@ function ensureDeviceCookie() {
   } catch (_) {}
 }
 ensureDeviceCookie();
+/** Another tab may have paired (or re-paired) this origin: adopt its token. */
+function syncToken() {
+  let saved = "";
+  try { saved = localStorage.getItem(TOKEN_KEY) || ""; } catch (_) {}
+  if (saved && saved !== token) token = saved;
+  return token;
+}
+// 0.5.2: the pair cookie is HttpOnly and set by the gateway (at pairing and
+// on /api/ui/apps-session), so no tab can clear or clobber it from script.
+// This only refreshes it from this tab's token; an empty token never deletes it.
 function rememberPairCookie() {
-  if (!token) {
-    document.cookie = "stickllm_pair=; Path=/; Max-Age=0; SameSite=Strict";
-    return;
-  }
-  document.cookie = "stickllm_pair=" + encodeURIComponent(token) + "; Path=/; SameSite=Strict";
+  syncToken();
+  if (!token) return;
   primeAppsSession();
 }
 // Paired LAN browser: the gateway sets an HttpOnly stickllm_apps cookie
@@ -118,8 +125,92 @@ document.addEventListener("pointerdown", (e) => {
   if (e.target && e.target.closest && e.target.closest("a.deskIcon[data-starter]")) primeAppsSession();
 }, true);
 function clearPairSession() {
-  token = ""; localStorage.removeItem(TOKEN_KEY);
-  rememberPairCookie();
+  const mine = token;
+  token = "";
+  // Only drop the saved token when it is this tab's (a newer one from
+  // another tab's re-pair must survive).
+  try {
+    const saved = localStorage.getItem(TOKEN_KEY) || "";
+    if (saved && saved === mine) localStorage.removeItem(TOKEN_KEY);
+    else if (saved) token = saved;
+  } catch (_) {}
+  appsSession.token = ""; appsSession.at = 0;
+  setPairIcon();
+}
+window.addEventListener("storage", (e) => {
+  if (e.key !== TOKEN_KEY) return;
+  const v = e.newValue || "";
+  if (v && v !== token) {
+    token = v;
+    appsSession.token = ""; appsSession.at = 0;
+    primeAppsSession(true);
+    hideNotPaired();
+    if (!browserPaired) { startAppStatus(); startOpenAppEvents(); }
+  }
+  setPairIcon();
+});
+/** Pairing state for the link icon next to the logo: local | paired | unpaired. */
+let pairUiState = detectLocalHost() ? "local" : (token ? "paired" : "unknown");
+function setPairIcon(stateName) {
+  if (stateName) pairUiState = stateName;
+  if (detectLocalHost()) pairUiState = "local";
+  for (const el of document.querySelectorAll(".pairLink")) {
+    el.dataset.state = pairUiState;
+    const t = pairUiState === "local" ? "Stick screen (no pairing needed)"
+      : pairUiState === "paired" ? "This browser is paired"
+      : pairUiState === "unpaired" ? "Not paired — click to pair this browser" : "Checking pairing…";
+    el.title = t;
+    el.setAttribute("aria-label", t);
+  }
+}
+/** 401 anywhere: drop this tab's token and show the re-pair screen. */
+function pairLost(msg) {
+  clearPairSession();
+  setPairIcon("unpaired");
+  showNotPaired(msg);
+}
+function showNotPaired(msg) {
+  if (detectLocalHost()) return;
+  const box = document.getElementById("notPaired");
+  if (!box) { openSettings("devices"); return; }
+  box.hidden = false;
+  box.removeAttribute("hidden");
+  const m = document.getElementById("npMsg");
+  if (m && msg) m.textContent = msg;
+  const inp = document.getElementById("npCode");
+  if (inp) setTimeout(() => inp.focus(), 0);
+}
+function hideNotPaired() {
+  const box = document.getElementById("notPaired");
+  if (box) { box.hidden = true; box.setAttribute("hidden", ""); }
+}
+async function pairWithCode(v) {
+  const r = await fetch("/api/pair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-StickLLM-Client": "ui" },
+    body: JSON.stringify({ code: v }),
+    credentials: "same-origin",
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.message || j.error || "Pair failed");
+  token = j.token; localStorage.setItem(TOKEN_KEY, token);
+  appsSession.token = token; appsSession.at = Date.now();
+  setPairIcon("paired");
+  hideNotPaired();
+  return j;
+}
+async function requestKioskCode() {
+  const out = document.getElementById("npMsg");
+  try {
+    const r = await fetch("/api/pair/request", {
+      method: "POST", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-StickLLM-Client": "ui" }, body: "{}",
+    });
+    const j = await r.json().catch(() => ({}));
+    const msg = j.message || (r.ok ? "Look at the stick screen for the code." : `Request failed (${r.status})`);
+    if (out) out.textContent = msg;
+    toast(msg);
+  } catch (e) { if (out) out.textContent = e.message; }
 }
 function agentPageUrl(status) {
   if (status && status.agent_url) return status.agent_url;
@@ -160,6 +251,7 @@ async function refreshAgentLink() {
   if (!label && !link && !$("#agentCatalogInstall")) return;
   try {
     const r = await fetch("/api/agent/status", { cache: "no-store", headers: authHeaders() });
+    if (r.status === 401 && !detectLocalHost() && pairUiState !== "unpaired") { ensurePaired().catch(() => {}); return; }
     if (!r.ok) return;
     const s = await r.json();
     const installed = agentIsInstalled(s);
@@ -556,13 +648,15 @@ async function control(action, params = {}) {
     body: JSON.stringify({ action, params }),
   });
   if (r.status === 401) {
-    clearPairSession();
-    toast("Pair required — enter the code from the stick screen");
-    openSettings("devices");
+    pairLost("This browser is no longer paired with the stick.");
     throw new Error("Pair required");
   }
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
+  const j = await r.json().catch(() => ({ error: `HTTP ${r.status} (no JSON)` }));
+  if (!r.ok) {
+    const e = new Error(j.message && j.error ? `${j.error}: ${j.message}` : (j.error || j.message || `HTTP ${r.status}`));
+    e.status = r.status;
+    throw e;
+  }
   return j;
 }
 
@@ -815,16 +909,18 @@ $("#newChatBtn").onclick = () => { newChat(); if (mobile()) toggleNav(false); };
 
 async function ensurePaired(force = false) {
   try {
-    const st = await pairStatus();
-    if (st.local) { isLocalMode = true; return true; }
-    if (!st.require_pair) return true;
-    if (token && !force) {
-      const t = await fetch("/api/storage", { headers: authHeaders(), cache: "no-store" });
-      if (t.ok) return true;
-      if (t.status === 401) clearPairSession();
-    }
-    openSettings("devices");
-    toast("Enter the pair code from the stick screen");
+    syncToken();
+    const st = await fetch("/api/pair/status", { cache: "no-store", headers: authHeaders() }).then((r) => r.json());
+    if (st.local) { isLocalMode = true; setPairIcon("local"); return true; }
+    if (!st.require_pair) { setPairIcon("paired"); return true; }
+    // /api/health is public, so "the stick is paired" says nothing about this
+    // browser: this_paired is computed from this request's Bearer/cookie.
+    if (st.this_paired && !force) { setPairIcon("paired"); primeAppsSession(true); return true; }
+    if (token) clearPairSession();
+    setPairIcon("unpaired");
+    showNotPaired(st.paired
+      ? "The stick is paired with another browser. Re-pair this browser."
+      : "Not paired — re-pair this browser.");
     return false;
   } catch (_) { return true; }
 }
@@ -1387,13 +1483,12 @@ async function runSend(gen, abort, prev) {
     const superseded = e && (e.name === "Superseded" || (gen !== sendGen));
     const stopped = e && (e.name === "VoiceBail" || e.name === "AbortError" || userStopGen === gen);
     if (e && e.name === "PairRequired") {
-      clearPairSession();
+      pairLost("This browser is no longer paired with the stick.");
       if (pend) {
         pend.pending = false;
         pend.r = "system";
         pend.t = "Pair required — enter the code from the stick screen.";
       }
-      openSettings("devices");
       if (pushedUser) dropApiUserTurn();
     } else if (superseded || stopped) {
       if (pend && pend.pending) {
@@ -1818,7 +1913,15 @@ function friendlyModelLabel(raw, pathHint) {
   // Keep quant tokens readable; turn other separators into spaces for the chip/popover.
   return s.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
 }
-async function refreshModels() {
+// Single flight: a slow control "status" must never pile up requests
+// (each one is a thread in the root control daemon).
+let modelsFlight = null;
+function refreshModels() {
+  if (modelsFlight) return modelsFlight;
+  modelsFlight = refreshModelsNow().finally(() => { modelsFlight = null; });
+  return modelsFlight;
+}
+async function refreshModelsNow() {
   if (!(await ensurePaired())) return;
   const st = await control("status");
   if (st.llama_service) lastLlama = st.llama_service;
@@ -2204,9 +2307,11 @@ function showLoadMismatch(actual) {
   renderModelsList();
   toast(loadMismatchText);
 }
+let healthFails = 0;
 function startLoadPoll() {
   stopLoadPoll();
   let ticks = 0;
+  let modelErr = "";
   loadPollTimer = setInterval(async () => {
     ticks += 1;
     try {
@@ -2215,8 +2320,15 @@ function startLoadPoll() {
         stopLoadPoll();
         return;
       }
-      await refreshModels().catch(() => {});
+      // Never await a slow control status here: health drives the chip.
+      if (!modelsFlight) refreshModels().then(() => { modelErr = ""; }).catch((e) => { modelErr = (e && e.message) || "control error"; });
       if (!loadingModelId) return;
+      if (!loadActivateSettled && ticks * 2 >= 60) {
+        const secs = ticks * 2;
+        setLoadStatusLine(true, 1, requestedLoadName(),
+          modelErr ? `Control service error: ${modelErr} — still waiting (${secs}s)`
+            : `Waiting for the stick's control service (${secs}s)…`, false);
+      }
       if (ticks > 450) {
         stopLoadPoll();
         loadingModelId = null;
@@ -2368,7 +2480,7 @@ $("#activate").onclick = async () => {
     loadingModelId = null;
     loadingModelName = "";
     loadingModelPath = "";
-    loadMismatchText = `Load failed — ${wanted} did not start`;
+    loadMismatchText = `Load failed — ${wanted} did not start` + (e && e.message && e.message !== "Pair required" ? ` (${e.message})` : "");
     setChipLoad(true, 0, wanted, loadMismatchText, true);
     if ($("#chipModel")) $("#chipModel").textContent = "Load failed";
     if ($("#runName")) $("#runName").textContent = "Load failed";
@@ -3216,10 +3328,40 @@ function paintF9PairCode(connect) {
   if (shown !== digits) $("#pairCodeShow").textContent = formatPairCode(digits);
   return digits;
 }
+/** Stick kiosk: a LAN browser pressed "Show a new code on the stick". */
+let lastPairRequestId = null;
+function handlePairRequest(c) {
+  const req = c && c.pair_request;
+  const id = req && String(req.id || "");
+  if (lastPairRequestId === null) { lastPairRequestId = id || ""; if (!id || Date.now() / 1000 - Number(req.at || 0) > 60) return; }
+  if (!id || id === lastPairRequestId) return;
+  lastPairRequestId = id;
+  const who = req.ip ? ` (${req.ip})` : "";
+  if (req.needs_confirm) {
+    const box = $("#kioskPairReq");
+    if (box) {
+      $("#kioskPairReqText").textContent = `A browser${who} asks to pair. A new code unpairs the browser that is paired now.`;
+      box.hidden = false; box.removeAttribute("hidden");
+    }
+    pushSystemMsg(`A browser${who} asks to pair. Press F9 (or Make new code) to show a new code — that unpairs the current browser.`);
+    toast("Pair request from a browser");
+    return;
+  }
+  const digits = pairDigits(c.pair_code) || pairDigits(c.remint_code);
+  if (digits) {
+    openSettings("devices");
+    paintF9PairCode(c);
+    pushSystemMsg(`PAIR CODE: ${digits} — a browser${who} asked to pair. Enter this code there.`);
+    toast("Pair code " + formatPairCode(digits));
+  } else {
+    issuePairHotkey();
+  }
+}
 /** Stick kiosk: chat line when a LAN browser mints a new code. */
 function announceRemintFromConnect(connect) {
   if (!detectLocalHost()) return;
   const c = connect || {};
+  try { handlePairRequest(c); } catch (_) {}
   const rid = String(c.remint_id || "").trim();
   const digits = paintF9PairCode(c);
   if (lastRemintId === null) {
@@ -3331,21 +3473,38 @@ async function openAgentPaired(e) {
 }
 document.addEventListener("click", (e) => { openAgentPaired(e); }, true);
 if ($("#showSsh")) $("#showSsh").onclick = () => { issueSshHotkey(); };
+if ($("#npAsk")) $("#npAsk").onclick = () => { requestKioskCode(); };
+if ($("#npForm")) $("#npForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const v = String($("#npCode").value || "").replace(/\s/g, "");
+  const err = $("#npErr");
+  if (!/^\d{4,8}$/.test(v)) { err.hidden = false; err.textContent = "Enter the code from the stick screen"; return; }
+  try {
+    await pairWithCode(v);
+    err.hidden = true; $("#npCode").value = "";
+    toast("Browser paired");
+    startAppStatus();
+    startOpenAppEvents();
+    refreshModels().catch(() => {});
+  } catch (ex) { err.hidden = false; err.textContent = ex.message; }
+};
+for (const el of document.querySelectorAll(".pairLink")) {
+  el.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (pairUiState === "unpaired") showNotPaired();
+    else openSettings("devices");
+  });
+}
+setPairIcon();
+if ($("#kprNo")) $("#kprNo").onclick = () => { $("#kioskPairReq").hidden = true; };
+if ($("#kprYes")) $("#kprYes").onclick = () => { $("#kioskPairReq").hidden = true; issuePairHotkey(); };
 $("#pairForm").onsubmit = async (e) => {
   e.preventDefault();
   const v = $("#pairIn").value.trim();
   const err = $("#pairErr");
   if (!/^\d{4,8}$/.test(v)) { err.hidden = false; err.textContent = "Enter the code from the stick screen"; return; }
   try {
-    const r = await fetch("/api/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-StickLLM-Client": "ui" },
-      body: JSON.stringify({ code: v }),
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.message || j.error || "Pair failed");
-    token = j.token; localStorage.setItem(TOKEN_KEY, token);
-    rememberPairCookie();
+    await pairWithCode(v);
     err.hidden = true; $("#pairIn").value = "";
     toast("Browser paired"); closeSettings();
     startAppStatus();
@@ -3508,8 +3667,13 @@ async function refreshStatus() {
     } catch (_) {}
     // vault chrome from health if present
     if (j.vault) setVaultChrome(vaultIsOpen(j.vault));
-  } catch (_) {
-    $("#chipModel").textContent = "waiting…";
+    healthFails = 0;
+  } catch (e) {
+    healthFails += 1;
+    $("#chipModel").textContent = healthFails >= 3 ? "stick not answering" : "waiting…";
+    if (loadingModelId && healthFails >= 3) {
+      setLoadStatusLine(true, 1, requestedLoadName(), `Can't reach the stick (${(e && e.message) || "no answer"}) — retrying…`, false);
+    }
   }
 }
 
@@ -4143,9 +4307,8 @@ async function finishMicBody(reason, parts, rec, mime) {
     const j = await r.json().catch(() => ({}));
     if (ctrl.signal.aborted) return;
     if (r.status === 401) {
-      clearPairSession();
+      pairLost();
       speechFail(sent + " Pair this browser using the code on the stick screen.");
-      openSettings("devices");
       return;
     }
     if (!r.ok || !j.ok) {
@@ -4494,9 +4657,7 @@ async function speakVoiceReply(text) {
     const j = await r.json().catch(() => ({}));
     if (mine !== speakToken || !voiceMode) return;
     if (r.status === 401) {
-      clearPairSession();
-      toast("Pair required — enter the code from the stick screen");
-      openSettings("devices");
+      pairLost();
       return;
     }
     if (!r.ok || !j.ok || !j.audio_base64) {
@@ -4801,9 +4962,7 @@ async function readAloud(btn) {
     const j = await r.json().catch(() => ({}));
     if (mine !== speakToken) return;
     if (r.status === 401) {
-      clearPairSession();
-      toast("Pair required — enter the code from the stick screen");
-      openSettings("devices");
+      pairLost();
       return;
     }
     if (!r.ok || !j.ok || !j.audio_base64) {
@@ -5299,7 +5458,7 @@ function startOpenAppEvents() {
     const mine = ++gen;
     clearTimeout(timer);
     teardown();
-    rememberPairCookie();
+    syncToken();
     let url = "/api/ui/events";
     try {
       const opts = {

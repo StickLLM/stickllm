@@ -607,3 +607,16 @@ select:focus{border-color:var(--accent);outline:none}
 .stick-app-frame{flex:1;width:100%;border:0;background:#fff}
 /* Masked secret fields. type=text so Chrome never offers to save a password. */
 input.secret { -webkit-text-security: disc; }
+
+/* 0.5.2 pairing link icon (next to the logo) */
+.pairLink{display:inline-grid;place-items:center;width:24px;height:24px;margin-left:6px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--muted,#8a9a9c);cursor:pointer}
+.pairLink svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+.pairLink .plX{display:none}
+.pairLink[data-state=paired],.pairLink[data-state=local]{color:var(--ok)}
+.pairLink[data-state=unpaired]{color:var(--danger)}
+.pairLink[data-state=unpaired] .plX{display:inline}
+.pairLink:hover{background:var(--line2,rgba(127,127,127,.15))}
+.topPair{display:none}
+.app.collapsed .topPair{display:inline-grid}
+@media (max-width:820px){.topPair{display:inline-grid}}
+#notPaired .err{color:var(--danger)}

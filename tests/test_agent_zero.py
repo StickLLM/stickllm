@@ -1,6 +1,7 @@
 """Agent Zero gates: unlock does not install, and unpaired :5443 is refused."""
 from __future__ import annotations
 
+import re
 import base64
 import fnmatch
 import hashlib
@@ -2049,7 +2050,7 @@ def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     prime = app[app.index("function primeAppsSession("):app.index("function clearPairSession()")]
     assert '"/api/ui/apps-session"' in prime and "detectLocalHost()" in prime
     assert "app-ticket" not in app and "appPageUrl" not in app
-    assert "app.js?v=openapp6" in index
+    assert re.search(r"app\.js\?v=[A-Za-z0-9]+", index)
 
 
 def test_app_pages_may_be_framed_by_stickllm_only(tmp_path, monkeypatch):
