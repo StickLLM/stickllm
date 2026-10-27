@@ -13,7 +13,7 @@ apt-get install -y --no-install-recommends \
   ca-certificates curl rsync xz-utils \
   squashfs-tools xorriso isolinux syslinux-common \
   grub-pc-bin grub-efi-amd64-bin mtools dosfstools \
-  build-essential cmake pkg-config python3
+  build-essential cmake pkg-config python3 git
 
 cd /work
 rm -rf /work/*
@@ -139,6 +139,17 @@ test -f config/includes.chroot/etc/systemd/system/stickllm-docs-install.service
 test -f config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
 grep -q 'amd64_digest=sha256:bff1a9fd46f2b79ada776fd0447c3fccf66cbf44c1996ec9316efa8ac4ee3fd5' \
   config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
+
+# Agent Zero plugins: banned unless allowlisted. Fetch each allowlisted plugin
+# once here at its pinned commit, hash-check it, bake it read-only. A pin or
+# hash mismatch stops the build. The stick never fetches plugins at runtime.
+A0_PLUGINS_OUT=config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins
+test -f config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow
+python3 /stickllm/scripts/lib/a0_plugins.py bake \
+  config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow \
+  "$A0_PLUGINS_OUT"
+chown -R root:root "$A0_PLUGINS_OUT"
+test -f "$A0_PLUGINS_OUT/MANIFEST"
 
 mkdir -p config/bootloaders/grub-pc config/bootloaders/grub-efi
 # Prefer tracked boot/grub.cfg (LF). Fall back to inline copy if missing.
