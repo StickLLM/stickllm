@@ -113,4 +113,6 @@ steps: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#agent-zero-apps-open-in-a-panel--
 Commits: `c4640f9` (desktop-icon click path, apps cookie, chat-based target),
 `488e0ac` (`/api/message_async` counted, `stickllm_device` cookie target),
 `5e4618c` (in-page panel when the tab is refused, openapp6).
+Temporary: the planned server connection with per-connection certificates
+(everything HTTPS on one origin) removes the http/https split.
 

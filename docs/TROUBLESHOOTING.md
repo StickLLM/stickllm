@@ -2,6 +2,11 @@
 
 ## Agent Zero apps open in a panel / don't open in a new tab
 
+> **Applies to current versions.** This goes away once per-connection
+> certificates land: StickLLM will then be reached through a server with a
+> certificate issued per connection, so everything is HTTPS on one origin and
+> there's only one site to allow.
+
 **What you see:** you ask Agent Zero to open an app (for example "open
 solitaire"). The app doesn't open in its own browser tab. It shows up in a
 panel inside the StickLLM tab instead, or the StickLLM tab title flashes and

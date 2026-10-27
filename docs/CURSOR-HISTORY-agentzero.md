@@ -206,7 +206,7 @@ It is grouped by topic, not by date. Secrets are left out on purpose: no passwor
     - `c4640f9`: `open_app` uses the desktop-icon click path; the HttpOnly `stickllm_apps` cookie replaces the URL ticket; only a LAN screen that chatted in the last 300 s is targeted, else the kiosk.
     - `488e0ac`: the gateway counts `/api/message_async` (the A0 UI's real path) as a chat; the target is the `stickllm_device` cookie, not the IP.
     - `5e4618c`: when the tab is refused, the app loads in the in-page panel so `app_state`/`app_act` work; it also offers "Open in new tab" (openapp6).
-  - **User docs:** [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+  - **User docs:** [TROUBLESHOOTING.md](TROUBLESHOOTING.md). Temporary: this goes away once per-connection certificates land (a server connection, everything HTTPS on one origin).
 
 ## 8. Things that failed or were dropped
 
