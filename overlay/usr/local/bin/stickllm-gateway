@@ -735,6 +735,25 @@ def docs_lib():
     return mod
 
 
+_ADDONS_LIB = None
+
+
+def addons_lib():
+    """Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED)."""
+    global _ADDONS_LIB
+    if _ADDONS_LIB is not None:
+        return _ADDONS_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_addons.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_addons", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_addons helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _ADDONS_LIB = mod
+    return mod
+
+
 # Request headers never forwarded to the Docs container. Cookie and the
 # pair bearer are StickLLM credentials; the rest are hop-by-hop.
 DOCS_DROP_HEADERS = frozenset(
@@ -973,6 +992,172 @@ def agent_handoff_redeem(ticket: object, doc: dict, now: float | None = None) ->
             return False
         _AGENT_HANDOFF_USED[nonce] = exp
     return True
+
+
+# Starter add-ons get one TLS port each (5451-5455) so every app has its own
+# origin: an app page can never read StickLLM's or another app's storage.
+# Same handoff as Agent: a paired UI tab gets a one-time ticket for that app
+# only; the app port then sets its own HttpOnly Secure cookie. StickLLM
+# cookies are stripped before anything reaches the app container.
+ADDON_COOKIE_PREFIX = "stickllm_addon_"
+ADDON_MAX_BODY = 512 * 1024 * 1024
+ADDON_HOP_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "proxy-authorization",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+    }
+)
+ADDON_STATE_LABELS = {
+    "running": "Running",
+    "starting": "Starting",
+    "stopped": "Installed",
+    "installing": "Installing",
+    "removing": "Removing",
+    "install_failed": "Install failed",
+    "locked": "Unlock the vault",
+    "not_installed": "Not installed",
+    "error": "Error",
+}
+
+
+def _addon_label(app_id: str, kind: str) -> bytes:
+    return f"stickllm-addon-{kind}-v1:{app_id}".encode("ascii")
+
+
+def addon_session_value(doc: dict, app_id: str) -> str:
+    secret = _pairing_secret(doc, _addon_label(app_id, "session"))
+    if secret is None:
+        return ""
+    return hmac.new(secret, b"addon-session", hashlib.sha256).hexdigest()
+
+
+def addon_session_ok(value: object, doc: dict, app_id: str) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    expected = addon_session_value(doc, app_id)
+    return bool(expected) and hmac.compare_digest(value, expected)
+
+
+def mint_addon_handoff(doc: dict, app_id: str, now: float | None = None, ttl: int = AGENT_HANDOFF_TTL) -> str:
+    secret = _pairing_secret(doc, _addon_label(app_id, "handoff"))
+    if secret is None:
+        return ""
+    exp = int((now if now is not None else time.time()) + max(1, int(ttl)))
+    msg = f"{exp}.{secrets.token_hex(16)}"
+    return msg + "." + hmac.new(secret, msg.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def addon_handoff_redeem(ticket: object, doc: dict, app_id: str, now: float | None = None) -> bool:
+    """One-time, 60 s, bound to one app. Never the pair token."""
+    if not isinstance(ticket, str) or len(ticket) > 128 or ticket.count(".") != 2:
+        return False
+    exp_s, nonce, sig = ticket.split(".")
+    if not exp_s.isdigit() or len(nonce) != 32 or len(sig) != 64:
+        return False
+    if any(ch not in "0123456789abcdef" for ch in nonce + sig):
+        return False
+    secret = _pairing_secret(doc, _addon_label(app_id, "handoff"))
+    if secret is None:
+        return False
+    current = int(now if now is not None else time.time())
+    exp = int(exp_s)
+    if exp < current or exp > current + AGENT_HANDOFF_TTL + 5:
+        return False
+    expected = hmac.new(secret, f"{exp_s}.{nonce}".encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return False
+    with _AGENT_HANDOFF_LOCK:
+        for old, old_exp in list(_AGENT_HANDOFF_USED.items()):
+            if old_exp < current:
+                _AGENT_HANDOFF_USED.pop(old, None)
+        if nonce in _AGENT_HANDOFF_USED:
+            return False
+        _AGENT_HANDOFF_USED[nonce] = exp
+    return True
+
+
+def _stickllm_cookie_name(name: str) -> bool:
+    return name.strip().lower().startswith("stickllm")
+
+
+def addon_request_cookie(raw: str) -> str:
+    """The app's own cookies only. stickllm_* (pair, apps, agent, addon
+    sessions) never reach a container."""
+    keep = []
+    for bit in str(raw or "").split(";"):
+        bit = bit.strip()
+        if not bit:
+            continue
+        name = bit.partition("=")[0]
+        if _stickllm_cookie_name(name):
+            continue
+        keep.append(bit)
+    return "; ".join(keep)
+
+
+def addon_proxy_headers(headers: dict, host: str, client_ip: str, *, websocket: bool = False) -> dict:
+    """Headers for a request relayed to an add-on on 127.0.0.1.
+
+    Host is kept, so the app builds links for the origin the browser sees.
+    The app's own Authorization (Vikunja's JWT) and cookies pass; StickLLM's
+    cookies do not."""
+    out: dict = {}
+    for key, value in headers.items():
+        low = key.lower()
+        if low in ADDON_HOP_HEADERS or low in ("host", "cookie", "content-length"):
+            continue
+        out[key] = value
+    cookie = addon_request_cookie(headers.get("Cookie") or headers.get("cookie") or "")
+    if cookie:
+        out["Cookie"] = cookie
+    out["Host"] = re.sub(r"[^A-Za-z0-9.:\[\]-]", "", str(host or ""))[:255] or "127.0.0.1"
+    out["X-Forwarded-Proto"] = "https"
+    out["X-Forwarded-For"] = str(client_ip or "")
+    if websocket:
+        out["Connection"] = "Upgrade"
+        out["Upgrade"] = "websocket"
+    else:
+        out["Connection"] = "close"
+    return out
+
+
+def addon_response_header_ok(key: str, value: str) -> bool:
+    low = key.lower()
+    if low in ("transfer-encoding", "connection", "keep-alive", "content-length"):
+        return False
+    if low == "set-cookie" and _stickllm_cookie_name(str(value).partition("=")[0]):
+        return False
+    return True
+
+
+class _LimitedReader:
+    """Request body for http.client: exactly Content-Length bytes."""
+
+    def __init__(self, src, length: int):
+        self._src = src
+        self._left = length
+
+    def read(self, n: int = -1) -> bytes:
+        if self._left <= 0:
+            return b""
+        if n is None or n < 0 or n > self._left:
+            n = self._left
+        data = self._src.read(min(n, 65536))
+        self._left -= len(data)
+        if not data:
+            self._left = 0
+        return data
 
 
 # App pages (/apps/<id>/, opened by a desktop icon or by open_app) must not
@@ -2484,6 +2669,22 @@ class Handler(SimpleHTTPRequestHandler):
                     row["label"] = DOCS_STATE_LABELS.get(str(docs.get("state") or ""), row.get("label"))
         except Exception:
             pass
+        try:
+            addons = addons_lib()
+            for row in doc.get("apps") or []:
+                if isinstance(row, dict) and row.get("id") in addons.APPS:
+                    st = addons.status_document(row["id"])
+                    row["installed"] = bool(st.get("installed"))
+                    row["installer"] = "stickllm-addon"
+                    row["state"] = st.get("state")
+                    row["message"] = st.get("message")
+                    row["running"] = bool(st.get("running"))
+                    row["open_url"] = self._addon_public_url(row["id"])
+                    row["open_link"] = "/api/apps/open-link"
+                    row["version"] = st.get("version")
+                    row["label"] = ADDON_STATE_LABELS.get(str(st.get("state") or ""), row.get("label"))
+        except Exception:
+            pass
         self._json(200, doc)
 
     def _apps_mutate(self, action: str, req: dict) -> None:
@@ -2492,6 +2693,13 @@ class Handler(SimpleHTTPRequestHandler):
         app_id = str((req or {}).get("id") or "")
         if app_id == "onlyoffice":
             self._docs_mutate(action)
+            return
+        try:
+            is_addon = app_id in addons_lib().APPS
+        except Exception:
+            is_addon = False
+        if is_addon:
+            self._addon_mutate(action, app_id)
             return
         try:
             mod = apps_lib()
@@ -2873,6 +3081,303 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._relay_http(method, path, parsed.query)
 
+    # ------------------------------------------------------------ add-ons
+
+    def _addon_id(self) -> str:
+        return str(getattr(self.server, "stickllm_addon", "") or "")
+
+    def _addon_cookie_name(self, app_id: str) -> str:
+        return ADDON_COOKIE_PREFIX + app_id.replace("-", "_")
+
+    def _addon_allowed(self, app_id: str) -> bool:
+        if self._is_loopback():
+            return True
+        doc = load_auth()
+        if addon_session_ok(self._cookie(self._addon_cookie_name(app_id)), doc, app_id):
+            return True
+        pair = self._cookie("stickllm_pair")
+        if pair and token_ok("Bearer " + pair, doc):
+            return True
+        return not bool(doc.get("require_pair"))
+
+    def _addon_page(self, code: int, title: str, text: str, extra: dict | None = None,
+                    refresh: bool = False) -> None:
+        method = self.command or "GET"
+        accept = self.headers.get("Accept") or ""
+        if method == "GET" and ("text/html" in accept or refresh or extra):
+            self._agent_html(code, title, text, extra, refresh=refresh)
+            return
+        self._json(code, {"ok": False, "error": title, "message": text})
+
+    def _addon_public_url(self, app_id: str) -> str:
+        spec = addons_lib().app(app_id)
+        if self._is_loopback():
+            # The console browser uses the loopback publish; no certificate.
+            return f"http://127.0.0.1:{spec['local_port']}/"
+        raw = (self.headers.get("Host") or "").strip()
+        if raw.startswith("["):
+            host = raw[: raw.find("]") + 1] if "]" in raw else ""
+        else:
+            host = raw.split(":")[0]
+        host = re.sub(r"[^A-Za-z0-9.\[\]:-]", "", host)[:255]
+        if not host or host == "0.0.0.0":
+            host = discover_lan_ip() or "127.0.0.1"
+        return f"https://{host}:{spec['tls_port']}/"
+
+    def _addon_open_link(self) -> None:
+        """Paired StickLLM tab -> one-time link that signs this browser in to
+        one app's TLS port (its own HttpOnly cookie)."""
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 2048:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        raw = self.rfile.read(length) if length else b""
+        if not stickllm_ui_client(self.headers) and not self._is_loopback():
+            self._json(403, {"ok": False, "error": "ui_only"})
+            return
+        try:
+            req = json.loads(raw.decode("utf-8") or "{}")
+            app_id = str(req.get("id") or "") if isinstance(req, dict) else ""
+            mod = addons_lib()
+            mod.app(app_id)
+        except (ValueError, UnicodeDecodeError):
+            self._json(400, {"ok": False, "error": "bad_json"})
+            return
+        except Exception:
+            self._json(404, {"ok": False, "error": "unknown_app"})
+            return
+        base = self._addon_public_url(app_id)
+        if self._is_loopback():
+            self._json(200, {"ok": True, "url": base})
+            return
+        doc, ok = self._auth()
+        if doc.get("require_pair") and not ok:
+            self._json(401, {"ok": False, "error": "pair_required"})
+            return
+        ticket = mint_addon_handoff(doc, app_id)
+        if not ticket:
+            # Pairing is off on this stick: the app port is open to the LAN.
+            self._json(200, {"ok": True, "url": base})
+            return
+        self._json(200, {"ok": True, "url": base + "__stickllm/handoff?t=" + urllib.parse.quote(ticket)})
+
+    def _addon_down(self, app_id: str) -> None:
+        mod = addons_lib()
+        name = mod.app(app_id)["name"]
+        try:
+            st = mod.status_document(app_id, upstream_up=False)
+            text = f"{name} is not running ({st.get('message') or st.get('state')}). Open StickLLM, then Apps."
+        except Exception:
+            text = f"{name} is not running. Open StickLLM, then Apps."
+        self._addon_page(503, f"{name}: not running", text)
+
+    def _serve_addon(self, method: str) -> None:
+        """Paired TLS proxy for one starter add-on on its own port."""
+        app_id = self._addon_id()
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path or "/"
+        try:
+            mod = addons_lib()
+            spec = mod.app(app_id)
+        except Exception:
+            self._json(500, {"ok": False, "error": "add-on helper missing"})
+            return
+        name = spec["name"]
+        if method == "GET" and path == "/__stickllm/handoff":
+            ticket = (urllib.parse.parse_qs(parsed.query).get("t") or [""])[0]
+            doc = load_auth()
+            value = addon_session_value(doc, app_id) if addon_handoff_redeem(ticket, doc, app_id) else ""
+            if not value:
+                self._agent_html(401, f"{name}: pair_required",
+                                 f"This {name} link expired or was already used. "
+                                 "Go back to StickLLM, Apps, and click Open again.")
+                return
+            cookie = f"{self._addon_cookie_name(app_id)}={value}; Path=/; Secure; HttpOnly; SameSite=Strict"
+            self._agent_html(200, f"Opening {name}", f"Opening {name}...", {"Set-Cookie": cookie}, refresh=True)
+            return
+        if not self._addon_allowed(app_id):
+            self.close_connection = True
+            self._addon_page(401, f"{name}: pair_required",
+                             f"This browser is not signed in to {name}. Open StickLLM in this browser "
+                             "(pair it there if needed), then Apps and Open.")
+            return
+        if not mod.vault_open():
+            self.close_connection = True
+            self._addon_page(423, f"{name}: vault_locked", mod.VAULT_LOCKED_MESSAGE)
+            return
+        target = path + (("?" + parsed.query) if parsed.query else "")
+        upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
+        if upgrade and method == "GET":
+            if not spec.get("websocket"):
+                self._json(400, {"ok": False, "error": "no_websocket"})
+                return
+            headers = addon_proxy_headers(dict(self.headers), self.headers.get("Host") or "",
+                                          self._client_ip(), websocket=True)
+            self._addon_websocket(app_id, spec["local_port"], target, headers)
+            return
+        self._addon_relay(method, app_id, spec["local_port"], target)
+
+    def _addon_relay(self, method: str, app_id: str, port: int, target: str) -> None:
+        te = (self.headers.get("Transfer-Encoding") or "").strip().lower()
+        if te and te != "identity":
+            self.close_connection = True
+            self._json(411, {"ok": False, "error": "length_required"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > ADDON_MAX_BODY:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        headers = addon_proxy_headers(dict(self.headers), self.headers.get("Host") or "", self._client_ip())
+        body = None
+        if length:
+            headers["Content-Length"] = str(length)
+            body = _LimitedReader(self.rfile, length)
+        elif method not in ("GET", "HEAD", "OPTIONS", "DELETE"):
+            headers["Content-Length"] = "0"
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+        try:
+            conn.request(method, target, body=body, headers=headers, encode_chunked=False)
+            resp = conn.getresponse()
+        except Exception:
+            conn.close()
+            self.close_connection = True
+            self._addon_down(app_id)
+            return
+        try:
+            # The app sends its own CSP and headers; StickLLM's would break it.
+            self._skip_stick_headers = True
+            self.send_response(resp.status)
+            for key, value in resp.getheaders():
+                if addon_response_header_ok(key, value):
+                    self.send_header(key, value)
+            clen = resp.getheader("Content-Length") or ""
+            if method == "HEAD" or resp.status in (204, 304) or resp.status < 200:
+                if method == "HEAD" and clen.isdigit():
+                    self.send_header("Content-Length", clen)
+                self.end_headers()
+                return
+            if clen.isdigit():
+                self.send_header("Content-Length", clen)
+                self.end_headers()
+                left = int(clen)
+                while left > 0:
+                    chunk = resp.read(min(65536, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+                if left:
+                    self.close_connection = True
+                return
+            data = resp.read()
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            if data:
+                self.wfile.write(data)
+        except OSError:
+            self.close_connection = True
+        finally:
+            conn.close()
+
+    def _addon_websocket(self, app_id: str, port: int, target: str, headers: dict) -> None:
+        try:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        except OSError:
+            self._addon_down(app_id)
+            return
+        lines = [f"GET {target} HTTP/1.1"] + [f"{k}: {v}" for k, v in headers.items()]
+        try:
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1", errors="replace"))
+            header = b""
+            while b"\r\n\r\n" not in header and len(header) < 65536:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                header += chunk
+            if header.find(b"\r\n\r\n") < 0:
+                sock.close()
+                self._json(502, {"ok": False, "error": "the app did not accept the socket"})
+                return
+            self.connection.sendall(header)
+        except OSError:
+            sock.close()
+            return
+        self.close_connection = True
+        sock.settimeout(None)
+
+        def _pump(src, dst) -> None:
+            try:
+                while True:
+                    data = src.recv(65536)
+                    if not data:
+                        break
+                    dst.sendall(data)
+            except OSError:
+                pass
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+        left = threading.Thread(target=_pump, args=(self.connection, sock), daemon=True)
+        right = threading.Thread(target=_pump, args=(sock, self.connection), daemon=True)
+        left.start()
+        right.start()
+        left.join()
+        right.join()
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def _addon_mutate(self, action: str, app_id: str) -> None:
+        """Apps page Install/Uninstall for a starter add-on (vault required)."""
+        mod = addons_lib()
+        name = mod.app(app_id)["name"]
+        if not mod.vault_open():
+            self._json(423, {"ok": False, "installed": False, "error": "vault_locked",
+                             "message": mod.VAULT_LOCKED_MESSAGE, "deleted": []})
+            return
+        if action == "install":
+            if mod.is_installed(app_id):
+                self._json(200, {"ok": True, "installed": True, "state": "installed",
+                                 "message": f"{name} is installed.", "deleted": []})
+                return
+            unit = ["systemctl", "start", "--no-block", f"stickllm-addon-install@{app_id}.service"]
+            fallback = ["/usr/local/bin/stickllm-addon", app_id, "install"]
+            message = f"Installing {name}. The image is pulled onto the host drive; its data stays in the vault."
+        else:
+            unit = None
+            fallback = ["/usr/local/bin/stickllm-addon", app_id, "uninstall"]
+            message = f"Removing {name}. Its data in vault/addons/{app_id} is kept."
+        started = False
+        if unit:
+            try:
+                started = subprocess.run(unit, capture_output=True, timeout=15, check=False).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                started = False
+        if not started:
+            try:
+                subprocess.Popen(fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except OSError:
+                self._json(500, {"ok": False, "installed": False, "error": "Could not start the installer",
+                                 "message": "Nothing was changed.", "deleted": []})
+                return
+        if action == "install":
+            mod.write_status(app_id, "installing")
+            self._json(200, {"ok": True, "started": True, "installed": False, "state": "installing",
+                             "message": message, "deleted": []})
+        else:
+            mod.write_status(app_id, "removing")
+            self._json(200, {"ok": True, "started": True, "installed": False, "state": "removing",
+                             "message": message, "deleted": []})
+
     def _agent_html(self, code: int, title: str, text: str, extra_headers: dict | None = None,
                     refresh: bool = False) -> None:
         import html as _html
@@ -3012,6 +3517,9 @@ class Handler(SimpleHTTPRequestHandler):
             pass
 
     def do_HEAD(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("HEAD")
+            return
         if self._is_agent_server():
             self._serve_agent_gateway("HEAD")
             return
@@ -3024,6 +3532,9 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def do_PUT(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("PUT")
+            return
         if self._is_agent_server():
             self._serve_agent_gateway("PUT")
             return
@@ -3032,6 +3543,9 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(405, {"error": "method not allowed"})
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("DELETE")
+            return
         if self._is_agent_server():
             self._serve_agent_gateway("DELETE")
             return
@@ -3040,6 +3554,9 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(405, {"error": "method not allowed"})
 
     def do_PATCH(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("PATCH")
+            return
         if self._is_agent_server():
             self._serve_agent_gateway("PATCH")
             return
@@ -3048,10 +3565,76 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(405, {"error": "method not allowed"})
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("OPTIONS")
+            return
         if self._is_agent_server():
             self._serve_agent_gateway("OPTIONS")
             return
         if self._docs_container_refused():
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_PROPFIND(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("PROPFIND")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_PROPPATCH(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("PROPPATCH")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_MKCOL(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("MKCOL")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_MKCALENDAR(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("MKCALENDAR")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_REPORT(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("REPORT")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_MOVE(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("MOVE")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_COPY(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("COPY")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_LOCK(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("LOCK")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_UNLOCK(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("UNLOCK")
             return
         self._json(405, {"error": "method not allowed"})
 
@@ -3117,6 +3700,9 @@ class Handler(SimpleHTTPRequestHandler):
         return True
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("GET")
+            return
         if self._is_agent_server():
             self._serve_agent_gateway("GET")
             return
@@ -3289,6 +3875,9 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("POST")
+            return
         if self._is_agent_server():
             self._serve_agent_gateway("POST")
             return
@@ -3309,6 +3898,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/agent/handoff":
             self._agent_handoff_mint()
+            return
+        if path == "/api/apps/open-link":
+            self._addon_open_link()
             return
         n = int(self.headers.get("Content-Length") or 0)
         if path == "/api/ui/app-reply" and n > 65536:
@@ -4288,6 +4880,41 @@ def start_agent_tls_server() -> int | None:
         return None
 
 
+def start_addon_tls_servers() -> list[int]:
+    """One paired TLS port per starter add-on (own origin per app). The app
+    itself listens on 127.0.0.1 only."""
+    started: list[int] = []
+    try:
+        mod = addons_lib()
+        ips = _tls_ips()
+        cert, key = _ensure_tls_cert(ips)
+    except Exception as exc:
+        print(f"stickllm-gateway add-on TLS off ({exc})", flush=True)
+        return started
+    for app_id in mod.ORDER:
+        port = int(mod.APPS[app_id]["tls_port"])
+        httpd = None
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
+            httpd = _ReuseHTTPServer((HOST, port), Handler)
+            httpd.stickllm_addon = app_id
+            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+            threading.Thread(target=httpd.serve_forever, name=f"stickllm-addon-{app_id}", daemon=True).start()
+            started.append(port)
+        except Exception as exc:
+            if httpd is not None:
+                try:
+                    httpd.server_close()
+                except Exception:
+                    pass
+            print(f"stickllm-gateway {app_id} TLS off ({exc})", flush=True)
+    if started:
+        print("stickllm-gateway add-on TLS on ports " + ",".join(str(p) for p in started), flush=True)
+    return started
+
+
 def main() -> int:
     os.chdir(UI_ROOT)
     try:
@@ -4296,6 +4923,7 @@ def main() -> int:
         pass
     start_tls_server()
     start_agent_tls_server()
+    start_addon_tls_servers()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"stickllm-gateway on http://{HOST}:{PORT} → {LLAMA} control={CONTROL}", flush=True)
     httpd.serve_forever()
