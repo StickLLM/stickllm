@@ -1,6 +1,6 @@
 # Cursor chat history: "Privacy AI USB image build" (StickLLM → Agent Zero)
 
-This file summarizes the important parts of the Cursor agent chat that built StickLLM, from Oct 7 to Oct 25, 2026.
+This file summarizes the important parts of the Cursor agent chat that built StickLLM, from Oct 7 to Oct 27, 2026.
 It is grouped by topic, not by date. Secrets are left out on purpose: no passwords, pair codes or tokens.
 
 - Source chat: `C:\Users\peter\.cursor\projects\c-Users-peter-stickllm-vault-wt\agent-transcripts\678605c3-21e4-464f-9ad2-99ec873815b4\` (jsonl plus `subagents\`).
@@ -221,8 +221,13 @@ It is grouped by topic, not by date. Secrets are left out on purpose: no passwor
 
 ## 9. Open TODOs and known issues
 
-- **Rebuild the A0 ISO.** The fixes since `stickllm-agentzero-v0.2.iso` (`a4d3a82` … `df7b4ce`) exist only as hotfixes on the running stick and in git. A freshly flashed v0.2 stick does not have them.
-- **A0 app hooks:** `window.stickllmApp` describe/state/act, built in `bb11ab4`. Agent Zero plays a StickLLM app in the visible tab with `open_app`, `app_state`, and `app_act`.
+- **v0.4 released (2026-10-27).** `stickllm-agentzero-v0.4.iso` (SHA256 `31cf3bb54b1767e4cad0ebaf12202eb15591ed26126a1da2afa11f879ab87879`) was built from `de3d741`, flashed, and passed the hardware test. The test covered a fresh vault in a non-default host folder, the Agent Zero install in that folder (the step that used to fail), the kiosk loading a model, and `open_app` playing Solitaire in a new tab on both the kiosk and a paired LAN desktop. Branch `stickllm-agentzero` was pushed to `4282e53`. `main` is untouched. The plan is for the next version to replace `main` once its tests pass. The ISO is on Google Drive.
+- **Next version (queued, not done):**
+  - **Docker container log leaks to plain text.** `docker run` sets no `--log-driver`, so Agent Zero's console output goes to `json-file` under `<data-root>/containers/` on the unencrypted host SSD. Use `--log-driver none` (or log into the vault). Also make the container `--read-only` apart from the vault mounts and `/tmp`, so nothing lands in the writable layer on the host SSD.
+  - **Vault passcode fields trigger Chrome's "Save password?".** Chrome also takes the folder path as the username. Set `autocomplete="new-password"` on both passcode fields and `autocomplete="off"` on the folder field. If Chrome still prompts, stop using `type=password` inputs.
+  - **About: the website link opens in a new tab.** Done in `4282e53` but not in the v0.4 ISO.
+  - **Boot screen shows the legacy "Checking model / Model still loading" text.** No model loads at boot anymore. Fix it as part of the first-boot setup wizard, along with suggesting a default vault folder (the picker currently opens at the drive root).
+  - **No way to remove things from the UI.** There is no Remove vault and no Uninstall Agent Zero. The Models page Delete must not touch LM Studio models.- **A0 app hooks:** `window.stickllmApp` describe/state/act, built in `bb11ab4`. Agent Zero plays a StickLLM app in the visible tab with `open_app`, `app_state`, and `app_act`.
 - **Catalog apps** (ONLYOFFICE, ComfyUI, Immich, …) have no installers yet. The requirement figures are "approx." until measured. Only A0's disk use (4 GB) is measured.
 - **Attachments:** ODS/ODT/ODP are not converted to text. Scanned PDFs need a vision model or OCR.
 - **The mic needs HTTPS** (a secure context), including over RDP.

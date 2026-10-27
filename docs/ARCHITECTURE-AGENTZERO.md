@@ -66,6 +66,8 @@ URL ids: `minesweeper`, `solitaire`, `tetris`, `notepad`, `calculator`, `files`,
 
 Unlock is the vault passcode. The same passcode opens the USB settings partition at `/mnt/stickllm-settings`. There is no second password. When `vault.key` and `vault-meta/recovery.sha256` already exist, those slots are added to the settings LUKS header as well: one key file and one recovery-phrase digest. Boot does not ask for the passcode. Chats and Agent Zero memory stay in the SSD vault (`/var/lib/stickllm/vault/addons/agent-zero`). Keys and Agent Zero settings stay on the settings partition.
 
+Known gap (v0.4): Docker's own container log is not in the vault. No `--log-driver` is set, so Agent Zero's stdout goes to `json-file` under `<data-root>/containers/` on the plain host SSD, and anything written outside the mounted folders stays in the container's writable layer there. `/tmp` is a RAM disk (tmpfs). The fix is queued for the next version: `--log-driver none` and a read-only container.
+
 ## Disk
 
 Docker data-root is the host SSD folder beside the models directory (`<models parent>/stickllm-docker`). `dockerd` is not the system `docker.service`. Its log is `/run/stickllm/agent-dockerd.log` and a copy that survives reboot at `<data-root parent>/stickllm-logs/agent-dockerd.log`.
