@@ -2020,6 +2020,68 @@ settings_helper() {
   return 1
 }
 
+# Mount name that mount_host would pick for a partition. Keep in step with the
+# naming in mount_host: label, else disk model, else partition name, then -<part>.
+host_mount_name_for_dev() {
+  STICKLLM_MOUNT_DEV="${1:-}" python3 - <<'PY'
+import os, re, subprocess
+from pathlib import Path
+
+dev = os.environ.get("STICKLLM_MOUNT_DEV", "").strip()
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+pk = sh("lsblk", "-no", "PKNAME", dev)
+pk = (pk.splitlines()[0] if pk else "").strip()
+label = sh("lsblk", "-no", "LABEL", dev)
+model = sh("lsblk", "-no", "MODEL", f"/dev/{pk}") if pk else ""
+part = Path(dev).name
+safe = re.sub(r"[^A-Za-z0-9_-]+", "-", label or model or part).strip("-_")[:48] or part
+print(f"{safe}-{part}"[:64])
+PY
+}
+
+# After a reboot the host SSD holding the blob may not be mounted yet. If the
+# blob sits under $HOST_MNT_ROOT/<leaf>/ and <leaf> is not mounted, mount that
+# partition through mount_host (the Mount button path: partitions only, plain
+# unencrypted filesystems, same options, never formats). The partition comes
+# from the leaf suffix and must map back to the same leaf, so a renumbered or
+# different disk is never mounted in its place.
+# Returns 0 if the blob exists afterwards, 2 if this does not apply (not a host
+# mount path, or the leaf is already mounted), 1 if the mount could not be done;
+# on 1 the drive it wanted is printed on stdout for the error message.
+ensure_host_mount_for_blob() {
+  local blob="${1:-}" root="${HOST_MNT_ROOT%/}" rel leaf part dev name out
+  [[ -n "$blob" && -f "$blob" ]] && return 0
+  [[ -n "$root" && "$blob" == "$root/"* ]] || return 2
+  rel="${blob#"$root"/}"
+  leaf="${rel%%/*}"
+  [[ -n "$leaf" && "$leaf" != "$rel" ]] || return 2
+  findmnt -n "$root/$leaf" >/dev/null 2>&1 && return 2
+  part="${leaf##*-}"
+  if [[ "$part" == "$leaf" || ! "$part" =~ ^[A-Za-z0-9]+$ ]]; then
+    printf '%s\n' "$leaf"
+    return 1
+  fi
+  dev="/dev/$part"
+  name="$(host_mount_name_for_dev "$dev" 2>/dev/null || true)"
+  if [[ "$name" != "$leaf" ]]; then
+    echo "stickllm-vault: $dev does not match host drive $leaf (found '${name:-none}'); not mounting" >&2
+    printf '%s\n' "$leaf"
+    return 1
+  fi
+  if ! out="$(STICKLLM_VAULT_CONFIRM=MOUNT-HOST mount_host "$dev" 2>&1)"; then
+    echo "stickllm-vault: mount-host $dev failed: ${out##*$'\n'}" >&2
+    printf '%s\n' "$dev ($leaf)"
+    return 1
+  fi
+  [[ -f "$blob" ]] && return 0
+  printf '%s\n' "$dev ($leaf)"
+  return 1
+}
+
 # init=0 opens an existing settings LUKS volume and never formats.
 # init=1 may LUKS-format the raw boot-USB slot, and is only used after this
 # passcode has already been accepted for the SSD vault.
@@ -2027,24 +2089,37 @@ sync_usb_settings() {
   local pass="${1:-}" init="${2:-0}" helper=""
   helper="$(settings_helper)" || return 0
   if [[ "$init" == "1" ]]; then
-    STICKLLM_SETTINGS_INIT=1 STICKLLM_VAULT_PASS="$pass" "$helper" ensure-partition >/dev/null 2>&1 || true
-    STICKLLM_SETTINGS_INIT=1 STICKLLM_VAULT_PASS="$pass" "$helper" open-or-init >/dev/null 2>&1 || true
+    STICKLLM_SETTINGS_INIT=1 STICKLLM_VAULT_PASS="$pass" "$helper" ensure-partition >/dev/null 2>&1 \
+      || echo "stickllm-vault: warning: usb settings ensure-partition failed (rc=$?)" >&2
+    STICKLLM_SETTINGS_INIT=1 STICKLLM_VAULT_PASS="$pass" "$helper" open-or-init >/dev/null 2>&1 \
+      || echo "stickllm-vault: warning: usb settings open-or-init failed (rc=$?)" >&2
   elif [[ -n "$pass" ]]; then
-    STICKLLM_VAULT_PASS="$pass" "$helper" open >/dev/null 2>&1 || true
+    STICKLLM_VAULT_PASS="$pass" "$helper" open >/dev/null 2>&1 \
+      || echo "stickllm-vault: warning: usb settings open failed (rc=$?)" >&2
   fi
-  "$helper" write-computer --from "$LOCATION_FILE" >/dev/null 2>&1 || true
+  "$helper" write-computer --from "$LOCATION_FILE" >/dev/null 2>&1 \
+    || echo "stickllm-vault: warning: usb settings write-computer failed (rc=$?)" >&2
+  return 0
 }
 
 maybe_bind_from_settings() {
   [[ -f "$META_DIR/container" ]] && return 0
   local helper="" blob=""
   helper="$(settings_helper)" || return 0
-  blob="$("$helper" print-blob 2>/dev/null || true)"
-  [[ -n "$blob" && -f "$blob" ]] || return 0
+  blob="$("$helper" print-blob 2>/dev/null)" \
+    || echo "stickllm-vault: warning: usb settings print-blob failed (rc=$?)" >&2
+  [[ -n "$blob" ]] || return 0
+  if [[ ! -f "$blob" ]]; then
+    ensure_host_mount_for_blob "$blob" >/dev/null || true
+  fi
+  if [[ ! -f "$blob" ]]; then
+    echo "stickllm-vault: warning: settings vault location not found: $blob" >&2
+    return 0
+  fi
   is_block_device_path "$blob" && return 0
   # cmd_use calls die(), which exits the process. Keep a bad location from
   # aborting unlock; the SSD vault open below still runs.
-  (cmd_use "$blob") || true
+  (cmd_use "$blob") || echo "stickllm-vault: warning: bind from usb settings failed (rc=$?)" >&2
 }
 
 cmd_status() {
@@ -2530,7 +2605,17 @@ cmd_unlock() {
 
   local tgt
   tgt="$(vault_target)" || { unset pass; die "no vault configured (run: stickllm-vault setup <dir>)"; }
-  [[ -f "$tgt" ]] || { unset pass; die "blob missing: $tgt"; }
+  if [[ ! -f "$tgt" ]]; then
+    # Host SSD not mounted after reboot: mount it like the Mount button, then
+    # re-check. A missing drive is not a wrong passcode, so no bump_fail here.
+    local hm_rc=0 hm_what=""
+    hm_what="$(ensure_host_mount_for_blob "$tgt")" || hm_rc=$?
+    if [[ "$hm_rc" -eq 1 ]]; then
+      unset pass
+      die "Host SSD not mounted: ${hm_what:-$tgt}. Press Mount on the drive, then Unlock."
+    fi
+    [[ -f "$tgt" ]] || { unset pass; die "blob missing: $tgt"; }
+  fi
   is_block_device_path "$tgt" && { unset pass; die "refusing to open block device — meta corrupt?"; }
 
   if cryptsetup status "$MAPPER_NAME" >/dev/null 2>&1; then
