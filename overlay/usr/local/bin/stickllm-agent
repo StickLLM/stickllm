@@ -6,14 +6,17 @@
 set -euo pipefail
 
 PYBIN="$(command -v python3 || command -v python || true)"
-LIB="/usr/local/lib/stickllm_agent.py"
+LIB="${STICKLLM_AGENT_LIB:-/usr/local/lib/stickllm_agent.py}"
 VAULT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
 ADDON="${VAULT}/addons/agent-zero"
 SOCK="/run/stickllm/agent-docker.sock"
 RELAY_PIDFILE="/run/stickllm/agent-llama-relay.pid"
 APPS_PIDFILE="/run/stickllm/agent-apps-bridge.pid"
 OPEN_APP_PIDFILE="/run/stickllm/agent-open-app.pid"
-PULL_LOG="/run/stickllm/agent-pull.log"
+RUN_DIR="${STICKLLM_AGENT_RUN:-/run/stickllm}"
+PULL_LOG="${RUN_DIR}/agent-pull.log"
+# Held (flock, fd 9) by `stickllm-agent install` for the whole pull.
+INSTALL_LOCK="${RUN_DIR}/agent-install.lock"
 CONTAINER="stickllm-agent-zero"
 NETWORK="stickllm-agent"
 ENTRY="/usr/local/bin/stickllm-agent-entrypoint"
@@ -94,8 +97,13 @@ cmd_gate() {
 # stickllm-dockerd.service, not in this unit's cgroup, so stopping Agent Zero
 # leaves Docs running. The daemon, socket and data-root are unchanged.
 DOCKERD="${STICKLLM_DOCKERD:-/usr/local/bin/stickllm-dockerd}"
+DOCKERD_USERS="${STICKLLM_DOCKERD_RUN:-/run/stickllm}/dockerd-users"
 
+# Holders: "agent" is stickllm-agent.service (run/stop). The installer uses
+# "agent-install", so a service stop (needs_install, restart) cannot release
+# the daemon in the middle of a pull.
 ensure_dockerd() {
+  local holder="${1:-agent}"
   # Gate again immediately before the daemon. A locked vault never reaches dockerd.
   if ! "$PYBIN" "$LIB" docker-may-start; then
     refuse_locked
@@ -106,7 +114,7 @@ ensure_dockerd() {
     exit 0
   fi
   "$PYBIN" "$LIB" prepare-vault
-  if ! "$DOCKERD" ensure agent 9>&-; then
+  if ! "$DOCKERD" ensure "$holder" 9>&-; then
     echo "stickllm-agent: dockerd did not become ready" >&2
     exit 1
   fi
@@ -115,7 +123,39 @@ ensure_dockerd() {
 # Forget Agent Zero as a dockerd user. dockerd stops only when no other
 # add-on (ONLYOFFICE) is registered and no container is running.
 release_dockerd() {
-  "$DOCKERD" release agent 9>&- || true
+  "$DOCKERD" release "${1:-agent}" 9>&- || true
+}
+
+# True while `stickllm-agent install` holds the install lock (pull running).
+install_running() {
+  [[ -e "$INSTALL_LOCK" ]] || return 1
+  if flock -n "$INSTALL_LOCK" true 9>&- 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
+# Without starting dockerd: 0 = image on the host SSD (or unknown), 1 = absent.
+image_on_disk() {
+  local rc=0
+  "$PYBIN" "$LIB" image-on-disk >/dev/null 2>&1 || rc=$?
+  [[ "$rc" -ne 1 ]]
+}
+
+needs_install() {
+  if ! install_running; then
+    "$PYBIN" "$LIB" write-status --state needs_install --image_present false --low_space false >/dev/null || true
+  fi
+  echo "agent image is not installed: agent not started" >&2
+}
+
+# ExecCondition for stickllm-agent.service: skip the unit (no ExecStop, no
+# dockerd) while the image is not installed. Exit 1 = skip.
+cmd_image_ready() {
+  if image_on_disk; then
+    exit 0
+  fi
+  exit 1
 }
 
 image_present() {
@@ -326,9 +366,9 @@ cmd_install() {
     refuse_locked
     exit 0
   fi
-  mkdir -p /run/stickllm
+  mkdir -p "$RUN_DIR"
   # Daemons started below close fd 9 (9>&-) so they do not keep this lock.
-  exec 9>/run/stickllm/agent-install.lock
+  exec 9>"$INSTALL_LOCK"
   if ! flock -n 9; then
     # An older script let dockerd inherit the lock. If no other install is
     # running and that dockerd is in the wrong mount namespace, stop it.
@@ -349,13 +389,15 @@ cmd_install() {
     echo "host SSD has under 12 GB free: image pull stopped" >&2
     exit 0
   fi
-  ensure_dockerd
+  ensure_dockerd agent-install
+  # Success or failure, the installer's own hold on dockerd ends with it.
+  trap 'release_dockerd agent-install' EXIT
   local ref previous
   ref="$("$PYBIN" "$LIB" image-ref)"
   # Remember the image that is already installed. Pull and smoke the pinned
   # ref before that id is retagged. The previous id is kept and is not removed.
   previous="$(docker_cli image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)"
-  mkdir -p /run/stickllm
+  mkdir -p "$RUN_DIR"
   : >"$PULL_LOG"
   "$PYBIN" "$LIB" write-status --state installing --image_present false --low_space false >/dev/null || true
   if ! docker_cli pull "$ref" 2>&1 | tee -a "$PULL_LOG"; then
@@ -377,8 +419,20 @@ cmd_install() {
     # restart and systemctl reports it. dockerd stays in stickllm-dockerd.service.
     exec 9>&-
     systemctl restart stickllm-agent.service
+    # Keep "agent-install" until the service holds dockerd as "agent" (or
+    # has ended), so the daemon is not stopped between the two.
+    local i
+    for i in $(seq 1 120); do
+      [[ -e "${DOCKERD_USERS}/agent" ]] && break
+      systemctl is-active --quiet stickllm-agent.service || break
+      sleep 0.5
+    done
     exit 0
   fi
+  ensure_dockerd agent
+  release_dockerd agent-install
+  trap - EXIT
+  exec 9>&-
   cmd_run_container
 }
 
@@ -409,7 +463,12 @@ cmd_run_container() {
   if ! resolve_docker_dir; then
     exit 0
   fi
-  ensure_dockerd
+  # No image on the host SSD: do not start dockerd for nothing.
+  if ! image_on_disk; then
+    needs_install
+    exit 0
+  fi
+  ensure_dockerd agent
   if ! image_present; then
     "$PYBIN" "$LIB" write-status --state needs_install --image_present false --low_space false >/dev/null || true
     echo "agent image is not installed" >&2
@@ -511,13 +570,24 @@ cmd_stop() {
   stop_apps || true
   stop_open_app || true
   "$PYBIN" "$LIB" nft-delete >/dev/null 2>&1 || true
-  release_dockerd
+  if install_running; then
+    # Never release dockerd under a running pull. The installer restarts this
+    # unit when it is done; vault lock still stops dockerd (stickllm-dockerd halt).
+    echo "stickllm-agent: install running, dockerd left to the installer" >&2
+    return 0
+  fi
+  release_dockerd agent
   "$PYBIN" "$LIB" write-status --state stopped >/dev/null || true
 }
 
 cmd_start() {
   if ! "$PYBIN" "$LIB" docker-may-start; then
     refuse_locked
+    exit 0
+  fi
+  # Unlock never starts the service (or dockerd) for an image that is not there.
+  if ! image_on_disk; then
+    needs_install
     exit 0
   fi
   if use_systemd; then
@@ -528,7 +598,7 @@ cmd_start() {
 }
 
 usage() {
-  echo "usage: stickllm-agent {gate|start|run|stop|install}" >&2
+  echo "usage: stickllm-agent {gate|start|run|stop|install|image-ready}" >&2
   exit 1
 }
 
@@ -538,5 +608,6 @@ case "${1:-}" in
   run) cmd_run ;;
   stop) cmd_stop ;;
   install) cmd_install ;;
+  image-ready) cmd_image_ready ;;
   *) usage ;;
 esac

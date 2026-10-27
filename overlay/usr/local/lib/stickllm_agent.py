@@ -125,6 +125,55 @@ def image_ref(pin: dict[str, str] | None = None) -> str:
     return f"{data['image']}@{data['amd64_digest']}"
 
 
+def _repo_names(image: str) -> set[str]:
+    names = {image}
+    short = image
+    for prefix in ("docker.io/", "index.docker.io/", "registry-1.docker.io/"):
+        if short.startswith(prefix):
+            short = short[len(prefix):]
+    names.add(short)
+    if short.startswith("library/"):
+        names.add(short[len("library/"):])
+    names |= {"docker.io/" + n for n in list(names) if "/" in n and not n.startswith("docker.io/")}
+    return names
+
+
+def image_on_disk(root: Path | None = None, ref: str | None = None) -> bool | None:
+    """Is the pinned image in the docker data-root, without starting dockerd?
+
+    dockerd records ``repo@sha256:...`` for an image pulled by digest in
+    ``<data-root>/image/<driver>/repositories.json``. None means unknown (no
+    data-root, or a layout without that file); callers then ask dockerd.
+    """
+    if root is None:
+        root = docker_data_root()
+    if root is None:
+        return None
+    ref = ref or image_ref()
+    image, _, digest = ref.partition("@")
+    if not digest:
+        return None
+    image_dir = Path(root) / "image"
+    if not image_dir.is_dir():
+        return False  # dockerd never ran on this data-root: nothing is pulled
+    files = sorted(image_dir.glob("*/repositories.json"))
+    if not files:
+        return None
+    names = _repo_names(image)
+    for path in files:
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        repos = doc.get("Repositories") if isinstance(doc, dict) else None
+        if not isinstance(repos, dict):
+            continue
+        for repo, refs in repos.items():
+            if repo in names and isinstance(refs, dict) and f"{repo}@{digest}" in refs:
+                return True
+    return False
+
+
 def _read_mounts(mounts_text: str | None = None) -> str:
     if mounts_text is not None:
         return mounts_text
@@ -2324,6 +2373,15 @@ def main(argv: list[str]) -> int:
     if cmd == "open-app-bridge":
         run_open_app_bridge()
         return 0
+    if cmd == "image-on-disk":
+        # 0 = present, 1 = absent, 2 = unknown (ask dockerd).
+        try:
+            found = image_on_disk()
+        except Exception:
+            found = None
+        if found is None:
+            return 2
+        return 0 if found else 1
     if cmd == "image-ref":
         print(image_ref())
         return 0

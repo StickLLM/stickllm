@@ -168,7 +168,7 @@ def test_run_does_not_install_and_checks_the_ssd_folder():
     assert "docker-may-start" in body
     assert body.index("docker-may-start") < body.index("ensure_dockerd")
     daemon = text.split("ensure_dockerd()", 1)[1].split("\nimage_present()", 1)[0]
-    assert daemon.index("docker-may-start") < daemon.index('"$DOCKERD" ensure agent')
+    assert daemon.index("docker-may-start") < daemon.index('"$DOCKERD" ensure "$holder"')
     ensure = shared.split("cmd_ensure()", 1)[1].split("\nrunning_containers()", 1)[0]
     assert ensure.index("gate") < ensure.index("start_daemon_background")
     run = shared.split("cmd_run()", 1)[1].split("\ncmd_ensure()", 1)[0]
@@ -218,7 +218,9 @@ def test_dockerd_runs_in_the_host_mount_namespace():
 def test_background_daemons_do_not_keep_the_install_lock():
     """dockerd once inherited fd 9, so every later install said "already running"."""
     text = _script()
-    assert "exec 9>/run/stickllm/agent-install.lock" in text
+    assert 'exec 9>"$INSTALL_LOCK"' in text
+    assert 'INSTALL_LOCK="${RUN_DIR}/agent-install.lock"' in text
+    assert 'RUN_DIR="${STICKLLM_AGENT_RUN:-/run/stickllm}"' in text
     for line in text.splitlines():
         stripped = line.rstrip()
         if stripped.endswith("&") and not stripped.endswith("&&"):
@@ -230,7 +232,7 @@ def test_background_daemons_do_not_keep_the_install_lock():
             assert "8>&- 9>&-" in stripped, stripped
     daemon = shared.split("start_daemon_background()", 1)[1].split("\ncmd_run()", 1)[0]
     assert '8>&- 9>&- 2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" 8>&- 9>&- &' in daemon
-    assert '"$DOCKERD" ensure agent 9>&-' in text
+    assert '"$DOCKERD" ensure "$holder" 9>&-' in text
 
 def test_install_and_container_run_in_their_own_units():
     """A process started by the gateway lives in the stickllm-ui cgroup.
@@ -2117,5 +2119,5 @@ def test_dockerd_unit_and_agent_use_the_shared_helper():
     assert "[Install]" not in unit, "dockerd starts only on demand after unlock"
     text = _script()
     assert "\n  dockerd " not in text and "\n  dockerd\n" not in text
-    assert '"$DOCKERD" ensure agent' in text
-    assert '"$DOCKERD" release agent' in text
+    assert '"$DOCKERD" ensure "$holder"' in text
+    assert '"$DOCKERD" release "${1:-agent}"' in text

@@ -6,6 +6,8 @@ ConditionPathIsMountPoint=/var/lib/stickllm/vault
 
 [Service]
 Type=simple
+# No image on the host SSD: the unit is skipped (no dockerd, no ExecStop).
+ExecCondition=/usr/local/bin/stickllm-agent image-ready
 ExecStart=/usr/local/bin/stickllm-agent run
 ExecStop=/usr/local/bin/stickllm-agent stop
 Restart=on-failure
