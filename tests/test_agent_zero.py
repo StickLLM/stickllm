@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GATEWAY = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-gateway"
 AGENT = ROOT / "overlay" / "usr" / "local" / "lib" / "stickllm_agent.py"
 SCRIPT = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-agent"
+DOCKERD = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-dockerd"
 ENTRY = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-agent-entrypoint"
 LLAMA = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-llama-start"
 PIN = ROOT / "overlay" / "usr" / "local" / "share" / "stickllm" / "agent-zero.pin"
@@ -39,6 +40,10 @@ def _load(path: Path, name: str, env: dict | None = None):
 
 def _script() -> str:
     return SCRIPT.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def _dockerd() -> str:
+    return DOCKERD.read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def test_pin_is_a_real_digest():
@@ -140,10 +145,13 @@ def test_run_does_not_install_and_checks_the_ssd_folder():
     assert "vault free space" not in text
     assert "15 GB" not in text
     assert '${VAULT}/docker' not in text
-    assert "/var/lib/stickllm/vault/docker" in text
-    assert "never pointed back at the vault" in text
-    assert "--data-root \"${DOCKER_DIR}\"" in text
+    shared = _dockerd()
+    assert "/var/lib/stickllm/vault/docker" in shared
+    assert "never pointed back at the vault" in shared
+    assert "--data-root \"${DOCKER_DIR}\"" in shared
+    assert "--iptables=false" in shared
     assert 'SOCK="/run/stickllm/agent-docker.sock"' in text
+    assert 'SOCK="/run/stickllm/agent-docker.sock"' in shared
     assert "apparmor=unconfined" not in text
     assert "no-new-privileges=true" in text
     assert "no-new-privileges:true" not in text
@@ -153,7 +161,6 @@ def test_run_does_not_install_and_checks_the_ssd_folder():
     assert "nft-delete" in text
     assert "write-status --state error" in text
     assert "ALLOWED_ORIGINS" in text
-    assert "--iptables=false" in text
     assert "0.0.0.0:8080" not in text
     assert "kitten" not in text.lower()
     assert "whisper-server" not in text
@@ -161,10 +168,14 @@ def test_run_does_not_install_and_checks_the_ssd_folder():
     assert "docker-may-start" in body
     assert body.index("docker-may-start") < body.index("ensure_dockerd")
     daemon = text.split("ensure_dockerd()", 1)[1].split("\nimage_present()", 1)[0]
-    assert daemon.index("docker-may-start") < daemon.index("\n  dockerd")
-    assert "/run/stickllm/agent-dockerd.log" in text
-    assert "stickllm-logs/agent-dockerd.log" in text
-    assert "/var/log/stickllm-dockerd.log" not in text
+    assert daemon.index("docker-may-start") < daemon.index('"$DOCKERD" ensure agent')
+    ensure = shared.split("cmd_ensure()", 1)[1].split("\nrunning_containers()", 1)[0]
+    assert ensure.index("gate") < ensure.index("start_daemon_background")
+    run = shared.split("cmd_run()", 1)[1].split("\ncmd_ensure()", 1)[0]
+    assert run.index("gate") < run.index("\n  dockerd")
+    assert "/run/stickllm/agent-dockerd.log" in shared
+    assert "stickllm-logs/agent-dockerd.log" in shared
+    assert "/var/log/stickllm-dockerd.log" not in shared + text
 
 
 def test_dockerd_runs_in_the_host_mount_namespace():
@@ -188,12 +199,18 @@ def test_dockerd_runs_in_the_host_mount_namespace():
     head = guard[0]
     assert "\ndocker_cli()" not in head
     assert "\n  dockerd" not in head
-    daemon = text.split("ensure_dockerd()", 1)[1].split("\nimage_present()", 1)[0]
+    shared = _dockerd()
+    assert "exec nsenter --mount=/proc/1/ns/mnt --" in shared
+    sguard = shared.split("\ncase \"${1:-}\" in\n  ensure|release|halt|run|stale) enter_host_mount_ns", 1)
+    assert len(sguard) == 2, "stickllm-dockerd must enter the host namespace first"
+    assert "\n  dockerd" not in sguard[0]
+    ensure = shared.split("cmd_ensure()", 1)[1].split("\nrunning_containers()", 1)[0]
     # A daemon left in the gateway namespace is restarted before it is used.
-    assert daemon.index("dockerd_in_this_ns") < daemon.index("stop_dockerd")
-    assert daemon.index("stop_dockerd") < daemon.index("\n  dockerd")
+    assert ensure.index("dockerd_in_this_ns") < ensure.index("stop_dockerd")
+    assert ensure.index("stop_dockerd") < ensure.index("start_daemon_background")
     stop = text.split("cmd_stop()", 1)[1].split("\ncmd_start()", 1)[0]
-    assert "stop_dockerd" in stop
+    assert "release_dockerd" in stop
+    assert "stop_dockerd" not in stop
     # The smoke test stays before the previous image is retagged.
     install = text.split("cmd_install()", 1)[1].split("\nstop_container()", 1)[0]
     assert install.index("smoke_image") < install.index("stickllm-agent-zero:rollback")
@@ -206,8 +223,14 @@ def test_background_daemons_do_not_keep_the_install_lock():
         stripped = line.rstrip()
         if stripped.endswith("&") and not stripped.endswith("&&"):
             assert "9>&-" in stripped, stripped
-    daemon = text.split("ensure_dockerd()", 1)[1].split("\nimage_present()", 1)[0]
-    assert '9>&- 2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" 9>&- &' in daemon
+    shared = _dockerd()
+    for line in shared.splitlines():
+        stripped = line.rstrip()
+        if stripped.endswith("&") and not stripped.endswith("&&"):
+            assert "8>&- 9>&-" in stripped, stripped
+    daemon = shared.split("start_daemon_background()", 1)[1].split("\ncmd_run()", 1)[0]
+    assert '8>&- 9>&- 2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" 8>&- 9>&- &' in daemon
+    assert '"$DOCKERD" ensure agent 9>&-' in text
 
 def test_install_and_container_run_in_their_own_units():
     """A process started by the gateway lives in the stickllm-ui cgroup.
@@ -238,8 +261,9 @@ def test_install_and_container_run_in_their_own_units():
     text = _script()
     install = text.split("cmd_install()", 1)[1].split("\nuse_systemd()", 1)[0]
     tail = install.split("--state pulled", 1)[1]
-    assert tail.index("use_systemd") < tail.index("stop_dockerd")
-    assert tail.index("stop_dockerd") < tail.index("systemctl restart stickllm-agent.service")
+    # dockerd lives in its own unit now, so the install no longer stops it.
+    assert "stop_dockerd" not in tail
+    assert tail.index("use_systemd") < tail.index("systemctl restart stickllm-agent.service")
     assert tail.index("systemctl restart stickllm-agent.service") < tail.index("cmd_run_container")
     start = text.split("cmd_start()", 1)[1].split("\nusage()", 1)[0]
     assert "use_systemd" in start and "systemctl start stickllm-agent.service" in start
@@ -2044,3 +2068,55 @@ def test_app_pages_may_be_framed_by_stickllm_only(tmp_path, monkeypatch):
         assert "frame-ancestors 'none'" in gw.csp_for_path(path), path
     assert gw.csp_for_path("/apps/solitaire/") == gw.CSP_VENDORED.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
     assert "embedded" in gw.OPEN_APP_SEEN_RESULTS
+
+
+def _run_dockerd(tmp_path, *args):
+    import subprocess
+
+    env = dict(os.environ)
+    env.update({
+        "STICKLLM_DOCKERD_RUN": str(tmp_path / "run"),
+        "STICKLLM_AGENT_NO_SYSTEMD": "1",
+        "STICKLLM_AGENT_HOST_NS": "1",
+        "STICKLLM_AGENT_LIB": str(AGENT),
+    })
+    return subprocess.run(["bash", str(DOCKERD), *args], env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_shared_dockerd_is_kept_while_another_addon_uses_it(tmp_path):
+    """Stopping Agent Zero must not stop dockerd while ONLYOFFICE uses it."""
+    import shutil
+
+    import sys
+
+    if sys.platform == "win32" or not shutil.which("bash") or not shutil.which("flock"):
+        import pytest
+
+        pytest.skip("bash/flock not available")
+    users = tmp_path / "run" / "dockerd-users"
+    users.mkdir(parents=True)
+    (users / "agent").write_text("")
+    (users / "docs").write_text("")
+    kept = _run_dockerd(tmp_path, "release", "agent")
+    assert kept.returncode == 0, kept.stderr
+    assert "kept for docs" in kept.stderr
+    assert not (users / "agent").exists()
+    assert (users / "docs").exists()
+    last = _run_dockerd(tmp_path, "release", "docs")
+    assert last.returncode == 0, last.stderr
+    assert "kept for" not in last.stderr
+    assert list(users.iterdir()) == []
+    bad = _run_dockerd(tmp_path, "release", "../x")
+    assert bad.returncode != 0
+
+
+def test_dockerd_unit_and_agent_use_the_shared_helper():
+    units = ROOT / "overlay" / "etc" / "systemd" / "system"
+    unit = (units / "stickllm-dockerd.service").read_text(encoding="utf-8")
+    assert "ExecStart=/usr/local/bin/stickllm-dockerd run" in unit
+    assert "ConditionPathIsMountPoint=/var/lib/stickllm/vault" in unit
+    assert "[Install]" not in unit, "dockerd starts only on demand after unlock"
+    text = _script()
+    assert "\n  dockerd " not in text and "\n  dockerd\n" not in text
+    assert '"$DOCKERD" ensure agent' in text
+    assert '"$DOCKERD" release agent' in text

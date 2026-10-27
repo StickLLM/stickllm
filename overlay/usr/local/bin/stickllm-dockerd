@@ -1,0 +1,282 @@
+#!/bin/bash
+# Shared dockerd for the vault add-ons (Agent Zero and ONLYOFFICE Docs).
+# One daemon, one socket, one data-root on the host SSD next to the models.
+# Only public images live in that data-root. Containers get no writable
+# storage there: each add-on bind-mounts the vault and uses RAM tmpfs.
+#
+#   ensure USER   start dockerd if needed and record USER (agent|docs)
+#   release USER  forget USER; stop dockerd when no user and no container is left
+#   halt          stop dockerd now (vault lock, after the add-ons are stopped)
+#   run           foreground daemon for stickllm-dockerd.service
+#   stale         exit 0 when a dockerd runs in another mount namespace
+#   users         print recorded users
+#
+# With systemd, dockerd lives in stickllm-dockerd.service, so stopping
+# stickllm-agent.service (and its cgroup) no longer kills ONLYOFFICE.
+set -euo pipefail
+
+PYBIN="$(command -v python3 || command -v python || true)"
+LIB="${STICKLLM_AGENT_LIB:-/usr/local/lib/stickllm_agent.py}"
+RUN="${STICKLLM_DOCKERD_RUN:-/run/stickllm}"
+SOCK="/run/stickllm/agent-docker.sock"
+PIDFILE="/run/stickllm/agent-dockerd.pid"
+USERS_DIR="${RUN}/dockerd-users"
+LOCK="${RUN}/dockerd.lock"
+UNIT="stickllm-dockerd.service"
+DOCKER_DIR=""
+
+if [[ -z "${PYBIN}" || ! -f "$LIB" ]]; then
+  echo "stickllm-dockerd: python helper missing" >&2
+  exit 1
+fi
+
+# dockerd mounts each container rootfs; containerd and runc run in the host
+# mount namespace. stickllm-ui has a private one (ProtectSystem/ProtectHome).
+mount_ns() {
+  readlink "/proc/$1/ns/mnt" 2>/dev/null || true
+}
+
+enter_host_mount_ns() {
+  [[ "$(id -u)" -eq 0 ]] || return 0
+  [[ -z "${STICKLLM_AGENT_HOST_NS:-}" ]] || return 0
+  local self host
+  self="$(mount_ns self)"
+  host="$(mount_ns 1)"
+  if [[ -z "$self" || -z "$host" || "$self" == "$host" ]]; then
+    return 0
+  fi
+  if command -v nsenter >/dev/null 2>&1 && nsenter --mount=/proc/1/ns/mnt -- true >/dev/null 2>&1; then
+    export STICKLLM_AGENT_HOST_NS=1
+    exec nsenter --mount=/proc/1/ns/mnt -- "$(readlink -f "$0")" "$@"
+  fi
+  echo "stickllm-dockerd: could not enter the host mount namespace" >&2
+}
+
+case "${1:-}" in
+  ensure|release|halt|run|stale) enter_host_mount_ns "$@" ;;
+esac
+
+docker_cli() {
+  DOCKER_HOST="unix://${SOCK}" docker "$@"
+}
+
+use_systemd() {
+  [[ -z "${STICKLLM_AGENT_NO_SYSTEMD:-}" ]] || return 1
+  [[ -d /run/systemd/system ]] || return 1
+  command -v systemctl >/dev/null 2>&1
+}
+
+valid_user() {
+  [[ "${1:-}" =~ ^[a-z][a-z0-9-]{0,31}$ ]]
+}
+
+resolve_docker_dir() {
+  local dir
+  # Commit 3db2ac0 stored the image at /var/lib/stickllm/vault/docker.
+  # That directory is not a data-root; dockerd is never pointed back at the vault.
+  if [[ -d /var/lib/stickllm/vault/docker ]]; then
+    echo "old vault docker dir is present and unused; image is re-pulled onto the host SSD" >&2
+  fi
+  if ! dir="$("$PYBIN" "$LIB" docker-dir)"; then
+    echo "Mount a drive for Agent Zero" >&2
+    return 1
+  fi
+  DOCKER_DIR="$dir"
+  mkdir -p "$DOCKER_DIR"
+}
+
+# /run is wiped every boot. The copy next to the docker data-root is on the
+# host data disk, so a reboot still leaves the daemon log (no document text).
+dockerd_persist_log() {
+  local dest dir size
+  dest="$(dirname "$DOCKER_DIR")/stickllm-logs/agent-dockerd.log"
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  if [[ -f "$dest" ]]; then
+    size="$(stat -c%s "$dest" 2>/dev/null || echo 0)"
+    if [[ "$size" -gt 2097152 ]]; then
+      mv "$dest" "${dest}.1"
+    fi
+  fi
+  printf '%s\n' "$dest"
+}
+
+daemon_up() {
+  [[ -S "$SOCK" ]] && docker_cli info >/dev/null 2>&1
+}
+
+# True when the running dockerd shares this mount namespace (the host one).
+dockerd_in_this_ns() {
+  local pid
+  [[ -f "$PIDFILE" ]] || return 0
+  pid="$(tr -cd '0-9' <"$PIDFILE" || true)"
+  [[ -n "${pid}" ]] || return 0
+  [[ "$(mount_ns "$pid")" == "$(mount_ns self)" ]]
+}
+
+# dockerd may not be a child of this shell, so poll the pid instead of wait(1).
+stop_dockerd() {
+  if [[ -f "$PIDFILE" ]]; then
+    local pid i
+    pid="$(tr -cd '0-9' <"$PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      for i in $(seq 1 60); do
+        kill -0 "$pid" >/dev/null 2>&1 || break
+        sleep 0.5
+      done
+    fi
+    rm -f "$PIDFILE"
+  fi
+  if [[ -S "$SOCK" ]]; then
+    rm -f "$SOCK" || true
+  fi
+}
+
+gate() {
+  # A locked vault never reaches dockerd.
+  "$PYBIN" "$LIB" docker-may-start
+}
+
+wait_ready() {
+  local i
+  for i in $(seq 1 60); do
+    if daemon_up; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "stickllm-dockerd: dockerd did not become ready" >&2
+  return 1
+}
+
+start_daemon_background() {
+  local persist_log
+  persist_log="$(dockerd_persist_log)"
+  # data-root is the host SSD folder. iptables stay off; nftables rules are ours.
+  dockerd \
+    --data-root "${DOCKER_DIR}" \
+    --host "unix://${SOCK}" \
+    --pidfile "$PIDFILE" \
+    --iptables=false \
+    --ip6tables=false \
+    --live-restore=false \
+    8>&- 9>&- 2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" 8>&- 9>&- &
+}
+
+cmd_run() {
+  if ! gate; then
+    echo "vault locked: docker not started" >&2
+    exit 0
+  fi
+  resolve_docker_dir || exit 0
+  if ! command -v dockerd >/dev/null 2>&1; then
+    echo "stickllm-dockerd: dockerd is not installed" >&2
+    exit 1
+  fi
+  mkdir -p /run/stickllm
+  local persist_log
+  persist_log="$(dockerd_persist_log)"
+  # Foreground: the unit's cgroup holds dockerd, not an add-on's.
+  dockerd \
+    --data-root "${DOCKER_DIR}" \
+    --host "unix://${SOCK}" \
+    --pidfile "$PIDFILE" \
+    --iptables=false \
+    --ip6tables=false \
+    --live-restore=false \
+    2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log"
+}
+
+cmd_ensure() {
+  local user="${1:-}"
+  valid_user "$user" || { echo "usage: stickllm-dockerd ensure USER" >&2; exit 1; }
+  if ! gate; then
+    echo "vault locked: docker not started" >&2
+    exit 2
+  fi
+  resolve_docker_dir || exit 3
+  mkdir -p "$RUN" "$USERS_DIR"
+  exec 8>"$LOCK"
+  flock -w 60 8 || { echo "stickllm-dockerd: lock busy" >&2; exit 1; }
+  : >"${USERS_DIR}/${user}"
+  if daemon_up; then
+    if dockerd_in_this_ns; then
+      local persist_log
+      persist_log="$(dockerd_persist_log)"
+      if [[ -f /run/stickllm/agent-dockerd.log && ! -s "$persist_log" ]]; then
+        cp -f /run/stickllm/agent-dockerd.log "$persist_log"
+      fi
+      return 0
+    fi
+    # Started from the gateway's private mount namespace by an older script.
+    echo "stickllm-dockerd: restarting dockerd in the host mount namespace" >&2
+    stop_dockerd
+  fi
+  if ! command -v dockerd >/dev/null 2>&1; then
+    echo "stickllm-dockerd: dockerd is not installed" >&2
+    exit 1
+  fi
+  if use_systemd; then
+    systemctl start --no-block "$UNIT"
+  else
+    start_daemon_background
+  fi
+  wait_ready
+}
+
+running_containers() {
+  daemon_up || return 0
+  docker_cli ps -q 2>/dev/null || true
+}
+
+halt_now() {
+  if use_systemd; then
+    systemctl stop "$UNIT" >/dev/null 2>&1 || true
+  fi
+  # A daemon from an older script (or without systemd) is stopped by pid.
+  stop_dockerd
+}
+
+cmd_release() {
+  local user="${1:-}"
+  valid_user "$user" || { echo "usage: stickllm-dockerd release USER" >&2; exit 1; }
+  mkdir -p "$RUN" "$USERS_DIR"
+  exec 8>"$LOCK"
+  flock -w 60 8 || { echo "stickllm-dockerd: lock busy" >&2; exit 1; }
+  rm -f "${USERS_DIR}/${user}"
+  local others running
+  others="$(ls -A "$USERS_DIR" 2>/dev/null || true)"
+  running="$(running_containers)"
+  if [[ -n "$others" || -n "$running" ]]; then
+    echo "stickllm-dockerd: kept for ${others//$'\n'/ }${running:+ (containers running)}" >&2
+    return 0
+  fi
+  halt_now
+}
+
+cmd_halt() {
+  mkdir -p "$RUN" "$USERS_DIR"
+  exec 8>"$LOCK"
+  flock -w 60 8 || true
+  rm -f "${USERS_DIR}"/* 2>/dev/null || true
+  halt_now
+}
+
+cmd_stale() {
+  daemon_up || exit 1
+  if dockerd_in_this_ns; then
+    exit 1
+  fi
+  exit 0
+}
+
+case "${1:-}" in
+  ensure) cmd_ensure "${2:-}" ;;
+  release) cmd_release "${2:-}" ;;
+  halt) cmd_halt ;;
+  run) cmd_run ;;
+  stale) cmd_stale ;;
+  users) ls -A "$USERS_DIR" 2>/dev/null || true ;;
+  *) echo "usage: stickllm-dockerd {ensure USER|release USER|halt|run|stale|users}" >&2; exit 1 ;;
+esac
