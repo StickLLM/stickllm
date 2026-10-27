@@ -1867,9 +1867,28 @@ refresh_gateway_vault_view() {
 }
 
 start_agent_addon() {
-  # Docker and Agent Zero stay down until this vault is mounted.
+  # Docker, Agent Zero and ONLYOFFICE Docs stay down until this vault is mounted.
   if [[ -x /usr/local/bin/stickllm-agent ]]; then
     /usr/local/bin/stickllm-agent start >/run/stickllm/agent-start.log 2>&1 &
+  fi
+  # Docs starts only when installed; its own gate re-checks vault + settings.
+  if [[ -x /usr/local/bin/stickllm-docs ]]; then
+    /usr/local/bin/stickllm-docs start >/run/stickllm/docs-start.log 2>&1 &
+  fi
+}
+
+stop_vault_addons() {
+  # Order matters: Docs first, while the vault is still mounted, so pending
+  # edits reach the save callback and land in vault/Documents. Then Agent
+  # Zero, then the shared dockerd, then the settings partition and the vault.
+  if [[ -x /usr/local/bin/stickllm-docs ]]; then
+    /usr/local/bin/stickllm-docs stop >/run/stickllm/docs-stop.log 2>&1 || true
+  fi
+  if [[ -x /usr/local/bin/stickllm-agent ]]; then
+    /usr/local/bin/stickllm-agent stop >/run/stickllm/agent-stop.log 2>&1 || true
+  fi
+  if [[ -x /usr/local/bin/stickllm-dockerd ]]; then
+    /usr/local/bin/stickllm-dockerd halt >/run/stickllm/dockerd-halt.log 2>&1 || true
   fi
 }
 
@@ -2657,9 +2676,8 @@ cmd_unlock() {
 
 cmd_lock() {
   need_root
-  if [[ -x /usr/local/bin/stickllm-agent ]]; then
-    /usr/local/bin/stickllm-agent stop >/run/stickllm/agent-stop.log 2>&1 || true
-  fi
+  mkdir -p /run/stickllm
+  stop_vault_addons
   local helper=""
   helper="$(settings_helper || true)"
   if [[ -n "$helper" ]]; then

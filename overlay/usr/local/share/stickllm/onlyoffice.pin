@@ -1,0 +1,8 @@
+# ONLYOFFICE Docs community image. Pulled by digest onto the host SSD
+# docker data-root only. Verified against registry-1.docker.io on 2026-10-27:
+# tag 10.0.0.1 (= 10.0, 10.0.0, latest), package 10.0.0-169, Ubuntu 24.04.
+# manifest_digest is the OCI index; amd64_digest is the linux/amd64 manifest.
+image=onlyoffice/documentserver
+version=10.0.0.1
+manifest_digest=sha256:ca17889f10b11141cc6441836aebdd2835cf3e1b49681b2fd6e155c94b7850b3
+amd64_digest=sha256:bff1a9fd46f2b79ada776fd0447c3fccf66cbf44c1996ec9316efa8ac4ee3fd5

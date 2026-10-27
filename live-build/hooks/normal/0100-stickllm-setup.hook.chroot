@@ -24,6 +24,9 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-vault-boot \
           /usr/local/bin/stickllm-agent \
           /usr/local/bin/stickllm-agent-entrypoint \
+          /usr/local/bin/stickllm-dockerd \
+          /usr/local/bin/stickllm-docs \
+          /usr/local/bin/stickllm-docs-entrypoint \
           /usr/local/bin/stickllm-files || true
 
 # Force LF — CRLF in sudoers breaks ALL rules on the stick

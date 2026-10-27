@@ -129,6 +129,16 @@ grep -q 'amd64_digest=sha256:307a2ceffc8501ba05a1e7253e8b6e4d656d2e1c3b97f0eb943
 test -f config/includes.chroot/usr/local/bin/stickllm-agent
 test -f config/includes.chroot/etc/systemd/system/stickllm-agent.service
 test -f config/includes.chroot/etc/systemd/system/stickllm-agent-install.service
+test -f config/includes.chroot/usr/local/bin/stickllm-dockerd
+test -f config/includes.chroot/etc/systemd/system/stickllm-dockerd.service
+test -f config/includes.chroot/usr/local/bin/stickllm-docs
+test -f config/includes.chroot/usr/local/bin/stickllm-docs-entrypoint
+test -f config/includes.chroot/usr/local/lib/stickllm_docs.py
+test -f config/includes.chroot/etc/systemd/system/stickllm-docs.service
+test -f config/includes.chroot/etc/systemd/system/stickllm-docs-install.service
+test -f config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
+grep -q 'amd64_digest=sha256:bff1a9fd46f2b79ada776fd0447c3fccf66cbf44c1996ec9316efa8ac4ee3fd5' \
+  config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
 
 mkdir -p config/bootloaders/grub-pc config/bootloaders/grub-efi
 # Prefer tracked boot/grub.cfg (LF). Fall back to inline copy if missing.
