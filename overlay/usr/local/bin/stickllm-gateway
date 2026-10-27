@@ -3165,13 +3165,19 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception:
             self._json(404, {"ok": False, "error": "unknown_app"})
             return
+        doc: dict = {}
+        if not self._is_loopback():
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"ok": False, "error": "pair_required"})
+                return
+        # A locked vault has no app to open: no URL, no handoff ticket.
+        if not mod.vault_open():
+            self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
+            return
         base = self._addon_public_url(app_id)
         if self._is_loopback():
             self._json(200, {"ok": True, "url": base})
-            return
-        doc, ok = self._auth()
-        if doc.get("require_pair") and not ok:
-            self._json(401, {"ok": False, "error": "pair_required"})
             return
         ticket = mint_addon_handoff(doc, app_id)
         if not ticket:

@@ -484,6 +484,17 @@ def test_gateway_addon_proxy_live(tmp_path):
         assert status in (401, 423) and "path" not in seen
         ip["v"] = "127.0.0.1"
         assert call(httpd, "GET", "/")[0] == 423 and "path" not in seen
+        # Open link refuses while locked (loopback and paired LAN tab alike).
+        status, body, _ = call(main, "POST", "/api/apps/open-link", json.dumps({"id": "vikunja"}).encode(),
+                               {"X-StickLLM-Client": "ui"})
+        assert status == 423 and json.loads(body)["error"] == "vault_locked" and "url" not in json.loads(body)
+        ip["v"] = "192.168.1.20"
+        status, body, _ = call(main, "POST", "/api/apps/open-link", json.dumps({"id": "vikunja"}).encode(),
+                               {"X-StickLLM-Client": "ui", "Authorization": "Bearer " + pair})
+        assert status == 423 and "url" not in json.loads(body)
+        assert call(main, "POST", "/api/apps/open-link", json.dumps({"id": "vikunja"}).encode(),
+                    {"X-StickLLM-Client": "ui"})[0] == 401
+        ip["v"] = "127.0.0.1"
         status, body, _ = call(main, "POST", "/api/apps/install", json.dumps({"id": "radicale"}).encode(),
                                {"X-StickLLM-Client": "ui", "Content-Type": "application/json"})
         assert status == 423
