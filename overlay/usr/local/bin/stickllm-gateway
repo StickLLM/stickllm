@@ -1551,6 +1551,18 @@ VAULT_MNT = Path(os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault")
 CHATS_DIR = VAULT_MNT / "chats"
 
 
+def stickllm_version() -> str:
+    """Release version from stickllm.json (the same file About reads)."""
+    try:
+        doc = json.loads((UI_ROOT / "stickllm.json").read_text(encoding="utf-8"))
+        version = str(doc.get("version") or "").strip() if isinstance(doc, dict) else ""
+        if re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,31}", version):
+            return version
+    except Exception:
+        pass
+    return "unknown"
+
+
 def vault_unlocked() -> bool:
     """True when the LUKS vault is mounted in *this* process mount namespace."""
     try:
@@ -3745,7 +3757,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "gateway": "ok",
                 "web": online,
                 "online": online,
-                "version": "0.3.2",
+                "version": stickllm_version(),
+                "vault": "unlocked" if vault_unlocked() else "locked",
                 "bind": f"{HOST}:{PORT}",
                 "llama": llama,
                 "llama_ok": llama_ok,
