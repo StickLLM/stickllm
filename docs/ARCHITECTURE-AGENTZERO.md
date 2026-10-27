@@ -87,3 +87,15 @@ Catalog installs do not use `/var/lib/stickllm/apps`. That path is the live over
 `:8081` serves the StickLLM app pages to Agent Zero only. It is not the catalog install directory.
 
 The installer pulls the pinned Agent Zero image and smoke-tests `/bin/sh` for `/bin/bash` and `/usr/bin/python3` before it starts the container. The previous image id is tagged `stickllm-agent-zero:rollback` and is not deleted.
+
+### open_app without a click (2026-10-26, openapp6)
+
+A Agent Zero open_app reaches the StickLLM tab of the device that chatted
+(device cookie). With no user gesture, Chrome refuses `window.open` unless
+pop-ups are allowed for the StickLLM site. The user is normally on the Agent
+tab, so a toast in the StickLLM tab alone left the agent with no app page
+(`app_state` -> `app_not_open`). Now, when the tab is refused, the app loads in
+the in-page panel (`stickllm-embed-<id>`) so the agent can play at once, the
+StickLLM tab title flashes, and "Open in new tab" moves it to a real tab on one
+click. Allowing pop-ups for the StickLLM site makes it open as a tab directly.
+iOS Safari: same panel + one-tap button.

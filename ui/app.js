@@ -5142,7 +5142,17 @@ function openStickApp(id) {
     reportOpenApp(id, "opened");
     return true;
   }
+  // No click, so the browser refused the tab (pop-ups not allowed for this
+  // site). The user is usually looking at the Agent tab, not this one, so a
+  // toast here alone leaves the agent with no app page (app_state fails with
+  // app_not_open) and the user sees nothing. Fall back to the in-page panel
+  // so the agent can play right away; its "Open in new tab" button (or the
+  // notification) moves it to a tab on one click, and the title flashes.
   cueHiddenTab(id);
+  if (showAppInPage(id)) {
+    reportOpenApp(id, "embedded");
+    return true;
+  }
   if (showOpenAppToast(id)) reportOpenApp(id, "toast-shown");
   else reportOpenApp(id, "blocked");
   return false;

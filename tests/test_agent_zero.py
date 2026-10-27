@@ -1994,8 +1994,11 @@ def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     # Kiosk and LAN browser: the desktop icon's own href and target (a new
     # tab), then a toast with one click doing the same; never the panel.
     assert "detectLocalHost" not in body
-    assert "showAppInPage" not in body and "window.open" not in body
-    assert body.index("openAppTab(id)") < body.index("showOpenAppToast(id)")
+    assert "window.open" not in body
+    # No click: tab first; refused, the in-page panel so app_state works at
+    # once (the user is usually on the Agent tab); then the toast.
+    assert body.index("openAppTab(id)") < body.index("showAppInPage(id)") < body.index("showOpenAppToast(id)")
+    assert 'reportOpenApp(id, "embedded")' in body
     assert 'reportOpenApp(id, "opened")' in body and "cueHiddenTab(id)" in body
     tab = app[app.index("function appTabLink(id)"):app.index("function openAppFromClick(id)")]
     assert '#deskIcons a.deskIcon[data-starter="' in tab
@@ -2021,7 +2024,7 @@ def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     prime = app[app.index("function primeAppsSession("):app.index("function clearPairSession()")]
     assert '"/api/ui/apps-session"' in prime and "detectLocalHost()" in prime
     assert "app-ticket" not in app and "appPageUrl" not in app
-    assert "app.js?v=openapp5" in index
+    assert "app.js?v=openapp6" in index
 
 
 def test_app_pages_may_be_framed_by_stickllm_only(tmp_path, monkeypatch):
