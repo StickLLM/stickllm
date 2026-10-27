@@ -601,3 +601,5 @@ select:focus{border-color:var(--accent);outline:none}
 .stick-app-bar button{background:transparent;color:inherit;border:1px solid currentColor;border-radius:6px;padding:2px 8px;font:inherit;cursor:pointer}
 .stick-app-bar button[hidden]{display:none}
 .stick-app-frame{flex:1;width:100%;border:0;background:#fff}
+/* Masked secret fields. type=text so Chrome never offers to save a password. */
+input.secret { -webkit-text-security: disc; }

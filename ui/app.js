@@ -2866,8 +2866,8 @@ $("#unlockForm").onsubmit = async (e) => {
     const payload = { passcode: pass };
     const bind = ($("#vaultPath").value || "").trim();
     if (bind) payload.path = bind;
-    const res = await control("vault_unlock", payload);
     $("#vaultPass").value = "";
+    const res = await control("vault_unlock", payload);
     if (!res.ok) throw new Error(res.error || res.stderr || "unlock failed");
     setVaultChrome(true);
     toast("Vault unlocked");
@@ -2893,6 +2893,7 @@ $("#createVault").onclick = () => {
           path, size_gb: size, confirm: "CREATE-VAULT",
           recovery_confirm: "SHOW-ONCE", passcode: p1, passcode2: p2, space_confirm: "SPACE-OK",
         });
+        $("#np1").value = $("#np2").value = "";
         if (!res.ok) throw new Error(res.error || res.stderr || "setup failed");
         const phrase = res.recovery_phrase || "(no phrase in response — check stick logs)";
         confirmBox({
@@ -3247,9 +3248,10 @@ $("#wifiBtn").onclick = async () => {
   try {
     toast("Connecting to " + ssid + "…");
     const res = await control("wifi_connect", { ssid, password });
+    $("#wpass").value = "";
     toast(res.online ? "Online via WiFi" : "WiFi profile saved — waiting for uplink");
     await refreshStatus();
-  } catch (e) { toast(e.message); }
+  } catch (e) { $("#wpass").value = ""; toast(e.message); }
 };
 
 async function refreshStatus() {
@@ -4879,7 +4881,7 @@ if ($("#hfToken")) $("#hfToken").addEventListener("input", () => {
     } catch (e) { hfHint({ error: e.message }); }
   }, 700);
 });
-if ($("#hfShow")) $("#hfShow").onclick = () => { const i = $("#hfToken"); if (i) i.type = i.type === "password" ? "text" : "password"; };
+if ($("#hfShow")) $("#hfShow").onclick = () => { const i = $("#hfToken"); if (i) i.classList.toggle("secret"); };
 if ($("#hfTest")) $("#hfTest").onclick = () => toast("HF token test — live gated downloads come later; catalog downloads need no token");
 
 applyModeUi("ephemeral");

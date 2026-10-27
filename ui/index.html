@@ -429,7 +429,7 @@
     <div class="mbMain">
       <div class="hfToken" id="hfTokenBox" hidden>
         <div class="hfRow"><label for="hfToken"><b>Hugging Face token</b></label>
-          <input type="password" id="hfToken" class="mono" placeholder="hf_…" autocomplete="new-password" spellcheck="false" aria-describedby="hfHint">
+          <input type="text" id="hfToken" class="mono secret" placeholder="hf_…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-describedby="hfHint">
           <button class="iconBtn sm" id="hfShow" type="button" aria-label="Show token" title="Show/hide"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
           <button class="btn sm" id="hfTest" type="button">Test</button>
           <span class="hfState" id="hfState"></span></div>
@@ -497,7 +497,7 @@
   <div class="vaultCard" id="vaultCard">
     <div class="vcIcon"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg></div>
     <div class="vcText"><b id="vcState">Vault locked</b><small id="vcSub">No vault attached yet</small></div>
-    <form class="vcUnlock" id="unlockForm" autocomplete="off"><input type="password" id="vaultPass" placeholder="Vault passcode" autocomplete="new-password" aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
+    <form class="vcUnlock" id="unlockForm" autocomplete="off"><input type="text" id="vaultPass" class="secret" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
     <button class="btn" id="lockBtn2" hidden>Lock</button>
   </div>
 
@@ -521,8 +521,8 @@
       <div class="row2">
         <div class="field"><span>Folder</span><div class="pathPick"><input class="mono" id="vaultPath" value="" autocomplete="off" placeholder="/mnt/…/stickllm" readonly aria-label="Vault folder"><button class="btn sm" id="pickCreate">Choose…</button></div></div>
         <label class="field" id="sizeField"><span>Size (GiB)</span><input type="number" id="vaultSize" value="32" min="1" max="2000"></label>
-        <label class="field"><span>Passcode (min 8)</span><input type="password" id="np1" autocomplete="new-password"></label>
-        <label class="field"><span>Confirm passcode</span><input type="password" id="np2" autocomplete="new-password"></label>
+        <label class="field"><span>Passcode (min 8)</span><input type="text" id="np1" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
+        <label class="field"><span>Confirm passcode</span><input type="text" id="np2" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
       </div>
       <button class="btn primary" id="createVault">Create vault…</button>
     </div>
@@ -579,7 +579,7 @@
   <h3>WiFi</h3>
   <div class="row2">
     <label class="field"><span>Network name (SSID)</span><input id="ssid" placeholder="HomeLAN"></label>
-    <label class="field"><span>Password</span><input id="wpass" type="password" autocomplete="new-password"></label>
+    <label class="field"><span>Password</span><input id="wpass" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
   </div>
   <div class="actions"><button class="btn primary" id="wifiBtn">Connect</button></div>
   <p class="muted small">No network yet? Run <span class="mono">stickllm-wifi-setup</span> in the stick's terminal. A WiFi access point mode is coming later.</p>
