@@ -84,10 +84,101 @@ def test_health_live_version_and_vault(tmp_path):
         with urllib.request.urlopen(url, timeout=10) as r:
             doc = json.loads(r.read())
         assert doc["version"] == "0.5.1"
-        assert doc["vault"] == "locked"
+        # Object shape, same as control vault_status: ui/app.js reads .status/.mounted.
+        assert doc["vault"] == {"status": "locked", "mounted": False}
         state["open"] = True
         with urllib.request.urlopen(url, timeout=10) as r:
             doc = json.loads(r.read())
-        assert doc["vault"] == "unlocked"
+        assert doc["vault"] == {"status": "unlocked", "mounted": True}
     finally:
         srv.shutdown()
+
+def test_apps_install_vault_gate_matches_health(tmp_path, monkeypatch):
+    """Apps install refuses with vault_locked only while health says locked."""
+    import subprocess
+    import urllib.error
+
+    ui = tmp_path / "ui"
+    ui.mkdir()
+    (ui / "index.html").write_text("<html></html>", encoding="utf-8")
+    (ui / "stickllm.json").write_text(json.dumps({"version": "0.5.1"}), encoding="utf-8")
+    gw = _load("gw_health_apps", ui, tmp_path)
+    gw.AUTH_PATH = tmp_path / "no-auth.json"
+    state = {"open": False}
+    gw.vault_unlocked = lambda: state["open"]
+    addons = gw.addons_lib()
+    monkeypatch.setattr(addons, "vault_open", lambda: state["open"])
+    monkeypatch.setattr(addons, "is_installed", lambda app_id: False)
+    monkeypatch.setattr(addons, "write_status", lambda *a, **k: {})
+    started = []
+
+    class Done:
+        returncode = 0
+        stdout = stderr = ""
+
+    def fake_run(cmd, *a, **k):
+        started.append(list(cmd))
+        return Done()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, *a, **k: started.append(list(cmd)))
+
+    class H(gw.Handler):
+        def _client_ip(self):
+            return "127.0.0.1"
+
+        def _is_loopback(self):
+            return True
+
+        def log_message(self, *a):
+            pass
+
+    srv = gw.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def install(app_id):
+        req = urllib.request.Request(base + "/api/apps/install", data=json.dumps({"id": app_id}).encode(),
+                                     method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def health():
+        with urllib.request.urlopen(base + "/api/health", timeout=10) as r:
+            return json.loads(r.read())["vault"]
+
+    gw.http_json = lambda *a, **k: (_ for _ in ()).throw(OSError("down"))
+    gw.uplink_ok = lambda *a, **k: False
+    gw.detect_backend = lambda *a, **k: "cpu"
+    gw.get_session_mode = lambda *a, **k: "vault"
+    gw.connect_info = lambda *a, **k: {}
+    gw.llama_load_info = lambda *a, **k: {}
+    gw.llama_unit_state = lambda *a, **k: "inactive"
+    try:
+        assert health()["status"] == "locked"
+        status, doc = install("radicale")
+        assert status == 423 and doc["error"] == "vault_locked" and not started
+        state["open"] = True
+        assert health() == {"status": "unlocked", "mounted": True}
+        status, doc = install("radicale")
+        assert status == 200 and doc.get("error") != "vault_locked"
+        assert doc["started"] is True and doc["state"] == "installing"
+        assert started and "stickllm-addon-install@radicale.service" in started[0]
+    finally:
+        srv.shutdown()
+
+
+def test_ui_reads_both_vault_shapes_and_ignores_key_repeat():
+    js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+    assert "function vaultIsOpen(v)" in js
+    assert 'if (typeof v === "string") return v.toLowerCase() === "unlocked";' in js
+    assert "setVaultChrome(vaultIsOpen(j.vault))" in js
+    assert "const open = vaultIsOpen(v);" in js
+    # Old inline check that broke on a string vault field is gone.
+    assert 'String(j.vault.status || "")' not in js
+    hot = js.split('if (e.key !== "F9" && e.key !== "F10") return;', 1)[1].split("}, true);", 1)[0]
+    assert "if (e.repeat) return;" in hot
+    assert hot.index("if (e.repeat) return;") < hot.index("issueSshHotkey()")

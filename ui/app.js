@@ -656,6 +656,14 @@ async function setSessionMode(m) {
 }
 $$("[data-mode]").forEach((b) => (b.onclick = () => setSessionMode(b.dataset.mode)));
 
+// Health and control report the vault as {status, mounted}; older gateways
+// sent a bare "unlocked"/"locked" string. Accept both.
+function vaultIsOpen(v) {
+  if (typeof v === "string") return v.toLowerCase() === "unlocked";
+  if (!v || typeof v !== "object") return false;
+  return String(v.status || "").toLowerCase() === "unlocked" || !!v.mounted;
+}
+
 function setVaultChrome(open) {
   state.vaultOpen = open;
   $("#vaultCard")?.classList.toggle("open", open);
@@ -2486,7 +2494,7 @@ async function refreshStorage() {
   if (!(await ensurePaired())) return;
   const st = await control("status");
   const v = st.vault || {};
-  const open = String(v.status || "").toLowerCase() === "unlocked" || !!v.mounted;
+  const open = vaultIsOpen(v);
   setVaultChrome(open);
   if ($("#vcSub")) {
     $("#vcSub").textContent = v.blob || v.root || v.path || (v.status || "absent");
@@ -3499,10 +3507,7 @@ async function refreshStatus() {
       }
     } catch (_) {}
     // vault chrome from health if present
-    if (j.vault) {
-      const open = String(j.vault.status || "").toLowerCase() === "unlocked" || !!j.vault.mounted;
-      setVaultChrome(open);
-    }
+    if (j.vault) setVaultChrome(vaultIsOpen(j.vault));
   } catch (_) {
     $("#chipModel").textContent = "waiting…";
   }
@@ -3513,6 +3518,8 @@ window.addEventListener("keydown", (e) => {
   if (e.key !== "F9" && e.key !== "F10") return;
   e.preventDefault();
   e.stopPropagation();
+  // Holding the key auto-repeats: one press, one pair code or SSH line.
+  if (e.repeat) return;
   if (e.key === "F9") issuePairHotkey();
   else issueSshHotkey();
 }, true);

@@ -1583,6 +1583,14 @@ def vault_unlocked() -> bool:
     return False
 
 
+def vault_health() -> dict:
+    """/api/health "vault" object. Same shape as stickllm-control vault_status
+    (status + mounted), which ui/app.js reads; a bare string made the UI show
+    "Vault locked" while the vault was open."""
+    mounted = vault_unlocked()
+    return {"status": "unlocked" if mounted else "locked", "mounted": mounted}
+
+
 def chats_available() -> tuple[bool, str]:
     if get_session_mode() != "vault":
         return False, "switch Mode to Vault to save chats (ephemeral never writes chats to disk)"
@@ -3770,7 +3778,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "web": online,
                 "online": online,
                 "version": stickllm_version(),
-                "vault": "unlocked" if vault_unlocked() else "locked",
+                "vault": vault_health(),
                 "bind": f"{HOST}:{PORT}",
                 "llama": llama,
                 "llama_ok": llama_ok,
