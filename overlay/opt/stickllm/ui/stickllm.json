@@ -1,5 +1,6 @@
 {
   "mode": "ephemeral",
   "profile": "amd-rtx3090",
-  "version": "0.4.2"
+  "version": "0.4.2",
+  "agentzero": "0.4"
 }

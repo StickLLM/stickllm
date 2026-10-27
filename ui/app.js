@@ -3382,7 +3382,7 @@ async function refreshStatus() {
       const m = await fetch("/stickllm.json", { cache: "no-store" });
       if (m.ok) {
         const meta = await m.json();
-        if (meta.version && $("#aboutVer")) $("#aboutVer").textContent = meta.version + " ";
+        if (meta.version && $("#aboutVer")) $("#aboutVer").textContent = meta.version + (meta.agentzero ? " \u00b7 Agent Zero v" + meta.agentzero : "") + " ";
         const boot = String(meta.mode || "").toLowerCase();
         if (boot === "local" || boot === "chat") isLocalMode = true;
       }
