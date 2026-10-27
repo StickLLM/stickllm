@@ -179,6 +179,14 @@ if [[ "${N_CPU_MOE:-0}" =~ ^[0-9]+$ ]] && (( N_CPU_MOE > 0 )); then
   gpu_extra+=(--n-cpu-moe "$N_CPU_MOE")
 fi
 # Vision only on a GPU backend, and only when Activate found an mmproj beside the GGUF.
+# KV cache type from Activate (Models > Advanced). f16 = llama.cpp default.
+# A quantized V cache needs flash attention, so q8_0/q4_0 turn it on.
+kv_extra=()
+case "${STICKLLM_KV_TYPE:-f16}" in
+  q8_0|q4_0)
+    kv_extra+=(--cache-type-k "$STICKLLM_KV_TYPE" --cache-type-v "$STICKLLM_KV_TYPE" --flash-attn on)
+    ;;
+esac
 mm_extra=()
 if [[ -n "${STICKLLM_MMPROJ:-}" && -f "${STICKLLM_MMPROJ}" ]]; then
   mm_extra+=(--mmproj "$STICKLLM_MMPROJ")
@@ -201,6 +209,7 @@ if [[ "$BACKEND" == "cuda" ]] && [[ -x "$CUDA_BIN" ]]; then
       --threads "$THREADS" \
       "${gpu_extra[@]}" \
       "${mm_extra[@]}" \
+      "${kv_extra[@]}" \
       --jinja \
       --metrics
   fi
@@ -227,6 +236,7 @@ if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "fallback" ]]; then
       --threads "$THREADS" \
       "${gpu_extra[@]}" \
       "${mm_extra[@]}" \
+      "${kv_extra[@]}" \
       --jinja \
       --metrics
   fi
@@ -251,7 +261,7 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-echo "stickllm-llama-start: STICKLLM_BACKEND=cpu (-ngl 0) threads=$THREADS host=$HOST:$PORT model=$MODEL bin=$BIN ctx=$CTX" >&2
+echo "stickllm-llama-start: STICKLLM_BACKEND=cpu (-ngl 0) threads=$THREADS host=$HOST:$PORT model=$MODEL bin=$BIN ctx=$CTX kv=${STICKLLM_KV_TYPE:-f16}" >&2
 write_runtime_env cpu
 exec "$BIN" \
   --model "$MODEL" \
@@ -260,5 +270,6 @@ exec "$BIN" \
   --ctx-size "$CTX" \
   --n-gpu-layers 0 \
   --threads "$THREADS" \
+  "${kv_extra[@]}" \
   --jinja \
   --metrics

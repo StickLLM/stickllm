@@ -1378,14 +1378,32 @@ def llama_health_ok() -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
+# stickllm-llama-start raises any smaller context to this (Agent Zero needs it).
+LLAMA_CTX_FLOOR = 32768
+KV_TYPES = {"f16": "f16", "q8": "q8_0", "q8_0": "q8_0", "q4": "q4_0", "q4_0": "q4_0"}
+
+
+def active_kv_type() -> str:
+    """KV cache type Activate wrote to model.env (f16 when unset)."""
+    env = RUN / "model.env"
+    try:
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line.startswith("STICKLLM_KV_TYPE="):
+                return KV_TYPES.get(line.split("=", 1)[1].strip(), "f16")
+    except OSError:
+        pass
+    return "f16"
+
+
 def active_ctx_size() -> int | None:
-    """Context size from model.env, else from running llama-server --ctx-size."""
+    """Context llama-server really runs with: model.env (raised to the
+    llama-start floor), else the running llama-server --ctx-size."""
     env = RUN / "model.env"
     if env.is_file():
         try:
             for line in env.read_text(encoding="utf-8").splitlines():
                 if line.startswith("STICKLLM_CTX_SIZE="):
-                    return int(line.split("=", 1)[1].strip())
+                    return max(LLAMA_CTX_FLOOR, int(line.split("=", 1)[1].strip()))
         except (OSError, ValueError, TypeError):
             pass
     # Older Activate writes omitted STICKLLM_CTX_SIZE — read live process args.
@@ -1443,6 +1461,7 @@ def active_model_identity() -> dict:
     }
     if ctx is not None:
         out["ctx_size"] = ctx
+    out["kv_type"] = active_kv_type()
     return out
 
 
@@ -3154,7 +3173,7 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
     return models
 
 
-def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
+def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | None = None) -> dict:
     models = enrich_models()
     m = next((x for x in models if x["id"] == model_id), None)
     if not m:
@@ -3187,6 +3206,9 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
         except (TypeError, ValueError):
             return {"ok": False, "error": "ctx_size must be an integer"}
     ctx = max(ctx_lo, min(ctx_hi, ctx))
+    kv = KV_TYPES.get(str(kv_type or "f16").strip().lower())
+    if kv is None:
+        return {"ok": False, "error": "kv_type must be f16, q8_0 or q4_0"}
     RUN.mkdir(parents=True, exist_ok=True)
     # A normal Load uses the VRAM fit. "Fewer GPU layers" is a separate override.
     try:
@@ -3199,6 +3221,7 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
         f"STICKLLM_MODEL_ID={model_id}\n"
         f"STICKLLM_MODEL_NAME={m.get('name') or model_id}\n"
         f"STICKLLM_CTX_SIZE={ctx}\n"
+        f"STICKLLM_KV_TYPE={kv}\n"
     )
     if mmproj and Path(mmproj).is_file():
         env_txt += f"STICKLLM_MMPROJ={mmproj}\n"
@@ -3230,7 +3253,9 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
     r["active_model"] = path
     r["id"] = model_id
     r["name"] = m.get("name") or model_id
-    r["ctx_size"] = ctx
+    r["ctx_size"] = max(LLAMA_CTX_FLOOR, ctx)
+    r["ctx_requested"] = ctx
+    r["kv_type"] = kv
     r["running"] = healthy
     r["health"] = health_msg
     r["load_state"] = "running" if healthy else "loading"
@@ -3468,7 +3493,7 @@ def handle(action: str, params: dict) -> dict:
                 ctx_arg = int(raw_ctx)
             except (TypeError, ValueError):
                 return {"ok": False, "error": "ctx_size must be an integer"}
-        return activate_model(mid, ctx_arg)
+        return activate_model(mid, ctx_arg, params.get("kv_type"))
     if action == "llama_fewer_layers":
         return llama_fewer_layers()
     if action == "model_delete":

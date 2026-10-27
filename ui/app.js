@@ -1411,10 +1411,16 @@ async function runSend(gen, abort, prev) {
     const base = {
       model: "stickllm",
       messages: messagesForRequest(holdVoice),
-      temperature: 0.7,
       web: state.web ? "on" : "off",
-      max_tokens: holdVoice ? VOICE_CHAT_TOKENS : CHAT_TOKENS,
     };
+    {
+      const t = tuneNow();
+      base.temperature = t.temp;
+      base.top_p = t.top_p;
+      base.top_k = Math.round(t.top_k);
+      base.repeat_penalty = t.repeat_penalty;
+      base.max_tokens = holdVoice ? VOICE_CHAT_TOKENS : Math.max(64, Math.min(4096, Math.round(t.max_tokens) || CHAT_TOKENS));
+    }
     if (holdVoice) base.chat_template_kwargs = { enable_thinking: false };
     const onShown = (shown) => {
       if (gen !== sendGen || userStopGen === gen) return;
@@ -1889,7 +1895,8 @@ function syncModelActions() {
   if ($("#ctx")) {
     $("#ctx").max = max;
     if (+$("#ctx").value > max) $("#ctx").value = max;
-    if ($("#ctxVal")) $("#ctxVal").textContent = (+$("#ctx").value).toLocaleString();
+    if ($("#ctxVal")) paintCtxVal();
+    try { syncPresetHighlight(); } catch (_) {}
   }
   updateVramBar(m);
 }
@@ -2091,16 +2098,74 @@ function startDlPoll() {
 }
 function stopDlPoll() { if (dlPollTimer) { clearInterval(dlPollTimer); dlPollTimer = null; } }
 
-$("#ctx").addEventListener("input", () => {
-  $("#ctxVal").textContent = (+$("#ctx").value).toLocaleString();
-});
+// Models > Preset / Advanced. A preset is ctx + KV type + temperature; the
+// highlight follows the knobs, so moving one away from a preset shows "Custom".
+const TUNE_PRESETS = {
+  fast: { ctx: 4096, kv: "q8", temp: 0.7 },
+  balanced: { ctx: 8192, kv: "f16", temp: 0.7 },
+  long: { ctx: 32768, kv: "q4", temp: 0.6 },
+};
+const TUNE_KEY = "stickllm_tune";
+const LLAMA_CTX_FLOOR = 32768; // stickllm-llama-start raises smaller values (Agent Zero)
+function tuneNow() {
+  const num = (sel, d) => { const el = $(sel); const v = el ? Number(el.value) : NaN; return Number.isFinite(v) ? v : d; };
+  return {
+    ctx: num("#ctx", 8192), kv: state.kv || "f16", temp: num("#temp", 0.7),
+    top_p: num("#topp", 0.9), top_k: num("#topk", 40), repeat_penalty: num("#rep", 1.1), max_tokens: num("#maxtok", CHAT_TOKENS),
+  };
+}
+function paintCtxVal() {
+  const v = +$("#ctx").value;
+  $("#ctxVal").textContent = v.toLocaleString();
+  const note = $("#ctxNote");
+  if (note) note.hidden = v >= LLAMA_CTX_FLOOR;
+}
+function syncPresetHighlight() {
+  const t = tuneNow();
+  const max = +$("#ctx").max || 32768;
+  let hit = "";
+  for (const [k, p] of Object.entries(TUNE_PRESETS)) {
+    if (t.ctx === Math.min(p.ctx, max) && t.kv === p.kv && Math.abs(t.temp - p.temp) < 0.001) { hit = k; break; }
+  }
+  $$("#presets button").forEach((x) => {
+    const on = x.dataset.preset === hit;
+    x.classList.toggle("on", on);
+    x.setAttribute("aria-checked", on ? "true" : "false");
+  });
+  const c = $("#presetCustom");
+  if (c) c.hidden = !!hit;
+  return hit;
+}
+function saveTune() {
+  try { localStorage.setItem(TUNE_KEY, JSON.stringify(tuneNow())); } catch (_) {}
+}
+function setKv(kv) {
+  state.kv = ["f16", "q8", "q4"].includes(kv) ? kv : "f16";
+  $$("#kvSeg button").forEach((x) => x.classList.toggle("on", x.dataset.kv === state.kv));
+}
+function applyTune(t) {
+  if (!t) return;
+  const set = (sel, v) => { const el = $(sel); if (el && v != null && Number.isFinite(Number(v))) el.value = v; };
+  set("#ctx", Math.min(Number(t.ctx) || 8192, +$("#ctx").max || 32768));
+  set("#temp", t.temp); set("#topp", t.top_p); set("#topk", t.top_k); set("#rep", t.repeat_penalty); set("#maxtok", t.max_tokens);
+  if (t.kv) setKv(t.kv);
+  if ($("#tempVal")) $("#tempVal").textContent = $("#temp").value;
+  if ($("#toppVal")) $("#toppVal").textContent = $("#topp").value;
+  paintCtxVal();
+  syncPresetHighlight();
+}
+function applyPreset(name) {
+  const p = TUNE_PRESETS[name];
+  if (!p) return;
+  applyTune({ ...tuneNow(), ctx: p.ctx, kv: p.kv, temp: p.temp });
+  saveTune();
+  renderModelsList();
+}
+$("#ctx").addEventListener("input", () => { paintCtxVal(); syncPresetHighlight(); saveTune(); });
+$("#ctx").addEventListener("change", () => renderModelsList());
 $$("#presets button").forEach((b) => (b.onclick = () => {
-  const map = { fast: 4096, balanced: 8192, long: 32768 };
-  const v = map[b.dataset.preset] || 8192;
-  $("#ctx").value = Math.min(v, +$("#ctx").max);
-  $("#ctxVal").textContent = (+$("#ctx").value).toLocaleString();
-  $$("#presets button").forEach((x) => x.classList.toggle("on", x === b));
-  toast("Context preset → " + $("#ctx").value + " (sampling knobs greyed)");
+  applyPreset(b.dataset.preset);
+  toast("Preset " + (b.querySelector("b")?.textContent || b.dataset.preset) + " · applies on next Load");
 }));
 $("#probeBtn").onclick = async () => {
   try { toast("Probing GPU…"); await control("model_probe"); await refreshModels(); toast("Probe done"); }
@@ -2459,7 +2524,7 @@ $("#activate").onclick = async () => {
     beginModelLoadUi(m.id, name);
     startLoadPoll();
     await paintSoon();
-    const res = await control("model_activate", { id: m.id, ctx_size: +$("#ctx").value });
+    const res = await control("model_activate", { id: m.id, ctx_size: +$("#ctx").value, kv_type: { f16: "f16", q8: "q8_0", q4: "q4_0" }[state.kv] || "f16" });
     loadActivateSettled = true;
     if (!res.ok && res.error) throw new Error(res.error);
     if (res.id && String(res.id) !== String(m.id)) {
@@ -3715,26 +3780,29 @@ $$("#backendSeg button").forEach((b) => {
   b.disabled = true;
   b.onclick = (e) => { e.preventDefault(); toast("Coming soon — backend is auto-selected"); };
 });
-// Advanced sampling: UI active for presets/context; KV/sampling stored locally until llama wire-up
+// Advanced: KV type goes to llama-server on the next Load; sampling goes with every Chat message.
 $$("#kvSeg button").forEach((b) => (b.onclick = () => {
-  state.kv = b.dataset.kv || "f16";
-  $$("#kvSeg button").forEach((x) => x.classList.toggle("on", x === b));
+  setKv(b.dataset.kv || "f16");
+  syncPresetHighlight(); saveTune();
   renderModelsList();
 }));
-["#temp", "#topp"].forEach((sel) => {
+["#temp", "#topp", "#topk", "#rep", "#maxtok"].forEach((sel) => {
   const el = $(sel); if (!el) return;
   el.addEventListener("input", () => {
-    const lab = sel === "#temp" ? $("#tempVal") : $("#toppVal");
-    if (lab) lab.textContent = el.value;
+    if (sel === "#temp" && $("#tempVal")) $("#tempVal").textContent = el.value;
+    if (sel === "#topp" && $("#toppVal")) $("#toppVal").textContent = el.value;
+    syncPresetHighlight(); saveTune();
   });
 });
 if ($("#resetPreset")) {
   $("#resetPreset").onclick = () => {
-    const on = $("#presets button.on");
-    if (on) on.click();
+    const hit = syncPresetHighlight() || "balanced";
+    applyTune({ ctx: TUNE_PRESETS[hit].ctx, kv: TUNE_PRESETS[hit].kv, temp: TUNE_PRESETS[hit].temp, top_p: 0.9, top_k: 40, repeat_penalty: 1.1, max_tokens: CHAT_TOKENS });
+    saveTune(); renderModelsList();
     toast("Reset to preset");
   };
 }
+try { applyTune(JSON.parse(localStorage.getItem(TUNE_KEY) || "null")); } catch (_) { syncPresetHighlight(); }
 let modelVision = false;
 function syncAttach() {
   const btn = $("#attachBtn");

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v052a" />
+<link rel="stylesheet" href="style.css?v=v052b" />
 </head>
 <body>
 <div class="app" id="app">
@@ -453,17 +453,19 @@
 
   <div id="localTune" hidden>
   <h3>Preset</h3>
-  <div class="presets" id="presets" role="radiogroup">
+  <div class="presets" id="presets" role="radiogroup" aria-label="Preset">
     <button type="button" data-preset="fast"><b>Fast</b><small>4k ctx · q8 KV · temp 0.7</small></button>
     <button type="button" data-preset="balanced" class="on"><b>Balanced</b><small>8k ctx · f16 KV · temp 0.7</small></button>
     <button type="button" data-preset="long"><b>Long context</b><small>32k ctx · q4 KV · temp 0.6</small></button>
   </div>
+  <p class="muted small" id="presetCustom" hidden>Custom settings (no preset matches).</p>
 
   <details class="adv" id="advanced">
     <summary>Advanced</summary>
     <div class="advBody">
       <label class="field"><span>Context size <b id="ctxVal">8,192</b> tokens</span>
         <input type="range" id="ctx" min="2048" max="32768" step="1024" value="8192"></label>
+      <p class="muted small" id="ctxNote">The stick runs at least 32,768 tokens so Agent Zero works. A smaller value only lowers the memory estimate here.</p>
       <div class="vram">
         <div class="vramBar" aria-label="VRAM usage"><i class="w" id="vW"></i><i class="kv" id="vKV"></i><i class="free" id="vFree"></i></div>
         <div class="legend"><span><i class="w"></i>Weights <b id="lW"></b></span><span><i class="kv"></i>KV cache <b id="lKV"></b></span><span><i class="free"></i>Free <b id="lFree"></b></span><span class="muted" id="vramTotal">of — GB</span></div>
@@ -478,6 +480,7 @@
         <label class="field"><span>Repeat penalty</span><input type="number" id="rep" value="1.1" step="0.05" min="1" max="2"></label>
         <label class="field"><span>Max reply tokens</span><input type="number" id="maxtok" value="1024" min="64" max="8192" step="64"></label>
       </div>
+      <p class="muted small" id="tuneApplies">Context and KV cache type apply on the next Load. Temperature, Top-p, Top-k, Repeat penalty and Max reply tokens apply to Chat messages (Agent Zero uses its own settings).</p>
       <button class="link" id="resetPreset" type="button">Reset to preset</button>
     </div>
   </details>
@@ -742,6 +745,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v052a"></script>
+<script src="app.js?v=v052b"></script>
 </body>
 </html>

@@ -154,6 +154,18 @@ AGENT_TARGET_WINDOW = 300.0
 AGENT_PROMPT_PATHS = ("/api/message_async", "/api/message", "/message_async", "/message")
 
 
+
+def _sampling_num(raw, default, lo, hi):
+    """Clamp one chat sampling value from the UI. Bad input -> default."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    return max(lo, min(hi, v))
+
+
 class _AgentClients:
     """Which LAN browser is driving Agent Zero right now. Loopback is never recorded."""
 
@@ -4837,10 +4849,20 @@ class Handler(SimpleHTTPRequestHandler):
         upstream = {
             "model": req.get("model") or "stickllm",
             "messages": out_messages,
-            "temperature": req.get("temperature", 0.7),
+            "temperature": _sampling_num(req.get("temperature"), 0.7, 0.0, 2.0),
             "stream": want_stream,
             "max_tokens": max_tokens,
         }
+        # Models > Advanced sampling knobs (only when the UI sent them).
+        for key, lo, hi, as_int in (
+            ("top_p", 0.0, 1.0, False),
+            ("top_k", 0, 200, True),
+            ("repeat_penalty", 1.0, 2.0, False),
+        ):
+            if req.get(key) is not None:
+                v = _sampling_num(req.get(key), None, lo, hi)
+                if v is not None:
+                    upstream[key] = int(v) if as_int else v
         think = req.get("chat_template_kwargs")
         if isinstance(think, dict) and "enable_thinking" in think:
             upstream["chat_template_kwargs"] = {"enable_thinking": bool(think.get("enable_thinking"))}
