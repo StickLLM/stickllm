@@ -2866,6 +2866,9 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(503, {"ok": False, "error": status.get("message") or "Agent is not running"})
             return
         if upgrade and method == "GET":
+            if mod.agent_request_denied(method, path, None):
+                self._json(403, {"ok": False, "error": "plugins_locked"})
+                return
             self._relay_websocket(path, parsed.query)
             return
         self._relay_http(method, path, parsed.query)
@@ -2909,6 +2912,18 @@ class Handler(SimpleHTTPRequestHandler):
     def _relay_http(self, method: str, upstream: str, query: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
+        # Plugins are locked: no installer, Plugin Hub, scan, delete, or
+        # execute-script calls reach Agent Zero through this proxy.
+        if agent_lib().agent_request_denied(method, upstream, body):
+            self._json(
+                403,
+                {
+                    "ok": False,
+                    "error": "plugins_locked",
+                    "message": "Plugins are locked on StickLLM. Only reviewed plugins built into the ISO load.",
+                },
+            )
+            return
         target = upstream + (("?" + query) if query else "")
         headers = agent_lib().agent_proxy_headers(dict(self.headers))
         conn = http.client.HTTPConnection("127.0.0.1", 5099, timeout=300)
