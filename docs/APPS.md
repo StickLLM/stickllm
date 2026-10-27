@@ -17,6 +17,47 @@ tiny.en for the mic, KittenTTS mini 0.8 for read-aloud. Pins live in
 This catalog is a planning surface for humans and agents, not a commitment to ship any
 specific app.
 
+## Installable from the Apps page (0.5.0)
+
+ONLYOFFICE Docs (0.4) plus five starter add-ons have a working **Install / Open / Remove**
+on the Apps page. Each needs the vault unlocked and the host drive used for Agent Zero
+(the image is stored there, pulled by digest). Pins: `overlay/usr/local/share/stickllm/addons/<id>.pin`.
+
+- Radicale 3.9.0 (`tomsquest/docker-radicale`), port 5451. Calendar and contacts web UI.
+- Vikunja 2.7.1 (`vikunja/vikunja`), port 5452. Tasks; create the first account in the app.
+- Actual Budget 26.10.0 (`actualbudget/actual-server`), port 5453. Set a server password on first open.
+- Trilium Notes v0.106.1 (`triliumnext/trilium`), port 5454. Set a password on first open.
+- Node-RED 5.0.9 (`nodered/node-red`), port 5455. See the risk note below.
+
+The same rules hold for all five (`overlay/usr/local/lib/stickllm_addons.py`, `stickllm-addon`):
+
+- Data lives only in `vault/addons/<id>`. A locked vault means the app is stopped and its
+  data is unreadable; locking stops the apps after Docs and before Agent Zero.
+- Container: non-root, `--read-only` with small tmpfs, `--cap-drop ALL`, `no-new-privileges`,
+  `--log-driver none`, no GPU, no docker socket. Not started at boot (units are not enabled);
+  installed apps start when the vault unlocks.
+- Network: the app listens on `127.0.0.1` only. Its bridge drops every packet the container
+  starts (no internet, no LAN, no host, no other app). A LAN browser reaches it only through
+  the gateway on the app's own TLS port, after pairing; **Open** mints a one-time 60 s link
+  that sets an HttpOnly cookie for that app only. StickLLM cookies are never forwarded to apps.
+- Each app has its own origin (own port), so its pages cannot read StickLLM or another app.
+  The browser shows the self-signed certificate warning once per port.
+- Open goes to a named tab (`stickllm-<id>`), never a pop-up window.
+- Remove deletes the image and keeps `vault/addons/<id>`; delete that folder yourself to erase the data.
+
+**Node-RED risk.** Node-RED flows are programs: function and exec nodes run arbitrary code
+inside the container, and `http in` nodes serve pages on the Node-RED origin. StickLLM
+limits that to the container: no network at all, read-only image, non-root, palette and
+npm installs disabled (`node-red-settings.js`), no editor login of its own (the gateway
+pairing is the login). Do not import flows you have not read.
+
+**Radicale.** 0.5.0 serves the web UI through the paired gateway. Phone or desktop
+CalDAV/CardDAV sync is not offered: those clients cannot do the pairing handoff.
+
+Skipped for now (fiddly): Paperless-ngx (needs Redis plus OCR workers), SnappyMail
+(needs outbound IMAP/SMTP, which the no-network rule forbids), Immich, Matrix, Jitsi
+and the rest need several containers, a GPU, or LAN/internet access.
+
 ---
 
 ## Core (starter apps)
@@ -62,7 +103,7 @@ specific app.
 | **whisper.cpp** and **KittenTTS mini 0.8** | MIT and Apache-2.0 | Chat mic and read-aloud. Baked with the image (see `stickllm-speech.pin`), not a companion app. Not Piper. Not Kitten TTS 2. |
 | **code-server** and **Jupyter** | MIT and BSD | Coding and data analysis. |
 | **n8n** | fair-code (not OSI open source) | Automations. Prefer an OSI-friendly stack unless license posture is explicit. |
-| **Node-RED** | Apache | OSI-friendly automation alternative under consideration instead of (or beside) n8n. |
+| **Node-RED** | Apache | Flow-based automation. Flows can run code; no palette installs, no internet. |
 
 ## Agent
 
