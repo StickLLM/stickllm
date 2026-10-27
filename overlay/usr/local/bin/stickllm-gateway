@@ -2697,6 +2697,12 @@ class Handler(SimpleHTTPRequestHandler):
                     row["label"] = ADDON_STATE_LABELS.get(str(st.get("state") or ""), row.get("label"))
         except Exception:
             pass
+        # ONLYOFFICE and the add-ons override "installed" above, so the count
+        # from catalog_document() is stale. Recount from the final rows.
+        rows = [row for row in doc.get("apps") or [] if isinstance(row, dict)]
+        for row in rows:
+            row["not_installed"] = not row.get("installed")
+        doc["installed_count"] = sum(1 for row in rows if row.get("installed"))
         self._json(200, doc)
 
     def _apps_mutate(self, action: str, req: dict) -> None:

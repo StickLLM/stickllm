@@ -467,8 +467,12 @@ def test_gateway_addon_proxy_live(tmp_path):
         # Catalog: the add-on rows are live.
         ip["v"] = "127.0.0.1"
         status, body, _ = call(main, "GET", "/api/apps")
-        rows = {r["id"]: r for r in json.loads(body)["apps"]}
+        catalog = json.loads(body)
+        rows = {r["id"]: r for r in catalog["apps"]}
         assert rows["vikunja"]["installer"] == "stickllm-addon" and rows["vikunja"]["installed"] is True
+        # installed_count is recounted after the add-on rows are overridden.
+        assert catalog["installed_count"] == sum(1 for r in catalog["apps"] if r["installed"]) >= 1
+        assert rows["vikunja"]["not_installed"] is False
         assert rows["vikunja"]["open_url"] == f"http://127.0.0.1:{up.server_address[1]}/"
         assert rows["radicale"]["installed"] is False and rows["radicale"]["state"] == "not_installed"
         assert rows["immich"].get("installer") is None
