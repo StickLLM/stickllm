@@ -416,6 +416,13 @@ cmd_run_container() {
     exit 0
   fi
   "$PYBIN" "$LIB" prepare-portable
+  # Read-only /a0/usr/plugins: our plugin + allowlisted plugins baked into the
+  # ISO. Anything else in the old plugins dir goes to vault quarantine.
+  if ! "$PYBIN" "$LIB" assemble-plugins; then
+    "$PYBIN" "$LIB" write-status --state error --image_present true >/dev/null || true
+    echo "agent plugins could not be assembled: agent not started" >&2
+    exit 1
+  fi
   ensure_network
   STICKLLM_HF_OFFLINE=0
   if "$PYBIN" "$LIB" embedding-cached || cache_embedding; then
@@ -434,7 +441,10 @@ cmd_run_container() {
   # Own bridge: llama relay and the internet only. UI is published on loopback.
   # Kokoro and Whisper stay at the image defaults. No host disks except the
   # vault addon and the portable settings dir.
+  # --log-driver none: container stdout (chat tool output) is not written to
+  # the json log under stickllm-docker on the unencrypted models drive.
   docker_cli run --name "$CONTAINER" \
+    --log-driver none \
     --network "$NETWORK" \
     --add-host llama:host-gateway \
     --dns 1.1.1.1 \
@@ -473,7 +483,12 @@ cmd_run_container() {
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/prompts:/a0/usr/prompts" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/instruments:/a0/usr/instruments" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/skills:/a0/usr/skills" \
+    -v "${ADDON}/plugins:/a0/usr/plugins:ro" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/model-config:/a0/usr/plugins/_model_config" \
+    -v "${ADDON}/plugin-data/_goal/goals:/a0/usr/plugins/_goal/goals" \
+    -v "${ADDON}/plugin-data/_orchestrator/data:/a0/usr/plugins/_orchestrator/data" \
+    -v "${ADDON}/empty-ro:/a0/usr/api:ro" \
+    -v "${ADDON}/empty-ro:/a0/usr/extensions:ro" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/open-app.token:/stickllm-open-app.token:ro" \
     -v "${ENTRY}:/stickllm-entrypoint.sh:ro" \
     --entrypoint /bin/bash \

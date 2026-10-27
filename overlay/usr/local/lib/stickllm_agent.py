@@ -12,15 +12,19 @@ API keys, vault passcodes, or chat text.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -768,11 +772,15 @@ class OpenApp(Tool):
 '''
 
 
-def ensure_open_app_plugin() -> None:
-    """Write the v2.14 plugin under the usr mount. No token is stored here."""
+def ensure_open_app_plugin(root: Path | None = None) -> None:
+    """Write the v2.14 plugin into the assembled plugin dir. No token is stored here.
+
+    The assembled dir (ADDON/plugins) is mounted read-only at /a0/usr/plugins.
+    """
     if not vault_mounted():
         return
-    root = ADDON / "state" / "plugins" / "stickllm_apps"
+    if root is None:
+        root = PLUGINS_RO / "stickllm_apps"
     files = {
         root / "plugin.yaml": open_app_plugin_yaml(),
         root / "tools" / "open_app.py": open_app_tool_source(),
@@ -823,7 +831,7 @@ def ensure_apps_instructions() -> None:
             current = skill_path.read_text(encoding="utf-8", errors="replace")
         if current != text:
             skill_path.write_text(text, encoding="utf-8")
-    ensure_open_app_plugin()
+    # The stickllm_apps plugin is written by assemble_plugins (read-only dir).
 
 
 def apps_server(listen_host: str, listen_port: int, root: Path | None = None) -> ThreadingHTTPServer:
@@ -1893,6 +1901,383 @@ def prepare_vault_dirs() -> None:
         (ADDON / sub).mkdir(parents=True, exist_ok=True)
 
 
+# --- Agent Zero plugin lockdown -------------------------------------------
+# /a0/usr/plugins is assembled on the host on every start and mounted
+# read-only. It holds only: our own stickllm_apps plugin, plugins listed in the
+# allowlist that were fetched at a pinned commit and hash-checked when the ISO
+# was built, data-only files for Agent Zero's built-in plugins, and empty
+# mountpoints. Anything else found in the old writable plugins dir is moved to
+# the vault quarantine folder (never deleted) and logged by name.
+PLUGINS_RO = ADDON / "plugins"
+PLUGIN_DATA = ADDON / "plugin-data"
+QUARANTINE = ADDON / "quarantine"
+EMPTY_RO = ADDON / "empty-ro"
+A0_PLUGIN_ALLOW = Path(
+    os.environ.get("STICKLLM_A0_PLUGIN_ALLOW", "/usr/local/share/stickllm/agent-zero-plugins.allow")
+)
+A0_BAKED_PLUGINS = Path(
+    os.environ.get("STICKLLM_A0_BAKED_PLUGINS", "/usr/local/share/stickllm/agent-zero-plugins")
+)
+OWN_PLUGINS = ("stickllm_apps",)
+# Built-in plugin names that hold settings only. Agent Zero writes their
+# config.json and .toggle-* under /a0/usr/plugins/<name>/.
+BUILTIN_NAME_RE = re.compile(r"^_[a-z0-9_]+$")
+PLUGIN_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+BUILTIN_DATA_FILES = ("config.json", ".toggle-0", ".toggle-1")
+# Built-in plugins that keep runtime data in a sub folder. These get a nested
+# read-write mount; plugin.yaml must sit at the read-only plugin root, so a
+# file dropped here cannot become a plugin.
+BUILTIN_DATA_DIRS = (("_goal", "goals"), ("_orchestrator", "data"))
+# Built-in plugins switched off (the installer is always_enabled upstream, so
+# the gateway also denies its API; see agent_request_denied).
+DISABLED_BUILTINS = ("_plugin_scan",)
+MODEL_CONFIG_FILES = ("config.json", "presets.yaml", ".toggle-0", ".toggle-1")
+# Other user code paths Agent Zero loads. Mounted as empty read-only dirs.
+USR_CODE_DIRS = ("api", "extensions")
+# Upstream skills that teach the agent to install, create, or publish plugins.
+HIDDEN_SKILLS = ("a0-manage-plugin", "a0-create-plugin")
+
+
+def read_plugin_allowlist(path: Path | None = None) -> dict[str, dict]:
+    """name -> {repo, commit, license, tree}. Bad lines are skipped here; the
+    ISO build refuses them (scripts/lib/a0_plugins.py)."""
+    path = path or A0_PLUGIN_ALLOW
+    out: dict[str, dict] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 5:
+            continue
+        name, repo, commit, lic, tree = parts
+        if not PLUGIN_NAME_RE.match(name) or name in OWN_PLUGINS:
+            continue
+        if not re.fullmatch(r"[0-9a-f]{40}", commit) or not re.fullmatch(r"[0-9a-f]{64}", tree):
+            continue
+        out[name] = {"repo": repo, "commit": commit, "license": lic, "tree": tree}
+    return out
+
+
+def plugin_tree_hash(root: Path) -> str:
+    """Same hash as scripts/lib/a0_plugins.py tree_hash (sorted file sha256 list)."""
+    rels: list[str] = []
+    for path in root.rglob("*"):
+        rel = path.relative_to(root)
+        if rel.parts and rel.parts[0] == ".git":
+            continue
+        if path.is_symlink():
+            raise ValueError(f"symlink in plugin: {rel.as_posix()}")
+        if path.is_file():
+            rels.append(rel.as_posix())
+    lines: list[bytes] = []
+    for rel in sorted(rels, key=lambda r: r.encode("utf-8")):
+        digest = hashlib.sha256((root / rel).read_bytes()).hexdigest()
+        lines.append(f"{digest}  {rel}\n".encode("utf-8"))
+    return hashlib.sha256(b"".join(lines)).hexdigest()
+
+
+def _quarantine_log(line: str) -> None:
+    QUARANTINE.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with (QUARANTINE / "quarantine.log").open("a", encoding="utf-8") as fh:
+        fh.write(f"{stamp} {line}\n")
+    print(f"stickllm-agent: {line}", file=sys.stderr)
+
+
+def _quarantine(entry: Path, kind: str, stamp: str) -> None:
+    dest_dir = QUARANTINE / stamp / kind
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / entry.name
+    n = 1
+    while dest.exists() or dest.is_symlink():
+        dest = dest_dir / f"{entry.name}.{n}"
+        n += 1
+    shutil.move(str(entry), str(dest))
+    safe = re.sub(r"[^A-Za-z0-9._-]", "?", entry.name)[:80]
+    _quarantine_log(f"quarantined {kind}/{safe} -> quarantine/{stamp}/{kind}/{dest.name}")
+
+
+def _is_empty_dir(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink() and not any(path.iterdir())
+
+
+def migrate_user_plugins(stamp: str | None = None) -> list[str]:
+    """Empty the old writable plugin/api/extension dirs under state/.
+
+    Built-in plugin settings (config.json, .toggle-*) and the _goal and
+    _orchestrator data folders move to plugin-data. Everything else goes to
+    quarantine. Returns quarantined names.
+    """
+    stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
+    moved: list[str] = []
+    old = ADDON / "state" / "plugins"
+    if old.is_dir() and not old.is_symlink():
+        for entry in sorted(old.iterdir()):
+            name = entry.name
+            if name == ".gitkeep" and entry.is_file():
+                continue
+            real_dir = entry.is_dir() and not entry.is_symlink()
+            if real_dir and BUILTIN_NAME_RE.match(name):
+                keep = PLUGIN_DATA / name
+                for fn in BUILTIN_DATA_FILES:
+                    src = entry / fn
+                    if src.is_file() and not src.is_symlink():
+                        keep.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(src), str(keep / fn))
+                for plug, sub in BUILTIN_DATA_DIRS:
+                    src = entry / sub
+                    if plug == name and src.is_dir() and not src.is_symlink():
+                        dest = keep / sub
+                        if not dest.exists():
+                            keep.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(src), str(dest))
+                        elif _is_empty_dir(dest):
+                            dest.rmdir()
+                            shutil.move(str(src), str(dest))
+                for plug, sub in BUILTIN_DATA_DIRS:
+                    if plug == name and _is_empty_dir(entry / sub):
+                        (entry / sub).rmdir()
+            if name in OWN_PLUGINS and real_dir:
+                # Regenerated from this file on every start.
+                shutil.rmtree(entry)
+                continue
+            if _is_empty_dir(entry):
+                entry.rmdir()
+                continue
+            _quarantine(entry, "plugins", stamp)
+            moved.append(name)
+    for sub in USR_CODE_DIRS:
+        old_dir = ADDON / "state" / sub
+        if not old_dir.is_dir() or old_dir.is_symlink():
+            continue
+        for entry in sorted(old_dir.iterdir()):
+            _quarantine(entry, sub, stamp)
+            moved.append(f"{sub}/{entry.name}")
+    return moved
+
+
+def sanitize_model_config() -> list[str]:
+    """model-config is a writable nested mount at /a0/usr/plugins/_model_config.
+    Only data files may live there. A plugin.yaml there would replace the
+    built-in plugin's code, so anything else goes to quarantine."""
+    moved: list[str] = []
+    if not settings_mounted():
+        return moved
+    root = PORTABLE / "model-config"
+    if not root.is_dir():
+        return moved
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for entry in sorted(root.iterdir()):
+        if entry.name in MODEL_CONFIG_FILES and entry.is_file() and not entry.is_symlink():
+            continue
+        if vault_mounted():
+            _quarantine(entry, "model-config", stamp)
+        elif entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+        moved.append(entry.name)
+    return moved
+
+
+def _copy_plugin_tree(src: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    for path in sorted(src.rglob("*")):
+        rel = path.relative_to(src)
+        if rel.parts and rel.parts[0] == ".git":
+            continue
+        target = dest / rel
+        if path.is_symlink():
+            raise ValueError(f"symlink in plugin: {rel.as_posix()}")
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            os.chmod(target, 0o755)
+        elif path.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+            os.chmod(target, 0o644)
+
+
+def baked_plugins() -> dict[str, Path]:
+    """Allowlisted plugins baked into the ISO whose pin and hash still match."""
+    allow = read_plugin_allowlist()
+    manifest: dict[str, tuple[str, str]] = {}
+    try:
+        for raw in (A0_BAKED_PLUGINS / "MANIFEST").read_text(encoding="utf-8").splitlines():
+            parts = raw.split()
+            if len(parts) == 3:
+                manifest[parts[0]] = (parts[1], parts[2])
+    except OSError:
+        return {}
+    out: dict[str, Path] = {}
+    for name, pin in allow.items():
+        src = A0_BAKED_PLUGINS / name
+        if manifest.get(name) != (pin["commit"], pin["tree"]):
+            print(f"stickllm-agent: plugin {name} skipped (not baked at the pinned commit)", file=sys.stderr)
+            continue
+        if not (src / "plugin.yaml").is_file():
+            continue
+        try:
+            if plugin_tree_hash(src) != pin["tree"]:
+                print(f"stickllm-agent: plugin {name} skipped (hash mismatch)", file=sys.stderr)
+                continue
+        except ValueError:
+            continue
+        out[name] = src
+    return out
+
+
+def assemble_plugins() -> Path:
+    """Rebuild ADDON/plugins (mounted read-only at /a0/usr/plugins)."""
+    if not vault_mounted():
+        raise SystemExit("vault locked")
+    ADDON.mkdir(parents=True, exist_ok=True)
+    migrate_user_plugins()
+    sanitize_model_config()
+    stage = ADDON / ".plugins.new"
+    if stage.exists():
+        shutil.rmtree(stage)
+    stage.mkdir(parents=True)
+    # copy_A0.sh copies /git/agent-zero/usr/plugins/.gitkeep with cp -n.
+    # It must already exist or the copy fails on the read-only mount.
+    (stage / ".gitkeep").write_text("", encoding="utf-8")
+    ensure_open_app_plugin(stage / "stickllm_apps")
+    for name, src in baked_plugins().items():
+        _copy_plugin_tree(src, stage / name)
+    # Data-only files for built-in plugins.
+    if PLUGIN_DATA.is_dir():
+        for entry in sorted(PLUGIN_DATA.iterdir()):
+            if not entry.is_dir() or entry.is_symlink() or not BUILTIN_NAME_RE.match(entry.name):
+                continue
+            for fn in BUILTIN_DATA_FILES:
+                src = entry / fn
+                if src.is_file() and not src.is_symlink():
+                    (stage / entry.name).mkdir(exist_ok=True)
+                    shutil.copyfile(src, stage / entry.name / fn)
+                    os.chmod(stage / entry.name / fn, 0o644)
+    for name in DISABLED_BUILTINS:
+        (stage / name).mkdir(exist_ok=True)
+        (stage / name / ".toggle-1").unlink(missing_ok=True)
+        (stage / name / ".toggle-0").write_text("", encoding="utf-8")
+    # Mountpoints for the nested writable mounts must exist before docker
+    # mounts the parent read-only.
+    (stage / "_model_config").mkdir(exist_ok=True)
+    for plug, sub in BUILTIN_DATA_DIRS:
+        (stage / plug / sub).mkdir(parents=True, exist_ok=True)
+        (PLUGIN_DATA / plug / sub).mkdir(parents=True, exist_ok=True)
+    EMPTY_RO.mkdir(parents=True, exist_ok=True)
+    for entry in list(EMPTY_RO.iterdir()):
+        _quarantine(entry, "empty-ro", time.strftime("%Y%m%d-%H%M%S"))
+    for path in [stage, *stage.rglob("*")]:
+        if path.is_dir():
+            os.chmod(path, 0o555)
+        else:
+            os.chmod(path, 0o444)
+    old = ADDON / ".plugins.old"
+    if old.exists():
+        _make_writable(old)
+        shutil.rmtree(old)
+    if PLUGINS_RO.exists():
+        PLUGINS_RO.rename(old)
+    stage.rename(PLUGINS_RO)
+    if old.exists():
+        _make_writable(old)
+        shutil.rmtree(old)
+    return PLUGINS_RO
+
+
+def _make_writable(root: Path) -> None:
+    for path in [root, *root.rglob("*")]:
+        if path.is_symlink():
+            continue
+        try:
+            os.chmod(path, 0o755 if path.is_dir() else 0o644)
+        except OSError:
+            pass
+
+
+def assembled_plugin_names() -> list[str]:
+    if not PLUGINS_RO.is_dir():
+        return []
+    return sorted(p.name for p in PLUGINS_RO.iterdir() if (p / "plugin.yaml").is_file())
+
+
+# Paths on the :5443 Agent proxy that install, scan, publish, or remove plugins.
+PLUGIN_DENY_PREFIXES = (
+    "/api/plugins/_plugin_installer/",
+    "/api/plugins/_plugin_scan/",
+    "/api/plugins/_plugin_validator/",
+    "/api/plugins/_a0_connector/v1/installed_plugins",
+    "/plugins/_plugin_installer/extensions/",
+    "/plugins/_plugin_installer/webui/install-index.html",
+    "/plugins/_plugin_installer/webui/install-detail.html",
+    "/plugins/_plugin_installer/webui/install-git.html",
+    "/plugins/_plugin_installer/webui/install-zip.html",
+    "/plugins/_plugin_installer/webui/main.html",
+    "/plugins/_plugin_scan/extensions/",
+    "/plugins/_plugin_scan/webui/",
+    "/plugins/_plugin_validator/extensions/",
+    "/plugins/_plugin_validator/webui/",
+)
+PLUGIN_DENY_ACTIONS = ("delete_plugin", "run_execute_script")
+
+
+def _norm_proxy_path(path: str) -> str:
+    raw = path or "/"
+    for _ in range(3):
+        nxt = urllib.parse.unquote(raw)
+        if nxt == raw:
+            break
+        raw = nxt
+    raw = raw.replace("\\", "/")
+    raw = re.sub(r"/{2,}", "/", raw)
+    parts: list[str] = []
+    for part in raw.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    norm = "/" + "/".join(parts)
+    if raw.endswith("/") and norm != "/":
+        norm += "/"
+    return norm
+
+
+def agent_request_denied(method: str, path: str, body: bytes | None = None) -> str:
+    """Reason string when the Agent proxy must refuse this request, else ''."""
+    norm = _norm_proxy_path(path)
+    probe = norm if norm.endswith("/") else norm + "/"
+    for prefix in PLUGIN_DENY_PREFIXES:
+        if norm.startswith(prefix) or (prefix.endswith("/") and probe == prefix):
+            return "plugins_locked"
+        if norm.lower().startswith(prefix.lower()):
+            return "plugins_locked"
+    if norm.rstrip("/").lower() == "/api/plugins" and (method or "").upper() not in ("GET", "HEAD", "OPTIONS"):
+        text = (body or b"")[:1_000_000].decode("utf-8", "replace")
+        action = ""
+        try:
+            doc = json.loads(text) if text.strip() else {}
+            if isinstance(doc, dict):
+                action = str(doc.get("action") or "")
+        except json.JSONDecodeError:
+            doc = None
+        if doc is None:
+            # Not JSON: refuse when a deny-listed action name appears at all.
+            if any(a in text for a in PLUGIN_DENY_ACTIONS):
+                return "plugins_locked"
+        elif action.strip().lower() in PLUGIN_DENY_ACTIONS:
+            return "plugins_locked"
+    return ""
+
+
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "docker-may-start":
@@ -1947,6 +2332,11 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "prepare-portable":
         prepare_portable()
+        return 0
+    if cmd == "assemble-plugins":
+        assemble_plugins()
+        names = assembled_plugin_names()
+        print("plugins: " + (" ".join(names) if names else "-"))
         return 0
     if cmd == "embedding-cached":
         return 0 if embedding_cached() else 1

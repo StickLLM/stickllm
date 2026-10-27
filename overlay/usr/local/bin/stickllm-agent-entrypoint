@@ -59,6 +59,13 @@ if [ -f /etc/searxng/settings.yml ] && ! grep -q 'bind_address:' /etc/searxng/se
   sed -i '/^server:/a\  bind_address: "127.0.0.1"' /etc/searxng/settings.yml
 fi
 
+# Plugins are locked (read-only /a0/usr/plugins). Drop the upstream skills that
+# teach installing, creating, or publishing plugins before /git/agent-zero is
+# copied into /a0. The container is recreated on every start.
+for skill in a0-manage-plugin a0-create-plugin; do
+  rm -rf "/git/agent-zero/skills/${skill}" "/a0/skills/${skill}"
+done
+
 mkdir -p /a0/usr/workdir /a0/usr/memory /a0/usr/logs /a0/usr/.cache
 
 # Prove the bridge control port from this container. Do not print the token.

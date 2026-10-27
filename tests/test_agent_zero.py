@@ -950,6 +950,7 @@ def test_apps_prompt_names_url_ids(tmp_path):
         },
     )
     agent.ensure_apps_instructions()
+    agent.assemble_plugins()
     prompt = (
         vault
         / "addons"
@@ -982,15 +983,15 @@ def test_apps_prompt_names_url_ids(tmp_path):
     assert '{"move":"t3->f1"}' in skill
     assert '{"draw":true}' in skill
     act_prompt = (
-        vault / "addons" / "agent-zero" / "state" / "plugins" / "stickllm_apps" / "prompts" / "agent.system.tool.app_act.md"
+        vault / "addons" / "agent-zero" / "plugins" / "stickllm_apps" / "prompts" / "agent.system.tool.app_act.md"
     ).read_text(encoding="utf-8")
     assert '{"move":"t3->f1"}' in act_prompt
     assert agent.APPS_PLAYABLE_NOTE in act_prompt
     state_tool = (
-        vault / "addons" / "agent-zero" / "state" / "plugins" / "stickllm_apps" / "tools" / "app_state.py"
+        vault / "addons" / "agent-zero" / "plugins" / "stickllm_apps" / "tools" / "app_state.py"
     ).read_text(encoding="utf-8")
     act_tool = (
-        vault / "addons" / "agent-zero" / "state" / "plugins" / "stickllm_apps" / "tools" / "app_act.py"
+        vault / "addons" / "agent-zero" / "plugins" / "stickllm_apps" / "tools" / "app_act.py"
     ).read_text(encoding="utf-8")
     assert "class AppState" in state_tool
     assert "http://172.30.0.1:8082/state" in state_tool
@@ -1002,7 +1003,6 @@ def test_apps_prompt_names_url_ids(tmp_path):
         vault
         / "addons"
         / "agent-zero"
-        / "state"
         / "plugins"
         / "stickllm_apps"
         / "tools"
@@ -1012,7 +1012,6 @@ def test_apps_prompt_names_url_ids(tmp_path):
         vault
         / "addons"
         / "agent-zero"
-        / "state"
         / "plugins"
         / "stickllm_apps"
         / "prompts"
