@@ -1875,14 +1875,23 @@ start_agent_addon() {
   if [[ -x /usr/local/bin/stickllm-docs ]]; then
     /usr/local/bin/stickllm-docs start >/run/stickllm/docs-start.log 2>&1 &
   fi
+  # Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED): only the
+  # installed ones start; each gate re-checks the vault.
+  if [[ -x /usr/local/bin/stickllm-addon ]]; then
+    /usr/local/bin/stickllm-addon start-all >/run/stickllm/addons-start.log 2>&1 &
+  fi
 }
 
 stop_vault_addons() {
   # Order matters: Docs first, while the vault is still mounted, so pending
-  # edits reach the save callback and land in vault/Documents. Then Agent
-  # Zero, then the shared dockerd, then the settings partition and the vault.
+  # edits reach the save callback and land in vault/Documents. Then the
+  # starter add-ons (their databases are in vault/addons), then Agent Zero,
+  # then the shared dockerd, then the settings partition and the vault.
   if [[ -x /usr/local/bin/stickllm-docs ]]; then
     /usr/local/bin/stickllm-docs stop >/run/stickllm/docs-stop.log 2>&1 || true
+  fi
+  if [[ -x /usr/local/bin/stickllm-addon ]]; then
+    /usr/local/bin/stickllm-addon stop-all >/run/stickllm/addons-stop.log 2>&1 || true
   fi
   if [[ -x /usr/local/bin/stickllm-agent ]]; then
     /usr/local/bin/stickllm-agent stop >/run/stickllm/agent-stop.log 2>&1 || true

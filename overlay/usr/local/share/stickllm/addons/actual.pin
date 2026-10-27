@@ -1,0 +1,7 @@
+# Actual Budget server (MIT). Pulled by digest onto the host SSD docker data-root only.
+# Verified against registry-1.docker.io on 2026-10-27. manifest_digest is the
+# OCI index; amd64_digest is the linux/amd64 manifest that is pulled.
+image=actualbudget/actual-server
+version=26.10.0
+manifest_digest=sha256:24645e971da6bb1a1f953d6859e307a0b29be1e8b4130a35b3220c209b5b860c
+amd64_digest=sha256:bdfbb624d5fe9df05481d8eb6791a00a4a78ab8152bce31e79c6f18917e6933e

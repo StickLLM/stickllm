@@ -139,6 +139,16 @@ test -f config/includes.chroot/etc/systemd/system/stickllm-docs-install.service
 test -f config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
 grep -q 'amd64_digest=sha256:bff1a9fd46f2b79ada776fd0447c3fccf66cbf44c1996ec9316efa8ac4ee3fd5' \
   config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
+# Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED).
+test -f config/includes.chroot/usr/local/bin/stickllm-addon
+test -f config/includes.chroot/usr/local/lib/stickllm_addons.py
+test -f config/includes.chroot/etc/systemd/system/stickllm-addon@.service
+test -f config/includes.chroot/etc/systemd/system/stickllm-addon-install@.service
+test -f config/includes.chroot/usr/local/share/stickllm/addons/radicale/config
+test -f config/includes.chroot/usr/local/share/stickllm/addons/node-red-settings.js
+for pin in radicale vikunja actual trilium node-red; do
+  grep -q '^amd64_digest=sha256:' "config/includes.chroot/usr/local/share/stickllm/addons/${pin}.pin"
+done
 
 # Agent Zero plugins: banned unless allowlisted. Fetch each allowlisted plugin
 # once here at its pinned commit, hash-check it, bake it read-only. A pin or

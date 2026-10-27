@@ -27,6 +27,7 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-dockerd \
           /usr/local/bin/stickllm-docs \
           /usr/local/bin/stickllm-docs-entrypoint \
+          /usr/local/bin/stickllm-addon \
           /usr/local/bin/stickllm-files || true
 
 # Force LF — CRLF in sudoers breaks ALL rules on the stick
@@ -55,6 +56,8 @@ if [[ -x /opt/stickllm/bin/llama-server-cpu ]]; then
 fi
 
 find /etc/systemd/system -name 'stickllm*.service' -exec chmod 644 {} + 2>/dev/null || true
+# Add-on config is bind-mounted read-only into non-root containers (uid 2999/1000).
+chmod -R u=rwX,go=rX /usr/local/share/stickllm/addons 2>/dev/null || true
 find /etc/ssh/sshd_config.d -type f -exec chmod 644 {} + 2>/dev/null || true
 
 # Prefer NVIDIA proprietary over nouveau
