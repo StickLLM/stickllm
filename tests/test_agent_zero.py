@@ -1740,6 +1740,14 @@ def test_agent_clients_pick_the_lan_browser_that_just_chatted():
     clients.prompt("192.168.72.80", now=1010.0)
     assert clients.target(now=1011.0) == "192.168.72.80"
     assert "/message_async" in gateway.AGENT_PROMPT_PATHS
+    # The Agent Zero web UI sends chat as POST /api/message_async (api.js).
+    assert "/api/message_async" in gateway.AGENT_PROMPT_PATHS
+    # A device id cookie wins over the IP (phones behind one NAT, changing IPs).
+    assert gateway.device_key("0123456789abcdef0123456789abcdef") == "d-0123456789abcdef0123456789abcdef"
+    assert gateway.device_key("nope") == "" and gateway.device_key("") == ""
+    assert gateway._target_log("d-0123456789abcdef") == " target=device:01234567"
+    clients.prompt("d-0123456789abcdef", now=1020.0)
+    assert clients.target(now=1021.0) == "d-0123456789abcdef"
     assert gateway.ui_peer_key("127.0.0.1") == "kiosk"
     assert gateway.ui_peer_key("192.168.72.76") == "192.168.72.76"
 
@@ -1889,6 +1897,23 @@ def test_open_app_and_app_calls_go_only_to_the_agent_browser(tmp_path):
         log = wait_log(f"target={desk} reason=agent_lan")
         assert f"target={desk} reason=agent_lan" in log
 
+        # A phone behind the same NAT IP, with its own device id cookie, sent the
+        # chat: only the phone's tab gets the event, not the desktop on that IP.
+        dev = "0123456789abcdef0123456789abcdef"
+        phone_ui = hold(lan_port, "/api/ui/events", cookie + "; stickllm_device=" + dev)
+        socks.append(phone_ui)
+        wait_log(f"STICKLLM_UI_EVENTS connect ip={desk}", 2)
+        gateway.AGENT_CLIENTS.prompt("d-" + dev)
+        code, body = open_app()
+        assert code == 200 and body["screen"] == "browser" and body["reason"] == "agent_lan"
+        assert b"event: open_app" in read_for(phone_ui, b"event: open_app", 2)
+        assert b"event: open_app" not in read_for(desk_ui, b"event: open_app", 0.8)
+        assert b"event: open_app" not in read_for(kiosk_ui, b"event: open_app", 0.3)
+        assert "target=device:01234567 reason=agent_lan" in wait_log("target=device:01234567")
+        phone_ui.close()
+        socks.remove(phone_ui)
+        gateway.AGENT_CLIENTS.prompt(desk)
+
         # Kiosk has the app open, the desktop does not: fail fast, no kiosk fallback.
         kiosk_app = hold(local_port, "/api/ui/events?app=minesweeper")
         socks.append(kiosk_app)
@@ -1996,7 +2021,7 @@ def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     prime = app[app.index("function primeAppsSession("):app.index("function clearPairSession()")]
     assert '"/api/ui/apps-session"' in prime and "detectLocalHost()" in prime
     assert "app-ticket" not in app and "appPageUrl" not in app
-    assert "app.js?v=openapp4" in index
+    assert "app.js?v=openapp5" in index
 
 
 def test_app_pages_may_be_framed_by_stickllm_only(tmp_path, monkeypatch):

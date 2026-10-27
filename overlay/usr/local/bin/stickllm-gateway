@@ -119,9 +119,26 @@ def ui_peer_key(ip: str) -> str:
     return "kiosk" if ip in _LOOPBACK_HOSTS else ip
 
 
+# Each browser's StickLLM tab sets a random, non-secret device id cookie. Cookies
+# are per host, not per port, so the same browser's Agent tab on :5443 sends it
+# too. open_app then goes to the device that sent the chat (phone, laptop,
+# desktop), even when several share one NAT IP or a phone changes IP. A browser
+# without it falls back to its IP. It only routes events; every stream and
+# reply still needs the pairing.
+DEVICE_COOKIE = "stickllm_device"
+_DEVICE_RE = re.compile(r"[0-9a-f]{16,64}")
+
+
+def device_key(value: str) -> str:
+    value = str(value or "").strip().lower()
+    return "d-" + value[:32] if _DEVICE_RE.fullmatch(value) else ""
+
+
 def _target_log(target: str) -> str:
     if not target:
         return ""
+    if target.startswith("d-") and re.fullmatch(r"d-[0-9a-f]{16,32}", target):
+        return f" target=device:{target[2:10]}"
     safe = target if re.fullmatch(r"[0-9A-Fa-f:.]+|kiosk", target) else "-"
     return f" target={safe}"
 
@@ -132,7 +149,9 @@ def _target_log(target: str) -> str:
 # from a kiosk chat went to a background desktop tab. The kiosk talks to Agent
 # on 127.0.0.1:5099 directly, so its own messages are never seen here.
 AGENT_TARGET_WINDOW = 300.0
-AGENT_PROMPT_PATHS = ("/message_async", "/message")
+# Agent Zero's web UI posts chat messages to /api/message_async (api.js puts
+# every call under /api/); the bare paths are older builds.
+AGENT_PROMPT_PATHS = ("/api/message_async", "/api/message", "/message_async", "/message")
 
 
 class _AgentClients:
@@ -186,7 +205,7 @@ AGENT_CLIENTS = _AgentClients()
 
 
 def ui_target(now: float | None = None) -> tuple[str, str]:
-    """(screen, reason): the LAN browser that just chatted with Agent, else the kiosk."""
+    """(screen, reason): the device that just chatted with Agent, else the kiosk."""
     lan = AGENT_CLIENTS.target(now)
     if lan:
         return lan, "agent_lan"
@@ -2234,8 +2253,11 @@ class Handler(SimpleHTTPRequestHandler):
         return (self.client_address[0] if self.client_address else "") or ""
 
     def _ui_screen_key(self) -> str:
-        """"kiosk" for the stick's own screen, else the LAN browser's IP."""
-        return "kiosk" if self._is_loopback() else (self._ui_client_ip() or "-")
+        """"kiosk" for the stick's own screen, else the browser's device id
+        cookie ("d-<hex>"), else its IP."""
+        if self._is_loopback():
+            return "kiosk"
+        return device_key(self._cookie(DEVICE_COOKIE)) or (self._ui_client_ip() or "-")
 
     def _stream_ui_events(self) -> None:
         if not self._ui_stream_allowed():
@@ -2392,7 +2414,16 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._is_loopback():
             AGENT_CLIENTS.note(self._ui_client_ip())
             if method == "POST" and path in AGENT_PROMPT_PATHS:
-                AGENT_CLIENTS.prompt(self._ui_client_ip())
+                ip = self._ui_client_ip()
+                screen = self._ui_screen_key()
+                AGENT_CLIENTS.prompt(screen)
+                safe_ip = ip if re.fullmatch(r"[0-9A-Fa-f:.]+", ip or "") else "-"
+                try:
+                    UI_OPEN._write_log(
+                        f"STICKLLM_AGENT_PROMPT ip={safe_ip}{_target_log(screen).replace(' target=', ' screen=')} path={path}\n"
+                    )
+                except Exception:
+                    pass
         upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
         try:
             mod = agent_lib()

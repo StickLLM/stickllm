@@ -62,6 +62,23 @@ function authHeaders(extra = {}) {
   if (token) h.Authorization = `Bearer ${token}`;
   return h;
 }
+// A random id for this browser (not a secret, no auth power). Cookies are per
+// host, not per port, so this browser's Agent tab on :5443 sends it too, and
+// the gateway sends open_app to the device that sent the chat message.
+function ensureDeviceCookie() {
+  try {
+    const m = document.cookie.match(/(?:^|;\s*)stickllm_device=([0-9a-f]{16,64})/);
+    let id = m ? m[1] : (localStorage.getItem("stickllm-device-id") || "");
+    if (!/^[0-9a-f]{16,64}$/.test(id)) {
+      const b = new Uint8Array(16);
+      crypto.getRandomValues(b);
+      id = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+    }
+    localStorage.setItem("stickllm-device-id", id);
+    document.cookie = "stickllm_device=" + id + "; Path=/; Max-Age=31536000; SameSite=Lax";
+  } catch (_) {}
+}
+ensureDeviceCookie();
 function rememberPairCookie() {
   if (!token) {
     document.cookie = "stickllm_pair=; Path=/; Max-Age=0; SameSite=Strict";
