@@ -356,6 +356,7 @@ async function refreshApps() {
     if (pill) pill.textContent = a.label || "Not available yet";
     if (sub) sub.textContent = a.installed ? "Installed" : "Not installed";
     if (a.installed) installedCount += 1;
+    paintAppActions(row, a);
   });
   paintResourceWarnings(j.resources);
   const empty = $("#appsInstalledEmpty");
@@ -367,6 +368,95 @@ async function refreshApps() {
   const sub = row.querySelector("[data-installed]");
   if ($("#appsSelInstalled")) $("#appsSelInstalled").textContent = sub ? sub.textContent : "Not installed";
   if ($("#appsSelState")) $("#appsSelState").textContent = pill ? pill.textContent : "Not available yet";
+}
+// Rows with an installer (ONLYOFFICE and the starter add-ons) carry their
+// own Install / Open / Remove controls. Open goes to a named tab, never a popup.
+const APP_BUSY_STATES = new Set(["installing", "removing", "starting"]);
+function paintAppActions(row, a) {
+  const box = row.querySelector("[data-actions-for]");
+  if (!box) return;
+  const install = box.querySelector('[data-app-act="install"]');
+  const remove = box.querySelector('[data-app-act="uninstall"]');
+  const open = box.querySelector("[data-app-open]");
+  const live = !!a.installer;
+  const busy = APP_BUSY_STATES.has(String(a.state || ""));
+  box.hidden = !live;
+  if (install) { install.hidden = !live || !!a.installed; install.disabled = busy; }
+  if (remove) { remove.hidden = !live || !a.installed; remove.disabled = busy; }
+  if (open) {
+    open.hidden = !live || !a.installed;
+    if (a.open_url) open.setAttribute("href", a.open_url);
+    open.dataset.openLink = a.open_link || "";
+  }
+  const msg = row.querySelector("[data-app-msg]");
+  if (msg && live) {
+    const text = a.installed && a.running ? "" : (a.message || "");
+    if (!msg.dataset.sticky) { msg.textContent = text; msg.hidden = !text; }
+  }
+}
+function appRowMessage(id, text) {
+  const row = $(`.appsRow[data-app="${id}"]`);
+  const msg = row ? row.querySelector("[data-app-msg]") : null;
+  if (!msg) return;
+  msg.textContent = text || "";
+  msg.hidden = !text;
+  msg.dataset.sticky = text ? "1" : "";
+  if (text) setTimeout(() => { msg.dataset.sticky = ""; }, 20000);
+}
+async function openAppPaired(a) {
+  const box = a.closest("[data-actions-for]");
+  const id = box ? box.dataset.actionsFor : "";
+  const link = a.dataset.openLink || "";
+  // Same-origin pages (ONLYOFFICE at /apps/docs/), the console, and unpaired
+  // sticks follow the link as is.
+  if (!id || !link || detectLocalHost() || !token) return false;
+  const w = window.open("", a.getAttribute("target") || "_blank");
+  let url = a.href;
+  try {
+    const r = await fetch(link, {
+      method: "POST", cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ id }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.url) url = j.url;
+    else appRowMessage(id, j.message || "Could not sign this browser in to the app. Try Open again.");
+  } catch (err) { /* follow the plain link; the app page explains pairing */ }
+  if (w) {
+    try { w.opener = null; } catch (err) { /* ignore */ }
+    w.location.href = url;
+  } else {
+    location.href = url;
+  }
+  return true;
+}
+async function appsActFor(id, action, btn) {
+  if (!id) return;
+  if (action === "uninstall" && btn && btn.dataset.confirm !== "1") {
+    btn.dataset.confirm = "1";
+    btn.textContent = "Click again to remove";
+    setTimeout(() => { btn.dataset.confirm = ""; btn.textContent = "Remove"; }, 5000);
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.dataset.confirm = ""; if (action === "uninstall") btn.textContent = "Remove"; }
+  try {
+    const r = await fetch("/api/apps/" + action, {
+      method: "POST",
+      cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ id }),
+    });
+    const j = await r.json().catch(() => ({}));
+    appRowMessage(id, j.message || (r.ok ? "" : "Nothing was changed."));
+    if (r.ok && j.started === true) {
+      [3, 10, 20, 40, 60, 120, 240, 480].forEach((sec) => setTimeout(() => refreshApps().catch(() => {}), sec * 1000));
+    }
+  } catch (e) {
+    appRowMessage(id, "Nothing was changed.");
+  } finally {
+    if (btn) btn.disabled = false;
+    refreshApps().catch(() => {});
+  }
 }
 async function appsAct(action) {
   if (!selectedAppId) return;
@@ -435,6 +525,21 @@ document.addEventListener("click", (ev) => {
 });
 if ($("#appsList")) $("#appsList").addEventListener("click", (e) => {
   if (e.target.closest("#agentCatalogInstall") || e.target.closest("#agentCatalogRow")) return;
+  const act = e.target.closest("[data-app-act]");
+  if (act) {
+    e.preventDefault();
+    const box = act.closest("[data-actions-for]");
+    appsActFor(box ? box.dataset.actionsFor : "", act.dataset.appAct, act);
+    return;
+  }
+  const open = e.target.closest("[data-app-open]");
+  if (open) {
+    if (open.dataset.openLink && !detectLocalHost() && token) {
+      e.preventDefault();
+      openAppPaired(open);
+    }
+    return;
+  }
   const row = e.target.closest(".appsRow");
   if (row) selectApp(row);
 });

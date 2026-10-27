@@ -107,6 +107,10 @@ html[data-theme="light"] .appsView{background:
 .appsState small{font-size:11px;color:var(--muted)}
 .appsRowLive{cursor:default;align-items:center;flex-wrap:wrap}
 .appsRowLive .appName{flex:1 1 220px}
+.appsActions{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;justify-content:flex-end}
+.appsActions[hidden],.appsActions [hidden]{display:none}
+.appsActions a.btn{text-decoration:none}
+.appsRowMsg{color:var(--muted);font-size:12px}
 .appsRow .appName small.appReq{display:block;margin-top:4px;color:var(--ink2);font-weight:550}
 .appsRow .appName small.appNote,.appsRow .appName small.appWarn{display:block;margin-top:2px;font-size:11.5px;line-height:1.35;font-weight:450}
 .appsRow .appName small.appNote{color:var(--muted)}

@@ -266,7 +266,7 @@ CATALOG: tuple[dict, ...] = (
         "name": "Node-RED",
         "group": "Creative and technical",
         "license": "Apache",
-        "description": "OSI-friendly automation alternative under consideration instead of (or beside) n8n.",
+        "description": "Flow-based automation. Flows can run code; no palette installs, no internet.",
         "disk_gb": 0.3,
         "ram_gb": {"min": 0.2, "recommended": 0.5},
         "vram_gb": 0,
