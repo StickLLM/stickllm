@@ -145,7 +145,7 @@ stickllm-wifi-setup — keyboard WiFi bootstrap (no browser)
     stickllm-wifi-setup --ssid NAME  # non-interactive (prompts password)
     stickllm-wifi-setup -h
 
-  No-network Server tip: Ctrl+Alt+F2 → login (user / stickllm) → this command.
+  No-network Server tip: Ctrl+Alt+F2 (console) → this command.
   Or: Local mode once to save WiFi on DATA, then reboot into Server.
   Or: plug Ethernet once, then Settings → Network in the browser.
 EOF

@@ -89,12 +89,14 @@ gpasswd -d stickllm sudo 2>/dev/null || true
 # Password is randomized per SSH boot by stickllm-ssh-bootstrap (not baked).
 passwd -l stickllm 2>/dev/null || true
 
-# Live user convenience (live-config may create user "user") — no password sudo
+# Live user "user" (created by live-config at boot): no password, no root.
 if getent passwd user >/dev/null 2>&1; then
   usermod -aG video,render user || true
   gpasswd -d user sudo 2>/dev/null || true
   passwd -l user 2>/dev/null || true
 fi
+# live-config's sudo component writes "user ALL=(ALL) NOPASSWD: ALL" on every boot.
+rm -f /lib/live/config/0040-sudo
 
 # Do not auto-start SSH on every boot — only menu 2 Terminal / 3 Test (stickllm.ssh)
 systemctl disable ssh.service 2>/dev/null || true

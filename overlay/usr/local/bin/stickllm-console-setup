@@ -3,19 +3,22 @@
 set -uo pipefail
 # Note: not using set -e — optional systemctl/useradd must not fail the oneshot.
 
+# Live 'user' (tty2 console, autologin from live-config): no password, no root.
+# live-config's user-setup puts it back in the sudo group on every boot, so this
+# unit runs After=live-config.service. The only sudo left for 'user' is the
+# narrow WiFi helpers in /etc/sudoers.d/stickllm.
 if ! getent passwd user >/dev/null 2>&1; then
-  useradd -m -s /bin/bash -G sudo,video,render user 2>/dev/null || true
+  useradd -m -s /bin/bash -G video,render user 2>/dev/null || true
 fi
 
 if getent passwd user >/dev/null 2>&1; then
-  echo 'user:stickllm' | chpasswd || true
-  usermod -aG sudo,video,render user 2>/dev/null || true
+  usermod -aG video,render user 2>/dev/null || true
+  gpasswd -d user sudo >/dev/null 2>&1 || true
+  passwd -l user >/dev/null 2>&1 || true
 fi
 
-cat >/etc/sudoers.d/stickllm-user <<'EOF'
-user ALL=(ALL) NOPASSWD:ALL
-EOF
-chmod 440 /etc/sudoers.d/stickllm-user || true
+# Blanket passwordless root rules from live-config (live) and pre-0.5.1 images (stickllm-user).
+rm -f /etc/sudoers.d/live /etc/sudoers.d/stickllm-user
 
 # Strip CRLF from overlay scripts (Windows checkout → exec 127 on Linux).
 # Live root is writable overlay; ignore failures on pure squashfs.
@@ -25,15 +28,16 @@ for _f in /usr/local/bin/stickllm-*; do
 done
 unset _f
 
-cat >/etc/motd <<'EOF'
+_ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9A-Za-z.+-]*\)".*/\1/p' /opt/stickllm/ui/stickllm.json 2>/dev/null | head -n1)"
+cat >/etc/motd <<EOF
 
-  StickLLM v0.3.2
+  StickLLM ${_ver:-}
   tty1 = loading + LAN URL + PAIR CODE
-  tty2 = login (Ctrl+Alt+F2)   SSH = Term menu only
+  tty2 = console (Ctrl+Alt+F2)   SSH = Terminal menu only
   No LAN?  stickllm-wifi-setup
-  user / stickllm
 
 EOF
+unset _ver
 
 sysctl -w kernel.printk="3 4 1 3" >/dev/null 2>&1 || true
 dmesg -n err >/dev/null 2>&1 || true
