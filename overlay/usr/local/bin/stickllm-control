@@ -295,25 +295,108 @@ def _gguf_search_roots() -> list[Path]:
     return model_dirs()
 
 
+# --- Bounded GGUF index (0.5.2) ---------------------------------------------
+# Path.rglob() walked whole trees (e.g. the vault host root /home/<user> holding
+# stickllm-docker/overlay2 with hundreds of thousands of files) once per catalog
+# file on every status call, hanging the control daemon. Walk at most
+# GGUF_MAX_DEPTH levels, prune heavy/system dirs, cap entries, cache briefly
+# and let only one thread scan at a time.
+GGUF_MAX_DEPTH = 4
+GGUF_MAX_ENTRIES = 200_000
+GGUF_INDEX_TTL = 20.0
+_GGUF_PRUNE = {
+    "stickllm-docker", "docker", "overlay2", "containerd", "node_modules",
+    "__pycache__", "site-packages", "proc", "sys", "dev", "snap", "flatpak",
+    "Windows", "$Recycle.Bin", "System Volume Information", "Program Files",
+    "Program Files (x86)", "ProgramData", "AppData", "lost+found", "venv",
+    ".venv", ".git",
+}
+_GGUF_HIDDEN_OK = {".lmstudio", ".cache", "huggingface", ".ollama"}
+_gguf_index_lock = threading.Lock()
+_gguf_index_cache: dict[str, tuple[float, list[Path]]] = {}
+
+
+def _walk_ggufs(root: Path) -> list[Path]:
+    out: list[Path] = []
+    try:
+        base = str(root)
+        if not os.path.isdir(base):
+            return out
+    except OSError:
+        return out
+    seen = 0
+    stack: list[tuple[str, int]] = [(base, 0)]
+    while stack:
+        cur, depth = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for ent in it:
+                    seen += 1
+                    if seen > GGUF_MAX_ENTRIES:
+                        return out
+                    name = ent.name
+                    try:
+                        if ent.is_dir(follow_symlinks=False):
+                            if depth + 1 >= GGUF_MAX_DEPTH:
+                                continue
+                            if name in _GGUF_PRUNE:
+                                continue
+                            if name.startswith(".") and name not in _GGUF_HIDDEN_OK:
+                                continue
+                            stack.append((ent.path, depth + 1))
+                        elif name.lower().endswith(".gguf") and ent.is_file():
+                            out.append(Path(ent.path))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return out
+
+
+def gguf_index(roots: list[Path] | None = None) -> dict[Path, list[Path]]:
+    """Cached {root: [gguf paths]} for model dirs (depth-bounded, single-flight)."""
+    if roots is None:
+        roots = _gguf_search_roots()
+    res: dict[Path, list[Path]] = {}
+    with _gguf_index_lock:
+        now = time.monotonic()
+        for r in roots:
+            key = str(r)
+            hit = _gguf_index_cache.get(key)
+            if hit and now - hit[0] < GGUF_INDEX_TTL:
+                res[r] = hit[1]
+                continue
+            files = _walk_ggufs(r)
+            _gguf_index_cache[key] = (time.monotonic(), files)
+            res[r] = files
+    return res
+
+
+def gguf_index_invalidate() -> None:
+    with _gguf_index_lock:
+        _gguf_index_cache.clear()
+
+
 def find_file(name: str) -> Path | None:
     want = name
+    want_low = os.path.basename(want).lower()
+    idx = gguf_index()
     for d in _gguf_search_roots():
         p = d / want
-        if p.is_file() and p.stat().st_size > 1_000_000:
-            return p
-        # Shallow recurse (LM Studio / HF layout: vendor/model/*.gguf)
         try:
-            for p in d.rglob(want):
-                if p.is_file() and p.stat().st_size > 1_000_000:
-                    # Cap depth under d to 4 path parts
-                    try:
-                        rel = p.relative_to(d)
-                    except ValueError:
-                        continue
-                    if len(rel.parts) <= 4:
-                        return p
+            if p.is_file() and p.stat().st_size > 1_000_000:
+                return p
         except OSError:
             pass
+        # Shallow recurse (LM Studio / HF layout: vendor/model/*.gguf), bounded.
+        for p in idx.get(d, []):
+            if p.name.lower() != want_low:
+                continue
+            try:
+                if p.is_file() and p.stat().st_size > 1_000_000:
+                    return p
+            except OSError:
+                continue
     return None
 
 
@@ -349,7 +432,7 @@ def discover_local_ggufs() -> list[dict]:
     found: dict[str, Path] = {}
     for d in roots:
         try:
-            for p in d.rglob("*.gguf"):
+            for p in gguf_index([d]).get(d, []):
                 if not p.is_file():
                     continue
                 try:
@@ -1518,7 +1601,7 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
     installed_names: set[str] = set()
     for folder in model_dirs():
         try:
-            for p in Path(folder).rglob("*.gguf"):
+            for p in gguf_index([Path(folder)]).get(Path(folder), []):
                 installed_names.add(p.name.lower())
         except OSError:
             continue
@@ -3256,7 +3339,16 @@ def wifi_connect(ssid: str, password: str) -> dict:
     return r
 
 
+_GGUF_INVALIDATE_ACTIONS = {
+    "model_delete", "set_models_dir", "set_session_mode", "vault_unlock", "vault_lock",
+    "vault_use", "vault_attach", "vault_setup", "vault_move_model", "vault_find_models",
+    "model_download", "mmproj_download",
+}
+
+
 def handle(action: str, params: dict) -> dict:
+    if action in _GGUF_INVALIDATE_ACTIONS:
+        gguf_index_invalidate()
     if action == "status":
         inv = gpu_inventory()
         vram = float(inv.get("vram_gb") or 0)
