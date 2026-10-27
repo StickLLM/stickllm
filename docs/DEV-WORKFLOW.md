@@ -12,7 +12,7 @@ The working branch for Agent Zero is `stickllm-agentzero`. Do not fast-forward `
 3. Nink tests that ISO on hardware.
 4. Push the fork after that test. Do not flash unless Nink asks.
 
-Keep the current Agent Zero ISO and the previous two (`n-2`) under `build-agentzero\`. Do not delete those restore copies to make room. Name the build `stickllm-agentzero-v0.5.0.iso` (About shows `0.5.0 · Agent Zero v0.5` from `stickllm.json`). Build it with `STICKLLM_VERSION=0.5.0 STICKLLM_ISO_PATH=build-agentzero/stickllm-agentzero-v0.5.0.iso ./scripts/build.sh`. The tested v0.4 ISO (`stickllm-agentzero-v0.4.iso`) stays as the restore copy; the running stick is not replaced until Nink has tested 0.5.0. Details of the running system: [ARCHITECTURE-AGENTZERO.md](ARCHITECTURE-AGENTZERO.md).
+Keep the current Agent Zero ISO and the previous two (`n-2`) under `build-agentzero\`. Do not delete those restore copies to make room. Name the build `stickllm-agentzero-v0.5.1.iso` (About shows `0.5.1 · Agent Zero v0.5` from `stickllm.json`). Build it with `STICKLLM_VERSION=0.5.1 STICKLLM_ISO_PATH=build-agentzero/stickllm-agentzero-v0.5.1.iso ./scripts/build.sh`. The v0.5.0 and v0.4 ISOs stay as restore copies; the running stick is not replaced until Nink has tested 0.5.1. Details of the running system: [ARCHITECTURE-AGENTZERO.md](ARCHITECTURE-AGENTZERO.md).
 
 ## Rules
 
