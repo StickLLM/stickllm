@@ -451,6 +451,7 @@ async function refreshApps() {
     paintAppActions(row, a);
   });
   paintResourceWarnings(j.resources);
+  syncCatalogDesktop(apps);
   const empty = $("#appsInstalledEmpty");
   if (empty) empty.hidden = installedCount > 0;
   if (!selectedAppId) return;
@@ -461,6 +462,69 @@ async function refreshApps() {
   if ($("#appsSelInstalled")) $("#appsSelInstalled").textContent = sub ? sub.textContent : "Not installed";
   if ($("#appsSelState")) $("#appsSelState").textContent = pill ? pill.textContent : "Not available yet";
 }
+// Desktop icons for installed catalog apps (ONLYOFFICE Docs and the add-ons).
+// Built-in starter apps keep their fixed icons in index.html; everything the
+// catalog says is installed and openable gets an icon here, and loses it on
+// removal. Paired LAN browsers go through the add-on's open link (a signed
+// URL on the right host); the kiosk and same-origin pages follow open_url.
+const catalogApps = new Map();
+const DESK_APP_GLYPHS = {
+  onlyoffice: { label: "Docs", color: "#1d4ed8", svg: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 12h6M10 16h6"/>' },
+  radicale: { label: "Calendar", color: "#0f766e", svg: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>' },
+  vikunja: { label: "Tasks", color: "#4f46e5", svg: '<path d="M5 7l2 2 3-3M5 13l2 2 3-3M13 8h6M13 14h6M5 19h14"/>' },
+  actual: { label: "Budget", color: "#9333ea", svg: '<path d="M12 3v18M16 7.5c-.8-1-2.2-1.5-4-1.5-2.2 0-3.5 1-3.5 2.6 0 3.8 7.5 2 7.5 6 0 1.7-1.5 2.9-4 2.9-1.9 0-3.4-.6-4.2-1.7"/>' },
+  trilium: { label: "Trilium", color: "#b45309", svg: '<path d="M5 4h10l4 4v12H5z"/><path d="M9 10h6M9 14h6M9 18h3"/>' },
+  "node-red": { label: "Node-RED", color: "#b91c1c", svg: '<rect x="3" y="9" width="6" height="6" rx="1"/><rect x="15" y="4" width="6" height="6" rx="1"/><rect x="15" y="14" width="6" height="6" rx="1"/><path d="M9 12c3 0 3-5 6-5M9 12c3 0 3 5 6 5"/>' },
+};
+function deskAppOpenable(a) {
+  return !!(a && a.installed && a.open_url && a.installer);
+}
+function syncCatalogDesktop(apps) {
+  const desk = $("#deskIcons");
+  catalogApps.clear();
+  for (const a of apps) if (a && a.id) catalogApps.set(a.id, a);
+  if (!desk) return;
+  const want = new Set();
+  for (const a of apps) {
+    if (!deskAppOpenable(a)) continue;
+    want.add(a.id);
+    let icon = desk.querySelector('a.deskIcon[data-catalog-app="' + CSS.escape(a.id) + '"]');
+    const g = DESK_APP_GLYPHS[a.id] || { label: a.name || a.id, color: "#475569", svg: '<rect x="4" y="4" width="16" height="16" rx="3"/>' };
+    if (!icon) {
+      icon = document.createElement("a");
+      icon.className = "deskIcon";
+      icon.dataset.catalogApp = a.id;
+      icon.rel = "noopener";
+      const glyph = document.createElement("span");
+      glyph.className = "deskGlyph";
+      glyph.setAttribute("aria-hidden", "true");
+      glyph.style.background = g.color;
+      glyph.innerHTML = '<svg viewBox="0 0 24 24">' + g.svg + "</svg>";
+      const label = document.createElement("span");
+      label.className = "deskLabel";
+      label.textContent = g.label;
+      icon.append(glyph, label);
+      const agent = $("#agentDeskIcon");
+      if (agent) desk.insertBefore(icon, agent); else desk.appendChild(icon);
+    }
+    icon.title = a.name || g.label;
+    icon.setAttribute("href", a.open_url);
+    icon.setAttribute("target", "stickllm-" + a.id);
+    icon.dataset.openLink = a.open_link || "";
+    icon.dataset.appId = a.id;
+  }
+  desk.querySelectorAll("a.deskIcon[data-catalog-app]").forEach((el) => {
+    if (!want.has(el.dataset.catalogApp)) el.remove();
+  });
+}
+if ($("#deskIcons")) $("#deskIcons").addEventListener("click", (e) => {
+  const icon = e.target.closest("a.deskIcon[data-catalog-app]");
+  if (!icon) return;
+  if (icon.dataset.openLink && !detectLocalHost() && token) {
+    e.preventDefault();
+    openAppPaired(icon);
+  }
+});
 // Rows with an installer (ONLYOFFICE and the starter add-ons) carry their
 // own Install / Open / Remove controls. Open goes to a named tab, never a popup.
 const APP_BUSY_STATES = new Set(["installing", "removing", "starting"]);
@@ -497,7 +561,7 @@ function appRowMessage(id, text) {
 }
 async function openAppPaired(a) {
   const box = a.closest("[data-actions-for]");
-  const id = box ? box.dataset.actionsFor : "";
+  const id = box ? box.dataset.actionsFor : (a.dataset.appId || "");
   const link = a.dataset.openLink || "";
   // Same-origin pages (ONLYOFFICE at /apps/docs/), the console, and unpaired
   // sticks follow the link as is.
@@ -5315,15 +5379,26 @@ function hideOpenAppToast() {
 // same named target, so Chrome opens it in a new tab (or reuses that app's
 // tab) and the page loads with the apps cookie. No window features, so it is
 // a tab, never a pop-up window.
+// Where an app id opens: its desktop icon (starter or catalog), then the
+// catalog's open_url (docs is ONLYOFFICE at /apps/docs/), and /apps/<id>/
+// only for the built-in starter apps. Unknown ids get null, not a 404 tab.
+const APP_ID_ALIASES = { docs: "onlyoffice", "onlyoffice-docs": "onlyoffice" };
 function appTabLink(id) {
-  const icon = document.querySelector('#deskIcons a.deskIcon[data-starter="' + id + '"]');
-  return {
-    href: (icon && icon.getAttribute("href")) || "/apps/" + id + "/",
-    target: (icon && icon.getAttribute("target")) || "stickllm-" + id,
-  };
+  const cid = APP_ID_ALIASES[id] || id;
+  const sel = (k, v) => document.querySelector("#deskIcons a.deskIcon[" + k + '="' + CSS.escape(v) + '"]');
+  const icon = sel("data-starter", id) || sel("data-catalog-app", cid);
+  if (icon && icon.getAttribute("href")) {
+    return { href: icon.getAttribute("href"), target: icon.getAttribute("target") || "stickllm-" + cid };
+  }
+  const a = catalogApps.get(cid);
+  if (a && a.open_url) return { href: a.open_url, target: "stickllm-" + cid };
+  if (cid === "onlyoffice") return { href: "/apps/docs/", target: "stickllm-onlyoffice" };
+  if (Object.prototype.hasOwnProperty.call(APP_LABELS, id)) return { href: "/apps/" + id + "/", target: "stickllm-" + id };
+  return null;
 }
 function openAppTab(id) {
   const link = appTabLink(id);
+  if (!link) return null;
   try { return window.open(link.href, link.target); } catch (e) { return null; }
 }
 // A click (toast button, notification, panel button): open the app tab.

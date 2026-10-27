@@ -2027,7 +2027,7 @@ def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     assert 'reportOpenApp(id, "embedded")' in body
     assert 'reportOpenApp(id, "opened")' in body and "cueHiddenTab(id)" in body
     tab = app[app.index("function appTabLink(id)"):app.index("function openAppFromClick(id)")]
-    assert '#deskIcons a.deskIcon[data-starter="' in tab
+    assert '#deskIcons a.deskIcon[' in tab and 'sel("data-starter", id)' in tab
     assert 'icon.getAttribute("href")' in tab and 'icon.getAttribute("target")' in tab
     assert "window.open(link.href, link.target)" in tab
     click = app[app.index("function openAppFromClick(id)"):app.index("// In-page app panel")]
