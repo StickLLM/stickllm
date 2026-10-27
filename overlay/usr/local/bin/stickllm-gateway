@@ -716,6 +716,103 @@ def apps_lib():
     return mod
 
 
+_DOCS_LIB = None
+
+
+def docs_lib():
+    """ONLYOFFICE Docs: vault-only document storage, links, JWT, callback."""
+    global _DOCS_LIB
+    if _DOCS_LIB is not None:
+        return _DOCS_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_docs.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_docs", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_docs helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _DOCS_LIB = mod
+    return mod
+
+
+# Request headers never forwarded to the Docs container. Cookie and the
+# pair bearer are StickLLM credentials; the rest are hop-by-hop.
+DOCS_DROP_HEADERS = frozenset(
+    {
+        "host",
+        "cookie",
+        "authorization",
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+        "content-length",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+        "x-stickllm-client",
+    }
+)
+
+
+def docs_proxy_headers(headers: dict, host: str, proto: str, client_ip: str, *, websocket: bool = False) -> dict:
+    """Headers for a request relayed to ONLYOFFICE on 127.0.0.1:8083.
+
+    X-Forwarded-Host carries the /docs-server virtual path, so the editor
+    builds its URLs under this origin.
+    """
+    out: dict = {}
+    for key, value in headers.items():
+        if key.lower() in DOCS_DROP_HEADERS:
+            continue
+        out[key] = value
+    host = re.sub(r"[^A-Za-z0-9.:\[\]-]", "", str(host or ""))[:255] or "127.0.0.1"
+    out["Host"] = "127.0.0.1:8083"
+    out["X-Forwarded-Host"] = host + "/docs-server"
+    out["X-Forwarded-Proto"] = "https" if proto == "https" else "http"
+    out["X-Forwarded-For"] = str(client_ip or "")
+    if websocket:
+        out["Connection"] = "Upgrade"
+        out["Upgrade"] = "websocket"
+    else:
+        out["Connection"] = "close"
+    return out
+
+
+DOCS_STATE_LABELS = {
+    "running": "Running",
+    "starting": "Starting",
+    "stopped": "Installed",
+    "installing": "Installing",
+    "removing": "Removing",
+    "locked": "Unlock the vault",
+    "settings_missing": "Unlock USB settings",
+    "not_installed": "Not installed",
+    "error": "Error",
+}
+
+
+def docs_container_ip(ip: str) -> bool:
+    """A request from the ONLYOFFICE bridge (never loopback)."""
+    ip = str(ip or "")
+    if ip.startswith("::ffff:"):
+        ip = ip[7:]
+    return ip.startswith("172.30.1.")
+
+
+def docs_container_route_ok(method: str, path: str) -> bool:
+    """The Docs container may only fetch a signed document and post a save."""
+    if method == "GET" and path.startswith("/api/docs/storage/"):
+        return True
+    if method == "POST" and path.startswith("/api/docs/callback/"):
+        return True
+    return False
+
+
 _FILES_LIB = None
 _SYSTEM_LIB = None
 
@@ -2097,6 +2194,265 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._json(200, {"ok": True, "message": "Install started. The image is pulled onto the host drive."})
 
+    # ------------------------------------------------------------ ONLYOFFICE
+
+    def _client_ip(self) -> str:
+        return (self.client_address[0] if self.client_address else "") or ""
+
+    def _docs_container_refused(self) -> bool:
+        """The Docs bridge reaches only the signed storage/callback routes."""
+        if not docs_container_ip(self._client_ip()):
+            return False
+        path = urllib.parse.urlparse(self.path).path
+        if docs_container_route_ok(self.command, path):
+            return False
+        self.close_connection = True
+        self._json(403, {"ok": False, "error": "forbidden"})
+        return True
+
+    def _docs_error(self, exc: Exception) -> None:
+        status = int(getattr(exc, "status", 500) or 500)
+        doc = exc.document() if hasattr(exc, "document") else {"ok": False, "error": "docs_failed"}
+        if status == 423:
+            doc.setdefault("locked", True)
+        self._json(status, doc)
+
+    def _docs_ui_allowed(self, mutate: bool = False) -> bool:
+        if not self._desktop_allowed():
+            return False
+        if mutate and not stickllm_ui_client(self.headers) and not self._is_loopback():
+            # The custom header forces a CORS preflight, so another site
+            # cannot post into vault/Documents with the apps cookie.
+            self._json(403, {"ok": False, "error": "ui_only"})
+            return False
+        return True
+
+    def _docs_read_body(self, limit: int) -> bytes | None:
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > limit:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large", "message": "That file is too large."})
+            return None
+        return self.rfile.read(n) if n else b""
+
+    def _docs_api(self, method: str, path: str) -> None:
+        """/api/docs/*. Every document byte is read from or written to vault/Documents."""
+        try:
+            mod = docs_lib()
+        except Exception:
+            self._json(500, {"ok": False, "error": "Docs support is not installed."})
+            return
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+
+        def q(name: str) -> str:
+            return (query.get(name) or [""])[0]
+
+        # Container-facing routes: signed link, Docs bridge or loopback only.
+        if path.startswith("/api/docs/storage/") or path.startswith("/api/docs/callback/"):
+            if not mod.ds_client_ok(self._client_ip()):
+                self._json(403, {"ok": False, "error": "forbidden"})
+                return
+            token = path.rsplit("/", 1)[-1]
+            if path.startswith("/api/docs/storage/") and method == "GET":
+                try:
+                    mod.require_vault()
+                    rel = mod.link_verify(token, mod.runtime_secret())
+                    target, data = mod.read_doc(rel)
+                except Exception as exc:
+                    self._docs_error(exc)
+                    return
+                self._send(200, data, "application/octet-stream")
+                return
+            if path.startswith("/api/docs/callback/") and method == "POST":
+                body = self._docs_read_body(64 * 1024)
+                if body is None:
+                    return
+                try:
+                    result = mod.handle_callback(token, body, self.headers.get("Authorization") or "")
+                except Exception as exc:
+                    # ONLYOFFICE retries a callback that is not {"error": 0}.
+                    msg = getattr(exc, "message", "save failed")
+                    UI_OPEN._write_log(f"STICKLLM_DOCS_CALLBACK failed: {str(msg)[:200]}\n")
+                    self._json(200, {"error": 1})
+                    return
+                self._json(200, result)
+                return
+            self._json(405, {"ok": False, "error": "method not allowed"})
+            return
+
+        if path == "/api/docs/status" and method == "GET":
+            if not self._docs_ui_allowed():
+                return
+            try:
+                self._json(200, mod.status_document())
+            except Exception as exc:
+                self._docs_error(exc)
+            return
+
+        if not self._docs_ui_allowed(mutate=(method == "POST")):
+            return
+        try:
+            # 423 when the vault is locked: no document is read or written.
+            mod.require_vault()
+            if path == "/api/docs/list" and method == "GET":
+                self._json(200, mod.list_documents())
+                return
+            if path == "/api/docs/config" and method == "GET":
+                doc = mod.editor_config(q("path"), mod.runtime_secret(), lang=q("lang") or "en")
+                doc["server"] = "/docs-server/"
+                self._json(200, doc)
+                return
+            if path == "/api/docs/download" and method == "GET":
+                target, data = mod.read_doc(q("path"))
+                name = re.sub(r'[^A-Za-z0-9 ._()-]', "_", target.name)[:120]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if path == "/api/docs/create" and method == "POST":
+                body = self._docs_read_body(8192)
+                if body is None:
+                    return
+                req = json.loads(body.decode("utf-8") or "{}") if body else {}
+                if not isinstance(req, dict):
+                    req = {}
+                rel = mod.create_document(
+                    str(req.get("name") or "Untitled"),
+                    str(req.get("kind") or "docx"),
+                    str(req.get("folder") or ""),
+                )
+                self._json(200, {"ok": True, "path": rel})
+                return
+            if path == "/api/docs/upload" and method == "POST":
+                body = self._docs_read_body(mod.MAX_UPLOAD)
+                if body is None:
+                    return
+                rel = mod.upload_document(q("name"), body, q("folder"))
+                self._json(200, {"ok": True, "path": rel})
+                return
+        except ValueError:
+            self._json(400, {"ok": False, "error": "bad_json"})
+            return
+        except Exception as exc:
+            self._docs_error(exc)
+            return
+        self._json(404, {"ok": False, "error": "not_found"})
+
+    def _docs_proto(self) -> str:
+        return "https" if isinstance(self.connection, ssl.SSLSocket) else "http"
+
+    def _docs_proxy(self, method: str) -> None:
+        """/docs-server/* -> ONLYOFFICE on 127.0.0.1:8083 (paired browsers only)."""
+        if not self._desktop_allowed():
+            return
+        try:
+            mod = docs_lib()
+            if not mod.vault_open():
+                self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
+                return
+        except Exception:
+            self._json(500, {"ok": False, "error": "Docs support is not installed."})
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        upstream = parsed.path[len("/docs-server"):] or "/"
+        if not upstream.startswith("/"):
+            upstream = "/" + upstream
+        target = upstream + (("?" + parsed.query) if parsed.query else "")
+        headers = docs_proxy_headers(
+            dict(self.headers),
+            self.headers.get("Host") or "",
+            self._docs_proto(),
+            self._client_ip(),
+            websocket=(self.headers.get("Upgrade") or "").lower() == "websocket",
+        )
+        if (self.headers.get("Upgrade") or "").lower() == "websocket":
+            self._docs_websocket(target, headers)
+            return
+        body = None
+        if method in ("POST", "PUT"):
+            body = self._docs_read_body(mod.MAX_SAVE)
+            if body is None:
+                return
+        conn = http.client.HTTPConnection("127.0.0.1", mod.DS_PORT, timeout=300)
+        try:
+            conn.request(method, target, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+        except Exception:
+            self._json(502, {"ok": False, "error": "ONLYOFFICE Docs is not running"})
+            return
+        finally:
+            conn.close()
+        # ONLYOFFICE sends its own CSP; StickLLM's would block the editor.
+        self._skip_stick_headers = True
+        self.send_response(resp.status)
+        for key, value in resp.getheaders():
+            if key.lower() in ("transfer-encoding", "connection", "content-length", "keep-alive", "set-cookie"):
+                continue
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if method != "HEAD" and data:
+            self.wfile.write(data)
+
+    def _docs_websocket(self, target: str, headers: dict) -> None:
+        try:
+            sock = socket.create_connection(("127.0.0.1", docs_lib().DS_PORT), timeout=10)
+        except OSError:
+            self._json(502, {"ok": False, "error": "ONLYOFFICE Docs is not running"})
+            return
+        lines = [f"GET {target} HTTP/1.1"] + [f"{k}: {v}" for k, v in headers.items()]
+        try:
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1", errors="replace"))
+            header = b""
+            while b"\r\n\r\n" not in header and len(header) < 65536:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                header += chunk
+            if header.find(b"\r\n\r\n") < 0:
+                sock.close()
+                self._json(502, {"ok": False, "error": "ONLYOFFICE Docs did not accept the socket"})
+                return
+            self.connection.sendall(header)
+        except OSError:
+            sock.close()
+            return
+        self.close_connection = True
+        sock.settimeout(None)
+
+        def _pump(src, dst) -> None:
+            try:
+                while True:
+                    data = src.recv(65536)
+                    if not data:
+                        break
+                    dst.sendall(data)
+            except OSError:
+                pass
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+        left = threading.Thread(target=_pump, args=(self.connection, sock), daemon=True)
+        right = threading.Thread(target=_pump, args=(sock, self.connection), daemon=True)
+        left.start()
+        right.start()
+        left.join()
+        right.join()
+        try:
+            sock.close()
+        except OSError:
+            pass
+
     def _apps_allowed(self) -> bool:
         if not stickllm_ui_client(self.headers) and not self._is_loopback():
             self._json(403, {"ok": False, "error": "ui_only", "message": "Apps are StickLLM UI only."})
@@ -2111,14 +2467,32 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._apps_allowed():
             return
         try:
-            self._json(200, apps_lib().catalog_document())
+            doc = apps_lib().catalog_document()
         except Exception:
             self._json(500, {"ok": False, "error": "apps catalog failed"})
+            return
+        try:
+            docs = docs_lib().status_document()
+            for row in doc.get("apps") or []:
+                if isinstance(row, dict) and row.get("id") == "onlyoffice":
+                    row["installed"] = bool(docs.get("installed"))
+                    row["installer"] = "stickllm-docs"
+                    row["state"] = docs.get("state")
+                    row["message"] = docs.get("message")
+                    row["running"] = bool(docs.get("running"))
+                    row["open_url"] = "/apps/docs/"
+                    row["label"] = DOCS_STATE_LABELS.get(str(docs.get("state") or ""), row.get("label"))
+        except Exception:
+            pass
+        self._json(200, doc)
 
     def _apps_mutate(self, action: str, req: dict) -> None:
         if not self._apps_allowed():
             return
         app_id = str((req or {}).get("id") or "")
+        if app_id == "onlyoffice":
+            self._docs_mutate(action)
+            return
         try:
             mod = apps_lib()
             if action == "install":
@@ -2138,6 +2512,56 @@ class Handler(SimpleHTTPRequestHandler):
             )
             return
         self._json(200 if result.get("ok") else 409, result)
+
+    def _docs_mutate(self, action: str) -> None:
+        """Apps page Install/Uninstall for ONLYOFFICE Docs (vault required)."""
+        try:
+            mod = docs_lib()
+            if not mod.vault_open():
+                self._json(423, {"ok": False, "installed": False, "error": "vault_locked",
+                                 "message": mod.VAULT_LOCKED_MESSAGE, "deleted": []})
+                return
+            if not mod.settings_open():
+                self._json(409, {"ok": False, "installed": False, "error": "settings_missing",
+                                 "message": mod.SETTINGS_MISSING_MESSAGE, "deleted": []})
+                return
+        except Exception:
+            self._json(500, {"ok": False, "installed": False, "error": "Docs support is not installed.",
+                             "message": "Nothing was changed.", "deleted": []})
+            return
+        if action == "install":
+            if mod.is_installed():
+                self._json(200, {"ok": True, "installed": True, "state": "installed",
+                                 "message": "ONLYOFFICE Docs is installed.", "deleted": []})
+                return
+            unit = ["systemctl", "start", "--no-block", "stickllm-docs-install.service"]
+            fallback = ["/usr/local/bin/stickllm-docs", "install"]
+            message = "Installing ONLYOFFICE Docs. The image is pulled onto the host drive; documents stay in the vault."
+        else:
+            unit = None
+            fallback = ["/usr/local/bin/stickllm-docs", "uninstall"]
+            message = "Removing ONLYOFFICE Docs. vault/Documents is kept."
+        started = False
+        if unit:
+            try:
+                started = subprocess.run(unit, capture_output=True, timeout=15, check=False).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                started = False
+        if not started:
+            try:
+                subprocess.Popen(fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except OSError:
+                self._json(500, {"ok": False, "installed": False, "error": "Could not start the installer",
+                                 "message": "Nothing was changed.", "deleted": []})
+                return
+        if action == "install":
+            mod.write_status("installing")
+            self._json(200, {"ok": True, "started": True, "installed": False, "state": "installing",
+                             "message": message, "deleted": []})
+        else:
+            self._json(200, {"ok": True, "started": True, "installed": False, "state": "removing",
+                             "message": message, "deleted": []})
 
     def _apps_cookie_ok(self, doc: dict) -> bool:
         return apps_session_ok(self._cookie(APPS_SESSION_COOKIE), doc)
@@ -2576,11 +3000,19 @@ class Handler(SimpleHTTPRequestHandler):
         if self._is_agent_server():
             self._serve_agent_gateway("HEAD")
             return
+        if self._docs_container_refused():
+            return
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/docs-server" or path.startswith("/docs-server/"):
+            self._docs_proxy("HEAD")
+            return
         super().do_HEAD()
 
     def do_PUT(self) -> None:  # noqa: N802
         if self._is_agent_server():
             self._serve_agent_gateway("PUT")
+            return
+        if self._docs_container_refused():
             return
         self._json(405, {"error": "method not allowed"})
 
@@ -2588,17 +3020,23 @@ class Handler(SimpleHTTPRequestHandler):
         if self._is_agent_server():
             self._serve_agent_gateway("DELETE")
             return
+        if self._docs_container_refused():
+            return
         self._json(405, {"error": "method not allowed"})
 
     def do_PATCH(self) -> None:  # noqa: N802
         if self._is_agent_server():
             self._serve_agent_gateway("PATCH")
             return
+        if self._docs_container_refused():
+            return
         self._json(405, {"error": "method not allowed"})
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         if self._is_agent_server():
             self._serve_agent_gateway("OPTIONS")
+            return
+        if self._docs_container_refused():
             return
         self._json(405, {"error": "method not allowed"})
 
@@ -2667,7 +3105,15 @@ class Handler(SimpleHTTPRequestHandler):
         if self._is_agent_server():
             self._serve_agent_gateway("GET")
             return
+        if self._docs_container_refused():
+            return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/docs/"):
+            self._docs_api("GET", path)
+            return
+        if path == "/docs-server" or path.startswith("/docs-server/"):
+            self._docs_proxy("GET")
+            return
         if path in ("/health", "/api/health"):
             auth = load_auth()
             # Pair skip is loopback-only; Chat serves LAN with pair.
@@ -2831,7 +3277,15 @@ class Handler(SimpleHTTPRequestHandler):
         if self._is_agent_server():
             self._serve_agent_gateway("POST")
             return
+        if self._docs_container_refused():
+            return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/docs/"):
+            self._docs_api("POST", path)
+            return
+        if path == "/docs-server" or path.startswith("/docs-server/"):
+            self._docs_proxy("POST")
+            return
         if path.startswith("/api/files"):
             self._proxy_files("POST")
             return

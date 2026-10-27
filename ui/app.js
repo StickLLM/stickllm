@@ -382,7 +382,8 @@ async function appsAct(action) {
       body: JSON.stringify({ id: selectedAppId }),
     });
     const j = await r.json().catch(() => ({}));
-    const succeeded = r.ok && j.ok === true && (action !== "install" || j.installed === true);
+    // ONLYOFFICE installs in the background: started, not installed yet.
+    const succeeded = r.ok && j.ok === true && (action !== "install" || j.installed === true || j.started === true);
     if (!succeeded) {
       appsMessage(j.message || (action === "install"
         ? "No installer yet. This app was not installed."
@@ -390,6 +391,9 @@ async function appsAct(action) {
       return;
     }
     appsMessage(j.message || "");
+    if (j.started === true) {
+      [5, 15, 30, 60, 120, 240].forEach((sec) => setTimeout(() => refreshApps().catch(() => {}), sec * 1000));
+    }
   } catch (e) {
     appsMessage(action === "install"
       ? "No installer yet. This app was not installed."
