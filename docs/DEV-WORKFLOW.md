@@ -84,3 +84,52 @@ published checksums or shipping tags. **Do not flash v0.3.5** (truncated).
 User runs HW checks. Only after confirm: tag, push, publish checksum. Feature work
 that is not kernel/drivers stays on a feature branch: SSH-test first, then one
 clean build + QEMU proof + integrity check.
+
+## VirtualBox test VM (`stickllm-v050-test`)
+
+Local test rig on DESKTOP-65FCPD4 for an ISO without flashing a stick. Files live in
+`C:\StickLLM-VM` (never OneDrive): `stickllm-v050-test\` (VM), `stick-v050*.vdi` (the ISO
+converted with `VBoxManage convertfromraw`, resized to ~60 GB), `host-ssd*.vdi` (200 GB dynamic),
+and `vm_ed25519` (VM-only SSH key, no passphrase). Test-vault passcode/recovery files sit in the same
+folder. They are throwaway, but never paste them into chats or commits.
+
+Config: EFI, 8 GB RAM (host had ~18 GB free), 8 vCPU, vmsvga, no GPU (CPU-only llama), xHCI.
+The stick VDI is on a **USB** storage controller (USB-MSD, shows as `sdb … usb`), so the first-boot
+claim makes STICKLLM-DATA + settings on it like a real stick. The host-SSD VDI is SATA `sda`
+(already GPT+ext4 `HOSTSSD` in the vault snapshot). NAT forwards:
+
+| Host | Guest | |
+|---|---|---|
+| http://127.0.0.1:18080 | 80 | web UI (gateway) |
+| https://127.0.0.1:18443 | 443 | web UI TLS (self-signed: `curl.exe -sk`) |
+| 127.0.0.1:12222 | 22 | SSH as `stickllm` |
+
+Snapshots (both taken **powered off**):
+- `vault-created`: claimed stick + HOSTSSD with a 4 GiB test vault at
+  `/mnt/stickllm-host/HOSTSSD-sda1/home/nink` and a LUKS USB settings partition. After boot,
+  `stickllm-vault status` shows `locked` and it unlocks with the test passcode.
+- `fresh-boot`: untouched stick (`stick-v050-fresh.vdi`) + blank SSD (`host-ssd-blank.vdi`), for testing first-boot claim/setup.
+
+Helper `scripts\vm.ps1`:
+```powershell
+.\scripts\vm.ps1 restore vault-created 2   # restore snapshot, boot headless, GRUB entry 2 (Terminal/SSH)
+.\scripts\vm.ps1 start 3                   # boot current state into GRUB entry 3 (Test - SSH Enabled)
+.\scripts\vm.ps1 shot                      # PNG of the screen -> out\vmshots\ (READY screen shows SSH password)
+.\scripts\vm.ps1 keys <ssh-password>       # install vm_ed25519.pub for this boot (prints KEY_INSTALLED)
+.\scripts\vm.ps1 ssh 'sudo -n stickllm-vault status'
+.\scripts\vm.ps1 web                       # HTTP codes for 18080 and 18443
+.\scripts\vm.ps1 snap <name>               # ACPI shutdown, then offline snapshot
+.\scripts\vm.ps1 stop | kill | status | snaps | key enter|down|up|esc | type <text> | boot <1|2|3>
+```
+
+Limits and gotchas:
+- VirtualBox 6.1 runs on Hyper-V (NEM), because AMD-V is unavailable while Hyper-V is on. Live/online snapshots
+  hang the guest after resume, so only take snapshots powered off (`snap` does this).
+- The SSH password is random each boot, and `~/.ssh` is in RAM, so run `shot` then `keys` after every boot.
+  GRUB entry 2 shows the password on the READY screen. Entries 1 and 3 sit on "Launching browser" (the kiosk
+  doesn't render on vmsvga), but the UI still answers through the forwards.
+- `stickllm` sudo is limited to stickllm-* tools. For root, use the live user:
+  `echo stickllm | su -c 'sudo -n …' user`. Pass vault confirmations as env with
+  `su -w VARS` + `sudo --preserve-env=VARS`.
+- GRUB keys are sent blind (Down x12 then Up); if a boot lands in the wrong mode, use `boot <n>`.
+- No model is installed and inference is CPU-only, so it is not useful for speed tests. Dynamic VDIs grow on C:.
