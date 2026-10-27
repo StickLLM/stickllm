@@ -255,3 +255,16 @@ It is grouped by topic, not by date. Secrets are left out on purpose: no passwor
 - Voice models stay in a plain folder (`/opt/stickllm/speech`), not in the vault.
 - Use plain-language explanations with concrete numbers (times, hashes, sizes).
 - The minesweeper desktop label is exactly **minesweep**, centred; the URL id stays `minesweeper`.
+
+## 11. Version 0.5.0 (built 2026-10-27, not hardware-tested)
+
+Local commits on `stickllm-agentzero` after `4282e53` (not pushed; `main` untouched). The running v0.4 stick is not replaced until Nink tests 0.5.0.
+
+- **Docker logs (v0.4 known gap):** Agent Zero runs with `--log-driver none`, so its stdout no longer lands in `json-file` on the host SSD. Agent Zero is still not `--read-only`.
+- **Vault UI:** passcode fields no longer trigger Chrome's "Save password?" (`autocomplete=new-password`, masked text fields); the About link opens in a new tab (from `4282e53`, first ISO with it). Unlock mounts the host SSD when its folder is not mounted yet.
+- **ONLYOFFICE Docs:** installer, runner and units through the shared `stickllm-dockerd` helper, stopped on vault lock; `/docs-server` proxy and Apps wiring.
+- **SSH:** per-boot password without look-alike characters.
+- **Agent Zero plugins: banned unless allowlisted.** The gateway answers the Agent Zero plugin installer API and Plugin Hub UI with 403 `plugins_locked`; unlisted plugins are quarantined and the plugin dir is read-only. Two reviewed plugins are baked at pinned commits and hash-checked in the build: `clock_24h` (github.com/jphermans/a0-plugin-clock-24h @ `44842bc2`, MIT, UI-only clock) and `chat_status_marklet` (github.com/mbradaschia/a0-chat-status-marklet @ `7dce2643`, MIT, browser-only status dots). Reviews: [PLUGIN-REVIEWS.md](PLUGIN-REVIEWS.md).
+- **Starter add-ons:** Radicale 3.9.0, Vikunja 2.7.1, Actual Budget 26.10.0, Trilium v0.106.1, Node-RED 5.0.9 have Install / Open / Remove on the Apps page. Pinned by digest, data in `vault/addons/<id>`, `--read-only`, non-root, `--log-driver none`, no GPU, no internet or LAN (nft `inet stickllm_addons`), own gateway TLS port 5451-5455 with a one-time per-app handoff, opened in a named tab. Start on unlock, stop on lock before Agent Zero. Node-RED flows can run arbitrary code (contained, no network). Skipped: Paperless-ngx, SnappyMail, Immich, Matrix, Jitsi ([APPS.md](APPS.md#installable-from-the-apps-page-050)).
+- **ISO:** `build-agentzero\stickllm-agentzero-v0.5.0.iso`, built with `STICKLLM_VERSION=0.5.0`. The v0.4 ISO and older are kept (n-2).
+- **Open:** the `stickllm_pair` cookie is not HttpOnly (follow-up); Radicale offers no phone CalDAV sync through pairing; Agent Zero `--read-only`.

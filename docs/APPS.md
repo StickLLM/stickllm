@@ -45,6 +45,11 @@ The same rules hold for all five (`overlay/usr/local/lib/stickllm_addons.py`, `s
 - Open goes to a named tab (`stickllm-<id>`), never a pop-up window.
 - Remove deletes the image and keeps `vault/addons/<id>`; delete that folder yourself to erase the data.
 
+Checked on the desktop's Docker (2026-10-27) with the exact flags above (read-only, non-root,
+cap-drop ALL, `--log-driver none`, tmpfs, vault binds): all five images pulled by their pinned
+digests and answered HTTP 200 on their local port, writing only under `vault/addons/<id>`.
+Not yet checked on a stick (ext4 ownership, nft bridge rules, gateway TLS ports).
+
 **Node-RED risk.** Node-RED flows are programs: function and exec nodes run arbitrary code
 inside the container, and `http in` nodes serve pages on the Node-RED origin. StickLLM
 limits that to the container: no network at all, read-only image, non-root, palette and
