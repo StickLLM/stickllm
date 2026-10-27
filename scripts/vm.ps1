@@ -1,4 +1,4 @@
-﻿# StickLLM VirtualBox test VM helper (DESKTOP-65FCPD4). VM files live in C:\StickLLM-VM (not OneDrive).
+# StickLLM VirtualBox test VM helper (DESKTOP-65FCPD4). VM files live in C:\StickLLM-VM (not OneDrive).
 # Usage: .\scripts\vm.ps1 <start [grub#]|stop|kill|status|shot|web|restore [snap] [grub#]|snap <name>|snaps|keys <ssh-password>|ssh [cmd]|type <text>|key <enter|down|up|esc>|boot <1|2|3>>
 # Ports: 127.0.0.1:18080->80 (UI http), 127.0.0.1:18443->443 (UI https), 127.0.0.1:12222->22 (SSH). See docs/DEV-WORKFLOW.md.
 param([Parameter(Position=0)][string]$Cmd='status',[Parameter(Position=1,ValueFromRemainingArguments=$true)][string[]]$Rest)
@@ -11,7 +11,7 @@ function State { ((& $vb showvminfo $vm --machinereadable) | Select-String '^VMS
 $sc=@{ enter='1c 9c'; down='e0 50 e0 d0'; up='e0 48 e0 c8'; esc='01 81'; '1'='02 82'; '2'='03 83'; '3'='04 84' }
 function Key($k){ & $vb controlvm $vm keyboardputscancode ($sc[$k] -split ' ') }
 # GRUB has a 20 s timeout and no wrap: spam Down to reach entry 3, then walk Up to the wanted entry.
-function Pick($n){ for($i=0;$i -lt 12;$i++){ Key 'down'; Start-Sleep -Milliseconds 700 }; for($i=3;$i -gt $n;$i--){ Key 'up'; Start-Sleep -Milliseconds 300 }; Key 'enter' }
+function Pick($n){ for($i=0;$i -lt 22;$i++){ Key 'down'; Start-Sleep -Milliseconds 700 }; for($i=3;$i -gt $n;$i--){ Key 'up'; Start-Sleep -Milliseconds 300 }; Key 'enter' }
 switch ($Cmd) {
   'start'   { # optional arg: GRUB entry (default 2 = Terminal/SSH). 0 = leave GRUB default (1 Server/Local)
               $n= if ($Rest) { [int]$Rest[0] } else { 2 }; & $vb startvm $vm --type headless; if ($n -gt 0) { Start-Sleep 3; Pick $n } }
@@ -36,7 +36,7 @@ switch ($Cmd) {
   'key'     { Key $Rest[0] }
   'boot'    { # reset running VM into GRUB entry: 1=Server/Local 2=Terminal 3=Test-SSH
               & $vb controlvm $vm reset; Start-Sleep 2; Pick ([int]$Rest[0]) }
-  'ssh'     { ssh -i $key -p 12222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o LogLevel=ERROR stickllm@127.0.0.1 @Rest }
+  'ssh'     { ssh -i $key -p 12222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 stickllm@127.0.0.1 @Rest }
   'web'     { foreach($u in 'http://127.0.0.1:18080/','https://127.0.0.1:18443/'){ curl.exe -sk -m 15 -o NUL -w ('{0} %{{http_code}}\n' -f $u) $u } }
   default   { Get-Content $PSCommandPath -TotalCount 3 }
 }
