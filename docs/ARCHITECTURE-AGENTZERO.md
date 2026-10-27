@@ -99,3 +99,18 @@ the in-page panel (`stickllm-embed-<id>`) so the agent can play at once, the
 StickLLM tab title flashes, and "Open in new tab" moves it to a real tab on one
 click. Allowing pop-ups for the StickLLM site makes it open as a tab directly.
 iOS Safari: same panel + one-tap button.
+
+### Pop-up permission is per origin (resolved 2026-10-26)
+
+The last desktop failure on 2026-10-26 was a browser setting, not code. Pop-ups
+were allowed for `https://192.168.72.70`, but the StickLLM tab that calls
+`window.open` is on `http://192.168.72.70`. Chrome keys site permissions by
+origin (scheme + host + port), so the https allow didn't apply and every
+no-click `open_app` was refused. After Nink allowed `http://192.168.72.70`
+(22:45 EDT), Solitaire opened in its own tab. The permission that matters is
+the one for the **StickLLM UI origin**, never the Agent tab (`:5443`). User
+steps: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#agent-zero-apps-open-in-a-panel--dont-open-in-a-new-tab).
+Commits: `c4640f9` (desktop-icon click path, apps cookie, chat-based target),
+`488e0ac` (`/api/message_async` counted, `stickllm_device` cookie target),
+`5e4618c` (in-page panel when the tab is refused, openapp6).
+
