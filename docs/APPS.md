@@ -59,18 +59,41 @@ pairing is the login). Do not import flows you have not read.
 **Radicale.** 0.5.0 serves the web UI through the paired gateway. Phone or desktop
 CalDAV/CardDAV sync is not offered: those clients cannot do the pairing handoff.
 
-### Hidden in v0.5.3
+### Blocked in v0.5.3
 
 v0.5.3 lists only apps that install, open in their own reused tab, survive a
 reboot with the vault, and can be installed by Agent Zero (after the user's
 click): Agent Zero, Office (ONLYOFFICE), Radicale, Trilium, Vikunja, Actual
 Budget and Node-RED. Each one is hash pinned; see [VERIFIED.md](VERIFIED.md).
 
-These planned apps are hidden from the Apps page and the `/api/apps` catalog
-(`"hidden"` in `stickllm_apps.py`; `catalog_document()` lists them under
-`hidden` with the reason). The planning tables below still describe them.
+The planned apps below are **hard blocked** on the server, not just hidden:
 
-| App | id | Why it is hidden |
+- They never appear in any list: the kiosk and LAN Apps page, `GET /api/apps`
+  (no `hidden` list either), and the Agent Zero `install_app` / `open_app` ids.
+- Every install path refuses them, whatever flags the request carries
+  (`verified_version`, `accept_unverified`):
+  - `POST /api/apps/install` returns `403 {"error":"blocked_app"}`.
+  - `POST /api/ui/install-request`, `/api/ui/open-app` and `/api/ui/open-app-seen`
+    (Agent Zero, through the gateway) also return 403.
+  - The Agent Zero control bridge (`172.30.0.1:8082/install`) returns 403.
+  - `stickllm_apps.install_app()` and `stickllm_addons.app()` (the add-on CLI)
+    refuse them too.
+- Aliases count as well, for example `code-server`, `jupyter`, `searx`,
+  `paperless` and `n8n_io`.
+- The list lives in `overlay/usr/local/share/stickllm/blocked-apps.list`, next
+  to `verified.json`. `scripts/pins.py manifest` copies it into `verified.json`
+  (`"blocked_apps"`). `stickllm_verify.BLOCKED_APPS` holds the same ids as a
+  built-in fallback: a missing or edited `verified.json` can add ids but never
+  unblock one. If the list cannot be loaded at all, the gateway refuses every
+  app. `pins.py verify` (run by the ISO build) fails if the three copies differ,
+  or if a blocked id is pinned, offered to Agent Zero or defined as an add-on.
+- Agent Zero's own built-in private search (its bundled SearXNG, bound to
+  127.0.0.1 inside the agent container) is part of Agent Zero, not this
+  catalog app, and is not affected.
+
+The planning tables below still describe these apps.
+
+| App | id | Why it is blocked |
 | --- | --- | --- |
 | Paperless-ngx | `paperless-ngx` | Needs Redis plus OCR worker containers; StickLLM add-ons are one locked-down container each. |
 | SnappyMail | `snappymail` | Webmail needs outbound IMAP/SMTP, and add-on containers have no network by design. |
@@ -135,11 +158,35 @@ These planned apps are hidden from the Apps page and the `/api/apps` catalog
 
 ## Agent
 
-| App | License | Role |
-|---|---|---|
-| **Agent Zero** | MIT | The operator that drives the above through each app’s tool layer. |
+### Egress hardening (v0.5.3)
 
----
+After the Cohere report (Agent Zero uploading via Alibaba OSS, probing cloud
+metadata, and running `unshare -Urm`), the Agent Zero container is
+**default-deny** for outbound traffic:
+
+| Layer | What it does |
+| --- | --- |
+| **nftables** (`stickllm_agent` table) | Drops 169.254.0.0/16, 100.100.100.200, all IPv6, and other RFC1918 except the agent bridge and DNS. The only internet path left is TCP to the host egress proxy on `172.30.0.1:18080`. |
+| **Egress proxy** | HTTP/HTTPS CONNECT proxy on the bridge. Refuses metadata hosts, `*.aliyuncs.com` / `*.aliyun.com`, and PUT/PATCH/DELETE. When `egress.json` has `"web_fetch": true` (default), GET/HEAD/POST and CONNECT:443 are allowed for SearXNG / web search. |
+| **HTTP_PROXY in the container** | Points at that proxy; `NO_PROXY` keeps llama / the control bridge direct. |
+| **DNS sinkhole** | `--add-host` maps metadata and the known OSS hosts from the report to `127.0.0.1`. |
+| **Pre-exec scanner** | Plugin extension `tool_execute_before/_30_stickllm_egress.py` scans shell/code tool args for metadata URLs, curl/wget to outside hosts, uploads, and `unshare`/`nsenter`. Blocks the call, logs a warning in the Agent chat, and posts `/egress-event` so `/api/agent/status` shows `egress_blocks`. |
+| **seccomp** | `agent-zero-seccomp.json` returns EPERM for `unshare` and for `clone` with `CLONE_NEWUSER`. Combined with `--cap-drop ALL` and `no-new-privileges`. |
+
+LAN services (llama relay, apps bridge, open_app / install_app control) stay on
+`172.30.0.0/24` and keep working. The built-in SearXNG bound to 127.0.0.1 inside
+the container is unchanged; it reaches the web through the proxy when
+`web_fetch` is on. Set `"web_fetch": false` in the USB settings file
+`agent-zero/egress.json` to turn that off. Uploads, metadata, and Alibaba Cloud
+stay blocked either way.
+
+VM checks (from inside the Agent Zero container):
+
+- `curl http://169.254.169.254/` fails
+- `curl -X PUT -T /etc/hostname https://example.com/` fails
+- `unshare -Urm true` fails
+- `install_app` / `open_app` and LAN apps still work
+- Web search still works when `web_fetch` is true
 
 ## Requirements
 
@@ -188,4 +235,5 @@ Before install, StickLLM checks free host-SSD space and total RAM. Below the min
 - **Download policy:** while the vault is unlocked, Chromium downloads go to `vault/Downloads`. When it's locked, downloads are blocked (`DownloadRestrictions=3`). The kiosk applies the policy at start.
 - **Context menu:** StickLLM pages have their own right-click menu (cut/copy/paste/select all/link/reload; Shift+right-click gives the native menu). Other pages keep Chromium's native menu.
 - **Container DNS:** the Agent Zero container uses the host's resolvers plus 1.1.1.1/9.9.9.9 as fallback. nftables allows port 53 only to those; LAN and the stick's own IP stay blocked from the container.
+- **Egress (v0.5.3):** Agent Zero is default-deny. Outbound HTTP(S) goes only through the host proxy on 172.30.0.1:18080; metadata, Alibaba Cloud, uploads, and user namespaces are always blocked. See "Egress hardening" under Agent.
 - **Add-on handoff on LAN:** add-ons open on their own gateway TLS port (5451-5455), so a LAN browser must be able to reach those ports.

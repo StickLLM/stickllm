@@ -51,7 +51,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "+ Redis; OCR spikes RAM/CPU; documents stored extra",
-        "hidden": "Needs Redis plus OCR worker containers; StickLLM add-ons are one locked-down container each.",
         "installer": None,
     },
     {
@@ -65,7 +64,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Very light",
-        "hidden": "Webmail needs outbound IMAP/SMTP, and add-on containers have no network by design.",
         "installer": None,
     },
     {
@@ -131,7 +129,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": "0 or 1-2",
         "gpu": "optional",
         "note": "Server + ML + Postgres + Redis; photo library stored extra; GPU ML search uses ~1-2 GB VRAM",
-        "hidden": "Needs Postgres, Redis and a machine-learning container (four containers) plus a GPU for search.",
         "installer": None,
     },
     {
@@ -145,7 +142,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "+ Valkey/Redis; Tor adds ~0.1 GB",
-        "hidden": "Already built into Agent Zero (its own private search); a second copy adds nothing.",
         "installer": None,
     },
     {
@@ -159,7 +155,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Conduit + Element web; bridges add more",
-        "hidden": "Federation and bridges need internet and LAN access; add-on containers have no network.",
         "installer": None,
     },
     {
@@ -173,7 +168,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "SMP/XFTP relay servers; clients are phone/desktop apps",
-        "hidden": "Relay servers only, used from phone and desktop apps; nothing to open in a browser tab.",
         "installer": None,
     },
     {
@@ -187,7 +181,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "4 containers incl. Java video bridge; CPU heavy with many callers",
-        "hidden": "Four containers including the Java video bridge, and calls need LAN/internet UDP.",
         "installer": None,
     },
     {
@@ -201,7 +194,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "CLI + Tor",
-        "hidden": "Command line plus Tor, which needs internet; no web app to open.",
         "installer": None,
     },
     {
@@ -215,7 +207,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Node + Postgres + Redis",
-        "hidden": "Node, Postgres and Redis, and posting needs internet access to the social networks.",
         "installer": None,
     },
     {
@@ -229,7 +220,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Client + minisign; negligible",
-        "hidden": "Command-line tools with no web app; timestamping needs internet calendars.",
         "installer": None,
     },
     {
@@ -243,7 +233,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": "8 / 12-24",
         "gpu": "required",
         "note": "PyTorch+CUDA install; models extra (SDXL ~7 GB, Flux 12-24 GB); unload or shrink the LLM to free VRAM",
-        "hidden": "Needs CUDA, PyTorch and the GPU the model is using; not containerised for the stick yet.",
         "installer": None,
     },
     {
@@ -257,7 +246,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "optional",
         "note": "GPU only if notebooks use it",
-        "hidden": "Not packaged and security-reviewed for the stick yet (a full terminal and package installs).",
         "installer": None,
     },
     {
@@ -271,7 +259,6 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Pick n8n or Node-RED, not both by default",
-        "hidden": "Fair-code licence (not OSI open source) and it duplicates Node-RED, which ships.",
         "installer": None,
     },
     {
@@ -309,6 +296,32 @@ AGENT_ZERO = {
 
 # Measured on the stick: base image plus the desktop starters, with a model loaded.
 STARTER_FOOTPRINT = "Base StickLLM with starter apps: ~25 MB extra, <3 GB RAM with a model loaded (measured on the stick)."
+
+
+_VERIFY = None
+
+
+def _verify_lib():
+    global _VERIFY
+    if _VERIFY is None:
+        import importlib.machinery
+        import importlib.util
+
+        path = Path(__file__).resolve().with_name("stickllm_verify.py")
+        loader = importlib.machinery.SourceFileLoader("stickllm_verify_apps", str(path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        _VERIFY = mod
+    return _VERIFY
+
+
+def is_blocked(app_id: object) -> bool:
+    """Hard blocklist (stickllm_verify). Fails closed when the list cannot load."""
+    try:
+        return bool(_verify_lib().app_blocked(app_id))
+    except Exception:
+        return True
 
 
 def find_app(app_id: str, catalog: tuple | list | None = None) -> dict | None:
@@ -620,16 +633,14 @@ def catalog_document(record_path: Path | None = None, catalog: tuple | list | No
     path, _root = resolve_store(record_path, None)
     rows = CATALOG if catalog is None else catalog
     record = load_record(path)
-    # Rows with a "hidden" reason have no working installer on the stick and are
-    # left off the Apps page (v0.5.3). The reasons are listed for docs and agents.
-    apps = [_public_app(app, record) for app in rows if not app.get("hidden")]
-    hidden = [{"id": app["id"], "name": app["name"], "reason": app["hidden"]} for app in rows if app.get("hidden")]
+    # Blocked apps (stickllm_verify blocklist, v0.5.3) are never listed. Their
+    # reasons stay in blocked-apps.list and docs/APPS.md, not in this document.
+    apps = [_public_app(app, record) for app in rows if not is_blocked(app.get("id"))]
     return {
         "ok": True,
         "note": "Install it first, then use it to install and configure these apps.",
         "installed_count": sum(1 for app in apps if app["installed"]),
         "apps": apps,
-        "hidden": hidden,
         "agent_zero": {
             "id": AGENT_ZERO["id"],
             "name": AGENT_ZERO["name"],
@@ -669,6 +680,12 @@ def install_app(
     The directory is the host SSD, USB DATA, or the unlocked vault.
     /var/lib/stickllm/apps is not used: that path is the live overlay.
     """
+    if is_blocked(app_id):
+        return _fail(
+            "That app is blocked on StickLLM and cannot be installed. Nothing was installed.",
+            error="blocked_app",
+            state="blocked",
+        )
     path, root = resolve_store(record_path, install_root)
     if root is None:
         return _fail(

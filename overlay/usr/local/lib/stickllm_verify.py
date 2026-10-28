@@ -52,6 +52,90 @@ _ACCEPT = ", ".join(
 )
 
 
+# Hard blocklist (v0.5.3, Nink). These ids never appear in any app list and
+# every install path refuses them server-side, whatever verified.json says:
+# the effective list is this set plus verified.json "blocked_apps" (from
+# overlay/usr/local/share/stickllm/blocked-apps.list via scripts/pins.py).
+BLOCKED_APPS = frozenset(
+    {
+        "paperless-ngx",
+        "snappymail",
+        "immich",
+        "searxng",
+        "matrix",
+        "simplex",
+        "jitsi",
+        "onionshare",
+        "postiz",
+        "opentimestamps",
+        "comfyui",
+        "code-server-jupyter",
+        "n8n",
+    }
+)
+# Other names people (or an agent) might use for a blocked app.
+BLOCKED_ALIASES = {
+    "paperless": "paperless-ngx",
+    "paperlessngx": "paperless-ngx",
+    "searx": "searxng",
+    "conduit": "matrix",
+    "element": "matrix",
+    "synapse": "matrix",
+    "simplex-chat": "simplex",
+    "jitsi-meet": "jitsi",
+    "comfy": "comfyui",
+    "comfy-ui": "comfyui",
+    "code-server": "code-server-jupyter",
+    "codeserver": "code-server-jupyter",
+    "jupyter": "code-server-jupyter",
+    "jupyterlab": "code-server-jupyter",
+    "jupyter-lab": "code-server-jupyter",
+    "n8n-io": "n8n",
+    "ots": "opentimestamps",
+}
+BLOCKED_MESSAGE = "{name} is blocked on StickLLM and cannot be installed."
+
+
+def blocked_key(app_id: object) -> str:
+    """Canonical blocklist id for app_id ("" when it is not a string)."""
+    if not isinstance(app_id, str):
+        return ""
+    text = re.sub(r"[\s_./]+", "-", app_id.strip().lower()).strip("-")
+    return BLOCKED_ALIASES.get(text, text)
+
+
+def blocked_apps(manifest: dict | None = None) -> dict[str, str]:
+    """Blocked id -> reason. Always includes BLOCKED_APPS (fail closed)."""
+    doc = manifest if manifest is not None else load_manifest()
+    extra = doc.get("blocked_apps") if isinstance(doc, dict) else None
+    out = {app_id: "Blocked by StickLLM." for app_id in BLOCKED_APPS}
+    if isinstance(extra, dict):
+        for key, reason in extra.items():
+            if isinstance(key, str) and key:
+                out[blocked_key(key)] = str(reason or "Blocked by StickLLM.")
+    return out
+
+
+def app_blocked(app_id: object, manifest: dict | None = None) -> bool:
+    key = blocked_key(app_id)
+    return bool(key) and key in blocked_apps(manifest)
+
+
+def blocked_document(app_id: object, name: str = "") -> dict:
+    key = blocked_key(app_id)
+    reasons = blocked_apps()
+    return {
+        "ok": False,
+        "installed": False,
+        "state": "blocked",
+        "error": "blocked_app",
+        "id": key,
+        "reason": reasons.get(key, ""),
+        "message": BLOCKED_MESSAGE.format(name=name or key or "That app") + " Nothing was installed.",
+        "deleted": [],
+    }
+
+
 def load_manifest(path: Path | None = None) -> dict:
     try:
         doc = json.loads((path or MANIFEST).read_text(encoding="utf-8"))
@@ -247,6 +331,7 @@ def summary(manifest: dict | None = None) -> dict:
         "apps": [app_status(k, manifest=doc) for k in sorted(doc["apps"])],
         "plugins": [plugin_status(k, manifest=doc) for k in sorted(doc["plugins"])],
         "models": [dict(model_status(*k.rsplit("/", 1), manifest=doc), id=k) for k in sorted(doc["models"])],
+        "blocked_apps": sorted(blocked_apps(doc)),
     }
 
 

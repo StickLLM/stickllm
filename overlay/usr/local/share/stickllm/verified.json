@@ -30,9 +30,9 @@
       "version": "10.0.0.1"
     },
     "radicale": {
-      "amd64_digest": "sha256:befe4ba4902dee167b4e1499ca6b7ee42a8840e8a231f992344f571632c0bc93",
+      "amd64_digest": "sha256:18a9ab6dc2ce458f2863a19f646fdc6934e6408f0d97d68275117a80ceef122e",
       "image": "tomsquest/docker-radicale",
-      "manifest_digest": "sha256:d10468453a61d2f74d2280e4438a19f207894f77454306f068a172f3ea809e2a",
+      "manifest_digest": "sha256:2f215d0e6a78ff68c280975af6ce580b05976f70c62b51640397e3eb5a7aa0e9",
       "tag": "3.9.0.0",
       "version": "3.9.0"
     },
@@ -50,6 +50,21 @@
       "tag": "2.7.1",
       "version": "2.7.1"
     }
+  },
+  "blocked_apps": {
+    "code-server-jupyter": "Not packaged and security-reviewed for the stick yet (a full terminal and package installs).",
+    "comfyui": "Needs CUDA, PyTorch and the GPU the model is using; not containerised for the stick yet.",
+    "immich": "Needs Postgres, Redis and a machine-learning container (four containers) plus a GPU for search.",
+    "jitsi": "Four containers including the Java video bridge, and calls need LAN/internet UDP.",
+    "matrix": "Federation and bridges need internet and LAN access; add-on containers have no network.",
+    "n8n": "Fair-code licence (not OSI open source) and it duplicates Node-RED, which ships.",
+    "onionshare": "Command line plus Tor, which needs internet; no web app to open.",
+    "opentimestamps": "Command-line tools with no web app; timestamping needs internet calendars.",
+    "paperless-ngx": "Needs Redis plus OCR worker containers; StickLLM add-ons are one locked-down container each.",
+    "postiz": "Node, Postgres and Redis, and posting needs internet access to the social networks.",
+    "searxng": "Already built into Agent Zero (its own private search); a second copy adds nothing.",
+    "simplex": "Relay servers only, used from phone and desktop apps; nothing to open in a browser tab.",
+    "snappymail": "Webmail needs outbound IMAP/SMTP, and add-on containers have no network by design."
   },
   "models": {
     "Qwen/Qwen2.5-3B-Instruct-GGUF/qwen2.5-3b-instruct-q4_k_m.gguf": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",

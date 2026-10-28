@@ -96,8 +96,8 @@ def test_apps_page_lists_the_documented_catalog():
     assert "Not available yet" not in agent_row
     assert "whisper" not in listing.lower()
     for app in apps.CATALOG:
-        if app.get("hidden"):
-            assert f'data-app="{app["id"]}"' not in listing  # hidden in v0.5.3
+        if apps.is_blocked(app["id"]):
+            assert f'data-app="{app["id"]}"' not in listing  # blocked in v0.5.3
             continue
         assert f'data-app="{app["id"]}"' in listing
         assert app["name"] in listing
@@ -123,9 +123,12 @@ def test_install_does_not_claim_success_without_an_installer(tmp_path):
         result = apps.install_app(app["id"], record_path=record, install_root=root)
         assert result["ok"] is False
         assert result["installed"] is False
-        assert result["state"] == "not_available"
-        assert result["error"] == "no_installer"
-        assert "was not installed" in result["message"]
+        assert result["state"] == ("blocked" if apps.is_blocked(app["id"]) else "not_available")
+        if apps.is_blocked(app["id"]):
+            assert result["error"] == "blocked_app" and "Nothing was installed" in result["message"]
+        else:
+            assert result["error"] == "no_installer"
+            assert "was not installed" in result["message"]
         assert result["deleted"] == []
     assert not record.exists()
     assert not root.exists()
@@ -179,7 +182,7 @@ def test_uninstall_removes_only_the_app_this_page_installed(tmp_path):
     outside.write_text("secret", encoding="utf-8")
     catalog = [
         {
-            "id": "comfyui",
+            "id": "demo-app",
             "name": "ComfyUI",
             "group": "Creative and technical",
             "license": "GPL",
@@ -188,23 +191,23 @@ def test_uninstall_removes_only_the_app_this_page_installed(tmp_path):
         }
     ]
     installed = apps.install_app(
-        "comfyui", record_path=record_path, install_root=root, catalog=catalog
+        "demo-app", record_path=record_path, install_root=root, catalog=catalog
     )
     assert installed["ok"] is True
     assert installed["installed"] is True
-    assert (root / "comfyui").is_dir()
+    assert (root / "demo-app").is_dir()
     sibling = root / "other"
     sibling.mkdir()
     (sibling / "keep").write_text("sibling", encoding="utf-8")
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    record["comfyui"]["paths"] = [str(outside), str(sibling)]
+    record["demo-app"]["paths"] = [str(outside), str(sibling)]
     record_path.write_text(json.dumps(record), encoding="utf-8")
     result = apps.uninstall_app(
-        "comfyui", record_path=record_path, install_root=root, catalog=catalog
+        "demo-app", record_path=record_path, install_root=root, catalog=catalog
     )
     assert result["ok"] is True
-    assert result["deleted"] == [str(root / "comfyui")]
-    assert not (root / "comfyui").exists()
+    assert result["deleted"] == [str(root / "demo-app")]
+    assert not (root / "demo-app").exists()
     assert outside.read_text(encoding="utf-8") == "secret"
     assert (sibling / "keep").read_text(encoding="utf-8") == "sibling"
 
@@ -280,8 +283,8 @@ def test_catalog_cards_show_requirements_and_low_disk_still_installs(tmp_path):
         line = apps.requirement_line(app)
         assert "Disk" in line and "RAM" in line and "GPU:" in line and "approx." in line
         assert "(measured)" not in line
-        if app.get("hidden"):
-            assert f'data-app="{app["id"]}"' not in listing  # hidden in v0.5.3
+        if apps.is_blocked(app["id"]):
+            assert f'data-app="{app["id"]}"' not in listing  # blocked in v0.5.3
         else:
             assert line in listing
             if app["note"]:
@@ -319,7 +322,7 @@ def test_catalog_cards_show_requirements_and_low_disk_still_installs(tmp_path):
     assert 'fetch("/api/agent/install"' in agent
     catalog = [
         {
-            "id": "comfyui",
+            "id": "demo-app",
             "name": "ComfyUI",
             "group": "Creative and technical",
             "license": "GPL",
@@ -333,7 +336,7 @@ def test_catalog_cards_show_requirements_and_low_disk_still_installs(tmp_path):
         }
     ]
     low = apps.install_app(
-        "comfyui",
+        "demo-app",
         record_path=tmp_path / "low.json",
         install_root=tmp_path / "low",
         catalog=catalog,
@@ -344,9 +347,9 @@ def test_catalog_cards_show_requirements_and_low_disk_still_installs(tmp_path):
     assert low["warning"]
     assert "You can still install." in low["warning"]
     assert "below" in low["warning"]
-    assert (tmp_path / "low" / "comfyui").is_dir()
+    assert (tmp_path / "low" / "demo-app").is_dir()
     plenty = apps.install_app(
-        "comfyui",
+        "demo-app",
         record_path=tmp_path / "ok.json",
         install_root=tmp_path / "ok",
         catalog=catalog,

@@ -41,6 +41,7 @@ add a review below, rebuild the ISO.
   the gateway. Install calls from there still fail because the plugins folder
   is read-only.
 - Next step (not done in 0.5.0): egress only while the Web toggle is on.
+- **Done in 0.5.3:** Agent Zero container is default-deny; SearXNG goes through the host egress proxy when `egress.json` has `web_fetch: true` (see APPS.md).
 
 ## Allowed
 

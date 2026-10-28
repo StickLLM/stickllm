@@ -64,8 +64,8 @@ APPS: dict[str, dict] = {
             "image": "tomsquest/docker-radicale",
             "version": "3.9.0",
             "tag": "3.9.0.0",
-            "manifest_digest": "sha256:d10468453a61d2f74d2280e4438a19f207894f77454306f068a172f3ea809e2a",
-            "amd64_digest": "sha256:befe4ba4902dee167b4e1499ca6b7ee42a8840e8a231f992344f571632c0bc93",
+            "manifest_digest": "sha256:2f215d0e6a78ff68c280975af6ce580b05976f70c62b51640397e3eb5a7aa0e9",
+            "amd64_digest": "sha256:18a9ab6dc2ce458f2863a19f646fdc6934e6408f0d97d68275117a80ceef122e",
         },
     },
     "vikunja": {
@@ -191,7 +191,31 @@ class AddonError(Exception):
         return {"ok": False, "error": self.code, "message": self.message}
 
 
+_VERIFY = None
+
+
+def _blocked(app_id: object) -> bool:
+    """Hard blocklist from stickllm_verify (defence in depth: APPS is already an allowlist)."""
+    global _VERIFY
+    try:
+        if _VERIFY is None:
+            import importlib.machinery
+            import importlib.util
+
+            path = Path(__file__).resolve().with_name("stickllm_verify.py")
+            loader = importlib.machinery.SourceFileLoader("stickllm_verify_addons", str(path))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(mod)
+            _VERIFY = mod
+        return bool(_VERIFY.app_blocked(app_id))
+    except Exception:
+        return False
+
+
 def app(app_id: str) -> dict:
+    if _blocked(app_id):
+        raise AddonError("blocked_app", "That app is blocked on StickLLM and cannot be installed.", 403)
     if not isinstance(app_id, str) or not _ID_RE.fullmatch(app_id) or app_id not in APPS:
         raise AddonError("unknown_app", "Unknown app.", 404)
     return APPS[app_id]

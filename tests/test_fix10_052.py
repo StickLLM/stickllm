@@ -40,14 +40,26 @@ def test_override_and_garbage(tmp_path):
 
 def test_nft_allows_dns_only_to_lan_resolvers():
     a = _agent()
+    # v0.5.3: all configured resolvers (LAN + public) get port 53; raw internet is dropped.
     rules = a.nft_ruleset(dns_servers=["192.168.72.1", "1.1.1.1", "8.8.8.8"])
-    assert "ip daddr { 192.168.72.1 } udp dport 53 accept" in rules
-    assert "ip daddr { 192.168.72.1 } tcp dport 53 accept" in rules
+    assert "192.168.72.1" in rules
+    assert "1.1.1.1" in rules
+    assert "8.8.8.8" in rules
+    assert "udp dport 53 accept" in rules
     assert rules.index("dport 53 accept") < rules.index("ip daddr 192.168.0.0/16 drop")
-    assert "1.1.1.1" not in rules
     plain = a.nft_ruleset()
     assert "dport 53" not in plain
     assert "ip daddr 192.168.0.0/16 drop" in plain
+    assert "169.254.0.0/16 drop" in plain
+    assert "100.100.100.200 drop" in plain
+    assert "tcp dport 18080 accept" in plain
+    agent_out = plain.split("chain agent_out", 1)[1].split("chain input", 1)[0]
+    lines = [
+        ln.strip()
+        for ln in agent_out.splitlines()
+        if ln.strip() and ln.strip() not in ("{", "}") and not ln.strip().startswith("type ")
+    ]
+    assert lines[-1] == "drop"
 
 
 def test_agent_container_and_embedding_use_dns_args():

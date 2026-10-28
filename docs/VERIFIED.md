@@ -57,12 +57,21 @@ Where the checks run:
 
 ## Status on 2026-10-28
 
-`pins.py upstream`:
+`pins.py upstream`: everything VERIFIED.
 
-- All apps VERIFIED except **Radicale**. `tomsquest/docker-radicale:3.9.0.0` was re-pushed upstream: it is now `sha256:2f215d0e…`, while the pin is still `sha256:d1046845…`. The pinned digest can still be pulled.
-- Radicale therefore shows **Changed upstream**, and Install offers the verified build until the new one is approved.
+- **Radicale.** The old pin `sha256:d1046845…` (amd64 `befe4ba4…`, built 2026-10-27 03:38 UTC) was a nightly `push_latest` rebuild that had been pushed under the `3.9.0.0` tag. The tag now points at `sha256:2f215d0e…` (amd64 `18a9ab6d…`). That is the official release-workflow build for GitHub release 3.9.0.0 ("Update to Radicale 3.9.0", published 2026-10-26 12:39 UTC; image built 12:40 UTC).
+  - Both builds have the same Dockerfile history, alpine-minirootfs 3.24.3 base layer, labels, UID 2999, healthcheck, volumes and port 5232.
+  - The pin is now the release build.
 - Both plugins VERIFIED (their pinned commits are still published).
 - All four model files VERIFIED (the HF LFS sha256 matches).
+
+## Agent Zero egress
+
+v0.5.3 default-denies Agent Zero internet egress (nft + host proxy + pre-exec scanner + seccomp). See "Egress hardening" under Agent in [APPS.md](APPS.md).
+
+## Blocked apps
+
+Some apps are never installable, whatever their pin: see "Blocked in v0.5.3" in [APPS.md](APPS.md). The ids are in `overlay/usr/local/share/stickllm/blocked-apps.list` and in `verified.json` under `"blocked_apps"`, and `GET /api/verified` lists them as `blocked_apps`. A blocked app can never be pinned: `pins.py verify` fails if one has a `.pin`.
 
 ## Testing a changed hash
 

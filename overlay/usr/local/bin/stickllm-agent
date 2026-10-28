@@ -13,6 +13,7 @@ SOCK="/run/stickllm/agent-docker.sock"
 RELAY_PIDFILE="/run/stickllm/agent-llama-relay.pid"
 APPS_PIDFILE="/run/stickllm/agent-apps-bridge.pid"
 OPEN_APP_PIDFILE="/run/stickllm/agent-open-app.pid"
+EGRESS_PIDFILE="/run/stickllm/agent-egress.pid"
 RUN_DIR="${STICKLLM_AGENT_RUN:-/run/stickllm}"
 PULL_LOG="${RUN_DIR}/agent-pull.log"
 # Held (flock, fd 9) by `stickllm-agent install` for the whole pull.
@@ -232,6 +233,52 @@ stop_open_app() {
     rm -f "$OPEN_APP_PIDFILE"
   fi
 }
+
+stop_egress() {
+  if [[ -f "$EGRESS_PIDFILE" ]]; then
+    local pid
+    pid="$(tr -cd '0-9' <"$EGRESS_PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$EGRESS_PIDFILE"
+  fi
+}
+
+ensure_egress() {
+  # HTTP/HTTPS proxy for the agent container. Bridge address only.
+  local i
+  for i in $(seq 1 25); do
+    local pid=""
+    if [[ -f "$EGRESS_PIDFILE" ]]; then
+      pid="$(tr -cd '0-9' <"$EGRESS_PIDFILE" || true)"
+    fi
+    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      "$PYBIN" "$LIB" egress-proxy >/var/log/stickllm-agent-egress.log 2>&1 9>&- &
+      echo $! >"$EGRESS_PIDFILE"
+    fi
+    if "$PYBIN" - <<'PY'
+import socket
+s = socket.socket()
+s.settimeout(0.2)
+try:
+    s.connect(("172.30.0.1", 18080))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+    then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "stickllm-agent: egress proxy did not bind 172.30.0.1:18080" >&2
+  "$PYBIN" "$LIB" write-status --state error --image_present true --message "egress proxy did not bind 172.30.0.1:18080" >/dev/null || true
+  return 1
+}
+
 
 ensure_relay() {
   # Bridge address only. llama-server stays on 127.0.0.1:8080.
@@ -504,6 +551,7 @@ cmd_run_container() {
   ensure_relay
   ensure_apps
   ensure_open_app
+  ensure_egress
   local ref origins
   ref="$("$PYBIN" "$LIB" image-ref)"
   origins="$("$PYBIN" "$LIB" allowed-origins)"
@@ -516,10 +564,21 @@ cmd_run_container() {
   # vault addon and the portable settings dir.
   # --log-driver none: container stdout (chat tool output) is not written to
   # the json log under stickllm-docker on the unencrypted models drive.
+  local BLOCK_HOST_ARGS=()
+  local h
+  for h in metadata.google.internal metadata.goog metadata instance-data instance-data.ec2.internal \
+    routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com sanmaohe.oss-cn-beijing.aliyuncs.com; do
+    BLOCK_HOST_ARGS+=(--add-host "${h}:127.0.0.1")
+  done
+  local SECCOMP_OPT=()
+  if [[ -f /usr/local/share/stickllm/agent-zero-seccomp.json ]]; then
+    SECCOMP_OPT=(--security-opt "seccomp=/usr/local/share/stickllm/agent-zero-seccomp.json")
+  fi
   docker_cli run --name "$CONTAINER" \
     --log-driver none \
     --network "$NETWORK" \
     --add-host llama:host-gateway \
+    "${BLOCK_HOST_ARGS[@]}" \
     "${DNS_ARGS[@]}" \
     -p 127.0.0.1:5099:5099 \
     --cap-drop ALL \
@@ -530,6 +589,7 @@ cmd_run_container() {
     --cap-add SETGID \
     --cap-add KILL \
     --security-opt no-new-privileges=true \
+    "${SECCOMP_OPT[@]}" \
     --pids-limit 1024 \
     -e NVIDIA_VISIBLE_DEVICES=void \
     -e CUDA_VISIBLE_DEVICES= \
@@ -540,6 +600,12 @@ cmd_run_container() {
     -e HF_HUB_OFFLINE="${STICKLLM_HF_OFFLINE:-0}" \
     -e TRANSFORMERS_OFFLINE="${STICKLLM_HF_OFFLINE:-0}" \
     -e HF_DATASETS_OFFLINE="${STICKLLM_HF_OFFLINE:-0}" \
+    -e HTTP_PROXY=http://172.30.0.1:18080 \
+    -e HTTPS_PROXY=http://172.30.0.1:18080 \
+    -e http_proxy=http://172.30.0.1:18080 \
+    -e https_proxy=http://172.30.0.1:18080 \
+    -e NO_PROXY=172.30.0.1,llama,localhost,127.0.0.1 \
+    -e no_proxy=172.30.0.1,llama,localhost,127.0.0.1 \
     -e A0_SET_update_check_enabled=false \
     -e A0_SET_rfc_auto_docker=false \
     -e A0_SET_a2a_server_enabled=false \
@@ -552,6 +618,7 @@ cmd_run_container() {
     -v "${ADDON}/logs:/a0/usr/logs" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/.env:/a0/usr/.env" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/settings.json:/a0/usr/settings.json" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/egress.json:/a0/usr/egress.json:ro" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/prompts:/a0/usr/prompts" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/instruments:/a0/usr/instruments" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/skills:/a0/usr/skills" \
@@ -582,6 +649,7 @@ cmd_stop() {
   stop_relay || true
   stop_apps || true
   stop_open_app || true
+  stop_egress || true
   "$PYBIN" "$LIB" nft-delete >/dev/null 2>&1 || true
   if install_running; then
     # Never release dockerd under a running pull. The installer restarts this

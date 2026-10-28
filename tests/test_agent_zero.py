@@ -913,8 +913,8 @@ def test_apps_bridge_serves_only_static_apps(tmp_path):
     rules = agent.nft_ruleset()
     assert 'iifname "lo" accept' in rules
     assert rules.index('iifname "lo" accept') < rules.index('iifname "stickllm-a0" drop')
-    assert "tcp dport { 8080, 8081, 8082 }" in rules
-    assert 'iifname "stickllm-a0" ip daddr 172.30.0.1 tcp dport { 8080, 8081, 8082 } accept' in rules
+    assert "tcp dport { 8080, 8081, 8082, 18080 }" in rules
+    assert 'iifname "stickllm-a0" ip daddr 172.30.0.1 tcp dport { 8080, 8081, 8082, 18080 } accept' in rules
     assert "192.168.0.0/16 drop" in rules
     assert "5099" not in rules
     assert "0.0.0.0:8081" not in rules
@@ -928,6 +928,11 @@ def test_apps_bridge_serves_only_static_apps(tmp_path):
     assert "open-app-bridge" in script
     assert "/stickllm-open-app.token:ro" in script
     assert "-p 127.0.0.1:5099:5099" in script
+    assert "HTTP_PROXY=http://172.30.0.1:18080" in script
+    assert "seccomp=/usr/local/share/stickllm/agent-zero-seccomp.json" in script
+    assert "ensure_egress" in script
+    assert "metadata.google.internal" in script
+    assert '--add-host "${h}:127.0.0.1"' in script
     run = script.split("docker_cli run --name", 1)[1].split("--entrypoint", 1)[0]
     assert ":8081" not in run
     assert ":8082" not in run

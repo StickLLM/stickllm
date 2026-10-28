@@ -797,6 +797,23 @@ def verify_lib():
     return mod
 
 
+def app_blocked(app_id: object) -> bool:
+    """Hard blocklist (stickllm_verify.BLOCKED_APPS + verified.json). Fails closed."""
+    try:
+        return bool(verify_lib().app_blocked(app_id))
+    except Exception:
+        return True
+
+
+def blocked_reply(app_id: object) -> dict:
+    try:
+        return verify_lib().blocked_document(app_id)
+    except Exception:
+        return {"ok": False, "installed": False, "state": "blocked", "error": "blocked_app",
+                "message": "That app is blocked on StickLLM and cannot be installed. Nothing was installed.",
+                "deleted": []}
+
+
 def app_verification(app_id: str, check_upstream: bool = False) -> dict | None:
     """Verified / Changed upstream / Not verified for a catalog app, or None."""
     try:
@@ -2899,7 +2916,11 @@ class Handler(SimpleHTTPRequestHandler):
             pass
         # ONLYOFFICE and the add-ons override "installed" above, so the count
         # from catalog_document() is stale. Recount from the final rows.
-        rows = [row for row in doc.get("apps") or [] if isinstance(row, dict)]
+        # Blocked apps are never listed (defence in depth: catalog_document
+        # already drops them).
+        rows = [row for row in doc.get("apps") or [] if isinstance(row, dict) and not app_blocked(row.get("id"))]
+        doc["apps"] = rows
+        doc.pop("hidden", None)
         # Verified badge from the pins; "changed" only from an earlier upstream
         # check (this listing never goes online).
         for row in rows:
@@ -2945,6 +2966,9 @@ class Handler(SimpleHTTPRequestHandler):
         return out
 
     def _agent_install_request(self, req: dict) -> None:
+        if app_blocked((req or {}).get("id")):
+            self._json(403, blocked_reply((req or {}).get("id")))
+            return
         try:
             lib = agent_lib()
             app_id = lib.normalize_app_id(req.get("id"))
@@ -3081,6 +3105,10 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._apps_allowed():
             return
         app_id = str((req or {}).get("id") or "")
+        # Hard blocklist first: no verified/unverified override gets past it.
+        if action == "install" and app_blocked(app_id):
+            self._json(403, blocked_reply(app_id))
+            return
         try:
             is_addon = app_id in addons_lib().APPS
         except Exception:
@@ -4460,6 +4488,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if not self._open_app_control_ok():
                 return
+            if app_blocked(req.get("id")):
+                self._json(403, blocked_reply(req.get("id")))
+                return
             try:
                 lib = agent_lib()
                 app_id = lib.normalize_app_id(req.get("id"))
@@ -4618,6 +4649,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": "bad_json"})
                 return
             if not self._ui_stream_allowed():
+                return
+            if app_blocked(req.get("id")):
+                self._json(403, blocked_reply(req.get("id")))
                 return
             try:
                 lib = agent_lib()

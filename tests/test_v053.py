@@ -1,4 +1,4 @@
-"""v0.5.3: bug list (A1-A6), hidden catalog apps (B) and hash pinning (C)."""
+"""v0.5.3: bug list (A1-A6), blocked catalog apps (B) and hash pinning (C)."""
 from __future__ import annotations
 
 import importlib.machinery
@@ -97,21 +97,22 @@ def test_a6_print_blob_is_quiet():
 
 
 # ------------------------------------------------------------------ B: catalog
-def test_b_unworkable_apps_are_hidden_with_reasons():
+def test_b_unworkable_apps_are_blocked_with_reasons():
     apps = _load(LIB / "stickllm_apps.py", "apps_t2")
-    hidden = {a["id"]: a["hidden"] for a in apps.CATALOG if a.get("hidden")}
+    blocked = json.loads(MANIFEST.read_text(encoding="utf-8"))["blocked_apps"]
     for app_id in ("paperless-ngx", "snappymail", "immich", "searxng", "matrix", "simplex", "jitsi",
                    "onionshare", "postiz", "opentimestamps", "comfyui", "code-server-jupyter", "n8n"):
-        assert len(hidden.get(app_id, "")) > 20, app_id
-    doc = apps.catalog_document() if callable(getattr(apps, "catalog_document", None)) else None
-    if doc is not None:
-        listed = {r["id"] for r in doc.get("apps", [])}
-        assert not listed & set(hidden)
+        assert len(blocked.get(app_id, "")) > 20, app_id
+        assert apps.is_blocked(app_id)
+    doc = apps.catalog_document()
+    listed = {r["id"] for r in doc.get("apps", [])}
+    assert not listed & set(blocked)
+    assert "hidden" not in doc
     html = (ROOT / "ui/index.html").read_text()
-    for app_id in hidden:
+    for app_id in blocked:
         assert f'data-app="{app_id}"' not in html
     text = (ROOT / "docs/APPS.md").read_text()
-    assert "Hidden in v0.5.3" in text and all(f"`{i}`" in text for i in hidden)
+    assert "Blocked in v0.5.3" in text and all(f"`{i}`" in text for i in blocked)
 
 
 # ------------------------------------------------------------------ C: pins

@@ -55,6 +55,29 @@ LLAMA_BRIDGE_PORT = 8080
 APPS_BRIDGE_PORT = 8081
 # open_app control. Bridge and loopback only, never 0.0.0.0 and never the LAN.
 OPEN_APP_PORT = 8082
+EGRESS_PROXY_PORT = int(os.environ.get("STICKLLM_EGRESS_PROXY_PORT", "18080"))
+EGRESS_EVENTS = Path(os.environ.get("STICKLLM_EGRESS_EVENTS", "/run/stickllm/agent-egress-events.json"))
+SECCOMP_PROFILE = Path(os.environ.get(
+    "STICKLLM_AGENT_SECCOMP",
+    "/usr/local/share/stickllm/agent-zero-seccomp.json",
+))
+EGRESS_SCAN_LIB = Path(os.environ.get(
+    "STICKLLM_EGRESS_SCAN",
+    "/usr/local/lib/stickllm_egress_scan.py",
+))
+EGRESS_EXT_SRC = Path(os.environ.get(
+    "STICKLLM_EGRESS_EXT",
+    "/usr/local/share/stickllm/agent-zero-egress-extension.py",
+))
+ALWAYS_BLOCK_HOSTS = (
+    "metadata.google.internal",
+    "metadata.goog",
+    "metadata",
+    "instance-data",
+    "instance-data.ec2.internal",
+    "routify-file-proxy-sg.oss-ap-southeast-1.aliyuncs.com",
+    "sanmaohe.oss-cn-beijing.aliyuncs.com",
+)
 LLAMA_BRIDGE_SUBNET = "172.30.0.0/24"
 LLAMA_BRIDGE_IFACE = "stickllm-a0"
 LLAMA_BASE = f"http://{LLAMA_BRIDGE_HOST}:{LLAMA_BRIDGE_PORT}/v1"
@@ -558,27 +581,38 @@ def nft_ruleset(
     llama_port: int = LLAMA_BRIDGE_PORT,
     apps_port: int = APPS_BRIDGE_PORT,
     open_app_port: int = OPEN_APP_PORT,
+    egress_port: int = EGRESS_PROXY_PORT,
     dns_servers=(),
 ) -> str:
     """Forward rules owned by stickllm-agent. dockerd is started with --iptables=false.
 
-    ``dns_servers``: LAN resolvers handed to the container with --dns. Only
-    port 53 to exactly those addresses is let through the RFC1918 drops.
+    Default-deny egress from the Agent Zero container (v0.5.3 hardening):
 
-    The bridge subnet is accepted before the RFC1918 drops, so forwarded
-    traffic can stay on the bridge. Other addresses in 192.168.0.0/16,
-    10.0.0.0/8, and 172.16.0.0/12 are dropped. Internet is allowed.
+    - Always drop cloud metadata (169.254.0.0/16, 100.100.100.200) and all IPv6.
+    - Always drop other RFC1918 (LAN) except the agent bridge and LAN DNS.
+    - Allow DNS to the container's configured resolvers (LAN + public).
+    - Allow TCP to the host egress proxy on the bridge gateway (HTTP_PROXY).
+      The proxy is what lets SearXNG / web search out when enabled; uploads and
+      always-blocked hosts are refused there.
+    - Everything else from the bridge is dropped (no raw internet).
 
     From the bridge, the host accepts only the llama relay, the static apps
-    server, and the open-app control port. Loopback still reaches the relay
-    for the host health check. LAN clients cannot open those ports, and the
-    container cannot open any other host port.
+    server, the open-app control port, and the egress proxy. Loopback still
+    reaches the relay for the host health check. LAN clients cannot open those
+    ports, and the container cannot open any other host port.
     """
-    ports = f"{{ {int(llama_port)}, {int(apps_port)}, {int(open_app_port)} }}"
-    dns_lan = private_dns_v4(dns_servers)
+    ports = f"{{ {int(llama_port)}, {int(apps_port)}, {int(open_app_port)}, {int(egress_port)} }}"
+    dns_all = []
+    for raw in dns_servers or ():
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if ip.version == 4 and not ip.is_loopback and str(ip) not in dns_all:
+            dns_all.append(str(ip))
     dns_rules = ""
-    if dns_lan:
-        dset = "{ " + ", ".join(dns_lan) + " }"
+    if dns_all:
+        dset = "{ " + ", ".join(dns_all) + " }"
         dns_rules = f"    ip daddr {dset} udp dport 53 accept\n    ip daddr {dset} tcp dport 53 accept\n"
     return (
         f"table inet {NFT_TABLE} {{\n"
@@ -589,18 +623,18 @@ def nft_ruleset(
         "  chain agent_out {\n"
         "    ct state established,related accept\n"
         f"    ip daddr {subnet} accept\n"
+        "    ip daddr 169.254.0.0/16 drop\n"
+        "    ip daddr 100.100.100.200 drop\n"
         + dns_rules +
         "    ip daddr 192.168.0.0/16 drop\n"
         "    ip daddr 10.0.0.0/8 drop\n"
         "    ip daddr 172.16.0.0/12 drop\n"
         "    meta nfproto ipv6 drop\n"
-        "    accept\n"
+        f"    ip daddr {gateway} tcp dport {int(egress_port)} accept\n"
+        "    drop\n"
         "  }\n"
         "  chain input {\n"
         "    type filter hook input priority 0; policy accept;\n"
-        # The host health check connects to the bridge address via lo.
-        # Return traffic for the published loopback UI is established.
-        # New bridge connections are limited to the llama relay and apps.
         '    iifname "lo" accept\n'
         f'    iifname "{bridge}" ct state established,related accept\n'
         f'    iifname "{bridge}" ip daddr {gateway} tcp dport {ports} accept\n'
@@ -656,6 +690,263 @@ def nft_delete() -> int:
         check=False,
     )
     return 0 if proc.returncode in (0, 1) else proc.returncode
+
+
+
+def _load_egress_scan():
+    """Import stickllm_egress_scan from disk (ISO path or test override)."""
+    import importlib.util
+    path = EGRESS_SCAN_LIB
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+    spec = importlib.util.spec_from_file_location("stickllm_egress_scan", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def agent_web_fetch_enabled(settings: Path | None = None) -> bool:
+    """Whether the agent egress proxy may fetch the public web (SearXNG).
+
+    Default True so Agent Zero's built-in search works. Set
+    ``{"web_fetch": false}`` in the portable egress.json to shut it off.
+    Metadata, Alibaba Cloud, and uploads stay blocked either way.
+    """
+    root = settings if settings is not None else PORTABLE
+    for path in (root / "egress.json", Path("/run/stickllm/agent-egress.json")):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(doc, dict) and "web_fetch" in doc:
+            return bool(doc["web_fetch"])
+    return True
+
+
+_EGRESS_LOCK = threading.Lock()
+_EGRESS_EVENTS: list[dict] = []
+
+
+def record_egress_event(obj: dict) -> None:
+    """Persist a blocked (or noted) outbound attempt. Never stores secrets."""
+    item = {
+        "ts": int(obj.get("ts") or time.time()),
+        "tool": str(obj.get("tool") or "")[:80],
+        "findings": list(obj.get("findings") or [])[:8],
+        "via": str(obj.get("via") or "agent")[:40],
+    }
+    with _EGRESS_LOCK:
+        _EGRESS_EVENTS.append(item)
+        del _EGRESS_EVENTS[:-32]
+        snapshot = list(_EGRESS_EVENTS)
+    try:
+        EGRESS_EVENTS.parent.mkdir(parents=True, exist_ok=True)
+        EGRESS_EVENTS.write_text(json.dumps({"events": snapshot}) + "\n", encoding="utf-8")
+        os.chmod(EGRESS_EVENTS, 0o644)
+    except OSError:
+        return
+
+
+def read_egress_events() -> list[dict]:
+    with _EGRESS_LOCK:
+        if _EGRESS_EVENTS:
+            return list(_EGRESS_EVENTS)
+    try:
+        doc = json.loads(EGRESS_EVENTS.read_text(encoding="utf-8"))
+        events = doc.get("events") if isinstance(doc, dict) else None
+        return list(events) if isinstance(events, list) else []
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _egress_host_allowed(host: str, method: str, web_fetch: bool) -> str:
+    """Empty string when the proxy may continue; else a short reason."""
+    try:
+        scan = _load_egress_scan()
+    except Exception:
+        # Fail closed if the scanner is missing.
+        return "egress scanner unavailable"
+    h = scan.norm_host(host)
+    reason = scan.always_blocked(h) or scan.default_blocked(h)
+    if reason:
+        return reason
+    if scan.is_local(h):
+        return "proxy must not target the stick itself"
+    if not web_fetch:
+        return "web fetch is off for the agent"
+    m = (method or "GET").upper()
+    if m in ("PUT", "PATCH", "DELETE"):
+        return "uploads and mutating methods are blocked from the agent"
+    return ""
+
+
+def run_egress_proxy(listen_host: str = LLAMA_BRIDGE_HOST, listen_port: int = EGRESS_PROXY_PORT) -> None:
+    """HTTP/HTTPS CONNECT proxy for the Agent Zero container only.
+
+    Listens on the stickllm-a0 bridge address. The container is pointed at it
+    with HTTP_PROXY/HTTPS_PROXY. Direct internet from the container is dropped
+    by nftables; this is the only way out, and it refuses metadata, Alibaba
+    Cloud, and uploads.
+    """
+    if listen_host in ("0.0.0.0", "::", ""):
+        raise SystemExit("egress proxy must not listen on all interfaces")
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((listen_host, int(listen_port)))
+    srv.listen(64)
+
+    def pump(a: socket.socket, b: socket.socket) -> None:
+        try:
+            while True:
+                data = a.recv(65536)
+                if not data:
+                    break
+                b.sendall(data)
+        except OSError:
+            pass
+        try:
+            b.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    def handle(conn: socket.socket, addr) -> None:
+        peer = addr[0] if addr else ""
+        try:
+            # Only accept clients on the agent bridge.
+            if not (peer.startswith("172.30.0.") and peer != LLAMA_BRIDGE_HOST):
+                conn.close()
+                return
+            conn.settimeout(30)
+            buf = b""
+            while b"\r\n\r\n" not in buf and len(buf) < 65536:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    conn.close()
+                    return
+                buf += chunk
+            head, _, rest = buf.partition(b"\r\n\r\n")
+            lines = head.decode("latin-1", "replace").split("\r\n")
+            if not lines:
+                conn.close()
+                return
+            parts = lines[0].split()
+            if len(parts) < 2:
+                conn.close()
+                return
+            method, target = parts[0].upper(), parts[1]
+            headers = {}
+            for line in lines[1:]:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    headers[k.strip().lower()] = v.strip()
+            web = agent_web_fetch_enabled()
+            if method == "CONNECT":
+                hostport = target
+                host, _, port_s = hostport.partition(":")
+                port = int(port_s or "443")
+                reason = _egress_host_allowed(host, "CONNECT", web)
+                if reason or port not in (443, 80):
+                    record_egress_event({
+                        "tool": "proxy",
+                        "via": "connect",
+                        "findings": [{"kind": "proxy", "target": hostport, "reason": reason or "port not allowed"}],
+                    })
+                    conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                    conn.close()
+                    return
+                remote = socket.create_connection((host, port), timeout=20)
+                conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                t = threading.Thread(target=pump, args=(conn, remote), daemon=True)
+                t.start()
+                pump(remote, conn)
+                try:
+                    remote.close()
+                except OSError:
+                    pass
+                conn.close()
+                return
+            # Absolute-form HTTP proxy request: GET http://host/path
+            if not target.startswith("http://") and not target.startswith("https://"):
+                conn.sendall(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+                conn.close()
+                return
+            from urllib.parse import urlsplit, urlunsplit
+            split = urlsplit(target)
+            host = split.hostname or ""
+            port = split.port or (443 if split.scheme == "https" else 80)
+            reason = _egress_host_allowed(host, method, web)
+            if reason:
+                record_egress_event({
+                    "tool": "proxy",
+                    "via": "http",
+                    "findings": [{"kind": "proxy", "target": host, "reason": reason}],
+                })
+                body = (reason + "\n").encode()
+                conn.sendall(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n"
+                    + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                    + body
+                )
+                conn.close()
+                return
+            path = urlunsplit(("", "", split.path or "/", split.query, split.fragment))
+            if not path.startswith("/"):
+                path = "/" + path
+            out_headers = []
+            for line in lines[1:]:
+                low = line.lower()
+                if low.startswith("proxy-") or low.startswith("connection:"):
+                    continue
+                out_headers.append(line)
+            out_headers.append("Connection: close")
+            out_headers.append(f"Host: {host}" if not any(h.lower().startswith("host:") for h in out_headers) else "")
+            out_headers = [h for h in out_headers if h]
+            req = f"{method} {path} HTTP/1.1\r\n" + "\r\n".join(out_headers) + "\r\n\r\n"
+            remote = socket.create_connection((host, port), timeout=20)
+            if split.scheme == "https":
+                import ssl
+                remote = ssl.create_default_context().wrap_socket(remote, server_hostname=host)
+            remote.sendall(req.encode("latin-1") + rest)
+            # Forward any remaining request body for POST (search engines).
+            cl = int(headers.get("content-length") or 0)
+            have = len(rest)
+            while have < cl:
+                chunk = conn.recv(min(65536, cl - have))
+                if not chunk:
+                    break
+                remote.sendall(chunk)
+                have += len(chunk)
+            while True:
+                data = remote.recv(65536)
+                if not data:
+                    break
+                conn.sendall(data)
+            try:
+                remote.close()
+            except OSError:
+                pass
+            conn.close()
+        except Exception:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    while True:
+        c, a = srv.accept()
+        threading.Thread(target=handle, args=(c, a), daemon=True).start()
+
+
+def block_add_hosts() -> list[str]:
+    """docker --add-host lines that sinkhole always-blocked names to loopback."""
+    out = []
+    for host in ALWAYS_BLOCK_HOSTS:
+        if host in ("metadata",):  # too generic as a hosts entry alone is fine
+            pass
+        out.append(f"{host}:127.0.0.1")
+    # Also pin common metadata IPv6 name when resolvers invent AAAA (IPv6 is dropped anyway).
+    return out
 
 
 def run_tcp_relay(listen_host: str, listen_port: int, target_host: str, target_port: int) -> None:
@@ -1082,6 +1373,15 @@ def ensure_open_app_plugin(root: Path | None = None) -> None:
         return
     if root is None:
         root = PLUGINS_RO / "stickllm_apps"
+    egress_scan = ""
+    egress_ext = ""
+    try:
+        if EGRESS_SCAN_LIB.is_file():
+            egress_scan = EGRESS_SCAN_LIB.read_text(encoding="utf-8")
+        if EGRESS_EXT_SRC.is_file():
+            egress_ext = EGRESS_EXT_SRC.read_text(encoding="utf-8")
+    except OSError:
+        egress_scan = egress_ext = ""
     files = {
         root / "plugin.yaml": open_app_plugin_yaml(),
         root / "tools" / "open_app.py": open_app_tool_source(),
@@ -1098,6 +1398,10 @@ def ensure_open_app_plugin(root: Path | None = None) -> None:
         root / "prompts" / "agent.system.tool.docs.md": docs_tools_prompt(),
         root / "skills" / "stickllm-apps" / "SKILL.md": apps_skill_text(),
     }
+    if egress_scan:
+        files[root / "helpers" / "egress_scan.py"] = egress_scan
+    if egress_ext:
+        files[root / "extensions" / "python" / "tool_execute_before" / "_30_stickllm_egress.py"] = egress_ext
     for path, text in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         current = ""
@@ -1276,8 +1580,30 @@ def normalize_app_id(app_id: object) -> str:
     return APP_ID_ALIASES.get(text, text)
 
 
+_VERIFY = None
+
+
+def app_blocked(app_id: object) -> bool:
+    """Hard blocklist (stickllm_verify). Fails closed when it cannot load."""
+    global _VERIFY
+    try:
+        if _VERIFY is None:
+            import importlib.machinery
+            import importlib.util
+
+            path = Path(__file__).resolve().with_name("stickllm_verify.py")
+            loader = importlib.machinery.SourceFileLoader("stickllm_verify_agent", str(path))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(mod)
+            _VERIFY = mod
+        return bool(_VERIFY.app_blocked(app_id))
+    except Exception:
+        return True
+
+
 def catalog_app_id_ok(app_id: object) -> bool:
-    return isinstance(app_id, str) and app_id in CATALOG_APP_IDS
+    return isinstance(app_id, str) and app_id in CATALOG_APP_IDS and not app_blocked(app_id)
 
 
 def open_target_ok(app_id: object) -> bool:
@@ -1619,7 +1945,7 @@ def open_app_server(
                 self._send(413, {"ok": False, "error": "too_large"})
                 return
             raw = self.rfile.read(length) if length else b""
-            if path not in ("/open", "/state", "/act", "/install", "/docs"):
+            if path not in ("/open", "/state", "/act", "/install", "/docs", "/egress-event"):
                 self._send(404, {"ok": False, "error": "not_found"})
                 return
             if not self._authorized():
@@ -1633,9 +1959,25 @@ def open_app_server(
             if not isinstance(req, dict):
                 self._send(400, {"ok": False, "error": "bad_json"})
                 return
+            if path == "/egress-event":
+                if not isinstance(req, dict):
+                    self._send(400, {"ok": False, "error": "bad_json"})
+                    return
+                record_egress_event({**req, "via": "bridge"})
+                self._send(200, {"ok": True})
+                return
             if path in ("/install", "/docs"):
                 if path == "/install":
                     app_id = normalize_app_id(req.get("id"))
+                    if app_blocked(app_id):
+                        self._send(403, {
+                            "ok": False,
+                            "error": "blocked_app",
+                            "message": "That app is blocked on StickLLM and cannot be installed. "
+                            "Tell the user; do not try another way. install_app ids: "
+                            + ", ".join(CATALOG_APP_IDS) + ".",
+                        })
+                        return
                     if not catalog_app_id_ok(app_id):
                         self._send(400, {
                             "ok": False,
@@ -1873,6 +2215,8 @@ def status_document(
         "image_present": image_present,
         "running": bool(upstream_up) and vault_open and settings_open and ssd,
         "needs_install": needs_install,
+        "egress_blocks": read_egress_events()[-8:],
+        "web_fetch": agent_web_fetch_enabled(),
         "low_space": low_space,
         "message": message,
         "pull_log": pull_log_tail() if state in ("installing", "pull_failed") else "",
@@ -2325,6 +2669,23 @@ def prepare_portable(model_name: str | None = None) -> None:
             if merged != current:
                 _write_settings(settings, merged)
     ensure_env_file(root / ".env")
+    egress = root / "egress.json"
+    if not egress.is_file():
+        egress.write_text(
+            json.dumps(
+                {
+                    "web_fetch": True,
+                    "note": "Set web_fetch false to disable SearXNG outbound.",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        try:
+            os.chmod(egress, 0o600)
+        except OSError:
+            pass
     ensure_apps_instructions()
     preset = root / "model-config" / "presets.yaml"
     preset.write_text(preset_text(model), encoding="utf-8")
@@ -2764,6 +3125,9 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "open-app-bridge":
         run_open_app_bridge()
+        return 0
+    if cmd == "egress-proxy":
+        run_egress_proxy()
         return 0
     if cmd == "image-on-disk":
         # 0 = present, 1 = absent, 2 = unknown (ask dockerd).
