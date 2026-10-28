@@ -1826,6 +1826,13 @@ schedule_ui_vault_refresh() {
   disown 2>/dev/null || true
 }
 
+download_policy() {
+  # Kiosk Chromium: downloads to vault/Downloads when unlocked, blocked when locked.
+  if [[ -x /usr/local/bin/stickllm-download-policy ]]; then
+    /usr/local/bin/stickllm-download-policy "$1" >/dev/null 2>&1 || true
+  fi
+}
+
 refresh_gateway_vault_view() {
   # stickllm-ui uses ProtectSystem=full (private mount NS). Vault mounts that
   # happen after the unit starts are invisible to stickllm-gateway ismount(),
@@ -1835,6 +1842,7 @@ refresh_gateway_vault_view() {
   # *deferred* try-restart so the unlock API response can finish first.
   local pid mapper log="/run/stickllm/vault-ui-refresh.log"
   mkdir -p /run/stickllm 2>/dev/null || true
+  download_policy unlocked
   pid="$(systemctl show -p MainPID --value stickllm-ui.service 2>/dev/null || true)"
   mapper="$(readlink -f "$MAPPER" 2>/dev/null || echo "$MAPPER")"
   {
@@ -2686,6 +2694,8 @@ cmd_unlock() {
 cmd_lock() {
   need_root
   mkdir -p /run/stickllm
+  # Block kiosk downloads first, so none starts into the unmounted path.
+  download_policy locked
   stop_vault_addons
   local helper=""
   helper="$(settings_helper || true)"
