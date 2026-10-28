@@ -5325,7 +5325,9 @@ const APP_LABELS = {
 };
 let openToastTimer = null;
 function appLabel(id) {
-  return APP_LABELS[id] || id;
+  if (APP_LABELS[id]) return APP_LABELS[id];
+  const a = catalogApps.get(APP_ID_ALIASES[id] || id);
+  return (a && a.name) || id;
 }
 function reportOpenApp(id, result) {
   fetch("/api/ui/open-app-seen", {
@@ -5396,16 +5398,38 @@ function appTabLink(id) {
   if (Object.prototype.hasOwnProperty.call(APP_LABELS, id)) return { href: "/apps/" + id + "/", target: "stickllm-" + id };
   return null;
 }
-function openAppTab(id) {
+// Agent Zero create_*/open_document: ONLYOFFICE opens that vault file.
+function docsOpenHref(doc) {
+  return "/apps/docs/?open=" + encodeURIComponent(String(doc || ""));
+}
+function openAppTab(id, doc) {
   const link = appTabLink(id);
   if (!link) return null;
+  const cid = APP_ID_ALIASES[id] || id;
+  if (doc && cid === "onlyoffice") link.href = docsOpenHref(doc);
+  // Add-ons on a paired LAN browser: same signed handoff as the desktop icon.
+  const icon = document.querySelector('#deskIcons a.deskIcon[data-catalog-app="' + CSS.escape(cid) + '"]');
+  if (icon && icon.dataset.openLink && !detectLocalHost() && token) {
+    let w = null;
+    try { w = window.open("", link.target); } catch (e) { w = null; }
+    if (!w) return null;
+    try { w.opener = null; } catch (e) {}
+    fetch(icon.dataset.openLink, {
+      method: "POST", cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ id: cid }),
+    }).then((r) => r.json().catch(() => ({})).then((j) => {
+      w.location.href = (r.ok && j.url) ? j.url : link.href;
+    })).catch(() => { w.location.href = link.href; });
+    return w;
+  }
   try { return window.open(link.href, link.target); } catch (e) { return null; }
 }
 // A click (toast button, notification, panel button): open the app tab.
 function openAppFromClick(id) {
   hideOpenAppToast();
   stopTabCue();
-  if (openAppTab(id)) {
+  if (openAppTab(id, pendingDoc[id])) {
     reportOpenApp(id, "opened");
     return true;
   }
@@ -5474,8 +5498,15 @@ function appPanel() {
   document.body.append(p);
   return p;
 }
+const pendingDoc = Object.create(null);
 function showAppInPage(id) {
   if (!document.body) return false;
+  // Static apps embed at /apps/<id>/; ONLYOFFICE at /apps/docs/. Add-ons
+  // are on their own origins (no iframe fallback): the toast offers a click.
+  const cid = APP_ID_ALIASES[id] || id;
+  let src = "/apps/" + id + "/?stickllm_embed=1";
+  if (cid === "onlyoffice") src = pendingDoc[id] ? docsOpenHref(pendingDoc[id]) : "/apps/docs/";
+  else if (!Object.prototype.hasOwnProperty.call(APP_LABELS, id)) return false;
   const p = appPanel();
   const name = "stickllm-embed-" + id;
   let frame = p.querySelector("iframe");
@@ -5487,7 +5518,7 @@ function showAppInPage(id) {
     frame.title = appLabel(id);
     p.append(frame);
     primeAppsSession().then(() => {
-      if (frame.isConnected) frame.src = "/apps/" + id + "/?stickllm_embed=1";
+      if (frame.isConnected) frame.src = src;
     });
   }
   p.dataset.app = id;
@@ -5547,8 +5578,9 @@ function cueHiddenTab(id) {
   }
   return true;
 }
-function openStickApp(id) {
-  if (!/^[a-z]+$/.test(id)) return false;
+function openStickApp(id, doc) {
+  if (!/^[a-z][a-z-]{0,23}$/.test(id)) return false;
+  if (doc) pendingDoc[id] = String(doc); else delete pendingDoc[id];
   // The gateway sends open_app only to the screen whose user just chatted
   // with Agent (a LAN browser that sent a message in the last 5 minutes,
   // else the kiosk). Kiosk and LAN browser alike do exactly what a click on
@@ -5558,7 +5590,16 @@ function openStickApp(id) {
   // pop-ups for StickLLM. Otherwise the toast (and, for a background tab, the
   // title flash and notification) offers that same click.
   primeAppsSession();
-  if (openAppTab(id)) {
+  // The add-on catalog loads with the Apps page. A fresh tab that never showed
+  // it has no link for an add-on yet: load the catalog once, then open.
+  if (!appTabLink(id) && !openStickApp.retry) {
+    refreshApps().catch(() => {}).finally(() => {
+      openStickApp.retry = true;
+      try { openStickApp(id, pendingDoc[id] || ""); } finally { openStickApp.retry = false; }
+    });
+    return true;
+  }
+  if (openAppTab(id, pendingDoc[id])) {
     reportOpenApp(id, "opened");
     return true;
   }
@@ -5577,6 +5618,50 @@ function openStickApp(id) {
   else reportOpenApp(id, "blocked");
   return false;
 }
+// Agent Zero install_app: the gateway asks this screen; nothing installs
+// until the user clicks Install here (the normal /api/apps/install).
+let agentInstallId = "";
+function showAgentInstall(id, name) {
+  const box = $("#agentInstall");
+  if (!box || !/^[a-z][a-z-]{0,23}$/.test(id)) return;
+  agentInstallId = id;
+  $("#aiTitle").textContent = "Install " + name + "?";
+  $("#aiText").textContent = "Agent Zero asks to install " + name + ". It downloads and runs on this stick, inside your vault. Install it?";
+  const err = $("#aiErr");
+  if (err) { err.hidden = true; err.textContent = ""; }
+  $("#aiYes").disabled = false;
+  box.hidden = false;
+  try { $("#aiYes").focus(); } catch (e) {}
+}
+async function agentInstallYes() {
+  const id = agentInstallId;
+  if (!id) return;
+  const cid = APP_ID_ALIASES[id] || id;
+  $("#aiYes").disabled = true;
+  try {
+    const r = await fetch("/api/apps/install", {
+      method: "POST",
+      cache: "no-store",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ id: cid }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) {
+      const err = $("#aiErr");
+      if (err) { err.textContent = j.message || "Not installed."; err.hidden = false; }
+      $("#aiYes").disabled = false;
+      return;
+    }
+    $("#agentInstall").hidden = true;
+    agentInstallId = "";
+    [1, 3, 10, 20, 40, 60, 120, 240, 480].forEach((sec) => setTimeout(() => refreshApps().catch(() => {}), sec * 1000));
+  } catch (e) {
+    $("#aiYes").disabled = false;
+  }
+}
+if ($("#aiNo")) $("#aiNo").onclick = () => { $("#agentInstall").hidden = true; agentInstallId = ""; };
+if ($("#aiYes")) $("#aiYes").onclick = () => { agentInstallYes(); };
+
 function startOpenAppEvents() {
   if (typeof EventSource !== "function") return;
   if (startOpenAppEvents.armed) {
@@ -5624,7 +5709,12 @@ function startOpenAppEvents() {
     es.addEventListener("open_app", (ev) => {
       let data = {};
       try { data = JSON.parse(ev.data || "{}"); } catch (err) { return; }
-      if (data && data.id) openStickApp(String(data.id));
+      if (data && data.id) openStickApp(String(data.id), typeof data.doc === "string" ? data.doc : "");
+    });
+    es.addEventListener("install_confirm", (ev) => {
+      let data = {};
+      try { data = JSON.parse(ev.data || "{}"); } catch (err) { return; }
+      if (data && data.id) showAgentInstall(String(data.id), String(data.name || data.id));
     });
     es.onerror = () => {
       if (mine !== gen) return;
@@ -5651,4 +5741,131 @@ function startOpenAppEvents() {
   connect();
 }
 
+})();
+
+// 0.5.2: StickLLM's own right-click menu. On the kiosk (cage, software
+// rendering) Chromium's native context menu draws invisible in both themes,
+// so this page shows its own: Cut/Copy/Paste/Select all, link actions, Reload.
+// Shift+right-click falls through to the native menu.
+(function stickContextMenu() {
+  let menu = null;
+  let ctx = null;
+  function close() {
+    if (menu) menu.hidden = true;
+    ctx = null;
+  }
+  function editableOf(el) {
+    if (!el || !el.closest) return null;
+    const ed = el.closest('input, textarea, [contenteditable=""], [contenteditable="true"]');
+    if (!ed) return null;
+    if (ed.tagName === "INPUT" && !/^(text|search|url|email|tel|number|password|)$/i.test(ed.type || "")) return null;
+    if (ed.disabled || ed.readOnly) return { el: ed, ro: true };
+    return { el: ed, ro: false };
+  }
+  function selectedText(ed) {
+    if (ed && (ed.el.tagName === "INPUT" || ed.el.tagName === "TEXTAREA")) {
+      try { return ed.el.value.slice(ed.el.selectionStart, ed.el.selectionEnd); } catch (e) { return ""; }
+    }
+    return String(window.getSelection ? window.getSelection() : "");
+  }
+  function restore() {
+    if (!ctx || !ctx.ed) return;
+    try { ctx.ed.el.focus({ preventScroll: true }); } catch (e) {}
+    if (ctx.range && (ctx.ed.el.tagName === "INPUT" || ctx.ed.el.tagName === "TEXTAREA")) {
+      try { ctx.ed.el.setSelectionRange(ctx.range[0], ctx.range[1]); } catch (e) {}
+    }
+  }
+  async function act(what) {
+    const c = ctx;
+    close();
+    if (!c) return;
+    ctx = c;
+    restore();
+    try {
+      if (what === "copy" || what === "cut") {
+        if (!document.execCommand(what) && c.text && navigator.clipboard) await navigator.clipboard.writeText(c.text);
+      } else if (what === "paste") {
+        let t = "";
+        try { t = await navigator.clipboard.readText(); } catch (e) { t = ""; }
+        if (t) document.execCommand("insertText", false, t);
+        else if (typeof toast === "function") toast("Paste with Ctrl+V");
+      } else if (what === "selectall") {
+        if (c.ed && c.ed.el.select) c.ed.el.select(); else document.execCommand("selectAll");
+      } else if (what === "openlink") {
+        const w = window.open(c.href, "_blank", "noopener");
+        if (!w) location.href = c.href;
+      } else if (what === "copylink") {
+        await navigator.clipboard.writeText(c.href);
+      } else if (what === "reload") {
+        location.reload();
+      }
+    } catch (e) { /* clipboard refused: nothing to do */ }
+    ctx = null;
+  }
+  function build() {
+    menu = document.createElement("div");
+    menu.id = "ctxMenu";
+    menu.className = "ctxMenu";
+    menu.setAttribute("role", "menu");
+    menu.hidden = true;
+    // Keep the selection and focus where they are while the menu is used.
+    menu.addEventListener("mousedown", (e) => e.preventDefault());
+    menu.addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-act]");
+      if (b && !b.disabled) act(b.dataset.act);
+    });
+    menu.addEventListener("contextmenu", (e) => e.preventDefault());
+    document.body.append(menu);
+  }
+  function item(act, label, key, off) {
+    return '<button type="button" role="menuitem" data-act="' + act + '"' + (off ? " disabled" : "") + ">" +
+      "<span>" + label + "</span>" + (key ? "<kbd>" + key + "</kbd>" : "") + "</button>";
+  }
+  document.addEventListener("contextmenu", (e) => {
+    if (e.shiftKey || e.defaultPrevented) return;
+    if (!document.body) return;
+    if (!menu) build();
+    const ed = editableOf(e.target);
+    const a = e.target.closest ? e.target.closest("a[href]") : null;
+    const href = a && /^(https?:|\/)/i.test(a.getAttribute("href") || "") ? a.href : "";
+    const text = selectedText(ed);
+    let range = null;
+    if (ed && (ed.el.tagName === "INPUT" || ed.el.tagName === "TEXTAREA")) {
+      try { range = [ed.el.selectionStart, ed.el.selectionEnd]; } catch (err) { range = null; }
+    }
+    ctx = { ed, href, text, range };
+    let html = "";
+    if (href) html += item("openlink", "Open link in new tab") + item("copylink", "Copy link address") + "<hr>";
+    if (ed) {
+      html += item("cut", "Cut", "Ctrl+X", ed.ro || !text) + item("copy", "Copy", "Ctrl+C", !text) +
+        item("paste", "Paste", "Ctrl+V", ed.ro) + item("selectall", "Select all", "Ctrl+A");
+    } else {
+      html += item("copy", "Copy", "Ctrl+C", !text) + item("selectall", "Select all", "Ctrl+A");
+    }
+    html += "<hr>" + item("reload", "Reload", "F5");
+    e.preventDefault();
+    menu.innerHTML = html;
+    menu.hidden = false;
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    menu.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - w - 4)) + "px";
+    menu.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - h - 4)) + "px";
+    const first = menu.querySelector("button:not(:disabled)");
+    if (first && e.button !== 2) first.focus({ preventScroll: true });
+  });
+  document.addEventListener("mousedown", (e) => { if (menu && !menu.hidden && !menu.contains(e.target)) close(); }, true);
+  document.addEventListener("keydown", (e) => {
+    if (!menu || menu.hidden) return;
+    if (e.key === "Escape") { e.preventDefault(); close(); restore(); return; }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const bs = [...menu.querySelectorAll("button:not(:disabled)")];
+      if (!bs.length) return;
+      e.preventDefault();
+      let i = bs.indexOf(document.activeElement);
+      i = e.key === "ArrowDown" ? (i + 1) % bs.length : (i <= 0 ? bs.length - 1 : i - 1);
+      bs[i].focus({ preventScroll: true });
+    }
+  }, true);
+  window.addEventListener("blur", close);
+  window.addEventListener("resize", close);
+  document.addEventListener("scroll", close, true);
 })();

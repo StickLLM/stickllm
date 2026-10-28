@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v052c" />
+<link rel="stylesheet" href="style.css?v=v052f" />
 </head>
 <body>
 <div class="app" id="app">
@@ -722,6 +722,18 @@
     </div>
   </div>
 
+  <!-- 0.5.2: Agent Zero asks to install an app; only this click installs it -->
+  <div class="modalWrap top2" id="agentInstall" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="aiTitle">
+      <div class="cfBody">
+        <h2 id="aiTitle">Install an app?</h2>
+        <p id="aiText"></p>
+        <p class="err" id="aiErr" hidden></p>
+        <div class="actions"><span class="grow"></span><button class="btn" id="aiNo" type="button">Not now</button><button class="btn primary" id="aiYes" type="button">Install</button></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Confirm dialog -->
   <div class="modalWrap top2" id="confirm" hidden>
     <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="cfTitle">
@@ -745,6 +757,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v052c"></script>
+<script src="app.js?v=v052f"></script>
 </body>
 </html>
