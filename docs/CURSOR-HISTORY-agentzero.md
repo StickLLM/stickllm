@@ -268,3 +268,39 @@ Local commits on `stickllm-agentzero` after `4282e53` (not pushed; `main` untouc
 - **Starter add-ons:** Radicale 3.9.0, Vikunja 2.7.1, Actual Budget 26.10.0, Trilium v0.106.1, Node-RED 5.0.9 have Install / Open / Remove on the Apps page. Pinned by digest, data in `vault/addons/<id>`, `--read-only`, non-root, `--log-driver none`, no GPU, no internet or LAN (nft `inet stickllm_addons`), own gateway TLS port 5451-5455 with a one-time per-app handoff, opened in a named tab. Start on unlock, stop on lock before Agent Zero. Node-RED flows can run arbitrary code (contained, no network). Skipped: Paperless-ngx, SnappyMail, Immich, Matrix, Jitsi ([APPS.md](APPS.md#installable-from-the-apps-page-050)).
 - **ISO:** `build-agentzero\stickllm-agentzero-v0.5.0.iso`, built with `STICKLLM_VERSION=0.5.0`. The v0.4 ISO and older are kept (n-2).
 - **Open:** the `stickllm_pair` cookie is not HttpOnly (follow-up); Radicale offers no phone CalDAV sync through pairing; Agent Zero `--read-only`.
+
+## 12. Version 0.5.2 (built and VM-verified 2026-10-27, flashed to the Samsung stick)
+
+Local commits on `stickllm-agentzero` after `589724e` (not pushed; `main` untouched; the running stick at 192.168.72.70 was not touched before the reflash).
+
+### Follow-up note on `589724e` (softens its commit message)
+
+The `589724e` message says that users toggling Ephemeral/Vault (because health sent `vault` as a bare string) explains the "kiosk can't load a model" report. That was stated too strongly. The health-shape bug and the F9/F10 key repeat were real and the fix stands, but the VM repro afterwards showed a different main cause for the hang: in Vault mode `stickllm-control` walked the vault host root with unlimited-depth `rglob()`, once per catalog file, and the Agent Zero docker data (`stickllm-docker/overlay2`) made each `status` call take over 200 s. The UI stayed on "Loading..." and model activation never reached `systemctl restart stickllm-llama`. The Ephemeral toggling may have added to it, but the evidence doesn't show it was the cause. The history above is unchanged; this note is the correction.
+
+### What changed (commit, VM result)
+
+- **P0 kiosk can't load** `4005f9d`: bounded `os.walk` (depth 4, prunes docker/overlay2, caches, node_modules, hidden dirs except `.lmstudio`), one cached index per refresh, single-flight scan. VM vault mode `status` 0.45 s (was over 200 s). Workaround for older images: reboot (or restart `stickllm-control`), then pick an Ephemeral session and load from USB DATA.
+- **Fixes 1-3, pairing** `15895c0`: pairing cookies are set by the server, HttpOnly, `__Secure-` on TLS; not-paired screen; kiosk pair request; link icon state; load-poll fallback. Playwright p2 19/19.
+- **Fix 4, presets/KV/temp** `8db6767`: preset highlight follows ctx/KV/temp; KV type goes to `--cache-type-k/v` + flash-attn; the chat sends sampler params. The 32k ctx floor is labelled. p4 22/22.
+- **Fix 5, catalog desktop icons** `3ca48db`. p5 13/13.
+- **Fixes 6/7, Agent Zero install_app/doc tools** `e032e12` (+ UI in `47928a2`): install needs a click on the driving screen; create_spreadsheet/open_document. p67 kiosk 10/10, LAN 10/10.
+- **Fix 8, download policy** `62f032d`: unlocked downloads go to `vault/Downloads`; locked blocks all downloads (`DownloadRestrictions=3`).
+- **Fix 9, in-page context menu** `47928a2`. p9 24/24, dark + light.
+- **Fix 10, container DNS / usb-settings rc** `9cfe571`. p10 15/15.
+- **Version** `fe29472`: 0.5.2 in health/About; v0.5.1 added to the refuse list.
+
+### ISO, boot-verify, flash
+
+- `build-agentzero\stickllm-agentzero-v0.5.2.iso`, 4127784960 bytes, SHA256 `b08bd5a7773ac755fe7ec5fce42a6521ebd6afb40a74d654f9644d7e4e903bbe`. Older ISOs kept.
+- VM boot-verify: vault reattach (find-vault 100, unlock, real lock/unlock download test, p2 19/19), realistic 60 GB stick (agent runs, 0 vault/USB warnings) and fresh boot (DATA + settings partitions created on stick free space, blank SSD untouched, not-paired screen in a real browser, unpaired API 401) all PASS.
+- Flashed with `out\_flash-agentzero-v052-safe-elev.ps1` (serial `AA00000000000489` enforced in the wrapper and in `out\safe-flash-samsung-v052.py`). FLASH_OK; readback BOOTFILES_OK, with 442 differing bytes only in EFI FAT metadata/system area (benign).
+
+### Open after 0.5.2
+
+- Unlock with no vault configured logs `usb settings print-blob failed (rc=1)` (cosmetic).
+- Agent Zero needs the USB settings partition, so a stick with no free space has no agent.
+- Health `vault.status` says `locked` when the vault CLI says `absent`.
+- The UI treats hostname 127.0.0.1 as local even through NAT/tunnels; the server still enforces pairing.
+- Executable systemd drop-in `.conf` files + an unknown `StartLimitIntervalSec` key in `[Service]` (cosmetic journal warnings).
+- Unknown local GGUFs are not listed; the 32k ctx floor makes the 4k/8k presets estimate-only.
+- Upstream `run_tunnel_api` FATAL in the Agent Zero log (not investigated).

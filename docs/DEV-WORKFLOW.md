@@ -138,3 +138,17 @@ Limits and gotchas:
   not in the image. Put vault confirmations (`STICKLLM_VAULT_*`) as `export` lines at the top of the file.
 - GRUB keys are sent blind (Down x12 then Up); if a boot lands in the wrong mode, use `boot <n>`.
 - No model is installed and inference is CPU-only, so it is not useful for speed tests. Dynamic VDIs grow on C:.
+
+### VM notes from 0.5.2
+
+- **No AVX in this VM:** VBox 6.1 on NEM/Hyper-V doesn't pass AVX through, so the production llama-server dies with SIGILL. A VM-only SSE build (`GGML_NATIVE/AVX*/FMA/F16C` off) can run a tiny model at ctx 2048 or less. Never put it in an ISO. Don't change VirtualBox or Hyper-V for this.
+- **VM stalls:** under host load (e.g. an ISO build) the guest can freeze for ~8 minutes (VBox.log heartbeat flat). Don't treat a timeout during a build as a test failure; rerun.
+- **Password after reboot without typing it:** take `VBoxManage controlvm <vm> screenshotpng` (send `keyboardputscancode 2a aa` first if the console blanked). Decode the READY-screen password by matching PSF console font glyphs (OCR misreads look-alike glyphs). Write it to a temp file, install the key from that file, then delete it. Never paste the password into chats or logs. Loopback `/api/health` also carries the per-boot pair code and SSH password, so don't print it whole.
+- **Scripts for `vm.ps1 root`** must have LF line endings. Vault confirmations go in as `export` lines; `mount-host` needs `STICKLLM_VAULT_CONFIRM=MOUNT-HOST` and a device path such as `/dev/sda1`. Pass a test passcode by file (scp, strip CRLF, read into the env, shred), never as an argument.
+- **Deploy vs rebuild:** the SSH hotfix path deploys `/usr/local/bin` and the UI, but it doesn't install `/etc` drop-ins (kiosk, policies). Install those in the VM by hand for testing, or rebuild.
+- **Real-browser tests:** Playwright on the host in `C:\StickLLM-VM\browser-test`, with `--host-resolver-rules=MAP stickllm.test 127.0.0.1` so the LAN path isn't seen as local (with hostname 127.0.0.1 the UI shows "local"). Reach the kiosk through `ssh -N -L 28080:127.0.0.1:80`. Extra NAT rules (e.g. 5451 for add-ons) are runtime only; remove them afterwards.
+- **Realistic stick image:** test with the ISO converted and resized to ~60 GB (`VBoxManage modifymedium --resize 61184`). The raw ISO size has no free space, so there is no settings partition and no agent.
+- **Build:** Git Bash (not WSL), never on OneDrive. Same command as 0.5.1; `build.sh` defaults to 0.5.2 since `fe29472`. Output: `build-agentzero\stickllm-agentzero-v0.5.2.iso`, log `build-agentzero\v0.5.2-build.log`. Keep n-2 ISOs.
+- **Copying files:** the agent box copies files into `C:\Users\peter\...`, then you move them into `C:\StickLLM-VM`.
+- **Snapshots for 0.5.2** (powered off): `v052-dev-state`, `v052-reflash-base`, `v052-60g-base` (60 GB stick + test-vault SSD), `v052-fresh-base` (fresh 60 GB stick + blank SSD).
+- **Flash:** `out\_flash-agentzero-v052-safe-elev.ps1` (elevated) refuses every disk except the USB Samsung Type-C with serial `AA00000000000489`, then reads the stick back and verifies (`out\verify-boot-v052.out`).

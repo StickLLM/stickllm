@@ -157,3 +157,12 @@ Before install, StickLLM checks free host-SSD space and total RAM. Below the min
 - Prefer projects with a clear local/API surface so a human UI and an agent can share the same backend.
 - License column is for awareness when evaluating ship/bake decisions; third-party terms stay with each upstream project.
 - Tracking: [ISSUES.md](../ISSUES.md) **ISS-022**. Roadmap checkboxes: [FEATURES.md](../FEATURES.md).
+
+## 0.5.2 behaviour
+
+- **Agent Zero tools:** `install_app` sends a confirm dialog to the screen that is driving the agent (kiosk or a paired LAN browser). Nothing installs until someone clicks Install. `create_spreadsheet` / `open_document` save to and open from `vault/Documents` in ONLYOFFICE; bad paths return `bad_path` and missing files `not_found`. The bridge answers HTTP 409 for every error and the message says why. A loop guard stops after 2 tries.
+- **Agent needs USB settings:** Agent Zero starts only when the USB settings partition is mounted. A stick written with no free space (raw ISO size) has no settings partition and no agent.
+- **Download policy:** while the vault is unlocked, Chromium downloads go to `vault/Downloads`. When it's locked, downloads are blocked (`DownloadRestrictions=3`). The kiosk applies the policy at start.
+- **Context menu:** StickLLM pages have their own right-click menu (cut/copy/paste/select all/link/reload; Shift+right-click gives the native menu). Other pages keep Chromium's native menu.
+- **Container DNS:** the Agent Zero container uses the host's resolvers plus 1.1.1.1/9.9.9.9 as fallback. nftables allows port 53 only to those; LAN and the stick's own IP stay blocked from the container.
+- **Add-on handoff on LAN:** add-ons open on their own gateway TLS port (5451-5455), so a LAN browser must be able to reach those ports.
