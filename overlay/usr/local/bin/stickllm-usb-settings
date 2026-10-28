@@ -202,9 +202,11 @@ cmd_open() {
   [[ -n "$pass" ]] || die "vault passcode required (STICKLLM_VAULT_PASS); no second password"
   local disk part
   disk="$(boot_disk)" || die "cannot identify the StickLLM boot USB"
-  part="$(find_settings_part)" || die "no settings partition on the boot USB"
+  # Exit 3 = nothing to open yet (no partition, or raw before first init).
+  # stickllm-vault treats that as normal before the vault accepts the passcode.
+  part="$(find_settings_part)" || { unset pass; echo "stickllm-usb-settings: no settings partition on the boot USB" >&2; exit 3; }
   assert_part "$part" "$disk" || die "refusing $part"
-  cryptsetup isLuks "$part" 2>/dev/null || die "settings partition is not LUKS yet"
+  cryptsetup isLuks "$part" 2>/dev/null || { unset pass; echo "stickllm-usb-settings: settings partition is not LUKS yet" >&2; exit 3; }
   if findmnt -n -S "$part" >/dev/null 2>&1; then
     die "refusing to open mounted $part"
   fi

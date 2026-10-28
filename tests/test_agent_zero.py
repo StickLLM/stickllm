@@ -688,10 +688,13 @@ fi
 
 def test_nft_apply_text_is_safe_on_debian12():
     agent = _load(AGENT, "stickllm_agent_nft")
-    text = agent.nft_apply_text()
+    text = agent.nft_apply_text(dns_servers=())
     assert text.startswith("add table inet stickllm_agent\n")
     assert "delete table inet stickllm_agent\n" in text
     assert agent.nft_ruleset().strip() in text
+    lan = agent.nft_apply_text(dns_servers=["192.168.72.1"])
+    assert agent.nft_ruleset(dns_servers=["192.168.72.1"]).strip() in lan
+    _nft_check(lan)
     for line in text.splitlines():
         assert line.strip() != "destroy table inet stickllm_agent"
         assert not line.strip().startswith("destroy table")

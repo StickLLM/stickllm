@@ -62,6 +62,15 @@ docker_cli() {
   DOCKER_HOST="unix://${SOCK}" docker "$@"
 }
 
+# Container DNS: host LAN/DHCP resolvers first, then public fallbacks
+# (stickllm_agent.host_dns_servers; nft lets port 53 through to exactly those).
+dns_args() {
+  local v
+  while read -r v; do
+    [[ -n "$v" ]] && printf -- '--dns\n%s\n' "$v"
+  done < <("$PYBIN" "$LIB" dns-servers 2>/dev/null || printf '1.1.1.1\n9.9.9.9\n')
+}
+
 refuse_locked() {
   "$PYBIN" "$LIB" write-status --state locked --image_present false >/dev/null || true
   echo "vault locked: docker not started" >&2
@@ -336,8 +345,11 @@ cache_embedding() {
   local ref
   ref="$("$PYBIN" "$LIB" image-ref)"
   mkdir -p "${ADDON}/state/.cache"
+  local DNS_ARGS=()
+  mapfile -t DNS_ARGS < <(dns_args)
   docker_cli run --rm \
     --network "$NETWORK" \
+    "${DNS_ARGS[@]}" \
     -e HF_HUB_OFFLINE=0 \
     -e HF_HUB_DISABLE_TELEMETRY=1 \
     -e HF_HOME=/a0/usr/.cache/huggingface \
@@ -497,6 +509,8 @@ cmd_run_container() {
   origins="$("$PYBIN" "$LIB" allowed-origins)"
   "$PYBIN" "$LIB" write-status --state running --image_present true --low_space false >/dev/null || true
   stop_container
+  local DNS_ARGS=()
+  mapfile -t DNS_ARGS < <(dns_args)
   # Own bridge: llama relay and the internet only. UI is published on loopback.
   # Kokoro and Whisper stay at the image defaults. No host disks except the
   # vault addon and the portable settings dir.
@@ -506,8 +520,7 @@ cmd_run_container() {
     --log-driver none \
     --network "$NETWORK" \
     --add-host llama:host-gateway \
-    --dns 1.1.1.1 \
-    --dns 9.9.9.9 \
+    "${DNS_ARGS[@]}" \
     -p 127.0.0.1:5099:5099 \
     --cap-drop ALL \
     --cap-add CHOWN \

@@ -2130,8 +2130,15 @@ sync_usb_settings() {
     STICKLLM_SETTINGS_INIT=1 STICKLLM_VAULT_PASS="$pass" "$helper" open-or-init >/dev/null 2>&1 \
       || echo "stickllm-vault: warning: usb settings open-or-init failed (rc=$?)" >&2
   elif [[ -n "$pass" ]]; then
-    STICKLLM_VAULT_PASS="$pass" "$helper" open >/dev/null 2>&1 \
-      || echo "stickllm-vault: warning: usb settings open failed (rc=$?)" >&2
+    # Pre-unlock open: only needed to read a saved per-computer location.
+    # rc=3 means no settings volume yet (first boot / raw slot): normal, quiet.
+    # Any other failure is retried with open-or-init once the vault accepts the
+    # passcode, which warns if it still fails, so this is a note, not a warning.
+    local rc=0
+    STICKLLM_VAULT_PASS="$pass" "$helper" open >/dev/null 2>&1 || rc=$?
+    if [[ "$rc" -ne 0 && "$rc" -ne 3 ]]; then
+      echo "stickllm-vault: note: usb settings not opened before vault unlock (rc=$rc); retried after unlock" >&2
+    fi
   fi
   "$helper" write-computer --from "$LOCATION_FILE" >/dev/null 2>&1 \
     || echo "stickllm-vault: warning: usb settings write-computer failed (rc=$?)" >&2

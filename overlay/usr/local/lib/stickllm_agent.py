@@ -491,6 +491,66 @@ def _local_ipv4s() -> list[str]:
     return found or ["127.0.0.1"]
 
 
+PUBLIC_DNS = ("1.1.1.1", "9.9.9.9")
+RESOLV_FILES = ("/run/systemd/resolve/resolv.conf", "/etc/resolv.conf")
+
+
+def host_dns_servers(files=None, override: str | None = None) -> list[str]:
+    """DNS servers for the Agent Zero container: the host's LAN/DHCP resolvers
+    first (at most 2), then public fallbacks; 3 total like resolv.conf.
+
+    Pinning only public DNS broke Hugging Face and pip on networks that block
+    outside DNS. Loopback stubs are skipped (127.0.0.53 is not reachable from
+    the bridge). STICKLLM_AGENT_DNS="a b" overrides the list.
+    """
+    override = os.environ.get("STICKLLM_AGENT_DNS", "") if override is None else override
+    out: list[str] = []
+
+    def add(raw: str) -> None:
+        try:
+            ip = ipaddress.ip_address(raw.strip())
+        except ValueError:
+            return
+        if ip.is_loopback or ip.is_unspecified or ip.is_link_local or ip.is_multicast:
+            return
+        if str(ip) not in out:
+            out.append(str(ip))
+
+    if override.strip():
+        for part in override.split():
+            add(part)
+        return out[:3]
+    for name in files if files is not None else RESOLV_FILES:
+        try:
+            text = Path(name).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            bits = line.split()
+            if len(bits) >= 2 and bits[0] == "nameserver":
+                add(bits[1])
+        if out:
+            break
+    out = out[:2]
+    for pub in PUBLIC_DNS:
+        if pub not in out:
+            out.append(pub)
+    return out[:3]
+
+
+def private_dns_v4(servers) -> list[str]:
+    """Resolvers inside the RFC1918 ranges the forward chain drops."""
+    keep = []
+    for raw in servers or ():
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if ip.version == 4 and ip.is_private and not ip.is_loopback and str(ip) not in keep:
+            keep.append(str(ip))
+    return keep
+
+
 def nft_ruleset(
     bridge: str = LLAMA_BRIDGE_IFACE,
     subnet: str = LLAMA_BRIDGE_SUBNET,
@@ -498,8 +558,12 @@ def nft_ruleset(
     llama_port: int = LLAMA_BRIDGE_PORT,
     apps_port: int = APPS_BRIDGE_PORT,
     open_app_port: int = OPEN_APP_PORT,
+    dns_servers=(),
 ) -> str:
     """Forward rules owned by stickllm-agent. dockerd is started with --iptables=false.
+
+    ``dns_servers``: LAN resolvers handed to the container with --dns. Only
+    port 53 to exactly those addresses is let through the RFC1918 drops.
 
     The bridge subnet is accepted before the RFC1918 drops, so forwarded
     traffic can stay on the bridge. Other addresses in 192.168.0.0/16,
@@ -511,6 +575,11 @@ def nft_ruleset(
     container cannot open any other host port.
     """
     ports = f"{{ {int(llama_port)}, {int(apps_port)}, {int(open_app_port)} }}"
+    dns_lan = private_dns_v4(dns_servers)
+    dns_rules = ""
+    if dns_lan:
+        dset = "{ " + ", ".join(dns_lan) + " }"
+        dns_rules = f"    ip daddr {dset} udp dport 53 accept\n    ip daddr {dset} tcp dport 53 accept\n"
     return (
         f"table inet {NFT_TABLE} {{\n"
         "  chain forward {\n"
@@ -520,6 +589,7 @@ def nft_ruleset(
         "  chain agent_out {\n"
         "    ct state established,related accept\n"
         f"    ip daddr {subnet} accept\n"
+        + dns_rules +
         "    ip daddr 192.168.0.0/16 drop\n"
         "    ip daddr 10.0.0.0/8 drop\n"
         "    ip daddr 172.16.0.0/12 drop\n"
@@ -545,7 +615,7 @@ def nft_ruleset(
     )
 
 
-def nft_apply_text() -> str:
+def nft_apply_text(dns_servers=None) -> str:
     """Ruleset script for ``nft -f``.
 
     Debian 12 ships nftables 1.0.6, which rejects ``destroy table`` (added in
@@ -556,7 +626,7 @@ def nft_apply_text() -> str:
     return (
         f"add table inet {NFT_TABLE}\n"
         f"delete table inet {NFT_TABLE}\n"
-        + nft_ruleset()
+        + nft_ruleset(dns_servers=host_dns_servers() if dns_servers is None else dns_servers)
     )
 
 
@@ -2636,6 +2706,9 @@ def main(argv: list[str]) -> int:
             return 0
         print(free if free is not None else -1)
         return 3
+    if cmd == "dns-servers":
+        print("\n".join(host_dns_servers()))
+        return 0
     if cmd == "allowed-origins":
         print(allowed_origins(_local_ipv4s()))
         return 0
