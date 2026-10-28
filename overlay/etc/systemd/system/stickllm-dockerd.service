@@ -1,0 +1,15 @@
+[Unit]
+Description=StickLLM shared dockerd for vault add-ons (host SSD image store only)
+After=local-fs.target
+# Never without the vault. Add-ons keep their data in the vault, not here.
+ConditionPathIsMountPoint=/var/lib/stickllm/vault
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/stickllm-dockerd run
+Restart=no
+TimeoutStopSec=90
+# Started on demand by `stickllm-dockerd ensure` (stickllm-agent, stickllm-docs).
+# Its own cgroup: stopping stickllm-agent.service no longer kills dockerd and
+# every other add-on container. Stopped by `stickllm-dockerd release|halt`.
+# Not enabled: never at boot.

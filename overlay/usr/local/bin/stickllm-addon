@@ -1,0 +1,283 @@
+#!/bin/bash
+# StickLLM starter add-ons (Radicale, Vikunja, Actual Budget, Trilium,
+# Node-RED). Same pattern as stickllm-docs:
+#
+#   host SSD (shared dockerd data-root): the public image, pulled by digest
+#   vault/addons/<id>/...:  everything the app writes (bind mounts)
+#   /usr/local/share/stickllm/addons: read-only config from the ISO
+#   container: --read-only, --log-driver none, non-root, --cap-drop ALL,
+#              no GPU, tmpfs /tmp, port published on 127.0.0.1 only
+#   network:   one bridge per app; nft table stickllm_addons drops every
+#              packet a container starts (no internet, LAN, host or app-to-app)
+#
+#   stickllm-addon <id> install    pull by digest, prepare the vault, start
+#   stickllm-addon <id> start      start when installed (vault unlock)
+#   stickllm-addon <id> run        foreground for stickllm-addon@<id>.service
+#   stickllm-addon <id> stop       stop the container (data stays in the vault)
+#   stickllm-addon <id> uninstall  stop and remove the image (vault data kept)
+#   stickllm-addon <id> gate|status|docker-args
+#   stickllm-addon start-all | stop-all | list
+set -euo pipefail
+
+PYBIN="$(command -v python3 || command -v python || true)"
+LIB="${STICKLLM_ADDONS_LIB:-/usr/local/lib/stickllm_addons.py}"
+DOCKERD="${STICKLLM_DOCKERD:-/usr/local/bin/stickllm-dockerd}"
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+SOCK="/run/stickllm/agent-docker.sock"
+
+if [[ -z "${PYBIN}" || ! -f "$LIB" ]]; then
+  echo "stickllm-addon: python helper missing" >&2
+  exit 1
+fi
+
+mount_ns() {
+  readlink "/proc/$1/ns/mnt" 2>/dev/null || true
+}
+
+# Same reason as stickllm-docs: the gateway has a private mount namespace.
+enter_host_mount_ns() {
+  [[ "$(id -u)" -eq 0 ]] || return 0
+  [[ -z "${STICKLLM_AGENT_HOST_NS:-}" ]] || return 0
+  local self host
+  self="$(mount_ns self)"
+  host="$(mount_ns 1)"
+  if [[ -z "$self" || -z "$host" || "$self" == "$host" ]]; then
+    return 0
+  fi
+  if command -v nsenter >/dev/null 2>&1 && nsenter --mount=/proc/1/ns/mnt -- true >/dev/null 2>&1; then
+    export STICKLLM_AGENT_HOST_NS=1
+    exec nsenter --mount=/proc/1/ns/mnt -- "$(readlink -f "$0")" "$@"
+  fi
+  echo "stickllm-addon: could not enter the host mount namespace" >&2
+}
+
+lib() { "$PYBIN" "$LIB" "$@"; }
+docker_cli() { DOCKER_HOST="unix://${SOCK}" docker "$@"; }
+
+use_systemd() {
+  [[ -z "${STICKLLM_AGENT_NO_SYSTEMD:-}" ]] || return 1
+  [[ -d /run/systemd/system ]] || return 1
+  command -v systemctl >/dev/null 2>&1
+}
+
+case "${1:-}" in
+  start-all|stop-all|list|"") ;;
+  *)
+    case "${2:-}" in
+      install|start|run|stop|uninstall) enter_host_mount_ns "$@" ;;
+    esac
+    ;;
+esac
+
+ID=""
+NAME=""
+CONTAINER=""
+NETWORK=""
+UNIT=""
+INSTALL_UNIT=""
+INSTALL_LOG=""
+LOCK=""
+STOPPING=""
+
+select_app() {
+  ID="$1"
+  NAME="$(lib name "$ID")" || { echo "stickllm-addon: unknown app" >&2; exit 1; }
+  CONTAINER="$(lib container "$ID")"
+  NETWORK="stickllm-${ID}"
+  UNIT="stickllm-addon@${ID}.service"
+  INSTALL_UNIT="stickllm-addon-install@${ID}.service"
+  INSTALL_LOG="${RUN}/addon-${ID}-install.log"
+  LOCK="${RUN}/addon-${ID}.lock"
+  STOPPING="${RUN}/addon-${ID}-stopping"
+}
+
+status() {
+  if [[ -n "${2:-}" ]]; then
+    lib write-status "$ID" --state "$1" --message "$2" >/dev/null 2>&1 || true
+  else
+    lib write-status "$ID" --state "$1" >/dev/null 2>&1 || true
+  fi
+}
+
+# Never start without the vault: every byte the app writes lives there.
+gate() {
+  if ! lib vault-open; then
+    status locked "Unlock the vault to use ${NAME}. Its data lives only in the vault."
+    echo "vault locked: ${NAME} not started" >&2
+    return 2
+  fi
+  return 0
+}
+
+ensure_network() {
+  local net=() sub
+  mapfile -t net < <(lib network "$ID")
+  # name bridge subnet gateway
+  if docker_cli network inspect "${net[0]}" >/dev/null 2>&1; then
+    sub="$(docker_cli network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "${net[0]}" 2>/dev/null || true)"
+    [[ "$sub" == "${net[2]}" ]] && return 0
+    docker_cli network rm "${net[0]}" >/dev/null 2>&1 || true
+  fi
+  docker_cli network create \
+    --driver bridge \
+    --subnet "${net[2]}" \
+    --gateway "${net[3]}" \
+    -o "com.docker.network.bridge.name=${net[1]}" \
+    "${net[0]}" >/dev/null
+}
+
+stop_container() {
+  docker_cli stop -t 30 "$CONTAINER" >/dev/null 2>&1 || true
+  docker_cli rm -f -v "$CONTAINER" >/dev/null 2>&1 || true
+}
+
+cmd_run() {
+  gate || exit 0
+  if ! lib installed "$ID"; then
+    status not_installed
+    echo "${NAME} is not installed" >&2
+    exit 0
+  fi
+  lib prepare-vault "$ID"
+  "$DOCKERD" ensure "addon-${ID}" 9>&- || { status error "Docker did not start."; exit 1; }
+  if ! docker_cli image inspect "$(lib image-ref "$ID")" >/dev/null 2>&1; then
+    status error "The ${NAME} image is missing from the host drive. Install it again from Apps."
+    exit 1
+  fi
+  ensure_network
+  # The firewall goes up before any container is attached to the bridge.
+  lib nft-apply || { status error "Firewall rules failed. ${NAME} not started."; exit 1; }
+  docker_cli rm -f -v "$CONTAINER" >/dev/null 2>&1 || true
+  rm -f "$STOPPING"
+  status starting
+  local args=()
+  # Re-check right before the container gets its vault mounts.
+  gate || exit 0
+  lib prepare-vault "$ID"
+  mapfile -t args < <(lib docker-args "$ID")
+  [[ ${#args[@]} -gt 5 ]] || { status error "Could not build the container arguments."; exit 1; }
+  docker_cli run "${args[@]}" >/dev/null
+  status running
+  trap 'stop_container; status stopped' TERM INT
+  # stdout of the container goes nowhere (--log-driver none).
+  docker_cli wait "$CONTAINER" >/dev/null 2>&1 &
+  wait $! || true
+  trap - TERM INT
+  if [[ -e "$STOPPING" ]]; then
+    status stopped
+    exit 0
+  fi
+  # Exited on its own: let Restart=on-failure try again (vault still gated).
+  status error "${NAME} stopped unexpectedly."
+  exit 1
+}
+
+cmd_start() {
+  gate || exit 0
+  lib installed "$ID" || exit 0
+  if use_systemd; then
+    systemctl start --no-block "$UNIT"
+    exit 0
+  fi
+  cmd_run >/dev/null 2>&1 9>&- &
+}
+
+cmd_stop() {
+  mkdir -p "$RUN"
+  : >"$STOPPING"
+  # From a shell: stop the unit too. As its ExecStop the unit is already
+  # "deactivating", so is-active is false and this does not recurse.
+  if use_systemd && systemctl is-active --quiet "$UNIT" 2>/dev/null; then
+    systemctl stop "$UNIT" >/dev/null 2>&1 || true
+  fi
+  if [[ -S "$SOCK" ]]; then
+    stop_container
+  fi
+  "$DOCKERD" release "addon-${ID}" 9>&- >/dev/null 2>&1 || true
+  if lib vault-open; then
+    status stopped
+  else
+    status locked "Unlock the vault to use ${NAME}. Its data lives only in the vault."
+  fi
+}
+
+cmd_install() {
+  mkdir -p "$RUN"
+  exec 9>"$LOCK"
+  flock -n 9 || { echo "stickllm-addon: ${NAME} install already running" >&2; exit 0; }
+  : >"$INSTALL_LOG"
+  gate || exit 0
+  status installing
+  lib prepare-vault "$ID" || { status install_failed "Vault folders could not be prepared."; exit 1; }
+  "$DOCKERD" ensure "addon-${ID}" 9>&- || {
+    status install_failed "Docker did not start. Mount the host drive used for Agent Zero."; exit 1; }
+  local ref
+  ref="$(lib image-ref "$ID")"
+  if ! docker_cli image inspect "$ref" >/dev/null 2>&1; then
+    # By digest only: a moved tag cannot change what runs.
+    if ! docker_cli pull "$ref" >>"$INSTALL_LOG" 2>&1; then
+      status install_failed "Image pull failed. Check the network and try again."
+      "$DOCKERD" release "addon-${ID}" 9>&- >/dev/null 2>&1 || true
+      exit 1
+    fi
+  fi
+  gate || exit 0
+  lib mark-installed "$ID"
+  status stopped
+  exec 9>&-
+  if use_systemd; then
+    systemctl start --no-block "$UNIT"
+  else
+    cmd_run >/dev/null 2>&1 &
+  fi
+}
+
+cmd_uninstall() {
+  cmd_stop
+  if "$DOCKERD" ensure "addon-${ID}" 9>&- >/dev/null 2>&1; then
+    docker_cli rmi -f "$(lib image-ref "$ID")" >/dev/null 2>&1 || true
+    docker_cli network rm "$NETWORK" >/dev/null 2>&1 || true
+    "$DOCKERD" release "addon-${ID}" 9>&- >/dev/null 2>&1 || true
+  fi
+  if lib vault-open; then
+    lib unmark-installed "$ID" || true
+  fi
+  status not_installed
+}
+
+all_ids() { lib ids; }
+
+case "${1:-}" in
+  list) all_ids; exit 0 ;;
+  start-all)
+    # Vault unlock: start every installed add-on (each is a no-op otherwise).
+    for id in $(all_ids); do
+      "$0" "$id" start >/dev/null 2>&1 9>&- || true
+    done
+    exit 0
+    ;;
+  stop-all)
+    # Vault lock: after Docs, before Agent Zero and dockerd halt.
+    # In parallel: each container gets up to 30 s to flush its database.
+    for id in $(all_ids); do
+      "$0" "$id" stop >/dev/null 2>&1 9>&- &
+    done
+    wait || true
+    nft delete table inet stickllm_addons >/dev/null 2>&1 || true
+    exit 0
+    ;;
+esac
+
+[[ -n "${1:-}" ]] || { echo "usage: stickllm-addon <id> {gate|install|start|run|stop|uninstall|status|docker-args} | start-all | stop-all | list" >&2; exit 1; }
+select_app "$1"
+case "${2:-}" in
+  gate) gate ;;
+  install) cmd_install ;;
+  start) cmd_start ;;
+  run) cmd_run ;;
+  stop) cmd_stop ;;
+  uninstall) cmd_uninstall ;;
+  status) lib status "$ID" ;;
+  docker-args) gate && lib docker-args "$ID" ;;
+  *) echo "usage: stickllm-addon <id> {gate|install|start|run|stop|uninstall|status|docker-args}" >&2; exit 1 ;;
+esac

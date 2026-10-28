@@ -1,0 +1,21 @@
+[Unit]
+Description=StickLLM ONLYOFFICE Docs (host SSD image, vault-only data, loopback only)
+After=local-fs.target stickllm-dockerd.service stickllm-ui.service
+# Shutdown order is the reverse: Docs stops (and flushes edits through the
+# gateway into vault/Documents) before the gateway, dockerd and the vault
+# mount go away.
+RequiresMountsFor=/var/lib/stickllm/vault /mnt/stickllm-settings
+# The unit is skipped until the server vault is actually mounted.
+ConditionPathIsMountPoint=/var/lib/stickllm/vault
+# The JWT secret is on the encrypted settings partition.
+ConditionPathIsMountPoint=/mnt/stickllm-settings
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/stickllm-docs run
+ExecStop=/usr/local/bin/stickllm-docs stop
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+# Started by vault unlock (when installed) or by stickllm-docs-install.service.
+# Not enabled: never at boot without an unlocked vault.

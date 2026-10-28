@@ -1,43 +1,62 @@
 #!/bin/bash
-# Claim unallocated space on the StickLLM boot USB as STICKLLM-DATA (models/vault).
-# Never touches internal disks. Safe to re-run (mounts existing DATA).
+# Claim unallocated space on the StickLLM boot USB.
+# STICKLLM-DATA holds models. A separate ~256 MiB partition is reserved beside
+# the live image for encrypted stick settings. That partition is not inside
+# the ISO and is not formatted here — stickllm-usb-settings LUKS-formats it
+# with the SSD vault passcode later. Never touches internal disks.
 set -euo pipefail
 
 LABEL="${STICKLLM_DATA_LABEL:-STICKLLM-DATA}"
 MNT="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
 STATUS_DIR="${STICKLLM_RUN:-/run/stickllm}"
+LIB="${STICKLLM_SETTINGS_LIB:-/usr/local/lib/stickllm_usb_settings.py}"
+if [[ ! -f "$LIB" ]]; then
+  LIB="$(cd "$(dirname "$0")/../lib" && pwd)/stickllm_usb_settings.py"
+fi
 AUTO=0
 YES=0
+SETTINGS_ONLY=0
+PRINT_DISK=0
+DISK=""
+LIVE_SRC=""
+SETTINGS_PART=""
+SETTINGS_NOTE=""
 
 usage() {
-  echo "Usage: sudo stickllm-usb-claim [--auto] [--yes]"
-  echo "  --auto  non-interactive: mount existing DATA, or create in free space on boot USB"
-  echo "  --yes   skip typed confirm (still requires --auto or interactive confirm)"
+  echo "Usage: sudo stickllm-usb-claim [--auto] [--yes] [--settings-only] [--print-boot-disk]"
+  echo "  --auto            non-interactive: mount existing DATA, or create in free space"
+  echo "  --yes             skip typed confirm (still requires --auto or interactive confirm)"
+  echo "  --settings-only   create the 256 MiB settings partition if it is missing; do not shrink DATA"
+  echo "  --print-boot-disk print the boot USB disk name and exit (no writes)"
 }
 
 for a in "$@"; do
   case "$a" in
     --auto) AUTO=1 ;;
     --yes|--i-understand) YES=1 ;;
+    --settings-only) SETTINGS_ONLY=1 ;;
+    --print-boot-disk) PRINT_DISK=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $a"; usage; exit 2 ;;
   esac
 done
 
-if [[ "$(id -u)" -ne 0 ]]; then
+if [[ "$PRINT_DISK" -ne 1 && "$(id -u)" -ne 0 ]]; then
   echo "Run as root (sudo)."
   exit 1
 fi
 
-mkdir -p "$STATUS_DIR" "$MNT"
+mkdir -p "$STATUS_DIR" "$MNT" 2>/dev/null || true
 
 write_status() {
   local mounted="$1" free_gb="$2" disk="$3" note="$4"
-  local note_json
+  local note_json part_json settings_note_json
   note_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$note" 2>/dev/null || printf '"%s"' "${note//\"/\\\"}")"
+  part_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "$SETTINGS_PART" 2>/dev/null || printf 'null')"
+  settings_note_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "${SETTINGS_NOTE:-}" 2>/dev/null || printf '""')"
   cat >"$STATUS_DIR/storage.json" <<EOF || true
 {
-  "version": "0.2",
+  "version": "0.4",
   "label": "$LABEL",
   "mount": "$MNT",
   "mounted": $mounted,
@@ -45,6 +64,10 @@ write_status() {
   "free_gb": $free_gb,
   "models_dir": "$MNT/models",
   "vault_dir": "$MNT/vault",
+  "settings_mib": 256,
+  "settings_part": $part_json,
+  "settings_mount": "/mnt/stickllm-settings",
+  "settings_note": $settings_note_json,
   "note": $note_json
 }
 EOF
@@ -61,132 +84,295 @@ soft_exit() {
   exit 1
 }
 
-part_path() {
-  local disk="$1" num="$2"
-  if [[ "$disk" == nvme* || "$disk" == mmcblk* || "$disk" == loop* ]]; then
-    echo "/dev/${disk}p${num}"
+resolve_boot_disk() {
+  local medium="" boot_part="" disk="" rm="" bytes="" p=""
+  DISK=""
+  LIVE_SRC=""
+  for p in /lib/live/mount/medium /run/live/medium /lib/live/mount/findiso; do
+    if findmnt -n "$p" >/dev/null 2>&1; then
+      medium="$(findmnt -n -o SOURCE "$p" | head -1)"
+      break
+    fi
+  done
+  if [[ -n "$medium" && -b "$medium" ]]; then
+    boot_part="$medium"
+  elif [[ -b /dev/disk/by-label/PRIVACYAI ]]; then
+    boot_part="$(readlink -f /dev/disk/by-label/PRIVACYAI)"
+  elif [[ -b /dev/disk/by-label/STICKLLM ]]; then
+    boot_part="$(readlink -f /dev/disk/by-label/STICKLLM)"
+  fi
+  LIVE_SRC="$boot_part"
+  if [[ -z "$boot_part" ]]; then
+    local -a rem=()
+    mapfile -t rem < <(lsblk -dn -o NAME,TYPE,RM | awk '$2=="disk" && $3=="1"{print $1}')
+    if [[ ${#rem[@]} -eq 1 ]]; then
+      disk="${rem[0]}"
+    else
+      return 1
+    fi
   else
-    echo "/dev/${disk}${num}"
+    disk="$(lsblk -no PKNAME "$boot_part" 2>/dev/null | head -1)"
+    disk="${disk:-$(basename "$boot_part" | sed -E 's/p?[0-9]+$//')}"
+  fi
+  [[ -n "$disk" && -b "/dev/$disk" ]] || return 1
+  rm="$(lsblk -dn -o RM "/dev/$disk" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+  if [[ "$rm" != "1" && -z "$medium" ]]; then
+    return 1
+  fi
+  bytes="$(lsblk -dn -b -o SIZE "/dev/$disk" | tr -d '[:space:]')"
+  if [[ -n "$bytes" ]] && (( bytes > 512 * 1024 * 1024 * 1024 )); then
+    return 1
+  fi
+  DISK="$disk"
+  return 0
+}
+
+if [[ "$PRINT_DISK" -eq 1 ]]; then
+  if resolve_boot_disk; then
+    printf '%s\n' "$DISK"
+    exit 0
+  fi
+  exit 1
+fi
+
+read_free_region() {
+  local bytes used_mib disk_mib start_mib size_mib free_line
+  bytes="$(lsblk -dn -b -o SIZE "/dev/$DISK" | tr -d '[:space:]')"
+  disk_mib=$(( bytes / 1024 / 1024 ))
+  used_mib="$(lsblk -b -n -o NAME,SIZE,TYPE "/dev/$DISK" | awk -v d="$DISK" '
+    $3=="part" {
+      sub("^"d"p?","",$1)
+      used+=$2
+    }
+    END { printf "%d", (used/1024/1024)+0 }
+  ')"
+  start_mib=$(( used_mib + 8 ))
+  if (( start_mib < 8 )); then start_mib=8; fi
+  size_mib=$(( disk_mib - start_mib - 1 ))
+  free_line="$(parted -sm "/dev/$DISK" unit MiB print free 2>/dev/null | awk -F: '$1=="free"{print}' | tail -1 || true)"
+  if [[ -n "$free_line" ]]; then
+    start_mib="$(echo "$free_line" | awk -F: '{gsub(/MiB/,"",$2); print int($2+0.999)}')"
+    size_mib="$(echo "$free_line" | awk -F: '{gsub(/MiB/,"",$4); print int($4)}')"
+  fi
+  FREE_START="$start_mib"
+  FREE_SIZE="$size_mib"
+}
+
+plan_json() {
+  local data_exists="$1" settings_exists="$2"
+  python3 "$LIB" plan \
+    --free-start "$FREE_START" \
+    --free-size "$FREE_SIZE" \
+    --data-exists "$data_exists" \
+    --settings-exists "$settings_exists"
+}
+
+create_range() {
+  local start_mib="$1" end_mib="$2"
+  local size_mib=$(( end_mib - start_mib ))
+  (( size_mib > 0 )) || return 1
+  if command -v parted >/dev/null; then
+    echo "Creating partition ${start_mib}MiB → ${end_mib}MiB with parted…"
+    if parted -s "/dev/$DISK" -- mkpart primary "${start_mib}MiB" "${end_mib}MiB" 2>/tmp/stickllm-parted.err; then
+      return 0
+    fi
+    echo "parted mkpart failed (common on isohybrid): $(head -c 200 /tmp/stickllm-parted.err 2>/dev/null || true)"
+  fi
+  if command -v sfdisk >/dev/null; then
+    echo "Retrying with sfdisk --append --no-reread (live USB is mounted)…"
+    if echo "start=${start_mib}MiB, size=${size_mib}MiB, type=83" \
+        | sfdisk --append --no-reread --force "/dev/$DISK" 2>/tmp/stickllm-sfdisk.err; then
+      return 0
+    fi
+    echo "sfdisk append failed: $(head -c 400 /tmp/stickllm-sfdisk.err 2>/dev/null || true)"
+  fi
+  return 1
+}
+
+settle_disk() {
+  sleep 2
+  partprobe "/dev/$DISK" 2>/dev/null || true
+  partx -u "/dev/$DISK" 2>/dev/null || partx -a "/dev/$DISK" 2>/dev/null || true
+  sleep 1
+  udevadm settle 2>/dev/null || true
+}
+
+find_settings_node() {
+  local pref="" part=""
+  if [[ -f "$MNT/stickllm-settings-part.json" ]]; then
+    pref="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("part") or "")' "$MNT/stickllm-settings-part.json" 2>/dev/null || true)"
+  fi
+  part="$(lsblk -J -b -o NAME,PATH,SIZE,TYPE,FSTYPE,LABEL,PKNAME,MOUNTPOINT "/dev/$DISK" 2>/dev/null \
+    | python3 "$LIB" choose --boot-disk "$DISK" --preferred "$pref" --live-source "$LIVE_SRC" 2>/dev/null || true)"
+  [[ -n "$part" && -b "$part" ]] || return 1
+  printf '%s\n' "$part"
+}
+
+write_settings_pointer() {
+  local part="$1" start_mib="${2:-}"
+  [[ -n "$part" && -b "$part" ]] || return 0
+  findmnt -n "$MNT" >/dev/null 2>&1 || return 0
+  local size
+  size="$(lsblk -bno SIZE "$part" 2>/dev/null | head -1 | tr -d '[:space:]' || echo 0)"
+  if [[ -n "$start_mib" ]]; then
+    python3 "$LIB" write-pointer --mnt "$MNT" --disk "$DISK" --part "$part" --size "$size" --start-mib "$start_mib" >/dev/null
+  else
+    python3 "$LIB" write-pointer --mnt "$MNT" --disk "$DISK" --part "$part" --size "$size" >/dev/null
   fi
 }
 
-# Prefer existing labeled partition anywhere removable
-EXISTING="$(blkid -L "$LABEL" 2>/dev/null || true)"
-if [[ -n "$EXISTING" ]]; then
+remember_settings() {
+  local part="$1" start_mib="${2:-}" note="$3"
+  SETTINGS_PART="$part"
+  SETTINGS_NOTE="$note"
+  write_settings_pointer "$part" "$start_mib" || true
+}
+
+ensure_settings_partition() {
+  local existing="" plan start end
+  existing="$(find_settings_node || true)"
+  if [[ -n "$existing" ]]; then
+    remember_settings "$existing" "" "settings partition already on the boot USB (not inside the ISO)"
+    echo "Settings partition present: $existing"
+    return 0
+  fi
+  read_free_region
+  plan="$(plan_json 1 0)"
+  start="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); s=d.get("settings"); print("" if not s else s["start_mib"])' "$plan")"
+  end="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); s=d.get("settings"); print("" if not s else s["end_mib"])' "$plan")"
+  if [[ -z "$start" || -z "$end" ]]; then
+    SETTINGS_NOTE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("note") or "no settings partition")' "$plan")"
+    echo "USB settings: $SETTINGS_NOTE"
+    return 0
+  fi
+  echo "Reserving settings partition ${start}MiB → ${end}MiB on /dev/$DISK (STICKLLM-DATA is not shrunk)."
+  if ! create_range "$start" "$end"; then
+    SETTINGS_NOTE="could not create the 256 MiB settings partition"
+    echo "USB settings: $SETTINGS_NOTE"
+    return 0
+  fi
+  settle_disk
+  existing="$(find_settings_node || true)"
+  if [[ -z "$existing" ]]; then
+    SETTINGS_NOTE="settings partition was requested but the kernel node is missing (reboot may attach it)"
+    echo "USB settings: $SETTINGS_NOTE"
+    return 0
+  fi
+  # Leave it raw. LUKS happens later with the vault passcode.
+  remember_settings "$existing" "$start" "created raw 256 MiB settings partition on the boot USB"
+  echo "Settings partition reserved (raw, not encrypted yet): $existing"
+}
+
+mount_existing_data() {
+  local existing="$1"
   if ! findmnt -n "$MNT" >/dev/null 2>&1; then
-    if ! mount "$EXISTING" "$MNT" 2>/tmp/stickllm-mount.err; then
-      echo "Mount failed for $EXISTING: $(head -c 240 /tmp/stickllm-mount.err 2>/dev/null || true)"
-      # Corrupt journal after unclean power-loss is common on live USB DATA.
+    if ! mount "$existing" "$MNT" 2>/tmp/stickllm-mount.err; then
+      echo "Mount failed for $existing: $(head -c 240 /tmp/stickllm-mount.err 2>/dev/null || true)"
       if command -v e2fsck >/dev/null; then
-        echo "Attempting e2fsck -fy on $EXISTING…"
-        e2fsck -fy "$EXISTING" 2>&1 | tail -20 || true
+        echo "Attempting e2fsck -fy on $existing…"
+        e2fsck -fy "$existing" 2>&1 | tail -20 || true
       fi
-      if ! mount "$EXISTING" "$MNT" 2>/tmp/stickllm-mount.err; then
-        DISK="$(lsblk -no PKNAME "$EXISTING" 2>/dev/null | head -1)"
-        # Never-mounted / unrecoverable: recreate when auto+yes (empty DATA only).
+      if ! mount "$existing" "$MNT" 2>/tmp/stickllm-mount.err; then
+        local disk=""
+        disk="$(lsblk -no PKNAME "$existing" 2>/dev/null | head -1)"
         if [[ "$AUTO" -eq 1 && "$YES" -eq 1 ]]; then
-          echo "Recreating corrupt $LABEL on $EXISTING (was never mountable)…"
-          mkfs.ext4 -F -L "$LABEL" "$EXISTING"
-          if ! mount "$EXISTING" "$MNT" 2>/tmp/stickllm-mount.err; then
-            soft_exit "Existing $LABEL corrupt and remount failed after mkfs" "${DISK:-unknown}"
+          echo "Recreating corrupt $LABEL on $existing (was never mountable)…"
+          mkfs.ext4 -F -L "$LABEL" "$existing"
+          if ! mount "$existing" "$MNT" 2>/tmp/stickllm-mount.err; then
+            soft_exit "Existing $LABEL corrupt and remount failed after mkfs" "${disk:-unknown}"
           fi
         else
-          soft_exit "Existing $LABEL present but unmountable (corrupt journal — re-run with --auto --yes)" "${DISK:-unknown}"
+          soft_exit "Existing $LABEL present but unmountable (corrupt journal — re-run with --auto --yes)" "${disk:-unknown}"
         fi
       fi
     fi
   fi
   mkdir -p "$MNT/models" "$MNT/vault" "$MNT/etc/stickllm"
-  FREE_KB="$(df -Pk "$MNT" | awk 'NR==2{print $4}')"
-  FREE_GB="$(awk -v k="$FREE_KB" 'BEGIN{printf "%.1f", k/1024/1024}')"
-  DISK="$(lsblk -no PKNAME "$EXISTING" 2>/dev/null | head -1)"
-  write_status true "$FREE_GB" "${DISK:-unknown}" "Mounted existing $LABEL"
-  echo "Mounted $EXISTING → $MNT (${FREE_GB} GiB free)"
+}
+
+finish_mounted() {
+  local free_kb free_gb
+  free_kb="$(df -Pk "$MNT" | awk 'NR==2{print $4}')"
+  free_gb="$(awk -v k="$free_kb" 'BEGIN{printf "%.1f", k/1024/1024}')"
+  write_status true "$free_gb" "${DISK:-unknown}" "${1:-Mounted $LABEL}"
+  echo "Mounted $LABEL at $MNT (${free_gb} GiB free)."
+  if [[ -n "$SETTINGS_PART" ]]; then
+    echo "Settings partition: $SETTINGS_PART ($SETTINGS_NOTE)"
+  elif [[ -n "$SETTINGS_NOTE" ]]; then
+    echo "Settings: $SETTINGS_NOTE"
+  fi
+}
+
+# --- Existing STICKLLM-DATA -------------------------------------------------
+DATA_MOUNTED=0
+EXISTING="$(blkid -L "$LABEL" 2>/dev/null || true)"
+if [[ -n "$EXISTING" ]]; then
+  mount_existing_data "$EXISTING"
+  DATA_MOUNTED=1
+fi
+
+if ! resolve_boot_disk; then
+  if [[ "$DATA_MOUNTED" -eq 1 ]]; then
+    SETTINGS_NOTE="boot USB was not identified; settings partition was not created"
+    finish_mounted "Mounted existing $LABEL"
+    exit 0
+  fi
+  soft_exit "Could not identify StickLLM boot USB"
+fi
+
+if [[ "$DATA_MOUNTED" -eq 1 ]]; then
+  # Same disk as the boot USB only. Never partition some other labeled volume.
+  data_disk="$(lsblk -no PKNAME "$EXISTING" 2>/dev/null | head -1 || true)"
+  if [[ -n "$data_disk" && "$data_disk" != "$DISK" ]]; then
+    SETTINGS_NOTE="STICKLLM-DATA is not on the boot USB; refusing to add a settings partition there"
+    finish_mounted "Mounted existing $LABEL"
+    exit 0
+  fi
+  ensure_settings_partition || SETTINGS_NOTE="${SETTINGS_NOTE:-settings partition check failed}"
+  finish_mounted "Mounted existing $LABEL"
   exit 0
 fi
 
-# Resolve boot / live medium disk (StickLLM USB only)
-MEDIUM=""
-for p in /lib/live/mount/medium /run/live/medium /lib/live/mount/findiso; do
-  if findmnt -n "$p" >/dev/null 2>&1; then
-    MEDIUM="$(findmnt -n -o SOURCE "$p" | head -1)"
-    break
-  fi
-done
-
-BOOT_PART=""
-if [[ -n "$MEDIUM" && -b "$MEDIUM" ]]; then
-  BOOT_PART="$MEDIUM"
-elif [[ -b /dev/disk/by-label/PRIVACYAI ]]; then
-  BOOT_PART="$(readlink -f /dev/disk/by-label/PRIVACYAI)"
-elif [[ -b /dev/disk/by-label/STICKLLM ]]; then
-  BOOT_PART="$(readlink -f /dev/disk/by-label/STICKLLM)"
-fi
-
-if [[ -z "$BOOT_PART" ]]; then
-  # Fallback: single removable disk
-  mapfile -t REM < <(lsblk -dn -o NAME,TYPE,RM | awk '$2=="disk" && $3=="1"{print $1}')
-  if [[ ${#REM[@]} -eq 1 ]]; then
-    DISK="${REM[0]}"
+if [[ "$SETTINGS_ONLY" -eq 1 ]]; then
+  ensure_settings_partition || SETTINGS_NOTE="${SETTINGS_NOTE:-settings partition check failed}"
+  if findmnt -n "$MNT" >/dev/null 2>&1; then
+    finish_mounted "Settings partition checked"
   else
-    soft_exit "Could not identify StickLLM boot USB"
+    write_status false 0 "$DISK" "${SETTINGS_NOTE:-settings partition checked; STICKLLM-DATA is not mounted}"
+    echo "Settings-only: ${SETTINGS_NOTE:-no STICKLLM-DATA yet}"
   fi
+  exit 0
+fi
+
+# --- Create DATA and, when it fits, the settings partition -----------------
+read_free_region
+settings_exists=0
+if find_settings_node >/dev/null 2>&1; then
+  settings_exists=1
+fi
+PLAN="$(plan_json 0 "$settings_exists")"
+DATA_START="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); s=d.get("data"); print("" if not s else s["start_mib"])' "$PLAN")"
+DATA_END="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); s=d.get("data"); print("" if not s else s["end_mib"])' "$PLAN")"
+SET_START="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); s=d.get("settings"); print("" if not s else s["start_mib"])' "$PLAN")"
+SET_END="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); s=d.get("settings"); print("" if not s else s["end_mib"])' "$PLAN")"
+PLAN_NOTE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("note") or "")' "$PLAN")"
+
+if [[ -z "$DATA_START" || -z "$DATA_END" ]]; then
+  echo "Free space ${FREE_SIZE} MiB — $PLAN_NOTE"
+  soft_exit "Free space only ${FREE_SIZE} MiB — need ≥1 GiB" "$DISK"
+fi
+
+echo "StickLLM USB claim"
+echo "  Disk:     /dev/$DISK ($(lsblk -dn -o SIZE,MODEL /dev/$DISK))"
+echo "  DATA:     ${DATA_START}MiB → ${DATA_END}MiB ($LABEL)"
+if [[ -n "$SET_START" ]]; then
+  echo "  Settings: ${SET_START}MiB → ${SET_END}MiB (256 MiB, raw until vault unlock)"
 else
-  DISK="$(lsblk -no PKNAME "$BOOT_PART" 2>/dev/null | head -1)"
-  DISK="${DISK:-$(basename "$BOOT_PART" | sed -E 's/p?[0-9]+$//')}"
+  echo "  Settings: not in this plan ($PLAN_NOTE)"
+  SETTINGS_NOTE="$PLAN_NOTE"
 fi
-
-if [[ ! -b "/dev/$DISK" ]]; then
-  soft_exit "Not a block device: $DISK"
-fi
-
-RM="$(lsblk -dn -o RM "/dev/$DISK" 2>/dev/null | tr -d '[:space:]' || echo 0)"
-# Some USB bridges report RM=0; still allow if it holds the live medium
-if [[ "$RM" != "1" && -z "$MEDIUM" ]]; then
-  soft_exit "Refusing non-removable disk without live medium" "$DISK"
-fi
-
-# Size check: refuse huge disks (likely internal mistaken)
-BYTES="$(lsblk -dn -b -o SIZE "/dev/$DISK" | tr -d '[:space:]')"
-if (( BYTES > 512*1024*1024*1024 )); then
-  soft_exit "Disk too large; refusing auto claim" "$DISK"
-fi
-
-DISK_MIB=$(( BYTES / 1024 / 1024 ))
-
-# How much is already claimed by partitions? (isohybrid often breaks parted "free")
-USED_MIB="$(lsblk -b -n -o NAME,SIZE,TYPE "/dev/$DISK" | awk -v d="$DISK" '
-  $3=="part" {
-    sub("^"d"p?","",$1)
-    used+=$2
-  }
-  END { printf "%d", (used/1024/1024)+0 }
-')"
-# Start a bit past used space (1 MiB align + 8 MiB slack for hybrid quirks)
-START_MIB=$(( USED_MIB + 8 ))
-# Align up to 1 MiB
-if (( START_MIB < 8 )); then START_MIB=8; fi
-SIZE_MIB=$(( DISK_MIB - START_MIB - 1 ))
-
-# Prefer parted free-region when it works
-FREE_LINE="$(parted -sm "/dev/$DISK" unit MiB print free 2>/dev/null | awk -F: '$1=="free"{print}' | tail -1 || true)"
-if [[ -n "$FREE_LINE" ]]; then
-  START_MIB="$(echo "$FREE_LINE" | awk -F: '{gsub(/MiB/,"",$2); print int($2+0.999)}')"
-  SIZE_MIB="$(echo "$FREE_LINE" | awk -F: '{gsub(/MiB/,"",$4); print int($4)}')"
-fi
-
-if (( SIZE_MIB < 1024 )); then
-  echo "Free space only ${SIZE_MIB} MiB — need at least 1 GiB."
-  echo "Disk ${DISK_MIB} MiB, partitions ~${USED_MIB} MiB."
-  soft_exit "Free space only ${SIZE_MIB} MiB — need ≥1 GiB" "$DISK"
-fi
-
-echo "StickLLM USB claim (v0.2)"
-echo "  Disk:  /dev/$DISK ($(lsblk -dn -o SIZE,MODEL /dev/$DISK))"
-echo "  Free:  ~${SIZE_MIB} MiB → will create $LABEL"
-echo "  Start: ${START_MIB}MiB (isohybrid-safe)"
-echo "  Mount: $MNT"
-echo "  Internal disks will NOT be touched."
+echo "  Mount:    $MNT"
+echo "  Internal disks will NOT be touched. The ISO file is not modified."
 echo
 
 if [[ "$AUTO" -ne 1 && "$YES" -ne 1 ]]; then
@@ -197,42 +383,19 @@ if [[ "$AUTO" -ne 1 && "$YES" -ne 1 ]]; then
   fi
 fi
 
-PARTS_BEFORE="$(lsblk -ln -o NAME,TYPE "/dev/$DISK" | awk '$2=="part"{print $1}')"
-
-created=0
-if command -v parted >/dev/null; then
-  echo "Creating partition with parted (${START_MIB}MiB → 100%)…"
-  if parted -s "/dev/$DISK" -- mkpart primary ext4 "${START_MIB}MiB" 100% 2>/tmp/stickllm-parted.err; then
-    created=1
-  else
-    echo "parted mkpart failed (common on isohybrid): $(head -c 200 /tmp/stickllm-parted.err 2>/dev/null || true)"
-  fi
-fi
-
-if [[ "$created" -ne 1 ]] && command -v sfdisk >/dev/null; then
-  echo "Retrying with sfdisk --append --no-reread (live USB is mounted)…"
-  # Live medium keeps the disk "busy"; --no-reread is required.
-  if echo 'type=83' | sfdisk --append --no-reread --force "/dev/$DISK" 2>/tmp/stickllm-sfdisk.err; then
-    created=1
-  else
-    echo "sfdisk append failed: $(cat /tmp/stickllm-sfdisk.err 2>/dev/null | head -c 400 || true)"
-  fi
-fi
-
-if [[ "$created" -ne 1 ]]; then
-  echo "Could not create partition on /dev/$DISK."
+if ! create_range "$DATA_START" "$DATA_END"; then
   soft_exit "Could not create DATA partition (isohybrid table)" "$DISK"
 fi
+if [[ -n "$SET_START" && -n "$SET_END" ]]; then
+  if ! create_range "$SET_START" "$SET_END"; then
+    SETTINGS_NOTE="DATA was created; the 256 MiB settings partition was not"
+    echo "USB settings: $SETTINGS_NOTE"
+  fi
+fi
 
-sleep 2
-partprobe "/dev/$DISK" 2>/dev/null || true
-partx -u "/dev/$DISK" 2>/dev/null || partx -a "/dev/$DISK" 2>/dev/null || true
-sleep 2
-udevadm settle 2>/dev/null || true
+settle_disk
 
-# Pick the largest partition >1 GiB that is NOT the live medium (never format EFI/tiny).
-MEDIUM_DEV="$(findmnt -n -o SOURCE /lib/live/mount/medium 2>/dev/null || true)"
-# -nr = no tree prefixes in NAME (critical)
+MEDIUM_DEV="$LIVE_SRC"
 PART="$(lsblk -nbr -o NAME,SIZE,TYPE "/dev/$DISK" | awk -v med="$MEDIUM_DEV" '
   $3=="part" {
     name=$1
@@ -249,23 +412,20 @@ if [[ -z "$PART" || ! -b "$PART" ]]; then
   soft_exit "Partition node missing after create (reboot may be required)" "$DISK"
 fi
 PSIZE="$(lsblk -bno SIZE "$PART" | tr -d '[:space:]')"
-if (( PSIZE < 1024*1024*1024 )); then
-  echo "Refusing to format $PART (only $PSIZE bytes) — likely EFI."
+if (( PSIZE < 1024 * 1024 * 1024 )); then
+  echo "Refusing to format $PART (only $PSIZE bytes) — likely EFI or the settings slot."
   soft_exit "Refusing to format tiny partition $PART" "$DISK"
 fi
 
 echo "Formatting $PART as ext4 label=$LABEL …"
 mkfs.ext4 -F -L "$LABEL" "$PART"
-# Ensure mountpoint is not a leftover empty dir on overlay
 umount "$MNT" 2>/dev/null || true
-# Isohybrid + busy live medium: re-probe before mount (mount errno 32 is common).
 partprobe "/dev/$DISK" 2>/dev/null || true
 partx -u "/dev/$DISK" 2>/dev/null || true
 udevadm settle 2>/dev/null || true
 sleep 1
 if ! mount "$PART" "$MNT" 2>/tmp/stickllm-mount.err; then
   echo "mount failed: $(head -c 200 /tmp/stickllm-mount.err 2>/dev/null || true)"
-  # Retry once after short settle — then soft-fail for --auto boot UX.
   sleep 2
   if ! mount "$PART" "$MNT" 2>/tmp/stickllm-mount.err; then
     soft_exit "Created $LABEL but mount failed (reboot may attach it)" "$DISK"
@@ -273,13 +433,21 @@ if ! mount "$PART" "$MNT" 2>/tmp/stickllm-mount.err; then
 fi
 mkdir -p "$MNT/models" "$MNT/vault" "$MNT/etc/stickllm"
 cat >"$MNT/README.txt" <<'EOF'
-StickLLM data partition (v0.2)
-- models/  verified GGUF downloads (hash-checked against USB catalog)
-- vault/   optional encrypted context (off by default)
+StickLLM data partition
+- models/  verified GGUF downloads (hash-checked against the USB catalog)
+- vault/   optional encrypted context pointer space (chats live in the SSD vault blob)
+
+The ~256 MiB STICKLLM-SETTINGS partition is a sibling on this USB, not a
+folder here and not a file inside the ISO. It is encrypted with the SSD
+vault passcode and holds per-computer vault locations plus portable secrets.
+Voice weights stay in /opt/stickllm/speech.
 EOF
 sync
 
-FREE_KB="$(df -Pk "$MNT" | awk 'NR==2{print $4}')"
-FREE_GB="$(awk -v k="$FREE_KB" 'BEGIN{printf "%.1f", k/1024/1024}')"
-write_status true "$FREE_GB" "$DISK" "Created and mounted $LABEL"
-echo "Done. $LABEL mounted at $MNT (${FREE_GB} GiB free)."
+settings_node="$(find_settings_node || true)"
+if [[ -n "$settings_node" ]]; then
+  remember_settings "$settings_node" "${SET_START:-}" "created raw 256 MiB settings partition beside the live image"
+else
+  [[ -n "$SETTINGS_NOTE" ]] || SETTINGS_NOTE="${PLAN_NOTE:-settings partition was not created}"
+fi
+finish_mounted "Created and mounted $LABEL"

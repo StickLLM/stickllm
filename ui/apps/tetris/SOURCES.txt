@@ -1,0 +1,6 @@
+name: javascript-tetris
+upstream: https://github.com/jakesgordon/javascript-tetris
+commit: e5c0c42f7dac0f3514a55eff656c6e22e95d68ed
+license: MIT
+pinned: 2025-06-01
+note: Single HTML file plus stats.js and texture.jpg. Vendored as-is aside from the tab title, favicon link, and Back to Apps link, plus two script tags before </body> that load stickllm-adapter.js (the Agent Zero adapter, StickLLM's own file) and /apps/stickllm-bridge.js.

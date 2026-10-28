@@ -1,0 +1,1964 @@
+#!/usr/bin/env python3
+"""Offline speech for the StickLLM UI. No network. No model download.
+
+STT: whisper.cpp v1.8.7, English ggml-tiny.en.bin, CPU (-ng).
+Chrome MediaRecorder posts audio/webm;codecs=opus (or Ogg Opus). libopus on the
+image decodes that to 16 kHz mono PCM WAV before whisper-cli.
+TTS: KittenTTS mini 0.8 ONNX (Apache-2.0), eSpeak-ng, eight voices, Bella default.
+Not Kitten TTS 2. Not Parakeet. Not Bark.
+
+Pins and licenses: /usr/local/lib/stickllm-speech.pin
+While Voice is on, whisper-server and KittenTTS stay loaded. Whisper listens
+on 127.0.0.1 only. Kitten answers on a unix socket. Voice off stops both.
+This process does not write speech files, does not log audio, and does not
+log the transcript or the reply text.
+"""
+from __future__ import annotations
+
+import array
+import ctypes
+import json
+import os
+import re
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+import wave
+from io import BytesIO
+from pathlib import Path
+
+# Wall-clock cap for one transcribe or one read-aloud, including the child.
+SPEECH_TIMEOUT_SECS = 90
+MEM_CAP_BYTES = int(os.environ.get("STICKLLM_SPEECH_MEM_CAP", str(2 * 1024 * 1024 * 1024)))
+CPU_LIMIT_SECS = SPEECH_TIMEOUT_SECS * 2
+MAX_AUDIO_BYTES = 2_500_000
+MAX_SPEAK_CHARS = 4000
+CHUNK_CHARS = 400
+WHISPER_THREADS = "4"
+SAMPLE_RATE = 24000
+TAIL_TRIM = 5000
+DEFAULT_VOICE = "Bella"
+KITTEN_DIR = "/run/stickllm-kitten"
+KITTEN_SOCK_NAME = "kitten.sock"
+KITTEN_UNIT = "stickllm-kitten.service"
+WHISPER_UNIT = "stickllm-whisper.service"
+WHISPER_HOST = "127.0.0.1"
+WHISPER_PORT = 8178
+VOICE_POWER_PATH = Path("/var/lib/stickllm/voice-power")
+KITTEN_FRAME_MAX = 8_000_000
+KITTEN_FAIL = {
+    "onnx": "Text to speech runtime is not installed (onnxruntime).",
+    "voices": "The KittenTTS voices file could not be read.",
+    "voice": "That voice is not in the KittenTTS voices file.",
+    "model": "That file is not the KittenTTS mini 0.8 model.",
+    "espeak": "Text to speech is not installed (espeak-ng).",
+    "infer": "Text to speech failed.",
+}
+WHISPER_MODEL_NAME = "ggml-tiny.en.bin"
+KITTEN_MODEL_NAME = "kitten_tts_mini_v0_8.onnx"
+KITTEN_VOICES_NAME = "voices.npz"
+
+# Friendly name -> style row in voices.npz. Same map as mini 0.8 config.json.
+VOICE_ALIASES = {
+    "Bella": "expr-voice-2-f",
+    "Jasper": "expr-voice-2-m",
+    "Luna": "expr-voice-3-f",
+    "Bruno": "expr-voice-3-m",
+    "Rosie": "expr-voice-4-f",
+    "Hugo": "expr-voice-4-m",
+    "Kiki": "expr-voice-5-f",
+    "Leo": "expr-voice-5-m",
+}
+VOICE_IDS = frozenset(VOICE_ALIASES.values())
+
+# KittenTTS TextCleaner alphabet (StyleTTS2). Index 0 is pad. Index 10 is the
+# end marker the ONNX graph expects (ellipsis). Unknown characters are skipped.
+_PAD = "$"
+_PUNCT = ";:,.!?¡¿—…\"«»“” "
+_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+_IPA = (
+    "ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘'̩'ᵻ"
+)
+_SYMBOLS = [_PAD] + list(_PUNCT) + list(_LETTERS) + list(_IPA)
+_SYMBOL_INDEX = {ch: i for i, ch in enumerate(_SYMBOLS)}
+
+_ENV_KEYS = (
+    "STICKLLM_WHISPER_BIN",
+    "STICKLLM_WHISPER_MODEL",
+    "STICKLLM_KITTEN_MODEL",
+    "STICKLLM_KITTEN_VOICES",
+    "STICKLLM_ESPEAK_BIN",
+    "STICKLLM_SPEECH_DIR",
+    "STICKLLM_SPEECH_USER",
+    "ESPEAK_DATA_PATH",
+)
+
+
+def speech_dir() -> Path:
+    return Path(os.environ.get("STICKLLM_SPEECH_DIR", "/opt/stickllm/speech"))
+
+
+def whisper_bin() -> str:
+    return os.environ.get("STICKLLM_WHISPER_BIN", "/usr/local/bin/whisper-cli")
+
+
+def whisper_model() -> str:
+    return os.environ.get("STICKLLM_WHISPER_MODEL", str(speech_dir() / WHISPER_MODEL_NAME))
+
+
+def kitten_model() -> str:
+    return os.environ.get("STICKLLM_KITTEN_MODEL", str(speech_dir() / KITTEN_MODEL_NAME))
+
+
+def kitten_voices() -> str:
+    return os.environ.get("STICKLLM_KITTEN_VOICES", str(speech_dir() / KITTEN_VOICES_NAME))
+
+
+def espeak_bin() -> str:
+    return os.environ.get("STICKLLM_ESPEAK_BIN", "/usr/bin/espeak-ng")
+
+
+def vocab_symbols() -> list[str]:
+    return list(_SYMBOLS)
+
+
+def speech_subprocess_kwargs() -> dict:
+    """Arguments shared by every speech subprocess. Timeout is the constant."""
+    return {
+        "capture_output": True,
+        "timeout": SPEECH_TIMEOUT_SECS,
+        "check": False,
+    }
+
+
+def speech_denied(loopback: bool, ui_client: bool, require_pair: bool, authed: bool) -> tuple[int, str] | None:
+    """Same gate as /api/chat: loopback, or the StickLLM UI, and the pair token when required."""
+    if loopback:
+        return None
+    if not ui_client:
+        return 410, "Use the StickLLM web UI only."
+    if require_pair and not authed:
+        return 401, "Pair this browser using the code on the stick screen."
+    return None
+
+
+def sandbox_command(script: str, args: list[str], *, posix: bool, euid: int, user: str) -> list[str]:
+    """Drop to an unprivileged user with no network when the parent is root."""
+    cmd = [sys.executable, script, *args]
+    if not posix or euid != 0:
+        return cmd
+    return ["unshare", "--net", "--", "runuser", "-u", user, "--", *cmd]
+
+
+def sandbox_argv(script: str, *args: str) -> list[str]:
+    euid = os.geteuid() if hasattr(os, "geteuid") else 1
+    user = os.environ.get("STICKLLM_SPEECH_USER", "stickllm") or "stickllm"
+    if user == "root":
+        user = "stickllm"
+    return sandbox_command(script, list(args), posix=(os.name == "posix"), euid=euid, user=user)
+
+
+def limit_child() -> None:
+    """Memory and CPU cap. POSIX only. Inherited by whisper and espeak."""
+    try:
+        import resource
+    except ImportError:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (MEM_CAP_BYTES, MEM_CAP_BYTES))
+        resource.setrlimit(resource.RLIMIT_CPU, (CPU_LIMIT_SECS, CPU_LIMIT_SECS))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (OSError, ValueError):
+        return
+
+
+def speech_child_env() -> dict[str, str]:
+    """Minimal env. Offline. Does not copy the parent environment."""
+    env = {
+        "PATH": os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "HOME": "/nonexistent",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+    }
+    for key in _ENV_KEYS:
+        val = os.environ.get(key)
+        if val:
+            env[key] = val
+    vendor = speech_dir() / "py"
+    if vendor.is_dir():
+        env["PYTHONPATH"] = str(vendor)
+    return env
+
+
+# Kept for tests that measure clip level. Transcribe does not reject on it:
+# a WebM Opus decode can look like silence while the recording still has speech.
+SILENCE_RMS = 0.0015
+
+
+def whisper_argv(bin_path: str, model_path: str) -> list[str]:
+    """whisper-cli v1.8.7 reads WAV on stdin and prints text on stdout.
+
+    ``-f -`` sets the output name to ``-`` and disables the segment printer.
+    ``-of - -otxt`` writes the transcript to stdout and does not create a file.
+    """
+    return [
+        bin_path,
+        "-m", model_path,
+        "-f", "-",
+        "-of", "-",
+        "-otxt",
+        "-l", "en",
+        "-nt",
+        "-np",
+        "-ng",
+        "-t", WHISPER_THREADS,
+    ]
+
+
+def espeak_argv(bin_path: str) -> list[str]:
+    """IPA on stdout. The sentence is stdin, never an argument (it would show in ps)."""
+    return [bin_path, "-v", "en-us", "-q", "--ipa"]
+
+
+def resolve_voice(name: str) -> str:
+    raw = (name or "").strip() or DEFAULT_VOICE
+    if raw in VOICE_ALIASES:
+        return VOICE_ALIASES[raw]
+    if raw in VOICE_IDS:
+        return raw
+    return ""
+
+
+def audio_error(audio: bytes) -> str:
+    if not audio or len(audio) < 44:
+        return "No audio recorded."
+    if len(audio) > MAX_AUDIO_BYTES:
+        return "That recording is too long."
+    if not audio.startswith(b"RIFF") or audio[8:12] != b"WAVE":
+        return "The recording was not a WAV file."
+    return ""
+
+
+def wav_rms(audio: bytes) -> float | None:
+    """RMS of 16-bit PCM, or None when the clip is not that format."""
+    try:
+        with wave.open(BytesIO(audio), "rb") as wf:
+            channels = wf.getnchannels()
+            width = wf.getsampwidth()
+            frames = wf.getnframes()
+            raw = wf.readframes(frames)
+    except Exception:
+        return None
+    if width != 2 or channels < 1 or frames < 1:
+        return None
+    count = frames * channels
+    if len(raw) < count * 2:
+        return None
+    samples = array.array("h")
+    try:
+        samples.frombytes(raw[: count * 2])
+    except ValueError:
+        return None
+    if sys.byteorder != "little":
+        samples.byteswap()
+    acc = 0.0
+    for sample in samples:
+        value = sample / 32768.0
+        acc += value * value
+    return (acc / count) ** 0.5
+
+
+def clean_speak_text(text: str) -> str:
+    raw = str(text or "")
+    raw = re.sub(r"```.*?```", " ", raw, flags=re.S)
+    raw = re.sub(r"`([^`]+)`", r"\1", raw)
+    raw = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", raw)
+    raw = re.sub(r"https?://\S+", " ", raw)
+    raw = raw.replace("**", "")
+    raw = re.sub(r"(?<!\w)\*(.*?)\*(?!\w)", r"\1", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw
+
+
+def chunk_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
+    """Sentence chunks, then words, matching KittenTTS mini's 400-character window."""
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    chunks: list[str] = []
+    buf = ""
+
+    def take_long(part: str) -> str:
+        while len(part) > limit:
+            window = part[:limit]
+            cut = window.rfind(" ")
+            if cut < limit // 2:
+                cut = limit
+            piece = part[:cut].strip()
+            if piece:
+                chunks.append(piece)
+            part = part[cut:].strip()
+        return part
+
+    for part in parts:
+        part = take_long(part.strip())
+        if not part:
+            continue
+        if not buf:
+            buf = part
+        elif len(buf) + 1 + len(part) <= limit:
+            buf = f"{buf} {part}"
+        else:
+            chunks.append(buf)
+            buf = part
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+def basic_english_tokenize(text: str) -> list[str]:
+    return re.findall(r"\w+|[^\w\s]", text)
+
+
+def phoneme_token_ids(ipa: str) -> list[int]:
+    phonemes = " ".join(basic_english_tokenize(ipa))
+    tokens = []
+    for ch in phonemes:
+        idx = _SYMBOL_INDEX.get(ch)
+        if idx is not None:
+            tokens.append(idx)
+    tokens.insert(0, 0)
+    tokens.append(10)
+    tokens.append(0)
+    return tokens
+
+
+def style_row(text: str, rows: int) -> int:
+    if rows <= 1:
+        return 0
+    return min(len(text), rows - 1)
+
+
+def _kill_proc(proc: subprocess.Popen) -> None:
+    if os.name == "posix":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            return
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def limit_oneshot() -> None:
+    """Memory cap for one cold Kitten load. No CPU rlimit: that load can use minutes."""
+    try:
+        import resource
+    except ImportError:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (MEM_CAP_BYTES, MEM_CAP_BYTES))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (OSError, ValueError):
+        return
+
+
+def run_captured(
+    argv: list[str],
+    payload: bytes,
+    *,
+    env: dict | None = None,
+    cwd: str | None = None,
+    limit: bool = False,
+    timeout: float | None = None,
+    preexec=None,
+) -> tuple[int, bytes, bytes]:
+    """Run argv. Stderr is returned to the caller and not logged here."""
+    wall = SPEECH_TIMEOUT_SECS if timeout is None else timeout
+    popen_kw: dict = {
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "env": env,
+        "cwd": cwd,
+    }
+    if os.name == "posix":
+        popen_kw["start_new_session"] = True
+        if preexec is not None:
+            popen_kw["preexec_fn"] = preexec
+        elif limit:
+            popen_kw["preexec_fn"] = limit_child
+    proc = subprocess.Popen(argv, **popen_kw)  # noqa: S603
+    try:
+        out, err = proc.communicate(payload, timeout=wall)
+    except subprocess.TimeoutExpired:
+        _kill_proc(proc)
+        try:
+            proc.communicate(timeout=2)
+        except Exception:
+            pass
+        raise
+    return proc.returncode or 0, out or b"", err or b""
+
+
+def transcript_from_whisper(stdout: str) -> str:
+    lines = []
+    for line in stdout.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith(("whisper_", "main:", "error:", "ggml_", "system_info", "log_")):
+            continue
+        text = re.sub(r"^\[\d\d:\d\d:\d\d\.\d+\s+-->\s+\d\d:\d\d:\d\d\.\d+\]\s*", "", text).strip()
+        if text:
+            lines.append(text)
+    text = " ".join(lines).strip()
+    half = len(text) // 2
+    if half > 8 and text[:half].strip() == text[half:].strip():
+        text = text[:half].strip()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_ID_SEGMENT = 0x18538067
+_ID_TRACKS = 0x1654AE6B
+_ID_TRACK = 0xAE
+_ID_TRACKNO = 0xD7
+_ID_CODEC = 0x86
+_ID_PRIVATE = 0x63A2
+_ID_CLUSTER = 0x1F43B675
+_ID_SIMPLE = 0xA3
+_ID_GROUP = 0xA0
+_ID_BLOCK = 0xA1
+_OPUS_RATE = 48000
+_WHISPER_RATE = 16000
+_OPUS = None
+
+
+def _ebml_id(data: bytes, i: int) -> tuple[int, int]:
+    if i >= len(data) or data[i] == 0:
+        raise ValueError("id")
+    mask = 0x80
+    length = 1
+    while length < 5 and (data[i] & mask) == 0:
+        mask >>= 1
+        length += 1
+    end = i + length
+    if length > 4 or end > len(data):
+        raise ValueError("id")
+    return int.from_bytes(data[i:end], "big"), end
+
+
+def _ebml_size(data: bytes, i: int) -> tuple[int | None, int]:
+    if i >= len(data) or data[i] == 0:
+        raise ValueError("size")
+    mask = 0x80
+    length = 1
+    while length < 9 and (data[i] & mask) == 0:
+        mask >>= 1
+        length += 1
+    end = i + length
+    if length > 8 or end > len(data):
+        raise ValueError("size")
+    bits = 7 * length
+    value = int.from_bytes(data[i:end], "big") & ((1 << bits) - 1)
+    if value == (1 << bits) - 1:
+        return None, end
+    return value, end
+
+
+def _ebml_children(data: bytes, start: int, end: int):
+    i = start
+    while i + 2 <= end:
+        begin = i
+        try:
+            eid, i = _ebml_id(data, i)
+            size, i = _ebml_size(data, i)
+        except ValueError:
+            return
+        if size is None:
+            yield eid, i, end
+            return
+        nxt = i + size
+        if nxt > end or nxt <= begin:
+            return
+        yield eid, i, nxt
+        i = nxt
+
+
+def _uint_payload(payload: bytes) -> int:
+    n = 0
+    for b in payload[:8]:
+        n = (n << 8) | b
+    return n
+
+
+def _unlace(payload: bytes) -> tuple[int, list[bytes]]:
+    """Matroska SimpleBlock or Block. Returns track number and Opus packets."""
+    track, i = _ebml_size(payload, 0)
+    if track is None or i + 3 > len(payload):
+        return 0, []
+    i += 2
+    flags = payload[i]
+    i += 1
+    body = payload[i:]
+    lace = flags & 0x06
+    if lace == 0:
+        return track, [body] if body else []
+    if not body:
+        return track, []
+    count = body[0] + 1
+    if count < 1 or count > 64:
+        return track, []
+    if lace == 0x04:
+        data = body[1:]
+        if len(data) < count or len(data) % count:
+            return track, [data] if data else []
+        size = len(data) // count
+        return track, [data[k * size:(k + 1) * size] for k in range(count)]
+    if lace == 0x02:
+        pos = 1
+        sizes: list[int] = []
+        for _ in range(count - 1):
+            size = 0
+            while pos < len(body) and body[pos] == 255:
+                size += 255
+                pos += 1
+                if size > len(body):
+                    return track, []
+            if pos >= len(body):
+                return track, []
+            size += body[pos]
+            pos += 1
+            sizes.append(size)
+        frames = []
+        for size in sizes:
+            if size < 0 or pos + size > len(body):
+                return track, []
+            frames.append(body[pos:pos + size])
+            pos += size
+        if pos < len(body):
+            frames.append(body[pos:])
+        return track, [f for f in frames if f]
+    return track, _ebml_lace(body, count)
+
+
+def _ebml_lace(body: bytes, count: int) -> list[bytes]:
+    if count < 2 or not body:
+        return [body] if body else []
+    try:
+        first, pos = _ebml_size(body, 1)
+    except ValueError:
+        return []
+    if first is None:
+        return []
+    sizes = [first]
+    for _ in range(count - 2):
+        try:
+            diff, pos = _ebml_signed(body, pos)
+        except ValueError:
+            return []
+        sizes.append(sizes[-1] + diff)
+    frames = []
+    for size in sizes:
+        if size < 0 or pos + size > len(body):
+            return []
+        frames.append(body[pos:pos + size])
+        pos += size
+    if pos < len(body):
+        frames.append(body[pos:])
+    return [f for f in frames if f]
+
+
+def _ebml_signed(data: bytes, i: int) -> tuple[int, int]:
+    value, end = _ebml_size(data, i)
+    if value is None:
+        raise ValueError("lace")
+    length = end - i
+    bits = 7 * length
+    bias = (1 << (bits - 1)) - 1
+    return value - bias, end
+
+
+def _opus_track(data: bytes, start: int, end: int) -> tuple[int, bytes] | None:
+    for eid, a, b in _ebml_children(data, start, end):
+        if eid == _ID_TRACK:
+            number = None
+            codec = b""
+            private = b""
+            for cid, ca, cb in _ebml_children(data, a, b):
+                if cid == _ID_TRACKNO:
+                    number = _uint_payload(data[ca:cb])
+                elif cid == _ID_CODEC:
+                    codec = data[ca:cb].split(b"\x00", 1)[0]
+                elif cid == _ID_PRIVATE:
+                    private = data[ca:cb]
+            if codec == b"A_OPUS" and private.startswith(b"OpusHead"):
+                return number or 1, private
+        elif eid in (_ID_SEGMENT, _ID_TRACKS):
+            found = _opus_track(data, a, b)
+            if found:
+                return found
+    return None
+
+
+def _opus_blocks(data: bytes, start: int, end: int, track_no: int, out: list[bytes]) -> None:
+    for eid, a, b in _ebml_children(data, start, end):
+        if eid in (_ID_SEGMENT, _ID_CLUSTER, _ID_GROUP):
+            _opus_blocks(data, a, b, track_no, out)
+        elif eid in (_ID_SIMPLE, _ID_BLOCK):
+            track, frames = _unlace(data[a:b])
+            if track != track_no:
+                continue
+            for frame in frames:
+                if frame and not frame.startswith((b"OpusHead", b"OpusTags")):
+                    out.append(frame)
+                    if len(out) > 20000:
+                        return
+
+
+def _one_webm(data: bytes) -> tuple[bytes, list[bytes]] | None:
+    if not data.startswith(b"\x1a\x45\xdf\xa3"):
+        return None
+    found = _opus_track(data, 0, len(data))
+    if not found:
+        return None
+    track_no, head = found
+    packets: list[bytes] = []
+    _opus_blocks(data, 0, len(data), track_no, packets)
+    if not head.startswith(b"OpusHead") or not packets:
+        return None
+    return head, packets
+
+
+def webm_opus_packets(data: bytes) -> tuple[bytes, list[bytes]]:
+    """OpusHead plus packets from a WebM file. Raises ValueError when it is not Opus.
+
+    Chrome timeslices are sometimes several EBML documents stuck together.
+    A single walk can stop at the first cluster, so each document is parsed
+    and the longer packet list is kept.
+    """
+    if not data.startswith(b"\x1a\x45\xdf\xa3"):
+        raise ValueError("webm")
+    whole = _one_webm(data)
+    magic = b"\x1a\x45\xdf\xa3"
+    pieces: list[bytes] = []
+    start = 0
+    i = len(magic)
+    while True:
+        j = data.find(magic, i)
+        if j < 0:
+            pieces.append(data[start:])
+            break
+        pieces.append(data[start:j])
+        start = j
+        i = j + len(magic)
+    if len(pieces) <= 1:
+        if whole is None:
+            raise ValueError("webm")
+        return whole
+    head = b""
+    packets: list[bytes] = []
+    for piece in pieces:
+        one = _one_webm(piece)
+        if not one:
+            continue
+        if not head:
+            head = one[0]
+        packets.extend(one[1])
+    if whole is not None and len(whole[1]) >= len(packets):
+        return whole
+    if not head or not packets:
+        if whole is not None:
+            return whole
+        raise ValueError("webm")
+    return head, packets
+
+
+def ogg_opus_packets(data: bytes) -> tuple[bytes, list[bytes]]:
+    """OpusHead plus packets from an Ogg Opus file."""
+    if not data.startswith(b"OggS"):
+        raise ValueError("ogg")
+    head = b""
+    packets: list[bytes] = []
+    partial = b""
+    i = 0
+    n = len(data)
+    while i + 27 <= n and data[i:i + 4] == b"OggS":
+        nseg = data[i + 26]
+        table_at = i + 27
+        if table_at + nseg > n:
+            break
+        table = data[table_at:table_at + nseg]
+        i = table_at + nseg
+        total = sum(table)
+        if i + total > n:
+            break
+        page = data[i:i + total]
+        i += total
+        off = 0
+        for seg in table:
+            partial += page[off:off + seg]
+            off += seg
+            if seg < 255:
+                pkt = partial
+                partial = b""
+                if pkt.startswith(b"OpusHead"):
+                    head = pkt
+                elif pkt.startswith(b"OpusTags") or not head:
+                    continue
+                else:
+                    packets.append(pkt)
+                    if len(packets) > 20000:
+                        break
+    if not head.startswith(b"OpusHead") or not packets:
+        raise ValueError("ogg")
+    return head, packets
+
+
+def _opus_lib():
+    global _OPUS
+    if _OPUS is not None:
+        return _OPUS
+    lib = ctypes.CDLL("libopus.so.0")
+    lib.opus_decoder_create.argtypes = [ctypes.c_int32, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+    lib.opus_decoder_create.restype = ctypes.c_void_p
+    lib.opus_decode.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_ubyte),
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_int16),
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    lib.opus_decode.restype = ctypes.c_int
+    lib.opus_decoder_destroy.argtypes = [ctypes.c_void_p]
+    lib.opus_decoder_destroy.restype = None
+    _OPUS = lib
+    return lib
+
+
+def _pcm16_wav(samples: array.array, rate: int) -> bytes:
+    buf = BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(samples.tobytes())
+    return buf.getvalue()
+
+
+def _resample_s16(samples: array.array, from_rate: int, to_rate: int) -> array.array:
+    if from_rate == to_rate or not samples:
+        return samples
+    if from_rate <= 0 or to_rate <= 0:
+        return array.array("h")
+    out_n = max(1, int(len(samples) * to_rate / from_rate))
+    out = array.array("h")
+    last = len(samples) - 1
+    for i in range(out_n):
+        pos = i * from_rate / to_rate
+        left = int(pos)
+        if left >= last:
+            out.append(samples[last])
+            continue
+        frac = pos - left
+        mixed = samples[left] * (1.0 - frac) + samples[left + 1] * frac
+        out.append(int(max(-32767, min(32767, mixed))))
+    return out
+
+
+def opus_packets_to_wav(head: bytes, packets: list[bytes]) -> bytes:
+    """Decode Opus packets to 16 kHz mono 16-bit PCM WAV. Needs libopus.so.0."""
+    if len(head) < 19 or not head.startswith(b"OpusHead") or not packets:
+        raise ValueError("opus")
+    channels = head[9] or 1
+    if channels < 1 or channels > 2:
+        raise ValueError("opus")
+    preskip = int.from_bytes(head[10:12], "little")
+    err = ctypes.c_int(0)
+    lib = _opus_lib()
+    dec = lib.opus_decoder_create(_WHISPER_RATE, channels, ctypes.byref(err))
+    if not dec or err.value != 0:
+        raise OSError("opus")
+    room = 5760
+    pcm = (ctypes.c_int16 * (room * channels))()
+    mono = array.array("h")
+    try:
+        for packet in packets:
+            buf = (ctypes.c_ubyte * len(packet)).from_buffer_copy(packet)
+            n = lib.opus_decode(dec, buf, len(packet), pcm, room, 0)
+            if n <= 0:
+                continue
+            if channels == 1:
+                mono.extend(pcm[i] for i in range(n))
+            else:
+                for i in range(n):
+                    mono.append(int((int(pcm[i * 2]) + int(pcm[i * 2 + 1])) / 2))
+            if len(mono) > _WHISPER_RATE * 120:
+                break
+    finally:
+        lib.opus_decoder_destroy(dec)
+    drop = preskip * _WHISPER_RATE // _OPUS_RATE
+    if drop > 0:
+        mono = mono[drop:]
+    if not mono:
+        raise ValueError("opus")
+    if sys.byteorder != "little":
+        mono.byteswap()
+    return _pcm16_wav(mono, _WHISPER_RATE)
+
+
+def _wav_to_whisper(audio: bytes) -> tuple[bytes, str]:
+    try:
+        with wave.open(BytesIO(audio), "rb") as wf:
+            channels = wf.getnchannels()
+            width = wf.getsampwidth()
+            rate = wf.getframerate()
+            frames = wf.getnframes()
+            if channels == 1 and width == 2 and rate == _WHISPER_RATE and frames > 0:
+                return audio, ""
+            if width != 2 or channels < 1 or frames < 1 or rate <= 0:
+                return b"", "Could not read the recording."
+            raw = wf.readframes(frames)
+    except Exception:
+        return b"", "Could not read the recording."
+    samples = array.array("h")
+    try:
+        samples.frombytes(raw[: (len(raw) // 2) * 2])
+    except ValueError:
+        return b"", "Could not read the recording."
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if channels > 1:
+        mixed = array.array("h")
+        usable = len(samples) // channels
+        for i in range(usable):
+            acc = 0
+            base = i * channels
+            for c in range(channels):
+                acc += samples[base + c]
+            mixed.append(int(acc / channels))
+        samples = mixed
+    samples = _resample_s16(samples, rate, _WHISPER_RATE)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return b"", "Could not read the recording."
+    return _pcm16_wav(samples, _WHISPER_RATE), ""
+
+
+def to_whisper_wav(audio: bytes) -> tuple[bytes, str]:
+    """16 kHz mono PCM WAV for whisper-cli.
+
+    A browser recording is WebM Opus or Ogg Opus, not WAV. A WAV that is already
+    16 kHz mono 16-bit is unchanged.
+    """
+    if not audio or len(audio) < 16:
+        return b"", "No audio recorded."
+    try:
+        if audio.startswith(b"RIFF") and audio[8:12] == b"WAVE":
+            wav, _conv_err = _wav_to_whisper(audio)
+            # A readable PCM WAV is normalized. Anything else with a RIFF
+            # header keeps the old checks (too short, missing whisper, silence).
+            if wav:
+                return wav, ""
+            return audio, ""
+        if audio.startswith(b"\x1a\x45\xdf\xa3"):
+            head, packets = webm_opus_packets(audio)
+            return opus_packets_to_wav(head, packets), ""
+        if audio.startswith(b"OggS"):
+            head, packets = ogg_opus_packets(audio)
+            return opus_packets_to_wav(head, packets), ""
+    except (ValueError, OSError):
+        return b"", "Could not read the recording."
+    except Exception:
+        return b"", "Could not read the recording."
+    return b"", "Could not read the recording."
+
+
+_STT_HALLUCINATION = {
+    "you",
+    "you you",
+    "thank you",
+    "thanks for watching",
+    "thanks for listening",
+}
+
+
+def stt_hallucination(text: str) -> bool:
+    """Whisper tiny.en says these on silence or a clip that never held the words."""
+    norm = re.sub(r"[^a-z\s]", " ", (text or "").lower())
+    norm = re.sub(r"\s+", " ", norm).strip()
+    return norm in _STT_HALLUCINATION
+
+
+def wav_probe(audio: bytes) -> tuple[int, int, float]:
+    """Sample rate, frame count, and RMS. Zeros when the clip is not 16-bit PCM."""
+    rms = wav_rms(audio)
+    level = 0.0 if rms is None else float(rms)
+    try:
+        with wave.open(BytesIO(audio), "rb") as wf:
+            return int(wf.getframerate() or 0), int(wf.getnframes() or 0), level
+    except Exception:
+        return 0, 0, level
+
+
+def _stt_stats(src_len: int, wav: bytes) -> dict:
+    rate, frames, rms = wav_probe(wav) if wav else (0, 0, 0.0)
+    duration = (frames / rate) if rate else 0.0
+    return {
+        "webm_bytes": int(src_len),
+        "pcm_bytes": len(wav or b""),
+        "rate": rate,
+        "duration_s": round(duration, 3),
+        "rms": round(rms, 5),
+    }
+
+
+def transcribe(audio: bytes, *, bin_path: str | None = None, model_path: str | None = None) -> dict:
+    src_len = len(audio or b"")
+    audio, err = to_whisper_wav(audio)
+    stats = _stt_stats(src_len, audio)
+    if err:
+        return {"ok": False, "error": err, **stats}
+    err = audio_error(audio)
+    if err:
+        return {"ok": False, "error": err, **stats}
+    binary = bin_path or whisper_bin()
+    model = model_path or whisper_model()
+    if not Path(binary).is_file():
+        return {"ok": False, "error": "Speech recognition is not installed (whisper.cpp).", **stats}
+    if not Path(model).is_file():
+        return {"ok": False, "error": "The English speech model is not installed (ggml-tiny.en.bin).", **stats}
+    argv = whisper_argv(binary, model)
+    try:
+        code, out, _err = run_captured(argv, audio, env=speech_child_env(), cwd="/" if os.name == "posix" else None)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Speech recognition took too long.", **stats}
+    except OSError:
+        return {"ok": False, "error": "Speech recognition is not installed (whisper.cpp).", **stats}
+    if code != 0:
+        return {"ok": False, "error": "Speech recognition failed.", **stats}
+    text = transcript_from_whisper(out.decode("utf-8", "replace"))
+    if not text or stt_hallucination(text):
+        return {"ok": False, "error": "No speech detected.", **stats}
+    return {"ok": True, "text": text, **stats}
+
+
+def _phonemize(text: str, bin_path: str) -> str:
+    try:
+        code, out, _err = run_captured(
+            espeak_argv(bin_path),
+            (text.strip() + "\n").encode("utf-8"),
+            env=speech_child_env(),
+        )
+    except subprocess.TimeoutExpired:
+        return ""
+    except OSError:
+        return ""
+    if code != 0:
+        return ""
+    raw = out.decode("utf-8", "replace")
+    lines = []
+    for line in raw.splitlines():
+        line = re.sub(r"\([^)]*\)", "", line).strip()
+        if line:
+            lines.append(line)
+    return " ".join(lines).strip()
+
+
+def _wav_bytes(samples, rate: int) -> bytes:
+    import numpy as np
+
+    audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        return b""
+    peak = float(np.max(np.abs(audio)))
+    if peak > 1:
+        audio = audio / peak
+    audio = np.clip(audio, -1, 1)
+    pcm = (audio * 32767.0).astype(np.int16)
+    buf = BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(pcm.tobytes())
+    return buf.getvalue()
+
+
+def _ensure_vendor_path() -> None:
+    vendor = str(speech_dir() / "py")
+    if Path(vendor).is_dir() and vendor not in sys.path:
+        sys.path.insert(0, vendor)
+
+
+class KittenEngine:
+    """One loaded KittenTTS session. Reused for every read-aloud."""
+
+    def __init__(self, session, bank, espeak: str):
+        self.session = session
+        self.bank = bank
+        self.espeak = espeak
+
+    @staticmethod
+    def load(model: str, voices: str, espeak: str) -> "KittenEngine":
+        _ensure_vendor_path()
+        import numpy as np
+        import onnxruntime as ort
+
+        try:
+            bank = np.load(voices, allow_pickle=False)
+        except Exception:
+            raise RuntimeError("voices") from None
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 4
+        try:
+            sess = ort.InferenceSession(model, sess_options=opts, providers=["CPUExecutionProvider"])
+        except Exception:
+            raise RuntimeError("onnx") from None
+        needed = {"input_ids", "style", "speed"}
+        names = {item.name for item in sess.get_inputs()}
+        if not needed.issubset(names):
+            raise RuntimeError("model")
+        return KittenEngine(sess, bank, espeak)
+
+    def synthesize(self, text: str, voice_id: str) -> bytes:
+        import numpy as np
+
+        if voice_id not in getattr(self.bank, "files", []):
+            raise RuntimeError("voice")
+        table = np.asarray(self.bank[voice_id])
+        if getattr(table, "ndim", 0) == 1:
+            table = table.reshape(1, -1)
+        pieces = []
+        rows = int(table.shape[0]) if getattr(table, "ndim", 0) >= 1 else 0
+        for chunk in chunk_text(text):
+            ipa = _phonemize(chunk, self.espeak)
+            ids = phoneme_token_ids(ipa)
+            if len(ids) <= 3:
+                continue
+            row = style_row(chunk, rows)
+            style = np.asarray(table[row:row + 1], dtype=np.float32)
+            feeds = {
+                "input_ids": np.array([ids], dtype=np.int64),
+                "style": style,
+                "speed": np.array([1.0], dtype=np.float32),
+            }
+            try:
+                audio = np.asarray(self.session.run(None, feeds)[0], dtype=np.float32).reshape(-1)
+            except Exception:
+                raise RuntimeError("infer") from None
+            if audio.size > TAIL_TRIM + 1000:
+                audio = audio[:-TAIL_TRIM]
+            if audio.size:
+                pieces.append(audio)
+        if not pieces:
+            return b""
+        return _wav_bytes(np.concatenate(pieces), SAMPLE_RATE)
+
+
+def kitten_sock() -> str:
+    override = os.environ.get("STICKLLM_KITTEN_SOCK")
+    if override:
+        return override
+    return str(Path(KITTEN_DIR) / KITTEN_SOCK_NAME)
+
+
+def _read_exact(sock: socket.socket, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise OSError("closed")
+        buf += chunk
+    return bytes(buf)
+
+
+def frame_write(sock: socket.socket, doc: dict) -> None:
+    raw = json.dumps(doc, ensure_ascii=True).encode("ascii")
+    if len(raw) > KITTEN_FRAME_MAX:
+        raise OSError("frame")
+    sock.sendall(struct.pack(">I", len(raw)) + raw)
+
+
+def frame_read(sock: socket.socket, limit: int = KITTEN_FRAME_MAX) -> dict:
+    n = struct.unpack(">I", _read_exact(sock, 4))[0]
+    if n <= 0 or n > limit:
+        raise OSError("frame")
+    doc = json.loads(_read_exact(sock, n).decode("utf-8"))
+    if not isinstance(doc, dict):
+        raise OSError("frame")
+    return doc
+
+
+def _wav_result(wav: bytes) -> dict:
+    if not wav:
+        return {"ok": False, "error": "Text to speech produced no audio."}
+    import base64
+    return {"ok": True, "audio_base64": base64.b64encode(wav).decode("ascii"), "mime": "audio/wav"}
+
+
+def _speak_with_engine(engine: KittenEngine, text: str, voice_id: str) -> dict:
+    try:
+        wav = engine.synthesize(text, voice_id)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Reading aloud took too long."}
+    except RuntimeError as exc:
+        return {"ok": False, "error": KITTEN_FAIL.get(str(exc), "Text to speech failed.")}
+    except OSError:
+        return {"ok": False, "error": "Text to speech is not installed (espeak-ng)."}
+    return _wav_result(wav)
+
+
+def kitten_rpc(text: str, voice: str) -> dict:
+    """Ask the resident Kitten process. Does not load onnxruntime."""
+    path = kitten_sock()
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(path)
+        sock.settimeout(SPEECH_TIMEOUT_SECS)
+        frame_write(sock, {"op": "speak", "text": text, "voice": voice})
+        doc = frame_read(sock)
+    except Exception:
+        return {"ok": False, "error": "Text to speech is not ready."}
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+    if doc.get("ok") and doc.get("audio_base64"):
+        audio = str(doc.get("audio_base64") or "")
+        if len(audio) > KITTEN_FRAME_MAX:
+            return {"ok": False, "error": "Text to speech failed."}
+        return {"ok": True, "audio_base64": audio, "mime": "audio/wav"}
+    err = str(doc.get("error") or "Text to speech failed.")
+    if len(err) > 240 or err not in KITTEN_FAIL.values() and err not in {
+        "Nothing to read aloud.",
+        "Text to speech produced no audio.",
+        "Text to speech failed.",
+        "Text to speech is not ready.",
+        "Reading aloud took too long.",
+        "The read-aloud request was not valid.",
+        "Unknown speech command.",
+    } and not err.startswith("That reply is too long") and not err.startswith("Unknown voice"):
+        err = "Text to speech failed."
+    return {"ok": False, "error": err}
+
+
+def speak(
+    text: str,
+    voice: str = DEFAULT_VOICE,
+    *,
+    espeak: str | None = None,
+    model_path: str | None = None,
+    voices_path: str | None = None,
+    runtime_ok: bool | None = None,
+    engine: KittenEngine | None = None,
+    local: bool = False,
+) -> dict:
+    cleaned = clean_speak_text(text)
+    if not cleaned:
+        return {"ok": False, "error": "Nothing to read aloud."}
+    if len(cleaned) > MAX_SPEAK_CHARS:
+        return {"ok": False, "error": f"That reply is too long to read aloud ({MAX_SPEAK_CHARS} characters)."}
+    voice_id = resolve_voice(voice)
+    if not voice_id:
+        return {"ok": False, "error": "Unknown voice. Choose Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, or Leo."}
+    if engine is not None:
+        return _speak_with_engine(engine, cleaned, voice_id)
+    espeak_path = espeak or espeak_bin()
+    model = model_path or kitten_model()
+    voices = voices_path or kitten_voices()
+    if not Path(espeak_path).is_file():
+        return {"ok": False, "error": "Text to speech is not installed (espeak-ng)."}
+    if not Path(model).is_file() or not Path(voices).is_file():
+        return {"ok": False, "error": "Text to speech model is not installed (KittenTTS mini 0.8)."}
+    if runtime_ok is False:
+        return {"ok": False, "error": "Text to speech runtime is not installed (onnxruntime)."}
+    if local:
+        try:
+            loaded = KittenEngine.load(model, voices, espeak_path)
+        except RuntimeError as exc:
+            return {"ok": False, "error": KITTEN_FAIL.get(str(exc), "Text to speech failed.")}
+        except ImportError:
+            return {"ok": False, "error": "Text to speech runtime is not installed (onnxruntime)."}
+        except OSError:
+            return {"ok": False, "error": "Text to speech is not installed (espeak-ng)."}
+        except Exception:
+            return {"ok": False, "error": "Text to speech failed."}
+        return _speak_with_engine(loaded, cleaned, voice_id)
+    return kitten_rpc(cleaned, voice)
+
+
+def speak_request(raw: bytes, *, local: bool = False) -> dict:
+    try:
+        doc = json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        return {"ok": False, "error": "The read-aloud request was not valid."}
+    if not isinstance(doc, dict):
+        return {"ok": False, "error": "The read-aloud request was not valid."}
+    return speak(str(doc.get("text") or ""), str(doc.get("voice") or DEFAULT_VOICE), local=local)
+
+
+def kitten_ready(timeout: float = 0.4) -> bool:
+    path = kitten_sock()
+    if not path or not os.path.exists(path):
+        return False
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect(path)
+        frame_write(sock, {"op": "ping"})
+        doc = frame_read(sock, limit=256)
+        return bool(doc.get("ok") and doc.get("ready"))
+    except Exception:
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def _status_snapshot() -> tuple[str, float]:
+    path = Path(kitten_sock()).parent / "status"
+    try:
+        st = path.stat()
+        code = path.read_text(encoding="ascii", errors="replace").strip().split()[0]
+    except Exception:
+        return "", 0.0
+    if not re.fullmatch(r"[a-z]{1,16}", code or ""):
+        return "", st.st_mtime
+    return code, st.st_mtime
+
+
+def _write_status(code: str) -> None:
+    if not re.fullmatch(r"[a-z]{1,16}", code):
+        return
+    path = Path(kitten_sock()).parent / "status"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name("status.tmp")
+        tmp.write_text(code + "\n", encoding="ascii")
+        os.replace(tmp, path)
+    except OSError:
+        return
+
+
+def prepare_kitten_dir() -> None:
+    path = Path(kitten_sock()).parent
+    path.mkdir(parents=True, exist_ok=True)
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    user = os.environ.get("STICKLLM_SPEECH_USER", "stickllm") or "stickllm"
+    if user == "root":
+        user = "stickllm"
+    try:
+        import pwd
+        pw = pwd.getpwnam(user)
+    except Exception:
+        return
+    try:
+        os.chown(path, pw.pw_uid, pw.pw_gid)
+        os.chmod(path, 0o700)
+    except OSError:
+        return
+
+
+def _spawn_kitten(script: str) -> None:
+    if os.name != "posix":
+        return
+    argv = sandbox_argv(script, "kitten")
+    env = speech_child_env()
+    env["STICKLLM_KITTEN_SOCK"] = kitten_sock()
+    try:
+        subprocess.Popen(  # noqa: S603
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+            cwd="/",
+        )
+    except OSError:
+        return
+
+
+def _start_kitten(script: str) -> None:
+    prepare_kitten_dir()
+    systemctl = "/usr/bin/systemctl"
+    if os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0 and Path(systemctl).is_file():
+        try:
+            proc = subprocess.run(
+                [systemctl, "start", KITTEN_UNIT],
+                timeout=20,
+                check=False,
+                capture_output=True,
+            )
+        except Exception:
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            return
+    _spawn_kitten(script)
+
+
+def ensure_kitten(script: str, *, wait: float = 60.0) -> str | None:
+    """Start the resident synthesizer if it is down. None means it is ready."""
+    if kitten_ready():
+        return None
+    started = time.time()
+    _start_kitten(script)
+    deadline = started + wait
+    while time.time() < deadline:
+        if kitten_ready():
+            return None
+        code, mtime = _status_snapshot()
+        if code in KITTEN_FAIL and mtime >= started - 0.5:
+            return KITTEN_FAIL[code]
+        time.sleep(0.2)
+    code, mtime = _status_snapshot()
+    if code in KITTEN_FAIL and mtime >= started - 0.5:
+        return KITTEN_FAIL[code]
+    return "Text to speech is not ready."
+
+
+def _cpu_limit_blocks_resident() -> bool:
+    try:
+        import resource
+        _soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
+    except Exception:
+        return False
+    if hard == resource.RLIM_INFINITY:
+        return False
+    return hard < 24 * 60 * 60
+
+
+def _serve_conn(conn: socket.socket, engine: KittenEngine) -> None:
+    conn.settimeout(SPEECH_TIMEOUT_SECS)
+    try:
+        req = frame_read(conn, limit=65536)
+    except Exception:
+        return
+    op = req.get("op")
+    try:
+        if op == "ping":
+            frame_write(conn, {"ok": True, "ready": True})
+            return
+        if op == "stop":
+            try:
+                frame_write(conn, {"ok": True, "ready": False})
+            except Exception:
+                pass
+            raise SystemExit(0)
+        if op != "speak":
+            frame_write(conn, {"ok": False, "error": "Unknown speech command."})
+            return
+        result = speak(
+            str(req.get("text") or ""),
+            str(req.get("voice") or DEFAULT_VOICE),
+            engine=engine,
+        )
+        if result.get("ok") and result.get("audio_base64"):
+            frame_write(conn, {
+                "ok": True,
+                "audio_base64": result["audio_base64"],
+                "mime": "audio/wav",
+            })
+            return
+        err = str(result.get("error") or "Text to speech failed.")
+        if len(err) > 240:
+            err = "Text to speech failed."
+        frame_write(conn, {"ok": False, "error": err})
+    except Exception:
+        try:
+            frame_write(conn, {"ok": False, "error": "Text to speech failed."})
+        except Exception:
+            return
+
+
+def _kitten_fail(kind: str) -> int:
+    """Exit the resident process. The word on stderr is a status code, never reply text."""
+    code = kind if kind in KITTEN_FAIL or kind in ("fail", "starting") else "fail"
+    _write_status(code)
+    try:
+        sys.stderr.write("kitten-exit %s\n" % code)
+        sys.stderr.flush()
+    except Exception:
+        pass
+    return 1
+
+
+def kitten_serve() -> int:
+    """Load Kitten once and answer on a local socket. No network. No request logs."""
+    _ensure_vendor_path()
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        resource.setrlimit(resource.RLIMIT_AS, (MEM_CAP_BYTES, MEM_CAP_BYTES))
+    except Exception:
+        pass
+    _write_status("starting")
+    try:
+        if not Path(espeak_bin()).is_file():
+            raise RuntimeError("espeak")
+        if not Path(kitten_model()).is_file() or not Path(kitten_voices()).is_file():
+            raise RuntimeError("model")
+        engine = KittenEngine.load(kitten_model(), kitten_voices(), espeak_bin())
+    except RuntimeError as exc:
+        kind = str(exc)
+        return _kitten_fail(kind if kind in KITTEN_FAIL else "fail")
+    except Exception:
+        return _kitten_fail("fail")
+
+    path = kitten_sock()
+    parent = Path(path).parent
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(parent / "lock", os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return _kitten_fail("fail")
+    if os.name == "posix":
+        import fcntl
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0
+    if os.path.exists(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            return _kitten_fail("fail")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        srv.bind(path)
+        os.chmod(path, 0o600)
+    except OSError:
+        return _kitten_fail("fail")
+    srv.listen(4)
+    _write_status("ready")
+
+    def stop(_signum=None, _frame=None):
+        try:
+            srv.close()
+        except Exception:
+            pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    while True:
+        try:
+            conn, _addr = srv.accept()
+        except OSError:
+            break
+        try:
+            _serve_conn(conn, engine)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return 0
+
+
+def parse_speech_output(out: bytes) -> dict:
+    raw = out.decode("utf-8", "replace").strip()
+    try:
+        doc = json.loads(raw or "{}")
+    except Exception:
+        return {"ok": False, "error": "Speech failed."}
+    if not isinstance(doc, dict):
+        return {"ok": False, "error": "Speech failed."}
+    if doc.get("ok"):
+        result = {"ok": True}
+        if "text" in doc:
+            result["text"] = str(doc.get("text") or "")
+        audio = doc.get("audio_base64")
+        if audio:
+            result["audio_base64"] = str(audio)
+            result["mime"] = "audio/wav"
+        return _copy_stt_stats(doc, result)
+    err = str(doc.get("error") or "Speech failed.")
+    if len(err) > 240:
+        err = "Speech failed."
+    return _copy_stt_stats(doc, {"ok": False, "error": err})
+
+
+def _copy_stt_stats(doc: dict, result: dict) -> dict:
+    for key in ("webm_bytes", "pcm_bytes", "rate", "duration_s", "rms"):
+        val = doc.get(key)
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            continue
+        result[key] = val
+    return result
+
+
+def _wait_kitten(script: str) -> bool:
+    """True when the resident synthesizer is answering. Does not load ONNX here."""
+    if os.name != "posix":
+        return False
+    if kitten_ready():
+        return True
+    _start_kitten(script)
+    begin = time.time()
+    absolute = begin + 180
+    deadline = begin + 8
+    while time.time() < deadline and time.time() < absolute:
+        if kitten_ready():
+            return True
+        code, _mtime = _status_snapshot()
+        if code in KITTEN_FAIL or code == "fail":
+            return False
+        if code == "starting":
+            deadline = min(absolute, time.time() + 5)
+        time.sleep(0.25)
+    return kitten_ready()
+
+
+def _tts_resident(script: str, payload: bytes) -> dict | None:
+    """Speak through the loaded process. None means it is down and the caller should one-shot."""
+    if not _wait_kitten(script):
+        return None
+    result = speak_request(payload)
+    if result.get("error") == "Text to speech is not ready.":
+        return None
+    return result
+
+
+def _tts_oneshot(script: str, payload: bytes) -> dict:
+    """Cold Kitten load in a short-lived unprivileged child. No socket."""
+    argv = sandbox_argv(script, "once")
+    env = speech_child_env()
+    cwd = "/" if os.name == "posix" else None
+
+    def once(cmd: list[str]) -> tuple[int, bytes]:
+        code, out, _err = run_captured(
+            cmd,
+            payload,
+            env=env,
+            cwd=cwd,
+            timeout=240,
+            preexec=(limit_oneshot if os.name == "posix" else None),
+        )
+        return code, out
+
+    try:
+        _code, out = once(argv)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Reading aloud took too long."}
+    except OSError:
+        if argv[:3] == ["unshare", "--net", "--"]:
+            try:
+                _code, out = once(argv[3:])
+            except (OSError, subprocess.TimeoutExpired):
+                return {"ok": False, "error": "Could not start speech."}
+        else:
+            return {"ok": False, "error": "Could not start speech."}
+    return parse_speech_output(out)
+
+
+def _speech_script() -> str:
+    return str(Path(__file__).resolve())
+
+
+def voice_power_on() -> bool:
+    """Missing file means off. A page load must not start the models."""
+    try:
+        return VOICE_POWER_PATH.read_text(encoding="utf-8").strip() == "1"
+    except Exception:
+        return False
+
+
+def _stick_voice() -> bool:
+    """The power file lives on the stick. Tests elsewhere keep the old paths."""
+    try:
+        return VOICE_POWER_PATH.parent.is_dir()
+    except Exception:
+        return False
+
+
+def _voice_blocks() -> bool:
+    """On the stick, Voice off refuses speech so nothing cold-loads the models."""
+    if not _stick_voice():
+        return False
+    return not voice_power_on()
+
+
+def _write_voice_power(on: bool) -> None:
+    path = VOICE_POWER_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("1\n" if on else "0\n", encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o644)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
+def _systemctl(*args: str) -> bool:
+    systemctl = "/usr/bin/systemctl"
+    if os.name != "posix" or not Path(systemctl).is_file():
+        return False
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return False
+    try:
+        proc = subprocess.run(
+            [systemctl, *args],
+            timeout=30,
+            check=False,
+            capture_output=True,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+def whisper_ready() -> bool:
+    """True when the resident recognizer is accepting connections. No request is sent."""
+    if os.name != "posix":
+        return False
+    try:
+        with socket.create_connection((WHISPER_HOST, WHISPER_PORT), timeout=0.4):
+            return True
+    except Exception:
+        return False
+
+
+def _stop_kitten_socket() -> None:
+    if os.name != "posix":
+        return
+    try:
+        if not kitten_ready():
+            return
+    except Exception:
+        return
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(2)
+        sock.connect(kitten_sock())
+        frame_write(sock, {"op": "stop"})
+        try:
+            frame_read(sock, limit=65536)
+        except Exception:
+            pass
+    except Exception:
+        return
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def stop_voice_models() -> None:
+    """Stop both resident processes and keep them from returning at boot."""
+    _systemctl("disable", "--now", KITTEN_UNIT)
+    _systemctl("disable", "--now", WHISPER_UNIT)
+    _stop_kitten_socket()
+    _kill_whisper_pid()
+
+
+WHISPER_PID = Path("/run/stickllm/whisper.pid")
+
+
+def _spawn_whisper() -> None:
+    """Last resort when systemd did not bring the server up. Loopback only, no logs."""
+    if os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    binary = "/usr/local/bin/whisper-server"
+    if not Path(binary).is_file() or whisper_ready():
+        return
+    runuser = "/usr/sbin/runuser"
+    if not Path(runuser).is_file():
+        runuser = "runuser"
+    argv = [
+        runuser, "-u", "stickllm", "--",
+        binary,
+        "-m", whisper_model(),
+        "--host", WHISPER_HOST,
+        "--port", str(WHISPER_PORT),
+        "-l", "en",
+        "-nt",
+        "-ng",
+        "-t", WHISPER_THREADS,
+    ]
+    try:
+        proc = subprocess.Popen(  # noqa: S603
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd="/",
+        )
+    except OSError:
+        return
+    try:
+        WHISPER_PID.write_text(str(proc.pid) + "\n", encoding="ascii")
+    except OSError:
+        return
+
+
+def _kill_whisper_pid() -> None:
+    try:
+        pid = int(WHISPER_PID.read_text(encoding="ascii").strip())
+    except Exception:
+        return
+    if os.name == "posix":
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+    try:
+        WHISPER_PID.unlink()
+    except OSError:
+        pass
+
+
+def ensure_whisper(*, wait: float = 45.0) -> str | None:
+    """Start whisper-server if it is down. None means the model process is up."""
+    if whisper_ready():
+        return None
+    if not Path("/usr/local/bin/whisper-server").is_file():
+        return "Speech recognition is not ready."
+    started = _systemctl("start", WHISPER_UNIT)
+    deadline = time.time() + (20.0 if started else 0.0)
+    while time.time() < deadline:
+        if whisper_ready():
+            return None
+        time.sleep(0.2)
+    if not whisper_ready():
+        _spawn_whisper()
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if whisper_ready():
+            return None
+        time.sleep(0.2)
+    return "Speech recognition is not ready."
+
+
+def set_voice_power(on: bool) -> dict:
+    """Remember the switch, then load or unload both models."""
+    script = _speech_script()
+    if on:
+        _write_voice_power(True)
+        _systemctl("enable", KITTEN_UNIT)
+        _systemctl("enable", WHISPER_UNIT)
+        err_w = ensure_whisper()
+        err_k = ensure_kitten(script)
+        if err_w or err_k:
+            _write_voice_power(False)
+            stop_voice_models()
+            return {"ok": False, "on": False, "error": err_w or err_k or "Voice is not ready."}
+        return {"ok": True, "on": True}
+    _write_voice_power(False)
+    stop_voice_models()
+    return {"ok": True, "on": False}
+
+
+def reconcile_voice_power() -> None:
+    """UI start: load both models only when the stick says Voice was left on."""
+    if not VOICE_POWER_PATH.parent.is_dir() and os.name != "posix":
+        return
+    if voice_power_on():
+        _systemctl("enable", KITTEN_UNIT)
+        _systemctl("enable", WHISPER_UNIT)
+        ensure_whisper()
+        ensure_kitten(_speech_script())
+        return
+    if VOICE_POWER_PATH.parent.is_dir():
+        stop_voice_models()
+
+
+def _whisper_infer(wav: bytes) -> tuple[str | None, str]:
+    """POST one clip to the resident server. Returns (text, error).
+
+    text is None when the server is gone, so the caller may one-shot once.
+    The wav and the transcript are not logged.
+    """
+    import urllib.request
+
+    boundary = "----StickllmWhisper"
+    chunks: list[bytes] = []
+
+    def field(name: str, value: bytes | str, filename: str = "", ctype: str = "") -> None:
+        head = '--%s\r\nContent-Disposition: form-data; name="%s"' % (boundary, name)
+        if filename:
+            head += '; filename="%s"' % filename
+        head += "\r\n"
+        if ctype:
+            head += "Content-Type: %s\r\n" % ctype
+        head += "\r\n"
+        chunks.append(head.encode("ascii"))
+        chunks.append(value if isinstance(value, bytes) else str(value).encode("utf-8"))
+        chunks.append(b"\r\n")
+
+    field("file", wav, filename="clip.wav", ctype="audio/wav")
+    field("response_format", "json")
+    field("temperature", "0")
+    field("language", "en")
+    chunks.append(("--%s--\r\n" % boundary).encode("ascii"))
+    body = b"".join(chunks)
+    req = urllib.request.Request(
+        "http://%s:%d/inference" % (WHISPER_HOST, WHISPER_PORT),
+        data=body,
+        headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=SPEECH_TIMEOUT_SECS) as resp:
+            raw = resp.read(1_000_000)
+    except Exception:
+        return None, ""
+    try:
+        doc = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:
+        return "", "Speech recognition failed."
+    if not isinstance(doc, dict):
+        return "", "Speech recognition failed."
+    if doc.get("error"):
+        return "", "Speech recognition failed."
+    return str(doc.get("text") or ""), ""
+
+
+def transcribe_resident(audio: bytes) -> dict | None:
+    """Use the already-loaded model. None means the resident process is down."""
+    src_len = len(audio or b"")
+    wav, err = to_whisper_wav(audio)
+    stats = _stt_stats(src_len, wav)
+    if err:
+        return {"ok": False, "error": err, **stats}
+    err = audio_error(wav)
+    if err:
+        return {"ok": False, "error": err, **stats}
+    if not whisper_ready():
+        return None
+    text, infer_err = _whisper_infer(wav)
+    if text is None:
+        return None
+    if infer_err:
+        return {"ok": False, "error": infer_err, **stats}
+    text = transcript_from_whisper(text)
+    if not text or stt_hallucination(text):
+        return {"ok": False, "error": "No speech detected.", **stats}
+    return {"ok": True, "text": text, **stats}
+
+
+def _stt_oneshot(script: str, payload: bytes) -> dict:
+    argv = sandbox_argv(script, "stt")
+    env = speech_child_env()
+    cwd = "/" if os.name == "posix" else None
+
+    def once(cmd: list[str]) -> tuple[int, bytes]:
+        code, out, _err = run_captured(cmd, payload, env=env, cwd=cwd, limit=True)
+        return code, out
+
+    try:
+        _code, out = once(argv)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Speech took too long."}
+    except OSError:
+        if argv[:3] == ["unshare", "--net", "--"]:
+            try:
+                _code, out = once(argv[3:])
+            except (OSError, subprocess.TimeoutExpired):
+                return {"ok": False, "error": "Could not start speech."}
+        else:
+            return {"ok": False, "error": "Could not start speech."}
+    return parse_speech_output(out)
+
+
+def run_sandboxed(script: str, command: str, payload: bytes) -> dict:
+    """Parent entry. While Voice is on, both models stay resident.
+
+    A one-shot load runs only when that resident process is actually down,
+    and the daemon is started again so the next request is warm.
+    Does not log payload or output.
+    """
+    if command not in ("stt", "tts"):
+        return {"ok": False, "error": "Unknown speech command."}
+    if _voice_blocks():
+        return {"ok": False, "error": "Voice is off."}
+    if command == "tts":
+        resident = _tts_resident(script, payload)
+        if resident is not None:
+            return resident
+        result = _tts_oneshot(script, payload)
+        if _stick_voice():
+            try:
+                ensure_kitten(script)
+            except Exception:
+                pass
+        return result
+    if _stick_voice() and ensure_whisper() is None:
+        resident = transcribe_resident(payload)
+        if resident is not None:
+            return resident
+    result = _stt_oneshot(script, payload)
+    if _stick_voice():
+        try:
+            ensure_whisper()
+        except Exception:
+            pass
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv if argv is None else argv)
+    command = args[1] if len(args) > 1 else ""
+    if command == "kitten":
+        try:
+            return kitten_serve()
+        except Exception:
+            return _kitten_fail("fail")
+    try:
+        if command == "stt":
+            raw = sys.stdin.buffer.read(MAX_AUDIO_BYTES + 1)
+            result = transcribe(raw)
+        elif command == "once":
+            raw = sys.stdin.buffer.read(64 * 1024)
+            result = speak_request(raw, local=True)
+        elif command == "tts":
+            raw = sys.stdin.buffer.read(64 * 1024)
+            if kitten_ready():
+                result = speak_request(raw)
+                if result.get("error") == "Text to speech is not ready.":
+                    result = speak_request(raw, local=True)
+            else:
+                result = speak_request(raw, local=True)
+        else:
+            result = {"ok": False, "error": "Unknown speech command."}
+    except Exception:
+        result = {"ok": False, "error": "Speech failed."}
+    sys.stdout.buffer.write(json.dumps(result, ensure_ascii=True).encode("ascii"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

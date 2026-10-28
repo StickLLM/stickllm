@@ -3,6 +3,17 @@
 Goal: ship features without rebuilding (or patching) an ISO for every tweak.
 Hardware validation stays on real sticks (example: 3090 desktop + ASUS laptop).
 
+The working branch for Agent Zero is `stickllm-agentzero`. Do not fast-forward `main` until that line is accepted. Work on `C:\Users\peter\stickllm-vault-wt`. Never use OneDrive.
+
+## Agent Zero fork
+
+1. Change the fork and test it on the stick with `sudo -n stickllm-hotfix`.
+2. Rebuild one clean ISO into `build-agentzero\` (not `out\`, not OneDrive).
+3. Nink tests that ISO on hardware.
+4. Push the fork after that test. Do not flash unless Nink asks.
+
+Keep the current Agent Zero ISO and the previous two (`n-2`) under `build-agentzero\`. Do not delete those restore copies to make room. Name the build `stickllm-agentzero-v0.5.1.iso` (About shows `0.5.1 · Agent Zero v0.5` from `stickllm.json`). Build it with `STICKLLM_VERSION=0.5.1 STICKLLM_ISO_PATH=build-agentzero/stickllm-agentzero-v0.5.1.iso ./scripts/build.sh`. The v0.5.0 and v0.4 ISOs stay as restore copies; the running stick is not replaced until Nink has tested 0.5.1. Details of the running system: [ARCHITECTURE-AGENTZERO.md](ARCHITECTURE-AGENTZERO.md).
+
 ## Rules
 
 1. **Feature commits on a feature branch** — iterate with normal git commits.
@@ -73,3 +84,71 @@ published checksums or shipping tags. **Do not flash v0.3.5** (truncated).
 User runs HW checks. Only after confirm: tag, push, publish checksum. Feature work
 that is not kernel/drivers stays on a feature branch: SSH-test first, then one
 clean build + QEMU proof + integrity check.
+
+## VirtualBox test VM (`stickllm-v050-test`)
+
+Local test rig on DESKTOP-65FCPD4 for an ISO without flashing a stick. Files live in
+`C:\StickLLM-VM` (never OneDrive): `stickllm-v050-test\` (VM), `stick-v050*.vdi` (the ISO
+converted with `VBoxManage convertfromraw`, resized to ~60 GB), `host-ssd*.vdi` (200 GB dynamic),
+and `vm_ed25519` (VM-only SSH key, no passphrase). Test-vault passcode/recovery files sit in the same
+folder. They are throwaway, but never paste them into chats or commits.
+
+Config: EFI, 8 GB RAM (host had ~18 GB free), 8 vCPU, vmsvga, no GPU (CPU-only llama), xHCI.
+The stick VDI is on a **USB** storage controller (USB-MSD, shows as `sdb … usb`), so the first-boot
+claim makes STICKLLM-DATA + settings on it like a real stick. The host-SSD VDI is SATA `sda`
+(already GPT+ext4 `HOSTSSD` in the vault snapshot). NAT forwards:
+
+| Host | Guest | |
+|---|---|---|
+| http://127.0.0.1:18080 | 80 | web UI (gateway) |
+| https://127.0.0.1:18443 | 443 | web UI TLS (self-signed: `curl.exe -sk`) |
+| 127.0.0.1:12222 | 22 | SSH as `stickllm` |
+
+Snapshots (both taken **powered off**):
+- `vault-created`: claimed stick + HOSTSSD with a 4 GiB test vault at
+  `/mnt/stickllm-host/HOSTSSD-sda1/home/nink` and a LUKS USB settings partition. After boot,
+  `stickllm-vault status` shows `locked` and it unlocks with the test passcode.
+- `fresh-boot`: untouched stick (`stick-v050-fresh.vdi`) + blank SSD (`host-ssd-blank.vdi`), for testing first-boot claim/setup.
+
+Helper `scripts\vm.ps1`:
+```powershell
+.\scripts\vm.ps1 restore vault-created 2   # restore snapshot, boot headless, GRUB entry 2 (Terminal/SSH)
+.\scripts\vm.ps1 start 3                   # boot current state into GRUB entry 3 (Test - SSH Enabled)
+.\scripts\vm.ps1 shot                      # PNG of the screen -> out\vmshots\ (READY screen shows SSH password)
+.\scripts\vm.ps1 keys <ssh-password>       # install vm_ed25519.pub for this boot (prints KEY_INSTALLED)
+.\scripts\vm.ps1 ssh 'sudo -n stickllm-vault status'
+.\scripts\vm.ps1 root C:\StickLLM-VM\check.sh   # DEV ONLY: run a bash file (or 'cmd string') as root, print output
+.\scripts\vm.ps1 web                       # HTTP codes for 18080 and 18443
+.\scripts\vm.ps1 snap <name>               # ACPI shutdown, then offline snapshot
+.\scripts\vm.ps1 stop | kill | status | snaps | key enter|down|up|esc | type <text> | boot <1|2|3>
+```
+
+Limits and gotchas:
+- VirtualBox 6.1 runs on Hyper-V (NEM), because AMD-V is unavailable while Hyper-V is on. Live/online snapshots
+  hang the guest after resume, so only take snapshots powered off (`snap` does this).
+- The SSH password is random each boot, and `~/.ssh` is in RAM, so run `shot` then `keys` after every boot.
+  GRUB entry 2 shows the password on the READY screen. Entries 1 and 3 sit on "Launching browser" (the kiosk
+  doesn't render on vmsvga), but the UI still answers through the forwards.
+- `stickllm` sudo is limited to stickllm-* tools, and since v0.5.1 the live `user` (tty2 console) has a
+  locked password and no sudo beyond the WiFi helpers, so the old `su ... user` root trick is gone.
+  For root in the VM use `vm.ps1 root <file.sh|'cmd'>` (dev only): it copies a throwaway
+  `stickllm-vmtest` script + oneshot unit into `/tmp/stickllm-hotfix/` and runs
+  `sudo -n stickllm-hotfix stickllm-vmtest.service` (the existing SSH-iterate rule, Terminal mode only).
+  Output goes to `/tmp/stickllm-vmtest.out` and is printed; the runner lives only in the VM's RAM and is
+  not in the image. Put vault confirmations (`STICKLLM_VAULT_*`) as `export` lines at the top of the file.
+- GRUB keys are sent blind (Down x12 then Up); if a boot lands in the wrong mode, use `boot <n>`.
+- No model is installed and inference is CPU-only, so it is not useful for speed tests. Dynamic VDIs grow on C:.
+
+### VM notes from 0.5.2
+
+- **No AVX in this VM:** VBox 6.1 on NEM/Hyper-V doesn't pass AVX through, so the production llama-server dies with SIGILL. A VM-only SSE build (`GGML_NATIVE/AVX*/FMA/F16C` off) can run a tiny model at ctx 2048 or less. Never put it in an ISO. Don't change VirtualBox or Hyper-V for this.
+- **VM stalls:** under host load (e.g. an ISO build) the guest can freeze for ~8 minutes (VBox.log heartbeat flat). Don't treat a timeout during a build as a test failure; rerun.
+- **Password after reboot without typing it:** take `VBoxManage controlvm <vm> screenshotpng` (send `keyboardputscancode 2a aa` first if the console blanked). Decode the READY-screen password by matching PSF console font glyphs (OCR misreads look-alike glyphs). Write it to a temp file, install the key from that file, then delete it. Never paste the password into chats or logs. Loopback `/api/health` also carries the per-boot pair code and SSH password, so don't print it whole.
+- **Scripts for `vm.ps1 root`** must have LF line endings. Vault confirmations go in as `export` lines; `mount-host` needs `STICKLLM_VAULT_CONFIRM=MOUNT-HOST` and a device path such as `/dev/sda1`. Pass a test passcode by file (scp, strip CRLF, read into the env, shred), never as an argument.
+- **Deploy vs rebuild:** the SSH hotfix path deploys `/usr/local/bin` and the UI, but it doesn't install `/etc` drop-ins (kiosk, policies). Install those in the VM by hand for testing, or rebuild.
+- **Real-browser tests:** Playwright on the host in `C:\StickLLM-VM\browser-test`, with `--host-resolver-rules=MAP stickllm.test 127.0.0.1` so the LAN path isn't seen as local (with hostname 127.0.0.1 the UI shows "local"). Reach the kiosk through `ssh -N -L 28080:127.0.0.1:80`. Extra NAT rules (e.g. 5451 for add-ons) are runtime only; remove them afterwards.
+- **Realistic stick image:** test with the ISO converted and resized to ~60 GB (`VBoxManage modifymedium --resize 61184`). The raw ISO size has no free space, so there is no settings partition and no agent.
+- **Build:** Git Bash (not WSL), never on OneDrive. Same command as 0.5.1; `build.sh` defaults to 0.5.2 since `fe29472`. Output: `build-agentzero\stickllm-agentzero-v0.5.2.iso`, log `build-agentzero\v0.5.2-build.log`. Keep n-2 ISOs.
+- **Copying files:** the agent box copies files into `C:\Users\peter\...`, then you move them into `C:\StickLLM-VM`.
+- **Snapshots for 0.5.2** (powered off): `v052-dev-state`, `v052-reflash-base`, `v052-60g-base` (60 GB stick + test-vault SSD), `v052-fresh-base` (fresh 60 GB stick + blank SSD).
+- **Flash:** `out\_flash-agentzero-v052-safe-elev.ps1` (elevated) refuses every disk except the USB Samsung Type-C with serial `AA00000000000489`, then reads the stick back and verifies (`out\verify-boot-v052.out`).

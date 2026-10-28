@@ -1,0 +1,16 @@
+---
+description: StickLLM Agent Zero context for new chats
+alwaysApply: true
+---
+
+# StickLLM context
+
+Read these before changing the Agent Zero fork:
+
+- `docs/ARCHITECTURE-AGENTZERO.md` — ports, open_app, vault, Docker data-root
+- `docs/APPS.md` — catalog install path
+- `docs/DEV-WORKFLOW.md` — fork branch, hotfix, ISO location
+- `docs/CURSOR-HISTORY-agentzero.md` — what is already built
+- `docs/VAULT.md` — passcode, key file, recovery phrase
+
+Work only in `C:\Users\peter\stickllm-vault-wt` on branch `stickllm-agentzero`. Never use OneDrive. Do not fast-forward `main` until that line is accepted. ISOs go in `build-agentzero\`. Do not print the stick SSH password.

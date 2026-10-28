@@ -2,13 +2,19 @@
 """Root control daemon — USB claim, model probe/download/activate, status."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
+import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -22,6 +28,12 @@ PORT = int(os.environ.get("STICKLLM_CONTROL_PORT", "8091"))
 BAKED_3B = Path("/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf")
 BAKED_7B = Path("/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf")
 SESSION_MODES = frozenset({"ephemeral", "vault"})
+# One download runs at a time. Extra clicks wait, then earlier partials resume.
+QUEUE_PATH = RUN / "download-queue.json"
+QUEUE_LOCK = threading.Lock()
+# Keep this much free on the models disk after every queued file.
+DOWNLOAD_SPARE_BYTES = 2 * 1024 ** 3
+DOWNLOAD_QUEUE_MAX = 32
 
 
 def session_mode() -> str:
@@ -283,25 +295,108 @@ def _gguf_search_roots() -> list[Path]:
     return model_dirs()
 
 
+# --- Bounded GGUF index (0.5.2) ---------------------------------------------
+# Path.rglob() walked whole trees (e.g. the vault host root /home/<user> holding
+# stickllm-docker/overlay2 with hundreds of thousands of files) once per catalog
+# file on every status call, hanging the control daemon. Walk at most
+# GGUF_MAX_DEPTH levels, prune heavy/system dirs, cap entries, cache briefly
+# and let only one thread scan at a time.
+GGUF_MAX_DEPTH = 4
+GGUF_MAX_ENTRIES = 200_000
+GGUF_INDEX_TTL = 20.0
+_GGUF_PRUNE = {
+    "stickllm-docker", "docker", "overlay2", "containerd", "node_modules",
+    "__pycache__", "site-packages", "proc", "sys", "dev", "snap", "flatpak",
+    "Windows", "$Recycle.Bin", "System Volume Information", "Program Files",
+    "Program Files (x86)", "ProgramData", "AppData", "lost+found", "venv",
+    ".venv", ".git",
+}
+_GGUF_HIDDEN_OK = {".lmstudio", ".cache", "huggingface", ".ollama"}
+_gguf_index_lock = threading.Lock()
+_gguf_index_cache: dict[str, tuple[float, list[Path]]] = {}
+
+
+def _walk_ggufs(root: Path) -> list[Path]:
+    out: list[Path] = []
+    try:
+        base = str(root)
+        if not os.path.isdir(base):
+            return out
+    except OSError:
+        return out
+    seen = 0
+    stack: list[tuple[str, int]] = [(base, 0)]
+    while stack:
+        cur, depth = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for ent in it:
+                    seen += 1
+                    if seen > GGUF_MAX_ENTRIES:
+                        return out
+                    name = ent.name
+                    try:
+                        if ent.is_dir(follow_symlinks=False):
+                            if depth + 1 >= GGUF_MAX_DEPTH:
+                                continue
+                            if name in _GGUF_PRUNE:
+                                continue
+                            if name.startswith(".") and name not in _GGUF_HIDDEN_OK:
+                                continue
+                            stack.append((ent.path, depth + 1))
+                        elif name.lower().endswith(".gguf") and ent.is_file():
+                            out.append(Path(ent.path))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return out
+
+
+def gguf_index(roots: list[Path] | None = None) -> dict[Path, list[Path]]:
+    """Cached {root: [gguf paths]} for model dirs (depth-bounded, single-flight)."""
+    if roots is None:
+        roots = _gguf_search_roots()
+    res: dict[Path, list[Path]] = {}
+    with _gguf_index_lock:
+        now = time.monotonic()
+        for r in roots:
+            key = str(r)
+            hit = _gguf_index_cache.get(key)
+            if hit and now - hit[0] < GGUF_INDEX_TTL:
+                res[r] = hit[1]
+                continue
+            files = _walk_ggufs(r)
+            _gguf_index_cache[key] = (time.monotonic(), files)
+            res[r] = files
+    return res
+
+
+def gguf_index_invalidate() -> None:
+    with _gguf_index_lock:
+        _gguf_index_cache.clear()
+
+
 def find_file(name: str) -> Path | None:
     want = name
+    want_low = os.path.basename(want).lower()
+    idx = gguf_index()
     for d in _gguf_search_roots():
         p = d / want
-        if p.is_file() and p.stat().st_size > 1_000_000:
-            return p
-        # Shallow recurse (LM Studio / HF layout: vendor/model/*.gguf)
         try:
-            for p in d.rglob(want):
-                if p.is_file() and p.stat().st_size > 1_000_000:
-                    # Cap depth under d to 4 path parts
-                    try:
-                        rel = p.relative_to(d)
-                    except ValueError:
-                        continue
-                    if len(rel.parts) <= 4:
-                        return p
+            if p.is_file() and p.stat().st_size > 1_000_000:
+                return p
         except OSError:
             pass
+        # Shallow recurse (LM Studio / HF layout: vendor/model/*.gguf), bounded.
+        for p in idx.get(d, []):
+            if p.name.lower() != want_low:
+                continue
+            try:
+                if p.is_file() and p.stat().st_size > 1_000_000:
+                    return p
+            except OSError:
+                continue
     return None
 
 
@@ -337,7 +432,7 @@ def discover_local_ggufs() -> list[dict]:
     found: dict[str, Path] = {}
     for d in roots:
         try:
-            for p in d.rglob("*.gguf"):
+            for p in gguf_index([d]).get(d, []):
                 if not p.is_file():
                     continue
                 try:
@@ -374,7 +469,7 @@ def discover_local_ggufs() -> list[dict]:
         else:
             stem = stem[: -len(".gguf")] if stem.lower().endswith(".gguf") else stem
         mid = "local-" + re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")[:80]
-        size_gb = round(path.stat().st_size / (1024**3), 2)
+        size_gb = round(gguf_weight_bytes(path) / (1024**3), 2)
         out.append(
             {
                 "id": mid,
@@ -395,23 +490,48 @@ def discover_local_ggufs() -> list[dict]:
     return out
 
 
+def _short_gpu_name(name: str) -> str:
+    s = str(name or "").strip()
+    for prefix in ("NVIDIA GeForce ", "NVIDIA ", "GeForce "):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+    return s.strip() or "GPU"
+
+
+def gpu_inventory() -> dict:
+    """Usable VRAM pool. Cards under 16 GB (the display GPU) are left out."""
+    rows = nvidia_gpu_rows()
+    suitable = suitable_gpus(rows)
+    use = suitable if suitable else rows
+    total_mib = sum(int(g.get("total_mib") or 0) for g in use)
+    gpus = []
+    names: list[str] = []
+    each: list[float] = []
+    for g in use:
+        gb = int(g.get("total_mib") or 0) / 1024.0
+        short = _short_gpu_name(str(g.get("name") or ""))
+        names.append(short)
+        each.append(gb)
+        gpus.append({"index": int(g.get("index") or 0), "name": short, "total_gb": round(gb, 1)})
+    uniq = list(dict.fromkeys(names))
+    if len(uniq) == 1:
+        label = uniq[0]
+    else:
+        label = " + ".join(uniq)
+    same = bool(each) and all(abs(x - each[0]) < 0.6 for x in each)
+    return {
+        "vram_gb": (total_mib / 1024.0) if use else 0.0,
+        "each_gb": each[0] if same else 0.0,
+        "count": len(use),
+        "name": label,
+        "gpus": gpus,
+    }
+
+
 def detect_vram_gb() -> float:
+    """Combined VRAM of every GPU large enough to hold weights."""
     try:
-        p = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=memory.total",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        vals = [float(x.strip()) for x in p.stdout.splitlines() if x.strip()]
-        if not vals:
-            return 0.0
-        return max(vals) / 1024.0
+        return float(gpu_inventory()["vram_gb"])
     except Exception:
         return 0.0
 
@@ -529,9 +649,16 @@ def gguf_arch_dims(meta: dict) -> dict:
     head_dim = num(f"{arch}.attention.key_length")
     if not head_dim and n_embd and n_head:
         head_dim = max(1, n_embd // n_head)
+    # Hybrid models (Qwen3.5 / Qwen3.8) run full attention every Nth layer.
+    # The other layers are recurrent and do not grow a KV cache with context.
+    interval = num(f"{arch}.full_attention_interval")
+    n_kv_layer = n_layer
+    if interval > 1 and n_layer > 0:
+        n_kv_layer = max(1, n_layer // interval)
     return {
         "architecture": arch,
         "n_layer": n_layer,
+        "n_kv_layer": n_kv_layer,
         "n_ctx_train": n_ctx,
         "n_embd": n_embd,
         "n_head": n_head,
@@ -604,6 +731,37 @@ def suitable_gpus(rows: list[dict] | None = None) -> list[dict]:
     return [g for g in rows if int(g.get("total_mib") or 0) >= GPU_SUITABLE_MIB]
 
 
+_SPLIT_GGUF = re.compile(
+    r"^(?P<stem>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    re.I,
+)
+
+
+def gguf_weight_bytes(path: Path) -> int:
+    """Bytes of the whole model. Split GGUFs are name-00001-of-00003 plus siblings."""
+    path = Path(path)
+    try:
+        own = int(path.stat().st_size)
+    except OSError:
+        return 0
+    m = _SPLIT_GGUF.match(path.name)
+    if not m:
+        return own
+    total = int(m.group("total"))
+    parent = path.parent
+    nbytes = 0
+    found = 0
+    for i in range(1, total + 1):
+        part = parent / f"{m.group('stem')}-{i:05d}-of-{m.group('total')}.gguf"
+        try:
+            if part.is_file():
+                nbytes += int(part.stat().st_size)
+                found += 1
+        except OSError:
+            continue
+    return nbytes if found else own
+
+
 def estimate_n_layer(dims: dict, file_bytes: int) -> tuple[int, str]:
     """Layer count from GGUF, else a documented size bucket.
 
@@ -643,8 +801,9 @@ def kv_bytes_per_token(dims: dict, n_layer: int, file_bytes: int) -> int:
     """K+V f16 bytes per token. Uses GGUF dims, else a 70B GQA ballpark."""
     n_kv = int(dims.get("n_kv_head") or 0)
     head = int(dims.get("head_dim") or 0)
-    if n_layer > 0 and n_kv > 0 and head > 0:
-        return 2 * n_layer * n_kv * head * 2
+    n_kv_layer = int(dims.get("n_kv_layer") or n_layer or 0)
+    if n_kv_layer > 0 and n_kv > 0 and head > 0:
+        return 2 * n_kv_layer * n_kv * head * 2
     gib = file_bytes / (1024**3)
     if gib >= 30:
         # Llama-3 70B: 80 layers * 8 kv heads * 128 * 2 bytes * K and V.
@@ -861,7 +1020,7 @@ def build_offload_plan(*, honor_override: bool = True) -> dict:
     if not path or not Path(path).is_file():
         return {"ok": False, "error": "model file missing", "n_gpu_layers": 0, "gpu_count": 0}
     try:
-        file_bytes = Path(path).stat().st_size
+        file_bytes = gguf_weight_bytes(Path(path))
     except OSError as e:
         return {"ok": False, "error": str(e), "n_gpu_layers": 0, "gpu_count": 0}
     meta = read_gguf_meta(path, max_keys=800)
@@ -935,6 +1094,8 @@ def llama_journal_error() -> str:
     for line in (p.stdout or "").splitlines():
         s = line.strip()
         if not s or _SECRET_LINE.search(s):
+            continue
+        if re.search(r"backend registered|stickllm-cuda-register", s, re.I):
             continue
         if _CUDA_ERR_LINE.search(s) or "stickllm-llama-start:" in s:
             picked.append(s)
@@ -1117,12 +1278,15 @@ def estimate_context_budget(
 
     Formula (documented for UI/ops):
       free_mem_after ≈ mem_gb - approx_size_gb * 1.05   # weights + small overhead
-      If GGUF dims known (n_layer, n_kv_head, head_dim):
-        kv_bytes/token ≈ 2 * n_layer * n_kv_head * head_dim * 2  # K+V, f16
+      If GGUF dims known (n_kv_layer, n_kv_head, head_dim):
+        kv_bytes/token ≈ 2 * n_kv_layer * n_kv_head * head_dim * 2  # K+V, f16
+        n_kv_layer is block_count, or block_count / full_attention_interval
+        for hybrid models whose other layers are recurrent.
       Else ballpark from weight size (calibrated ~7B @ ~56 KiB/token):
         kv_bytes/token ≈ 56000 * (approx_size_gb / 5.1)
       max_ctx_mem = floor(free_mem_after_bytes / kv_bytes_per_token)
       Clamp to [2048, model_max_ctx] (GGUF context_length when available).
+      GPU hosts are not capped at 32K. A CPU host stays at 8K.
     """
     dims = dims or {}
     size = max(0.1, float(approx_size_gb or 0) or 2.0)
@@ -1132,7 +1296,7 @@ def estimate_context_budget(
     # Leave a little headroom for runtime / fragmentation.
     free_after *= 0.85
 
-    n_layer = int(dims.get("n_layer") or 0)
+    n_layer = int(dims.get("n_kv_layer") or dims.get("n_layer") or 0)
     n_kv = int(dims.get("n_kv_head") or 0)
     head_dim = int(dims.get("head_dim") or 0)
     if n_layer > 0 and n_kv > 0 and head_dim > 0:
@@ -1144,10 +1308,10 @@ def estimate_context_budget(
     max_from_mem = int((free_after * (1024**3)) // kv_bpt) if free_after > 0 else 2048
     train_ctx = int(model_max_ctx or dims.get("n_ctx_train") or 0)
     if train_ctx <= 0:
-        train_ctx = 32768 if size >= 4 else 32768
-    # Hard ceiling for live stick UX (llama-server comfort).
-    hard_cap = 32768 if gpu else 8192
-    hi = max(2048, min(train_ctx, hard_cap, max(2048, max_from_mem)))
+        train_ctx = 32768
+    # CPU hosts stay small. GPU hosts follow the GGUF context length.
+    ceiling = train_ctx if gpu else min(train_ctx, 8192)
+    hi = max(2048, min(ceiling, max(2048, max_from_mem)))
     # Snap down to a friendly step.
     step = 1024 if hi <= 8192 else 2048
     hi = max(2048, (hi // step) * step)
@@ -1214,14 +1378,32 @@ def llama_health_ok() -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
+# stickllm-llama-start raises any smaller context to this (Agent Zero needs it).
+LLAMA_CTX_FLOOR = 32768
+KV_TYPES = {"f16": "f16", "q8": "q8_0", "q8_0": "q8_0", "q4": "q4_0", "q4_0": "q4_0"}
+
+
+def active_kv_type() -> str:
+    """KV cache type Activate wrote to model.env (f16 when unset)."""
+    env = RUN / "model.env"
+    try:
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line.startswith("STICKLLM_KV_TYPE="):
+                return KV_TYPES.get(line.split("=", 1)[1].strip(), "f16")
+    except OSError:
+        pass
+    return "f16"
+
+
 def active_ctx_size() -> int | None:
-    """Context size from model.env, else from running llama-server --ctx-size."""
+    """Context llama-server really runs with: model.env (raised to the
+    llama-start floor), else the running llama-server --ctx-size."""
     env = RUN / "model.env"
     if env.is_file():
         try:
             for line in env.read_text(encoding="utf-8").splitlines():
                 if line.startswith("STICKLLM_CTX_SIZE="):
-                    return int(line.split("=", 1)[1].strip())
+                    return max(LLAMA_CTX_FLOOR, int(line.split("=", 1)[1].strip()))
         except (OSError, ValueError, TypeError):
             pass
     # Older Activate writes omitted STICKLLM_CTX_SIZE — read live process args.
@@ -1263,12 +1445,11 @@ def active_model_identity() -> dict:
                 mid = line.split("=", 1)[1].strip()
             elif line.startswith("STICKLLM_MODEL_NAME="):
                 name = line.split("=", 1)[1].strip()
-    if not mid and path:
-        base = os.path.basename(path).lower()
-        if "3b" in base:
-            mid, name = "qwen25-3b-q4km", "Qwen2.5 3B Instruct (baked)"
-        elif "7b" in base:
-            mid, name = "qwen25-7b-q5km", "Qwen2.5 7B Instruct"
+    # A missing id/name stays the file Activate selected. Never invent the
+    # baked 3B (or 7B) from a substring — "27b" contains "7b", and a load of
+    # another id must not be reported as the default 3B.
+    if not name and path:
+        name = os.path.basename(path)
     healthy, health_msg = llama_health_ok()
     ctx = active_ctx_size()
     out = {
@@ -1280,7 +1461,29 @@ def active_model_identity() -> dict:
     }
     if ctx is not None:
         out["ctx_size"] = ctx
+    out["kv_type"] = active_kv_type()
     return out
+
+
+def find_mmproj(model_path: str) -> str:
+    """Vision projector GGUF sitting next to the weights. Empty if this model is text-only."""
+    p = Path(model_path)
+    if not p.is_file():
+        return ""
+    cands: list[Path] = []
+    try:
+        for f in p.parent.iterdir():
+            if not f.is_file() or f.resolve() == p.resolve():
+                continue
+            low = f.name.lower()
+            if low.endswith(".gguf") and "mmproj" in low:
+                cands.append(f)
+    except OSError:
+        return ""
+    if not cands:
+        return ""
+    cands.sort(key=lambda f: f.stat().st_size if f.is_file() else 0, reverse=True)
+    return str(cands[0])
 
 
 def active_model_path() -> str:
@@ -1297,6 +1500,230 @@ def active_model_path() -> str:
         except Exception:
             pass
     return ""
+
+
+_HF_COMMUNITY = {
+    "qwen", "bartowski", "unsloth", "lmstudio-community", "thebloke", "ggml-org",
+    "microsoft", "meta-llama", "mistralai", "google", "nvidia", "hugging-quants",
+    "maziyarpanahi", "second-state", "quantfactory", "librai", "nousresearch",
+}
+_QUANT_RE = re.compile(
+    r"(IQ\d+_[A-Z0-9]+|Q\d+_K_[A-Z0-9]+|Q\d+_K|Q\d+_0|Q\d+_1|F16|F32|BF16)",
+    re.I,
+)
+
+
+def _catalog_sha_index() -> dict[tuple[str, str], str]:
+    idx: dict[tuple[str, str], str] = {}
+    for m in parse_catalog():
+        repo = str(m.get("hf_repo") or "")
+        files = m.get("hf_files") or []
+        hashes = m.get("sha256") or []
+        for i, name in enumerate(files):
+            sha = ""
+            if i < len(hashes):
+                sha = str(hashes[i] or "").lower()
+            if repo and name and re.fullmatch(r"[0-9a-f]{64}", sha):
+                idx[(repo, name)] = sha
+    return idx
+
+
+def _hf_get_json(url: str, timeout: float = 12) -> object:
+    headers = {"User-Agent": "StickLLM/0.4 (local model search)", "Accept": "application/json"}
+    token = read_hf_token()
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def _is_abliterated(*parts: str) -> bool:
+    blob = " ".join(parts).lower()
+    return any(k in blob for k in ("abliterat", "uncensor", "jailbreak"))
+
+
+_VISION_RE = re.compile(
+    r"(?:^|[^a-z0-9])(?:vl|vision)(?:[^a-z0-9]|$)"
+    r"|qwen\d*(?:\.\d+)?-?vl|llava|moondream|minicpm-?v|internvl|pixtral|smolvlm|glm-?4v|kimi-?vl|idefics",
+    re.I,
+)
+
+
+def _pick_mmproj(files: list[tuple[str, int]]) -> tuple[str, int] | None:
+    """Prefer an f16/bf16 projector. One projector does not fit a different model."""
+    if not files:
+        return None
+
+    def score(pair: tuple[str, int]) -> tuple[int, int]:
+        low = pair[0].lower()
+        pref = 0 if ("f16" in low or "bf16" in low) else 1
+        return (pref, -pair[1])
+
+    return sorted(files, key=score)[0]
+
+
+def _sidecar_repo(model_path: str) -> str:
+    p = Path(model_path)
+    sc = Path(str(p) + ".stickllm.json")
+    if not sc.is_file():
+        return ""
+    try:
+        doc = json.loads(sc.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    repo = str(doc.get("repo") or "").strip()
+    return repo if "/" in repo else ""
+
+
+def looks_vision(*parts: str) -> bool:
+    blob = " ".join(p for p in parts if p).replace("_", "-")
+    return bool(_VISION_RE.search(blob))
+
+
+def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
+    """Search Hugging Face for GGUF files. Catalog hash hits are Verified."""
+    q = " ".join(str(query or "").split())
+    if len(q) < 2:
+        return {"ok": False, "error": "type at least 2 characters"}
+    abl = str(abl or "include").lower()
+    if abl not in ("include", "only", "exclude"):
+        abl = "include"
+    # "Only" must ask HF for abliterated repos. Filtering the popular Qwen list
+    # locally finds none, because those top hits are the normal instruct models.
+    vision = str(vision or "any").lower()
+    if vision not in ("any", "only"):
+        vision = "any"
+    search_q = q
+    if abl == "only" and "abliterat" not in q.lower() and "uncensor" not in q.lower():
+        search_q = q + " abliterated"
+    if vision == "only" and not looks_vision(q):
+        search_q = search_q + " VL"
+    search_url = "https://huggingface.co/api/models?" + urllib.parse.urlencode(
+        {
+            "search": search_q,
+            "filter": "gguf",
+            "sort": "downloads",
+            "direction": "-1",
+            "limit": "8",
+        }
+    )
+    try:
+        listing = _hf_get_json(search_url, timeout=15)
+    except urllib.error.URLError as exc:
+        return {"ok": False, "error": f"Hugging Face unreachable: {exc.reason if hasattr(exc, 'reason') else exc}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Hugging Face search failed: {exc}"}
+    if not isinstance(listing, list):
+        return {"ok": False, "error": "unexpected Hugging Face response"}
+    sha_idx = _catalog_sha_index()
+    installed_names: set[str] = set()
+    for folder in model_dirs():
+        try:
+            for p in gguf_index([Path(folder)]).get(Path(folder), []):
+                installed_names.add(p.name.lower())
+        except OSError:
+            continue
+    prefer = ("Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "Q4_K_S", "Q3_K_M", "IQ4_XS")
+    models: list[dict] = []
+    for item in listing:
+        if len(models) >= 24:
+            break
+        if not isinstance(item, dict):
+            continue
+        repo = str(item.get("id") or item.get("modelId") or "").strip()
+        if not repo or "/" not in repo:
+            continue
+        try:
+            tree = _hf_get_json(
+                "https://huggingface.co/api/models/"
+                + urllib.parse.quote(repo, safe="/")
+                + "/tree/main",
+                timeout=12,
+            )
+        except Exception:
+            continue
+        if not isinstance(tree, list):
+            continue
+        files = []
+        mmproj_files: list[tuple[str, int]] = []
+        for sib in tree:
+            if not isinstance(sib, dict) or sib.get("type") not in (None, "file"):
+                continue
+            name = str(sib.get("path") or sib.get("rfilename") or "")
+            if not name.lower().endswith(".gguf"):
+                continue
+            low = name.lower()
+            try:
+                size = int(sib.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if "mmproj" in low:
+                mmproj_files.append((name, size))
+                continue
+            files.append((name, size))
+        def rank(pair: tuple[str, int]) -> tuple[int, int, int]:
+            qm = _QUANT_RE.search(pair[0])
+            quant = qm.group(1).upper() if qm else ""
+            try:
+                pri = prefer.index(quant)
+            except ValueError:
+                pri = 50
+            split = 1 if "-of-" in pair[0].lower() else 0
+            return (pri, split, -pair[1])
+        files.sort(key=rank)
+        org = repo.split("/", 1)[0].lower()
+        downloads = int(item.get("downloads") or 0)
+        for name, size in files[:4]:
+            if len(models) >= 24:
+                break
+            ablit = _is_abliterated(repo, name)
+            picked = _pick_mmproj(mmproj_files)
+            sees = bool(picked) or looks_vision(repo, name)
+            if vision == "only" and not sees:
+                continue
+            if abl == "only" and not ablit:
+                continue
+            if abl == "exclude" and ablit:
+                continue
+            sha = sha_idx.get((repo, name), "")
+            if sha:
+                trust = "verified"
+            elif org in _HF_COMMUNITY:
+                trust = "community"
+            else:
+                trust = "untrusted"
+            qm = _QUANT_RE.search(name)
+            quant = qm.group(1).upper() if qm else ""
+            base = Path(name).name
+            mid = "hf:" + repo.replace("/", "__") + ":" + base
+            models.append(
+                {
+                    "id": mid,
+                    "name": base.replace(".gguf", ""),
+                    "repo": repo,
+                    "file": name,
+                    "hf_repo": repo,
+                    "hf_file": name,
+                    "sha256": sha,
+                    "trust": trust,
+                    "quant": quant,
+                    "bytes": size,
+                    "approx_size_gb": round(size / (1024 ** 3), 2) if size else 0,
+                    "downloads": downloads,
+                    "installed": base.lower() in installed_names,
+                    "source": "huggingface",
+                    "format": "GGUF",
+                    "hf": True,
+                    "pinned": bool(sha),
+                    "abliterated": ablit,
+                    "vision": sees,
+                    "mmproj_file": picked[0] if picked else "",
+                    "mmproj_bytes": picked[1] if picked else 0,
+                    "mmproj_ready": bool(picked) and Path(picked[0]).name.lower() in installed_names,
+                }
+            )
+    return {"ok": True, "query": q, "models": models}
 
 
 def parse_catalog() -> list[dict]:
@@ -1342,18 +1769,1145 @@ def parse_catalog() -> list[dict]:
     return out
 
 
+def _fmt_gb(n: int) -> str:
+    return f"{max(0, int(n)) / (1024 ** 3):.1f} GB"
+
+
+QUEUE_DISK_NAME = ".stickllm-download-queue.json"
+VAULT_MNT = Path("/var/lib/stickllm/vault")
+SETTINGS_MNT = Path("/mnt/stickllm-settings")
+SPEECH_DIR = Path("/opt/stickllm/speech")
+HF_TOKEN_NAME = "hf-token"
+
+
+def _queue_disk_path() -> Path | None:
+    dest = get_preferred_models_dir()
+    if dest is None:
+        return None
+    return dest / QUEUE_DISK_NAME
+
+
+def _queue_doc(path: Path) -> dict:
+    doc = read_json(path)
+    return doc if isinstance(doc, dict) else {}
+
+
+def _queue_items(doc: dict) -> list[dict]:
+    raw = doc.get("items")
+    if not isinstance(raw, list):
+        return []
+    return [i for i in raw if isinstance(i, dict)]
+
+
+def _queue_load() -> list[dict]:
+    """Live /run copy, or the models-folder copy after a reboot."""
+    run_doc = _queue_doc(QUEUE_PATH) if QUEUE_PATH.is_file() else {}
+    disk = _queue_disk_path()
+    disk_doc = _queue_doc(disk) if disk is not None and disk.is_file() else {}
+    run_items = _queue_items(run_doc)
+    disk_items = _queue_items(disk_doc)
+    try:
+        run_u = int(run_doc.get("updated") or 0)
+    except (TypeError, ValueError):
+        run_u = 0
+    try:
+        disk_u = int(disk_doc.get("updated") or 0)
+    except (TypeError, ValueError):
+        disk_u = 0
+    if run_items and (not disk_items or run_u >= disk_u):
+        return run_items
+    return disk_items or run_items
+
+
+def _queue_save(items: list[dict]) -> None:
+    # Never persist a token. The queue file sits in the models folder in the clear.
+    clean = []
+    for item in items:
+        row = {k: v for k, v in item.items() if k not in ("token", "hf_token", "authorization")}
+        clean.append(row)
+    doc = {"updated": int(time.time()), "items": clean}
+    text = json.dumps(doc, indent=2) + "\n"
+    RUN.mkdir(parents=True, exist_ok=True)
+    tmp = QUEUE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(QUEUE_PATH)
+    disk = _queue_disk_path()
+    if disk is None:
+        return
+    try:
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        dtmp = disk.with_suffix(".json.tmp")
+        dtmp.write_text(text, encoding="utf-8")
+        dtmp.replace(disk)
+    except OSError:
+        pass
+
+
+def vault_settings_dir() -> Path | None:
+    if not os.path.ismount(str(VAULT_MNT)):
+        return None
+    d = VAULT_MNT / "settings"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
+    except OSError:
+        return None
+    return d
+
+
+def _settings_api():
+    cached = getattr(_settings_api, "_mod", None)
+    if cached is not None:
+        return cached
+    lib = Path("/usr/local/lib/stickllm_usb_settings.py")
+    if not lib.is_file():
+        return None
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("stickllm_usb_settings", lib)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _settings_api._mod = mod
+    return mod
+
+
+def portable_secrets_dir() -> Path | None:
+    """Encrypted USB settings secrets dir. Never the speech tree or an unmounted path."""
+    if SETTINGS_MNT == SPEECH_DIR or SETTINGS_MNT == VAULT_MNT:
+        return None
+    if not os.path.ismount(str(SETTINGS_MNT)):
+        return None
+    mod = _settings_api()
+    if mod is not None:
+        try:
+            mod.assert_settings_mount(SETTINGS_MNT)
+        except ValueError:
+            return None
+    d = SETTINGS_MNT / "secrets"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
+    except OSError:
+        return None
+    return d
+
+
+def _clean_token(raw: str) -> str:
+    raw = str(raw or "").strip()
+    if not raw or len(raw) > 400 or any(c.isspace() for c in raw):
+        return ""
+    return raw
+
+
+def _read_token_file(path: Path) -> str:
+    try:
+        return _clean_token(path.read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+
+
+def _write_token_file(path: Path, token: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(token + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+    os.chmod(path, 0o600)
+
+
+def _vault_token_path() -> Path | None:
+    d = vault_settings_dir()
+    if d is None:
+        return None
+    return d / HF_TOKEN_NAME
+
+
+def read_hf_token() -> str:
+    secrets = portable_secrets_dir()
+    if secrets is not None:
+        current = _read_token_file(secrets / HF_TOKEN_NAME)
+        legacy_path = _vault_token_path()
+        legacy = _read_token_file(legacy_path) if legacy_path is not None else ""
+        if current:
+            if legacy_path is not None and legacy:
+                try:
+                    legacy_path.unlink()
+                except OSError:
+                    pass
+            return current
+        if legacy:
+            try:
+                _write_token_file(secrets / HF_TOKEN_NAME, legacy)
+                if legacy_path is not None:
+                    legacy_path.unlink()
+            except OSError:
+                return legacy
+            return legacy
+        return ""
+    legacy_path = _vault_token_path()
+    if legacy_path is None:
+        return ""
+    return _read_token_file(legacy_path)
+
+
+def write_hf_token(token: str) -> dict:
+    token = _clean_token(token)
+    secrets = portable_secrets_dir()
+    settings_open = secrets is not None
+    if secrets is None:
+        d = vault_settings_dir()
+        if d is None:
+            return {
+                "ok": False,
+                "saved": False,
+                "settings_mounted": False,
+                "error": "Unlock the vault to save the Hugging Face token",
+            }
+        path = d / HF_TOKEN_NAME
+        if not token:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return {
+                "ok": True,
+                "saved": False,
+                "settings_mounted": False,
+                "note": "Hugging Face token removed from the vault",
+            }
+        if not token.startswith("hf_") or len(token) < 10:
+            return {"ok": False, "saved": False, "settings_mounted": False, "error": "Token should look like hf_…"}
+        _write_token_file(path, token)
+        return {
+            "ok": True,
+            "saved": True,
+            "settings_mounted": False,
+            "note": "USB settings partition is not open; token saved in the vault until that partition is available",
+        }
+    path = secrets / HF_TOKEN_NAME
+    legacy = _vault_token_path()
+    if not token:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        if legacy is not None:
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
+        return {
+            "ok": True,
+            "saved": False,
+            "settings_mounted": True,
+            "note": "Hugging Face token removed from USB stick settings",
+        }
+    if not token.startswith("hf_") or len(token) < 10:
+        return {"ok": False, "saved": False, "settings_mounted": True, "error": "Token should look like hf_…"}
+    mod = _settings_api()
+    if mod is not None:
+        ok, why = mod.validate_secret_name(HF_TOKEN_NAME)
+        if not ok:
+            return {"ok": False, "saved": False, "settings_mounted": True, "error": why}
+    _write_token_file(path, token)
+    if legacy is not None:
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
+    return {
+        "ok": True,
+        "saved": True,
+        "settings_mounted": settings_open,
+        "note": "Hugging Face token saved on the USB stick settings partition",
+    }
+
+
+def _public_queue(items: list[dict]) -> list[dict]:
+    out = []
+    for j in items:
+        state = str(j.get("state") or "pending")
+        if state == "done":
+            continue
+        done = _bytes_on_disk(j)
+        total = int(j.get("bytes") or 0)
+        pct = None
+        prog = read_json(RUN / "download-progress.json")
+        if state == "active" and str(prog.get("id") or "") == str(j.get("id") or ""):
+            try:
+                done = int(prog.get("bytes_done") or done)
+            except (TypeError, ValueError):
+                pass
+            try:
+                total = int(prog.get("bytes_total") or total) or total
+            except (TypeError, ValueError):
+                pass
+            pct = prog.get("percent")
+        if pct is None and total > 0:
+            pct = round(min(99.9, 100.0 * done / total), 1)
+        out.append(
+            {
+                "id": j.get("id") or "",
+                "name": j.get("name") or j.get("file") or j.get("id") or "model",
+                "file": Path(str(j.get("file") or "")).name,
+                "bytes": total,
+                "bytes_done": done,
+                "percent": pct,
+                "state": state,
+                "error": j.get("error") or "",
+            }
+        )
+    return out
+
+
+def _job_base(job: dict) -> str:
+    return Path(str(job.get("file") or "")).name
+
+
+def _same_job(a: dict, b: dict) -> bool:
+    aid, bid = str(a.get("id") or ""), str(b.get("id") or "")
+    if aid and aid == bid:
+        return True
+    af, bf = _job_base(a), _job_base(b)
+    if not af or not bf or af != bf:
+        return False
+    return str(a.get("repo") or "") == str(b.get("repo") or "")
+
+
+def _final_path(job: dict) -> Path:
+    return Path(str(job.get("dest") or "")) / _job_base(job)
+
+
+def _bytes_on_disk(job: dict) -> int:
+    final = _final_path(job)
+    partial = Path(str(final) + ".partial")
+    try:
+        if final.is_file():
+            return final.stat().st_size
+        if partial.is_file():
+            return partial.stat().st_size
+    except OSError:
+        return 0
+    return 0
+
+
+def _job_remaining(job: dict) -> int:
+    need = int(job.get("bytes") or 0)
+    if need <= 0:
+        return 0
+    return max(0, need - _bytes_on_disk(job))
+
+
+def _job_complete(job: dict) -> bool:
+    final = _final_path(job)
+    try:
+        if not final.is_file():
+            return False
+        need = int(job.get("bytes") or 0)
+        if need <= 0:
+            return True
+        return final.stat().st_size >= int(need * 0.98)
+    except OSError:
+        return False
+
+
+def _has_partial(job: dict) -> bool:
+    try:
+        return Path(str(_final_path(job)) + ".partial").is_file()
+    except OSError:
+        return False
+
+
+def write_download_sidecar(job: dict) -> None:
+    dest = Path(str(job.get("dest") or ""))
+    base = _job_base(job)
+    if not dest or not base:
+        return
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        doc = {
+            "id": job.get("id") or "",
+            "name": job.get("name") or base,
+            "repo": job.get("repo") or "",
+            "file": job.get("file") or base,
+            "sha256": job.get("sha256") or "",
+            "bytes": int(job.get("bytes") or 0),
+            "dest": str(dest),
+        }
+        (dest / f"{base}.stickllm.json").write_text(json.dumps(doc) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _discover_partial_jobs() -> list[dict]:
+    """Sidecars next to unfinished files so an interrupted download can resume."""
+    found: list[dict] = []
+    seen: set[str] = set()
+    for d in model_dirs():
+        try:
+            sidecars = list(d.glob("*.gguf.stickllm.json"))
+        except OSError:
+            continue
+        for sc in sidecars:
+            job = read_json(sc)
+            if not job.get("file") and not job.get("id"):
+                continue
+            job.setdefault("dest", str(d))
+            job.setdefault("state", "pending")
+            job.setdefault("source", "partial")
+            key = str(job.get("id") or "") + "|" + _job_base(job)
+            if key in seen or _job_complete(job):
+                continue
+            if not _has_partial(job) and not _final_path(job).is_file():
+                # Sidecar with nothing on disk yet is only useful if already queued.
+                continue
+            if not _has_partial(job):
+                continue
+            seen.add(key)
+            found.append(job)
+    return found
+
+
+def _order_queue(items: list[dict]) -> list[dict]:
+    active = [j for j in items if j.get("state") == "active"]
+    failed = [j for j in items if j.get("state") == "failed"]
+    paused = [j for j in items if j.get("state") == "paused"]
+    pending = [j for j in items if j.get("state") not in ("active", "failed", "done", "paused")]
+    # Clicks stay in order. Interrupted partials resume after those.
+    user = [j for j in pending if j.get("source") != "partial"]
+    resumed = [j for j in pending if j.get("source") == "partial"]
+    return active + user + resumed + paused + failed
+
+
+def _merge_discovered(items: list[dict]) -> list[dict]:
+    for job in _discover_partial_jobs():
+        if any(_same_job(job, existing) for existing in items):
+            continue
+        job["state"] = "pending"
+        items.append(job)
+    return _order_queue(items)
+
+
+def _drop_finished(items: list[dict]) -> list[dict]:
+    prog = read_json(RUN / "download-progress.json")
+    prog_id = str(prog.get("id") or "")
+    prog_state = str(prog.get("state") or "")
+    kept = []
+    for j in items:
+        if _job_complete(j):
+            continue
+        if prog_id and _same_job(j, {"id": prog_id, "file": prog.get("file") or ""}) and prog_state == "done":
+            continue
+        if j.get("state") == "active" and prog_state == "failed" and prog_id and str(j.get("id") or "") == prog_id:
+            j["state"] = "failed"
+            j["error"] = str(prog.get("note") or "download failed")
+        kept.append(j)
+    return kept
+
+
+def _fs_free(path: Path) -> tuple[int, int]:
+    probe = path if path.exists() else path.parent
+    st = os.stat(probe)
+    vfs = os.statvfs(probe)
+    return st.st_dev, vfs.f_bavail * vfs.f_frsize
+
+
+def _space_error(items: list[dict]) -> str:
+    """Refuse a queue that would fill the models disk. 5% padding plus 2 GB spare."""
+    groups: dict[int, dict] = {}
+    for j in items:
+        if j.get("state") == "failed":
+            continue
+        dest = Path(str(j.get("dest") or ""))
+        if not str(dest):
+            continue
+        try:
+            dev, free = _fs_free(dest if dest.exists() else dest.parent)
+        except OSError:
+            return f"Cannot check free space on {dest}"
+        bucket = groups.setdefault(dev, {"free": free, "need": 0, "path": str(dest)})
+        bucket["need"] += _job_remaining(j)
+    spare = DOWNLOAD_SPARE_BYTES
+    for bucket in groups.values():
+        padded = int(bucket["need"] * 1.05)
+        if padded + spare > bucket["free"]:
+            return (
+                f"Not enough free space on {bucket['path']}. "
+                f"Queued downloads need {_fmt_gb(padded)} plus {_fmt_gb(spare)} spare, "
+                f"and {_fmt_gb(bucket['free'])} is free."
+            )
+    return ""
+
+
+def _pid_alive_download() -> bool:
+    try:
+        pid = int((RUN / "download.pid").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        return False
+    return "stickllm-download-model" in cmd
+
+
+def _lock_held() -> bool:
+    path = RUN / "download.lock"
+    try:
+        RUN.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return False
+        else:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            return False
+    finally:
+        os.close(fd)
+
+
 def download_running() -> bool:
+    if _pid_alive_download() or _live_downloader_pid() is not None:
+        return True
+    prog = read_json(RUN / "download-progress.json")
+    if prog.get("state") in ("downloading", "verifying", "starting"):
+        try:
+            updated = int(prog.get("updated") or 0)
+        except (TypeError, ValueError):
+            updated = 0
+        if updated and (time.time() - updated) < 25:
+            return True
+    try:
+        started = json.loads((RUN / "download.starting").read_text(encoding="utf-8") or "{}")
+        if time.time() - float(started.get("t") or 0) < 20 and _live_downloader_pid() is not None:
+            return True
+    except (OSError, ValueError, TypeError):
+        pass
+    return False
+
+
+def _live_downloader_pid() -> int | None:
+    """Pid of stickllm-download-model. Ignores shells that merely mention the name."""
     try:
         p = subprocess.run(
-            ["pgrep", "-f", "stickllm-download-model|curl.*huggingface"],
+            ["pgrep", "-f", "/usr/local/bin/stickllm-download-model"],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
-        return p.returncode == 0 and bool(p.stdout.strip())
-    except Exception:
-        return False
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in (p.stdout or "").split():
+        if not line.isdigit():
+            continue
+        pid = int(line)
+        try:
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "/usr/local/bin/stickllm-download-model" in cmd and "pgrep" not in cmd:
+            return pid
+    return None
+
+
+def _running_job_from_proc() -> dict | None:
+    pid = _live_downloader_pid()
+    if pid is None:
+        return None
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        return None
+
+    def grab(flag: str) -> str:
+        m = re.search(rf"(?:^|\s){re.escape(flag)} (\S+)", cmd)
+        return m.group(1) if m else ""
+
+    hf_file = grab("--file")
+    mid = grab("--id")
+    if not mid and not hf_file:
+        return None
+    try:
+        nbytes = int(grab("--bytes") or 0)
+    except ValueError:
+        nbytes = 0
+    return {
+        "id": mid or hf_file,
+        "name": grab("--name") or (Path(hf_file).name if hf_file else mid),
+        "repo": grab("--repo"),
+        "file": hf_file,
+        "sha256": grab("--sha256"),
+        "bytes": nbytes,
+        "dest": grab("--dest"),
+        "state": "active",
+        "source": "user",
+        "starts": 1,
+    }
+
+
+def _mark_active(items: list[dict]) -> None:
+    running = download_running()
+    prog = read_json(RUN / "download-progress.json")
+    prog_id = str(prog.get("id") or "")
+    for j in items:
+        if j.get("state") in ("failed", "paused"):
+            continue
+        if running and prog_id and str(j.get("id") or "") == prog_id:
+            j["state"] = "active"
+        elif j.get("state") == "active":
+            j["state"] = "pending"
+
+
+def _start_download_job(job: dict) -> None:
+    write_download_sidecar(job)
+    dest = str(job.get("dest") or "")
+    cmd = ["/usr/local/bin/stickllm-download-model", "--i-understand"]
+    repo = str(job.get("repo") or "")
+    hf_file = str(job.get("file") or "")
+    mid = str(job.get("id") or "hf")
+    if repo and hf_file and not job.get("catalog"):
+        cmd += ["--repo", repo, "--file", hf_file, "--id", mid]
+        sha = str(job.get("sha256") or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", sha):
+            cmd += ["--sha256", sha]
+        else:
+            cmd += ["--allow-unpinned"]
+        nbytes = int(job.get("bytes") or 0)
+        if nbytes > 0:
+            cmd += ["--bytes", str(nbytes)]
+        name = str(job.get("name") or hf_file)[:160]
+        if name:
+            cmd += ["--name", name]
+    else:
+        cmd += ["--id", mid]
+    if dest:
+        cmd += ["--dest", dest]
+    env = os.environ.copy()
+    env["STICKLLM_SESSION_MODE"] = session_mode()
+    if dest:
+        env["STICKLLM_MODELS_DIR"] = dest
+    token = read_hf_token()
+    if token:
+        env["STICKLLM_HF_TOKEN"] = token
+    RUN.mkdir(parents=True, exist_ok=True)
+    (RUN / "download.starting").write_text(
+        json.dumps({"id": mid, "t": time.time()}) + "\n", encoding="utf-8"
+    )
+    now = int(time.time())
+    (RUN / "download-progress.json").write_text(
+        json.dumps(
+            {
+                "state": "starting",
+                "id": mid,
+                "name": job.get("name") or mid,
+                "file": _job_base(job),
+                "percent": 0,
+                "bytes_done": _bytes_on_disk(job),
+                "bytes_total": int(job.get("bytes") or 0),
+                "note": "starting download",
+                "started": now,
+                "updated": now,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    logf = open(RUN / "download.log", "a", encoding="utf-8")
+    subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True, env=env)
+    job["state"] = "active"
+    job["error"] = ""
+    job["starts"] = int(job.get("starts") or 0) + 1
+    job["last_start"] = time.time()
+
+
+def _adopt_running(items: list[dict]) -> list[dict]:
+    """A live downloader always shows in the queue, even if the file was empty."""
+    live = _running_job_from_proc()
+    if live is not None and not any(_same_job(live, existing) for existing in items):
+        items.append(live)
+    return items
+
+
+def _pump_download_queue() -> dict:
+    """Start the next queued model when nothing is already downloading."""
+    items = _drop_finished(_queue_load())
+    items = _merge_discovered(items)
+    items = _adopt_running(items)
+    _mark_active(items)
+    if download_running():
+        _queue_save(items)
+        return {"started": False, "busy": True, "queue": _public_queue(items)}
+    pending = [j for j in items if j.get("state") not in ("failed", "done", "active", "paused")]
+    # A stale "active" mark with no process should be retried, unless it keeps dying.
+    if not pending:
+        pending = [j for j in items if j.get("state") == "active"]
+    nxt = None
+    for cand in pending:
+        if int(cand.get("starts") or 0) >= 3:
+            cand["state"] = "failed"
+            cand["error"] = cand.get("error") or "stopped after repeated failures"
+            continue
+        nxt = cand
+        break
+    if nxt is None:
+        _queue_save(_order_queue(items))
+        return {"started": False, "busy": False, "queue": _public_queue(items)}
+    err = _space_error([j for j in items if j.get("state") != "failed"])
+    if err:
+        nxt["error"] = err
+        _queue_save(_order_queue(items))
+        return {"started": False, "busy": False, "error": err, "queue": _public_queue(items)}
+    _start_download_job(nxt)
+    _queue_save(_order_queue(items))
+    return {"started": True, "busy": True, "id": nxt.get("id") or "", "queue": _public_queue(items)}
+
+
+def pump_download_queue() -> dict:
+    with QUEUE_LOCK:
+        return _pump_download_queue()
+
+
+def _build_download_job(params: dict) -> dict:
+    mid = str(params.get("id") or "").strip()
+    repo = str(params.get("repo") or "").strip()
+    hf_file = str(params.get("file") or "").strip()
+    dest_param = str(params.get("dest") or params.get("path") or "").strip()
+    if dest_param:
+        set_r = set_preferred_models_dir(dest_param)
+        if not set_r.get("ok"):
+            return {"ok": False, "error": set_r.get("error") or "invalid models folder"}
+    dest = get_preferred_models_dir() or vault_download_models_dir()
+    beside = str(params.get("beside") or "").strip()
+    if beside and Path(beside).is_dir():
+        dest = Path(beside)
+    if dest is None:
+        return {"ok": False, "error": "choose a models folder before downloading"}
+    sha = str(params.get("sha256") or "").strip().lower()
+    try:
+        nbytes = int(params.get("bytes") or 0)
+    except (TypeError, ValueError):
+        nbytes = 0
+    name = str(params.get("name") or "").strip()
+    if repo or hf_file:
+        if not repo or not hf_file:
+            return {"ok": False, "error": "repo and file are both required"}
+        if not hf_file.lower().endswith(".gguf") or ".." in hf_file or hf_file.startswith("/"):
+            return {"ok": False, "error": "only a GGUF file path is allowed"}
+        if "/" not in repo:
+            return {"ok": False, "error": "repo must look like org/name"}
+        if nbytes <= 0:
+            return {"ok": False, "error": "model size is unknown, so it cannot be queued safely"}
+        return {
+            "ok": True,
+            "id": mid or ("hf:" + repo.replace("/", "__") + ":" + Path(hf_file).name),
+            "name": (name or Path(hf_file).name)[:160],
+            "repo": repo,
+            "file": hf_file,
+            "sha256": sha if re.fullmatch(r"[0-9a-f]{64}", sha) else "",
+            "bytes": nbytes,
+            "dest": str(dest),
+            "state": "pending",
+            "starts": 0,
+            "source": "user",
+        }
+    if not mid:
+        return {"ok": False, "error": "id required"}
+    match = next((m for m in parse_catalog() if m.get("id") == mid), None)
+    if not match:
+        return {"ok": False, "error": f"unknown model id: {mid}"}
+    files = match.get("hf_files") or []
+    if not files:
+        return {"ok": False, "error": "model has no downloadable file"}
+    nbytes = int(float(match.get("approx_size_gb") or 0) * (1024 ** 3))
+    if nbytes <= 0:
+        return {"ok": False, "error": "model size is unknown, so it cannot be queued safely"}
+    return {
+        "ok": True,
+        "id": mid,
+        "name": match.get("name") or mid,
+        "repo": match.get("hf_repo") or "",
+        "file": files[0],
+        "sha256": "",
+        "bytes": nbytes,
+        "dest": str(dest),
+        "state": "pending",
+        "starts": 0,
+        "source": "user",
+        "catalog": True,
+    }
+
+
+def _enqueue_download(params: dict) -> dict:
+    built = _build_download_job(params)
+    if not built.get("ok"):
+        return built
+    job = {k: v for k, v in built.items() if k != "ok"}
+    items = _drop_finished(_queue_load())
+    items = _merge_discovered(items)
+    for existing in items:
+        if not _same_job(existing, job):
+            continue
+        if existing.get("state") == "active":
+            return {
+                "ok": True,
+                "queued": False,
+                "started": False,
+                "note": "Already downloading",
+                "download_dir": existing.get("dest") or "",
+                "download": download_progress(),
+                "queue": _public_queue(items),
+                "catalog": enrich_models(),
+            }
+        if existing.get("state") == "failed" or existing.get("source") == "partial":
+            existing.update({k: job[k] for k in ("name", "repo", "file", "sha256", "bytes", "dest")})
+            existing["state"] = "pending"
+            existing["source"] = "user"
+            existing["error"] = ""
+            existing["starts"] = 0
+            items = _order_queue(items)
+            err = _space_error(items)
+            if err:
+                return {"ok": False, "error": err, "queue": _public_queue(items)}
+            write_download_sidecar(existing)
+            _queue_save(items)
+            pumped = _pump_download_queue()
+            return {
+                "ok": True,
+                "queued": True,
+                "started": bool(pumped.get("started")),
+                "note": "Back in the download queue",
+                "download_dir": job.get("dest") or "",
+                "download": download_progress(),
+                "queue": pumped.get("queue") or [],
+                "catalog": enrich_models(),
+            }
+        state = "downloading" if existing.get("state") == "active" else "queued"
+        return {
+            "ok": True,
+            "queued": state == "queued",
+            "started": False,
+            "note": "Already downloading" if state == "downloading" else "Already in the download queue",
+            "download_dir": existing.get("dest") or "",
+            "download": download_progress(),
+            "queue": _public_queue(items),
+            "catalog": enrich_models(),
+        }
+    if _job_complete(job):
+        return {"ok": True, "started": False, "queued": False, "note": "Already downloaded", "queue": _public_queue(items)}
+    if sum(1 for j in items if j.get("state") != "failed") >= DOWNLOAD_QUEUE_MAX:
+        return {"ok": False, "error": f"Download queue is full ({DOWNLOAD_QUEUE_MAX})"}
+    trial = items + [job]
+    err = _space_error(trial)
+    if err:
+        return {"ok": False, "error": err, "queue": _public_queue(items)}
+    write_download_sidecar(job)
+    items.append(job)
+    items = _order_queue(items)
+    _queue_save(items)
+    pending = [j for j in items if j.get("state") not in ("failed", "done")]
+    pos = next((i + 1 for i, j in enumerate(pending) if _same_job(j, job)), len(pending))
+    pumped = _pump_download_queue()
+    started = bool(pumped.get("started")) and str(pumped.get("id") or "") == str(job.get("id") or "")
+    if started:
+        note = "Download started"
+    else:
+        note = f"Queued ({pos} of {len(pending)}). The current download keeps going."
+    return {
+        "ok": True,
+        "queued": not started,
+        "started": started,
+        "position": pos,
+        "note": note,
+        "session_mode": session_mode(),
+        "download_dir": job.get("dest") or "",
+        "download": download_progress(),
+        "queue": pumped.get("queue") or _public_queue(items),
+        "catalog": enrich_models(),
+    }
+
+
+def download_mmproj(params: dict) -> dict:
+    """Queue the mmproj that belongs to this model. It is not shared with other models."""
+    repo = str(params.get("repo") or "").strip()
+    model_path = str(params.get("path") or "").strip()
+    hf_file = str(params.get("file") or "").strip()
+    try:
+        nbytes = int(params.get("bytes") or 0)
+    except (TypeError, ValueError):
+        nbytes = 0
+    if not repo and model_path:
+        repo = _sidecar_repo(model_path)
+    if not repo or "/" not in repo:
+        return {
+            "ok": False,
+            "error": "No Hugging Face repo is known for this file. Search for the model, then click its vision tag.",
+        }
+    if not hf_file or nbytes <= 0 or "mmproj" not in hf_file.lower():
+        try:
+            tree = _hf_get_json(
+                "https://huggingface.co/api/models/"
+                + urllib.parse.quote(repo, safe="/")
+                + "/tree/main",
+                timeout=20,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"Could not read that repo: {exc}"}
+        cands: list[tuple[str, int]] = []
+        if isinstance(tree, list):
+            for sib in tree:
+                if not isinstance(sib, dict):
+                    continue
+                name = str(sib.get("path") or sib.get("rfilename") or "")
+                if "mmproj" not in name.lower() or not name.lower().endswith(".gguf"):
+                    continue
+                try:
+                    size = int(sib.get("size") or 0)
+                except (TypeError, ValueError):
+                    size = 0
+                if size > 0:
+                    cands.append((name, size))
+        picked = _pick_mmproj(cands)
+        if not picked:
+            return {"ok": False, "error": "That Hugging Face repo has no mmproj file for this model."}
+        hf_file, nbytes = picked
+    dest = ""
+    if model_path and Path(model_path).is_file():
+        dest = str(Path(model_path).parent)
+        already = Path(dest) / Path(hf_file).name
+        try:
+            if already.is_file() and already.stat().st_size >= int(nbytes * 0.98):
+                return {"ok": True, "already": True, "note": "This model's mmproj is already next to it."}
+        except OSError:
+            pass
+    payload = {
+        "id": str(params.get("id") or "") or ("mmproj:" + repo.replace("/", "__") + ":" + Path(hf_file).name),
+        "repo": repo,
+        "file": hf_file,
+        "bytes": nbytes,
+        "name": "mmproj · " + Path(hf_file).name,
+    }
+    if dest:
+        payload["beside"] = dest
+    return enqueue_download(payload)
+
+
+def enqueue_download(params: dict) -> dict:
+    with QUEUE_LOCK:
+        return _enqueue_download(params)
+
+
+def _find_queued(items: list[dict], mid: str) -> dict | None:
+    mid = str(mid or "").strip()
+    if not mid:
+        return None
+    for j in items:
+        if str(j.get("id") or "") == mid:
+            return j
+    return None
+
+
+def _stop_download_processes() -> None:
+    """Stop the active downloader and its curl child. Leaves the .partial file."""
+    pids: set[int] = set()
+    try:
+        pids.add(int((RUN / "download.pid").read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        pass
+    try:
+        p = subprocess.run(
+            ["pgrep", "-f", "/usr/local/bin/stickllm-download-model"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        for line in (p.stdout or "").split():
+            if line.isdigit():
+                pids.add(int(line))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    kids: set[int] = set()
+    for pid in list(pids):
+        try:
+            raw = Path(f"/proc/{pid}/task/{pid}/children").read_text(encoding="utf-8")
+        except OSError:
+            continue
+        kids.update(int(part) for part in raw.split() if part.isdigit())
+    pids |= kids
+    me = os.getpid()
+    pids = {pid for pid in pids if pid > 1 and pid != me}
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    time.sleep(0.4)
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    for name in ("download.pid", "download.starting"):
+        try:
+            (RUN / name).unlink()
+        except OSError:
+            pass
+    now = int(time.time())
+    try:
+        (RUN / "download-progress.json").write_text(
+            json.dumps(
+                {
+                    "state": "idle",
+                    "id": "",
+                    "name": "",
+                    "note": "stopped",
+                    "percent": 0,
+                    "bytes_done": 0,
+                    "bytes_total": 0,
+                    "started": now,
+                    "updated": now,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _load_queue_now() -> list[dict]:
+    items = _drop_finished(_queue_load())
+    items = _merge_discovered(items)
+    items = _adopt_running(items)
+    _mark_active(items)
+    return items
+
+
+def _queue_stop(mid: str) -> dict:
+    items = _load_queue_now()
+    job = _find_queued(items, mid)
+    if job is None:
+        return {"ok": False, "error": "not in the download queue"}
+    was_active = job.get("state") == "active" or (
+        download_running() and str(read_json(RUN / "download-progress.json").get("id") or "") == str(job.get("id") or "")
+    )
+    job["state"] = "paused"
+    job["error"] = ""
+    _queue_save(_order_queue(items))
+    if was_active:
+        _stop_download_processes()
+        items = _queue_load()
+        again = _find_queued(items, mid)
+        if again is not None:
+            again["state"] = "paused"
+            again["error"] = ""
+        _queue_save(_order_queue(items))
+        pumped = _pump_download_queue()
+        return {
+            "ok": True,
+            "note": "Stopped. The partial file is kept.",
+            "download": download_progress(),
+            "queue": pumped.get("queue") or [],
+        }
+    return {
+        "ok": True,
+        "note": "Paused",
+        "download": download_progress(),
+        "queue": _public_queue(_order_queue(items)),
+    }
+
+
+def _queue_start(mid: str) -> dict:
+    items = _load_queue_now()
+    job = _find_queued(items, mid)
+    if job is None:
+        return {"ok": False, "error": "not in the download queue"}
+    if download_running():
+        for other in items:
+            if other.get("state") == "active" and not _same_job(other, job):
+                other["state"] = "paused"
+                other["error"] = ""
+        _queue_save(_order_queue(items))
+        _stop_download_processes()
+        items = _queue_load()
+        job = _find_queued(items, mid)
+        if job is None:
+            return {"ok": False, "error": "not in the download queue"}
+    job["state"] = "pending"
+    job["source"] = "user"
+    job["starts"] = 0
+    job["error"] = ""
+    rest = [j for j in items if not _same_job(j, job)]
+    items = _order_queue([job] + rest)
+    _queue_save(items)
+    pumped = _pump_download_queue()
+    return {
+        "ok": True,
+        "note": "Download started" if pumped.get("started") else "Queued to start",
+        "started": bool(pumped.get("started")),
+        "download": download_progress(),
+        "queue": pumped.get("queue") or [],
+    }
+
+
+def _queue_remove(mid: str) -> dict:
+    items = _load_queue_now()
+    job = _find_queued(items, mid)
+    if job is None:
+        return {"ok": False, "error": "not in the download queue"}
+    if job.get("state") == "active" or (
+        download_running() and str(read_json(RUN / "download-progress.json").get("id") or "") == str(job.get("id") or "")
+    ):
+        _stop_download_processes()
+    sidecar = Path(str(job.get("dest") or "")) / f"{_job_base(job)}.stickllm.json"
+    try:
+        sidecar.unlink()
+    except OSError:
+        pass
+    items = [j for j in _queue_load() if not _same_job(j, job)]
+    _queue_save(_order_queue(items))
+    pumped = _pump_download_queue()
+    return {
+        "ok": True,
+        "note": "Removed from the queue. The partial file is still on disk.",
+        "download": download_progress(),
+        "queue": pumped.get("queue") or [],
+    }
+
+
+def queue_stop(mid: str) -> dict:
+    with QUEUE_LOCK:
+        return _queue_stop(mid)
+
+
+def queue_start(mid: str) -> dict:
+    with QUEUE_LOCK:
+        return _queue_start(mid)
+
+
+def queue_remove(mid: str) -> dict:
+    with QUEUE_LOCK:
+        return _queue_remove(mid)
 
 
 def download_progress() -> dict:
@@ -1401,7 +2955,7 @@ def download_progress() -> dict:
         except OSError:
             pass
     if not partials:
-        if download_running():
+        if _live_downloader_pid() is not None:
             return {
                 "state": "downloading",
                 "id": prog.get("id") or "",
@@ -1533,9 +3087,13 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
                 is_active = Path(active).resolve() == Path(first).resolve()
             except Exception:
                 is_active = os.path.basename(active) == os.path.basename(first)
-        elif active and m["id"] == "qwen25-7b-q5km" and "qwen2.5-7b" in active:
+        elif active and m["id"] == "qwen25-7b-q5km" and "qwen2.5-7b" in active.lower():
             is_active = True
-        elif active and m["id"] == "qwen25-3b-q4km" and "3b" in active.lower():
+        elif (
+            active
+            and m["id"] == "qwen25-3b-q4km"
+            and os.path.basename(active).lower() == BAKED_3B.name.lower()
+        ):
             is_active = True
         # "Running" only when this model is active AND llama /health is ok.
         running = bool(is_active and healthy)
@@ -1566,7 +3124,7 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
         offload_fit = ""
         if first and Path(first).is_file():
             try:
-                nbytes = Path(first).stat().st_size
+                nbytes = gguf_weight_bytes(Path(first))
             except OSError:
                 nbytes = int(max(size_gb, 0.1) * 1e9)
             preview_ctx = int(budget.get("ctx_suggested") or 8192)
@@ -1601,6 +3159,13 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
             "offload_caption": offload_caption,
             "offload_ngl": offload_ngl,
             "offload_fit": offload_fit,
+            "vision": bool(m.get("vision")) or looks_vision(
+                str(m.get("name") or ""),
+                str(m.get("id") or ""),
+                str(dims.get("architecture") or ""),
+                first,
+            ) or bool(find_mmproj(first) if first else ""),
+            "mmproj": find_mmproj(first) if first else "",
         }
         if is_active and loaded_ctx is not None:
             entry["ctx_loaded"] = loaded_ctx
@@ -1608,7 +3173,7 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
     return models
 
 
-def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
+def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | None = None) -> dict:
     models = enrich_models()
     m = next((x for x in models if x["id"] == model_id), None)
     if not m:
@@ -1641,19 +3206,26 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
         except (TypeError, ValueError):
             return {"ok": False, "error": "ctx_size must be an integer"}
     ctx = max(ctx_lo, min(ctx_hi, ctx))
+    kv = KV_TYPES.get(str(kv_type or "f16").strip().lower())
+    if kv is None:
+        return {"ok": False, "error": "kv_type must be f16, q8_0 or q4_0"}
     RUN.mkdir(parents=True, exist_ok=True)
     # A normal Load uses the VRAM fit. "Fewer GPU layers" is a separate override.
     try:
         (RUN / "ngl.env").unlink(missing_ok=True)
     except Exception:
         pass
-    (RUN / "model.env").write_text(
+    mmproj = "" if m.get("backend") == "cpu" else str(m.get("mmproj") or find_mmproj(path) or "")
+    env_txt = (
         f"STICKLLM_MODEL={path}\n"
         f"STICKLLM_MODEL_ID={model_id}\n"
         f"STICKLLM_MODEL_NAME={m.get('name') or model_id}\n"
-        f"STICKLLM_CTX_SIZE={ctx}\n",
-        encoding="utf-8",
+        f"STICKLLM_CTX_SIZE={ctx}\n"
+        f"STICKLLM_KV_TYPE={kv}\n"
     )
+    if mmproj and Path(mmproj).is_file():
+        env_txt += f"STICKLLM_MMPROJ={mmproj}\n"
+    (RUN / "model.env").write_text(env_txt, encoding="utf-8")
     try:
         os.chmod(RUN / "model.env", 0o644)
     except Exception:
@@ -1681,7 +3253,9 @@ def activate_model(model_id: str, ctx_size: int | None = None) -> dict:
     r["active_model"] = path
     r["id"] = model_id
     r["name"] = m.get("name") or model_id
-    r["ctx_size"] = ctx
+    r["ctx_size"] = max(LLAMA_CTX_FLOOR, ctx)
+    r["ctx_requested"] = ctx
+    r["kv_type"] = kv
     r["running"] = healthy
     r["health"] = health_msg
     r["load_state"] = "running" if healthy else "loading"
@@ -1790,12 +3364,22 @@ def wifi_connect(ssid: str, password: str) -> dict:
     return r
 
 
+_GGUF_INVALIDATE_ACTIONS = {
+    "model_delete", "set_models_dir", "set_session_mode", "vault_unlock", "vault_lock",
+    "vault_use", "vault_attach", "vault_setup", "vault_move_model", "vault_find_models",
+    "model_download", "mmproj_download",
+}
+
+
 def handle(action: str, params: dict) -> dict:
+    if action in _GGUF_INVALIDATE_ACTIONS:
+        gguf_index_invalidate()
     if action == "status":
-        vram = detect_vram_gb()
+        inv = gpu_inventory()
+        vram = float(inv.get("vram_gb") or 0)
         ram = detect_ram_gb()
         models = enrich_models(vram)
-        watchdog = maybe_resume_stalled_download()
+        watchdog = pump_download_queue()
         loaded = active_model_identity()
         online = False
         try:
@@ -1839,6 +3423,14 @@ def handle(action: str, params: dict) -> dict:
             if (RUN / "boot-phase.txt").is_file()
             else "",
             "vram_gb": round(vram, 1),
+            "vram_each_gb": round(float(inv.get("each_gb") or 0), 1),
+            "gpu_count": int(inv.get("count") or 0),
+            "gpu": inv.get("name") or "",
+            "gpus": inv.get("gpus") or [],
+            "hf_token": read_hf_token(),
+            "hf_token_saved": bool(read_hf_token()),
+            "settings_mounted": portable_secrets_dir() is not None,
+            "vault_unlocked": vault_settings_dir() is not None,
             "ram_gb": round(ram, 1),
             "backend": detect_backend(),
             "active_model": loaded.get("path") or "",
@@ -1847,6 +3439,7 @@ def handle(action: str, params: dict) -> dict:
             "wifi": {"ssid": wifi_ssid, "online": online},
             "catalog": models,
             "download": download_progress(),
+            "download_queue": watchdog.get("queue") or [],
             "watchdog": watchdog,
             "llama_service": llama_service_snapshot(),
             "offload": read_json(RUN / "llama-fit.json"),
@@ -1871,47 +3464,24 @@ def handle(action: str, params: dict) -> dict:
         return set_session_mode(str(params.get("mode") or ""))
     if action == "set_models_dir":
         return set_preferred_models_dir(str(params.get("path") or ""))
-    if action == "model_download":
-        mid = str(params.get("id") or "").strip()
-        if download_running():
-            return {
-                "ok": True,
-                "started": False,
-                "note": "download already running",
-                "download": download_progress(),
-                "catalog": enrich_models(),
-            }
-        # Optional explicit dest; else user pick; else session-mode default.
-        dest_param = str(params.get("dest") or params.get("path") or "").strip()
-        if dest_param:
-            set_r = set_preferred_models_dir(dest_param)
-            if not set_r.get("ok"):
-                return set_r
-        dest = get_preferred_models_dir() or vault_download_models_dir()
-        cmd = ["/usr/local/bin/stickllm-download-model", "--i-understand"]
-        if mid:
-            cmd += ["--id", mid]
-        if dest is not None:
-            cmd += ["--dest", str(dest)]
-        # Pass session mode so downloader never writes vault paths in ephemeral.
-        env = os.environ.copy()
-        env["STICKLLM_SESSION_MODE"] = session_mode()
-        if dest is not None:
-            env["STICKLLM_MODELS_DIR"] = str(dest)
-        RUN.mkdir(parents=True, exist_ok=True)
-        logf = open(RUN / "download.log", "a", encoding="utf-8")
-        subprocess.Popen(
-            cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True, env=env
+    if action == "hf_search":
+        return hf_search(
+            str(params.get("q") or params.get("query") or ""),
+            str(params.get("abl") or "include"),
+            str(params.get("vision") or "any"),
         )
-        time.sleep(0.4)
-        return {
-            "ok": True,
-            "started": True,
-            "session_mode": session_mode(),
-            "download_dir": str(dest) if dest else "",
-            "download": download_progress(),
-            "catalog": enrich_models(),
-        }
+    if action == "model_download":
+        return enqueue_download(params)
+    if action == "mmproj_download":
+        return download_mmproj(params)
+    if action == "queue_stop":
+        return queue_stop(str(params.get("id") or ""))
+    if action == "queue_start":
+        return queue_start(str(params.get("id") or ""))
+    if action == "queue_remove":
+        return queue_remove(str(params.get("id") or ""))
+    if action == "set_hf_token":
+        return write_hf_token(str(params.get("token") or ""))
     if action == "model_activate":
         mid = str(params.get("id") or "").strip()
         if not mid:
@@ -1923,7 +3493,7 @@ def handle(action: str, params: dict) -> dict:
                 ctx_arg = int(raw_ctx)
             except (TypeError, ValueError):
                 return {"ok": False, "error": "ctx_size must be an integer"}
-        return activate_model(mid, ctx_arg)
+        return activate_model(mid, ctx_arg, params.get("kv_type"))
     if action == "llama_fewer_layers":
         return llama_fewer_layers()
     if action == "model_delete":

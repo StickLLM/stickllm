@@ -1,0 +1,7 @@
+# TriliumNext Notes (AGPL). Pulled by digest onto the host SSD docker data-root only.
+# Verified against registry-1.docker.io on 2026-10-27. manifest_digest is the
+# OCI index; amd64_digest is the linux/amd64 manifest that is pulled.
+image=triliumnext/trilium
+version=v0.106.1
+manifest_digest=sha256:d87d810fdcb549db65710a40933acaa16bc75c9426a9164c547f7ba95592941b
+amd64_digest=sha256:871e9332d2e29a4ca29b3337ac7568235e0326584db8828ba86a3c0b8eacd7a7

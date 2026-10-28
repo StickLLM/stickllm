@@ -23,8 +23,8 @@ if [[ "${1:-}" == "--capture-fail" ]]; then
   printf '%s\n' "$n" >"$RUN_CAP/llama-fail-count" 2>/dev/null || true
   err="$(
     journalctl -u stickllm-llama -n 80 --no-pager -o cat 2>/dev/null \
-      | grep -Ei 'cuda|cublas|out of memory|ggml_cuda|failed to allocate|unable to allocate' \
-      | grep -Eiv 'password|STICKLLM_SSH_PASS' \
+      | grep -Ei 'cuda|cublas|out of memory|ggml_cuda|failed to allocate|unable to allocate|error|fatal|cannot' \
+      | grep -Eiv 'password|STICKLLM_SSH_PASS|backend registered|stickllm-cuda-register' \
       | tail -n 1 \
       || true
   )"
@@ -40,7 +40,7 @@ fi
 MODEL="${STICKLLM_MODEL:-}"
 HOST="${STICKLLM_LLAMA_HOST:-127.0.0.1}"
 PORT="${STICKLLM_LLAMA_PORT:-8080}"
-CTX="${STICKLLM_CTX_SIZE:-8192}"
+CTX="${STICKLLM_CTX_SIZE:-32768}"
 CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
 CPU_BIN="${STICKLLM_LLAMA_CPU:-/opt/stickllm/bin/llama-server-cpu}"
 VULKAN_BIN="${STICKLLM_LLAMA_VULKAN:-/opt/stickllm/bin/llama-server-vulkan}"
@@ -164,12 +164,32 @@ if [[ "${1:-}" == "--print-fit" ]]; then
   exit 0
 fi
 
+# Agent Zero's chat path needs jinja templates and a long context.
+# A smaller saved value is raised here so the next start picks it up.
+if [[ "$CTX" =~ ^[0-9]+$ ]] && (( CTX < 32768 )); then
+  echo "stickllm-llama-start: raising ctx-size ${CTX} to 32768" >&2
+  CTX=32768
+fi
+
 gpu_extra=()
 if [[ "$GPU_COUNT" =~ ^[0-9]+$ ]] && (( GPU_COUNT > 1 )) && [[ -n "$TENSOR_SPLIT" ]]; then
   gpu_extra+=(--tensor-split "$TENSOR_SPLIT")
 fi
 if [[ "${N_CPU_MOE:-0}" =~ ^[0-9]+$ ]] && (( N_CPU_MOE > 0 )); then
   gpu_extra+=(--n-cpu-moe "$N_CPU_MOE")
+fi
+# Vision only on a GPU backend, and only when Activate found an mmproj beside the GGUF.
+# KV cache type from Activate (Models > Advanced). f16 = llama.cpp default.
+# A quantized V cache needs flash attention, so q8_0/q4_0 turn it on.
+kv_extra=()
+case "${STICKLLM_KV_TYPE:-f16}" in
+  q8_0|q4_0)
+    kv_extra+=(--cache-type-k "$STICKLLM_KV_TYPE" --cache-type-v "$STICKLLM_KV_TYPE" --flash-attn on)
+    ;;
+esac
+mm_extra=()
+if [[ -n "${STICKLLM_MMPROJ:-}" && -f "${STICKLLM_MMPROJ}" ]]; then
+  mm_extra+=(--mmproj "$STICKLLM_MMPROJ")
 fi
 
 # 1) CUDA — only if pick-gpus said so AND list-devices still sees CUDA.
@@ -188,6 +208,9 @@ if [[ "$BACKEND" == "cuda" ]] && [[ -x "$CUDA_BIN" ]]; then
       --n-gpu-layers "$NGL" \
       --threads "$THREADS" \
       "${gpu_extra[@]}" \
+      "${mm_extra[@]}" \
+      "${kv_extra[@]}" \
+      --jinja \
       --metrics
   fi
   echo "stickllm-llama-start: CUDA claimed but list-devices has no CUDA — not starting fake-cuda" >&2
@@ -212,6 +235,9 @@ if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "fallback" ]]; then
       --n-gpu-layers "$NGL" \
       --threads "$THREADS" \
       "${gpu_extra[@]}" \
+      "${mm_extra[@]}" \
+      "${kv_extra[@]}" \
+      --jinja \
       --metrics
   fi
   if [[ "$BACKEND" == "vulkan" ]]; then
@@ -235,11 +261,7 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-# Cap CPU ctx to limit RAM (QEMU Local / no-GPU hosts) unless explicitly set.
-if [[ -z "${STICKLLM_CTX_SIZE:-}" ]]; then
-  CTX=4096
-fi
-echo "stickllm-llama-start: STICKLLM_BACKEND=cpu (-ngl 0) threads=$THREADS host=$HOST:$PORT model=$MODEL bin=$BIN ctx=$CTX" >&2
+echo "stickllm-llama-start: STICKLLM_BACKEND=cpu (-ngl 0) threads=$THREADS host=$HOST:$PORT model=$MODEL bin=$BIN ctx=$CTX kv=${STICKLLM_KV_TYPE:-f16}" >&2
 write_runtime_env cpu
 exec "$BIN" \
   --model "$MODEL" \
@@ -248,4 +270,6 @@ exec "$BIN" \
   --ctx-size "$CTX" \
   --n-gpu-layers 0 \
   --threads "$THREADS" \
+  "${kv_extra[@]}" \
+  --jinja \
   --metrics

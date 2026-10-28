@@ -1,0 +1,6 @@
+name: JSMinesweeper
+upstream: https://github.com/DavidNHill/JSMinesweeper
+commit: c30bd65ba7de859889ea76dccc1d227bed6e51d3
+license: MIT
+pinned: 2026-10-04
+note: Client files and resources/images only. The Express dev server, node_modules, and README screenshots are not included. Opening on start is checked by default. The only script edit is the tab title assignment in Minesweeper/client/main.js.

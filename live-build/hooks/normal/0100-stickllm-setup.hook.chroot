@@ -21,7 +21,14 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-nvidia-prep \
           /usr/local/bin/stickllm-pick-gpus \
           /usr/local/bin/stickllm-vault \
-          /usr/local/bin/stickllm-vault-boot || true
+          /usr/local/bin/stickllm-vault-boot \
+          /usr/local/bin/stickllm-agent \
+          /usr/local/bin/stickllm-agent-entrypoint \
+          /usr/local/bin/stickllm-dockerd \
+          /usr/local/bin/stickllm-docs \
+          /usr/local/bin/stickllm-docs-entrypoint \
+          /usr/local/bin/stickllm-addon \
+          /usr/local/bin/stickllm-files || true
 
 # Force LF — CRLF in sudoers breaks ALL rules on the stick
 if [[ -f /etc/sudoers.d/stickllm ]]; then
@@ -49,6 +56,8 @@ if [[ -x /opt/stickllm/bin/llama-server-cpu ]]; then
 fi
 
 find /etc/systemd/system -name 'stickllm*.service' -exec chmod 644 {} + 2>/dev/null || true
+# Add-on config is bind-mounted read-only into non-root containers (uid 2999/1000).
+chmod -R u=rwX,go=rX /usr/local/share/stickllm/addons 2>/dev/null || true
 find /etc/ssh/sshd_config.d -type f -exec chmod 644 {} + 2>/dev/null || true
 
 # Prefer NVIDIA proprietary over nouveau
@@ -80,12 +89,14 @@ gpasswd -d stickllm sudo 2>/dev/null || true
 # Password is randomized per SSH boot by stickllm-ssh-bootstrap (not baked).
 passwd -l stickllm 2>/dev/null || true
 
-# Live user convenience (live-config may create user "user") — no password sudo
+# Live user "user" (created by live-config at boot): no password, no root.
 if getent passwd user >/dev/null 2>&1; then
   usermod -aG video,render user || true
   gpasswd -d user sudo 2>/dev/null || true
   passwd -l user 2>/dev/null || true
 fi
+# live-config's sudo component writes "user ALL=(ALL) NOPASSWD: ALL" on every boot.
+rm -f /lib/live/config/0040-sudo
 
 # Do not auto-start SSH on every boot — only menu 2 Terminal / 3 Test (stickllm.ssh)
 systemctl disable ssh.service 2>/dev/null || true
@@ -105,6 +116,13 @@ systemctl enable seatd.service 2>/dev/null || true
 systemctl enable stickllm-ssh.service || true
 systemctl enable NetworkManager.service || true
 systemctl enable nvidia-persistenced.service || true
+# Docker must not start at boot. stickllm-agent starts dockerd after the vault unlocks.
+systemctl disable docker.service 2>/dev/null || true
+systemctl disable docker.socket 2>/dev/null || true
+systemctl mask docker.service 2>/dev/null || true
+systemctl mask docker.socket 2>/dev/null || true
+systemctl enable stickllm-agent.service || true
+systemctl enable stickllm-files.service || true
 
 # NM system-connections must be 600
 if [[ -d /etc/NetworkManager/system-connections ]]; then

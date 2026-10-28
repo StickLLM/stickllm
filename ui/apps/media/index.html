@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Media — StickLLM</title>
+<style>
+  body{margin:0;background:#0e1214;color:#e4ecee;font:15px/1.45 "Segoe UI",sans-serif}
+  header{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid #263136}
+  header a{color:#2bb5a8;text-decoration:none}
+  main{display:grid;grid-template-columns:260px 1fr;min-height:calc(100vh - 52px)}
+  aside{border-right:1px solid #263136;padding:12px}
+  button,select{font:inherit;background:#1e272c;color:#e4ecee;border:1px solid #263136;border-radius:8px;padding:7px 10px}
+  ul{list-style:none;padding:0;margin:10px 0}
+  li button{width:100%;text-align:left;margin:0 0 6px;background:none;cursor:pointer}
+  section{padding:16px;display:grid;gap:12px;align-content:start}
+  img,video,audio{max-width:100%;background:#000}
+  .muted{color:#7d8c91}
+  @media (max-width:720px){main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><a href="/">StickLLM</a><strong>Media</strong><span class="muted">Pictures, audio, and video</span></header>
+<main>
+  <aside>
+    <select id="root"></select>
+    <button type="button" id="up">Up</button>
+    <ul id="files"></ul>
+    <label>Or pick a file on this computer<br><input type="file" id="local" accept="image/*,audio/*,video/*" /></label>
+    <p class="muted" id="msg"></p>
+  </aside>
+  <section id="stage"><p class="muted">Choose a file.</p></section>
+</main>
+<script src="media.js?v=desk2"></script>
+</body>
+</html>

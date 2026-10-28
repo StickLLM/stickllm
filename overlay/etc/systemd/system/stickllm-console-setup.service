@@ -1,7 +1,8 @@
 [Unit]
 Description=StickLLM console/SSH user setup
 DefaultDependencies=no
-After=local-fs.target
+# live-config re-adds 'user' to sudo and writes sudoers.d/live; undo it afterwards.
+After=local-fs.target live-config.service
 Before=stickllm-bootstatus.service ssh.service sshd.service getty@tty1.service getty@tty2.service
 
 [Service]

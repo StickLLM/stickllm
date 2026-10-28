@@ -1,0 +1,626 @@
+#!/bin/bash
+# Start Agent Zero only after the server vault is mounted.
+# The image is pulled onto the mounted host SSD, next to models. It is not
+# part of the ISO and it is not stored in the vault.
+# Do not print API keys, vault passcodes, or chat text.
+set -euo pipefail
+
+PYBIN="$(command -v python3 || command -v python || true)"
+LIB="${STICKLLM_AGENT_LIB:-/usr/local/lib/stickllm_agent.py}"
+VAULT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
+ADDON="${VAULT}/addons/agent-zero"
+SOCK="/run/stickllm/agent-docker.sock"
+RELAY_PIDFILE="/run/stickllm/agent-llama-relay.pid"
+APPS_PIDFILE="/run/stickllm/agent-apps-bridge.pid"
+OPEN_APP_PIDFILE="/run/stickllm/agent-open-app.pid"
+RUN_DIR="${STICKLLM_AGENT_RUN:-/run/stickllm}"
+PULL_LOG="${RUN_DIR}/agent-pull.log"
+# Held (flock, fd 9) by `stickllm-agent install` for the whole pull.
+INSTALL_LOCK="${RUN_DIR}/agent-install.lock"
+CONTAINER="stickllm-agent-zero"
+NETWORK="stickllm-agent"
+ENTRY="/usr/local/bin/stickllm-agent-entrypoint"
+DOCKER_DIR=""
+
+if [[ -z "${PYBIN}" || ! -f "$LIB" ]]; then
+  echo "stickllm-agent: python helper missing" >&2
+  exit 1
+fi
+
+# The Apps page installer is started by stickllm-gateway. stickllm-ui runs
+# with ProtectSystem/ProtectHome, so it has a private mount namespace.
+# dockerd mounts each container rootfs itself, but the system containerd and
+# runc run in the host namespace. A dockerd started from the gateway left them
+# an empty rootfs: "stat /bin/sh: no such file or directory" and "reading
+# from a closed fifo". Run in PID 1's mount namespace so dockerd, containerd
+# and runc see the same mounts.
+mount_ns() {
+  readlink "/proc/$1/ns/mnt" 2>/dev/null || true
+}
+
+enter_host_mount_ns() {
+  [[ "$(id -u)" -eq 0 ]] || return 0
+  [[ -z "${STICKLLM_AGENT_HOST_NS:-}" ]] || return 0
+  local self host
+  self="$(mount_ns self)"
+  host="$(mount_ns 1)"
+  if [[ -z "$self" || -z "$host" || "$self" == "$host" ]]; then
+    return 0
+  fi
+  if command -v nsenter >/dev/null 2>&1 && nsenter --mount=/proc/1/ns/mnt -- true >/dev/null 2>&1; then
+    export STICKLLM_AGENT_HOST_NS=1
+    exec nsenter --mount=/proc/1/ns/mnt -- "$(readlink -f "$0")" "$@"
+  fi
+  echo "stickllm-agent: could not enter the host mount namespace" >&2
+}
+
+case "${1:-}" in
+  start|run|stop|install) enter_host_mount_ns "$@" ;;
+esac
+
+docker_cli() {
+  DOCKER_HOST="unix://${SOCK}" docker "$@"
+}
+
+# Container DNS: host LAN/DHCP resolvers first, then public fallbacks
+# (stickllm_agent.host_dns_servers; nft lets port 53 through to exactly those).
+dns_args() {
+  local v
+  while read -r v; do
+    [[ -n "$v" ]] && printf -- '--dns\n%s\n' "$v"
+  done < <("$PYBIN" "$LIB" dns-servers 2>/dev/null || printf '1.1.1.1\n9.9.9.9\n')
+}
+
+refuse_locked() {
+  "$PYBIN" "$LIB" write-status --state locked --image_present false >/dev/null || true
+  echo "vault locked: docker not started" >&2
+}
+
+resolve_docker_dir() {
+  local dir
+  # Commit 3db2ac0 stored the image at /var/lib/stickllm/vault/docker.
+  # That directory is not detected and is not a data-root. Migrating it
+  # could disturb the working host-SSD data-root, so an image found only
+  # there is re-pulled. dockerd is never pointed back at the vault.
+  if [[ -d /var/lib/stickllm/vault/docker ]]; then
+    echo "old vault docker dir is present and unused; image is re-pulled onto the host SSD" >&2
+  fi
+  if ! dir="$("$PYBIN" "$LIB" docker-dir)"; then
+    "$PYBIN" "$LIB" write-status --state no_ssd --image_present false --low_space false >/dev/null || true
+    echo "Mount a drive for Agent Zero" >&2
+    return 1
+  fi
+  DOCKER_DIR="$dir"
+  mkdir -p "$DOCKER_DIR"
+}
+
+cmd_gate() {
+  if "$PYBIN" "$LIB" docker-may-start; then
+    exit 0
+  fi
+  refuse_locked
+  exit 2
+}
+
+# dockerd is shared with ONLYOFFICE Docs (stickllm-docs). It lives in
+# stickllm-dockerd.service, not in this unit's cgroup, so stopping Agent Zero
+# leaves Docs running. The daemon, socket and data-root are unchanged.
+DOCKERD="${STICKLLM_DOCKERD:-/usr/local/bin/stickllm-dockerd}"
+DOCKERD_USERS="${STICKLLM_DOCKERD_RUN:-/run/stickllm}/dockerd-users"
+
+# Holders: "agent" is stickllm-agent.service (run/stop). The installer uses
+# "agent-install", so a service stop (needs_install, restart) cannot release
+# the daemon in the middle of a pull.
+ensure_dockerd() {
+  local holder="${1:-agent}"
+  # Gate again immediately before the daemon. A locked vault never reaches dockerd.
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  if [[ -z "${DOCKER_DIR}" ]]; then
+    echo "Mount a drive for Agent Zero" >&2
+    exit 0
+  fi
+  "$PYBIN" "$LIB" prepare-vault
+  if ! "$DOCKERD" ensure "$holder" 9>&-; then
+    echo "stickllm-agent: dockerd did not become ready" >&2
+    exit 1
+  fi
+}
+
+# Forget Agent Zero as a dockerd user. dockerd stops only when no other
+# add-on (ONLYOFFICE) is registered and no container is running.
+release_dockerd() {
+  "$DOCKERD" release "${1:-agent}" 9>&- || true
+}
+
+# True while `stickllm-agent install` holds the install lock (pull running).
+install_running() {
+  [[ -e "$INSTALL_LOCK" ]] || return 1
+  if flock -n "$INSTALL_LOCK" true 9>&- 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
+# Without starting dockerd: 0 = image on the host SSD (or unknown), 1 = absent.
+image_on_disk() {
+  local rc=0
+  "$PYBIN" "$LIB" image-on-disk >/dev/null 2>&1 || rc=$?
+  [[ "$rc" -ne 1 ]]
+}
+
+needs_install() {
+  if ! install_running; then
+    "$PYBIN" "$LIB" write-status --state needs_install --image_present false --low_space false >/dev/null || true
+  fi
+  echo "agent image is not installed: agent not started" >&2
+}
+
+# ExecCondition for stickllm-agent.service: skip the unit (no ExecStop, no
+# dockerd) while the image is not installed. Exit 1 = skip.
+cmd_image_ready() {
+  if image_on_disk; then
+    exit 0
+  fi
+  exit 1
+}
+
+image_present() {
+  local ref
+  ref="$("$PYBIN" "$LIB" image-ref)"
+  docker_cli image inspect "$ref" >/dev/null 2>&1
+}
+
+# The new image must answer /bin/sh and contain bash and python3 before the
+# installer starts it or touches the previous image.
+smoke_image() {
+  local ref="$1"
+  docker_cli run --rm --entrypoint /bin/sh "$ref" -c 'test -x /bin/bash && test -x /usr/bin/python3'
+}
+
+ensure_network() {
+  local sub
+  if docker_cli network inspect "$NETWORK" >/dev/null 2>&1; then
+    sub="$(docker_cli network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$NETWORK" 2>/dev/null || true)"
+    if [[ "$sub" == "172.30.0.0/24" ]]; then
+      return 0
+    fi
+    docker_cli network rm "$NETWORK" >/dev/null 2>&1 || true
+  fi
+  docker_cli network create \
+    --driver bridge \
+    --subnet 172.30.0.0/24 \
+    --gateway 172.30.0.1 \
+    -o com.docker.network.bridge.name=stickllm-a0 \
+    "$NETWORK" >/dev/null
+}
+
+stop_relay() {
+  if [[ -f "$RELAY_PIDFILE" ]]; then
+    local pid
+    pid="$(tr -cd '0-9' <"$RELAY_PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$RELAY_PIDFILE"
+  fi
+}
+
+stop_apps() {
+  if [[ -f "$APPS_PIDFILE" ]]; then
+    local pid
+    pid="$(tr -cd '0-9' <"$APPS_PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$APPS_PIDFILE"
+  fi
+}
+
+stop_open_app() {
+  if [[ -f "$OPEN_APP_PIDFILE" ]]; then
+    local pid
+    pid="$(tr -cd '0-9' <"$OPEN_APP_PIDFILE" || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$OPEN_APP_PIDFILE"
+  fi
+}
+
+ensure_relay() {
+  # Bridge address only. llama-server stays on 127.0.0.1:8080.
+  local i
+  for i in $(seq 1 25); do
+    local pid=""
+    if [[ -f "$RELAY_PIDFILE" ]]; then
+      pid="$(tr -cd '0-9' <"$RELAY_PIDFILE" || true)"
+    fi
+    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      "$PYBIN" "$LIB" llama-relay >/var/log/stickllm-agent-relay.log 2>&1 9>&- &
+      echo $! >"$RELAY_PIDFILE"
+    fi
+    if "$PYBIN" - <<'PY'
+import socket
+s = socket.socket()
+s.settimeout(0.2)
+try:
+    s.connect(("172.30.0.1", 8080))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+    then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "stickllm-agent: llama relay did not bind 172.30.0.1:8080" >&2
+  "$PYBIN" "$LIB" write-status --state error --image_present true --message "llama relay did not bind 172.30.0.1:8080" >/dev/null || true
+  return 1
+}
+
+ensure_apps() {
+  # Static ui/apps only, on the bridge address. Not 0.0.0.0 and not the LAN.
+  local i
+  for i in $(seq 1 25); do
+    local pid=""
+    if [[ -f "$APPS_PIDFILE" ]]; then
+      pid="$(tr -cd '0-9' <"$APPS_PIDFILE" || true)"
+    fi
+    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      "$PYBIN" "$LIB" apps-bridge >/var/log/stickllm-agent-apps.log 2>&1 9>&- &
+      echo $! >"$APPS_PIDFILE"
+    fi
+    if "$PYBIN" - <<'PY'
+import socket
+s = socket.socket()
+s.settimeout(0.2)
+try:
+    s.connect(("172.30.0.1", 8081))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+    then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "stickllm-agent: apps bridge did not bind 172.30.0.1:8081" >&2
+  "$PYBIN" "$LIB" write-status --state error --image_present true --message "apps bridge did not bind 172.30.0.1:8081" >/dev/null || true
+  return 1
+}
+
+ensure_open_app() {
+  # Control port on the bridge and on loopback. Not 0.0.0.0 and not the LAN.
+  "$PYBIN" "$LIB" ensure-open-app-token >/dev/null
+  local i
+  for i in $(seq 1 25); do
+    local pid=""
+    if [[ -f "$OPEN_APP_PIDFILE" ]]; then
+      pid="$(tr -cd '0-9' <"$OPEN_APP_PIDFILE" || true)"
+    fi
+    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      "$PYBIN" "$LIB" open-app-bridge >/var/log/stickllm-agent-open-app.log 2>&1 9>&- &
+      echo $! >"$OPEN_APP_PIDFILE"
+    fi
+    if "$PYBIN" - <<'PY'
+import socket
+s = socket.socket()
+s.settimeout(0.2)
+try:
+    s.connect(("172.30.0.1", 8082))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+    then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "stickllm-agent: open app control did not bind 172.30.0.1:8082" >&2
+  "$PYBIN" "$LIB" write-status --state error --image_present true --message "open app control did not bind 172.30.0.1:8082" >/dev/null || true
+  return 1
+}
+
+cache_embedding() {
+  # MiniLM is the Agent Zero memory embedder. Cache it before the container
+  # is marked offline, so the first question cannot block on Hugging Face.
+  if "$PYBIN" "$LIB" embedding-cached; then
+    return 0
+  fi
+  if ! image_present; then
+    return 1
+  fi
+  local ref
+  ref="$("$PYBIN" "$LIB" image-ref)"
+  mkdir -p "${ADDON}/state/.cache"
+  local DNS_ARGS=()
+  mapfile -t DNS_ARGS < <(dns_args)
+  docker_cli run --rm \
+    --network "$NETWORK" \
+    "${DNS_ARGS[@]}" \
+    -e HF_HUB_OFFLINE=0 \
+    -e HF_HUB_DISABLE_TELEMETRY=1 \
+    -e HF_HOME=/a0/usr/.cache/huggingface \
+    -e SENTENCE_TRANSFORMERS_HOME=/a0/usr/.cache/sentence-transformers \
+    -v "${ADDON}/state:/a0/usr" \
+    --entrypoint /opt/venv-a0/bin/python3 \
+    "$ref" -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")'
+}
+
+ensure_nft() {
+  local err
+  err="$("$PYBIN" "$LIB" nft-apply 2>&1)" || {
+    printf '%s\n' "stickllm-agent: nftables rules were not installed" "$err" >&2
+    if [[ -z "${err//[[:space:]]/}" ]]; then
+      err="nftables rules were not installed"
+    fi
+    # image_present stays true so the Agent tile remains and shows this
+    # instead of "Agent is starting" while systemd restarts the unit.
+    "$PYBIN" "$LIB" write-status --state error --image_present true --message "$err" >/dev/null || true
+    exit 1
+  }
+}
+
+cmd_install() {
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  mkdir -p "$RUN_DIR"
+  # Daemons started below close fd 9 (9>&-) so they do not keep this lock.
+  exec 9>"$INSTALL_LOCK"
+  if ! flock -n 9; then
+    # An older script let dockerd inherit the lock. If no other install is
+    # running and that dockerd is in the wrong mount namespace, stop it.
+    if ! pgrep -f 'stickllm-agent install' | grep -qvx "$$" && "$DOCKERD" stale 9>&-; then
+      echo "stickllm-agent: stopping a dockerd that holds the install lock" >&2
+      "$DOCKERD" halt 9>&- || true
+    fi
+    if ! flock -w 30 9; then
+      echo "install already running" >&2
+      exit 0
+    fi
+  fi
+  if ! resolve_docker_dir; then
+    exit 0
+  fi
+  if ! "$PYBIN" "$LIB" pull-allowed >/dev/null; then
+    "$PYBIN" "$LIB" write-status --state low_space --low_space true --image_present false >/dev/null || true
+    echo "host SSD has under 12 GB free: image pull stopped" >&2
+    exit 0
+  fi
+  ensure_dockerd agent-install
+  # Success or failure, the installer's own hold on dockerd ends with it.
+  trap 'release_dockerd agent-install' EXIT
+  local ref previous
+  ref="$("$PYBIN" "$LIB" image-ref)"
+  # Remember the image that is already installed. Pull and smoke the pinned
+  # ref before that id is retagged. The previous id is kept and is not removed.
+  previous="$(docker_cli image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)"
+  mkdir -p "$RUN_DIR"
+  : >"$PULL_LOG"
+  "$PYBIN" "$LIB" write-status --state installing --image_present false --low_space false >/dev/null || true
+  if ! docker_cli pull "$ref" 2>&1 | tee -a "$PULL_LOG"; then
+    "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
+    echo "agent image pull failed" >&2
+    exit 1
+  fi
+  if ! smoke_image "$ref"; then
+    echo "agent image smoke test failed; previous image left in place" | tee -a "$PULL_LOG" >&2
+    "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
+    exit 1
+  fi
+  if [[ -n "$previous" ]]; then
+    docker_cli tag "$previous" stickllm-agent-zero:rollback
+  fi
+  "$PYBIN" "$LIB" write-status --state pulled --image_present true --low_space false >/dev/null || true
+  if use_systemd; then
+    # Hand the container to stickllm-agent.service. It survives a stickllm-ui
+    # restart and systemctl reports it. dockerd stays in stickllm-dockerd.service.
+    exec 9>&-
+    systemctl restart stickllm-agent.service
+    # Keep "agent-install" until the service holds dockerd as "agent" (or
+    # has ended), so the daemon is not stopped between the two.
+    local i
+    for i in $(seq 1 120); do
+      [[ -e "${DOCKERD_USERS}/agent" ]] && break
+      systemctl is-active --quiet stickllm-agent.service || break
+      sleep 0.5
+    done
+    exit 0
+  fi
+  ensure_dockerd agent
+  release_dockerd agent-install
+  trap - EXIT
+  exec 9>&-
+  cmd_run_container
+}
+
+# stickllm-agent.service owns the container when systemd runs (dockerd is in stickllm-dockerd.service).
+use_systemd() {
+  [[ -z "${STICKLLM_AGENT_NO_SYSTEMD:-}" ]] || return 1
+  [[ -d /run/systemd/system ]] || return 1
+  command -v systemctl >/dev/null 2>&1
+}
+
+stop_container() {
+  if [[ -S "$SOCK" ]]; then
+    docker_cli rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  fi
+}
+
+cmd_run_container() {
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  # Secrets live on the encrypted settings partition. Do not start without it.
+  if ! "$PYBIN" "$LIB" settings-mounted; then
+    "$PYBIN" "$LIB" write-status --state settings_missing --image_present false >/dev/null || true
+    echo "USB settings partition is not mounted: agent not started" >&2
+    exit 0
+  fi
+  if ! resolve_docker_dir; then
+    exit 0
+  fi
+  # No image on the host SSD: do not start dockerd for nothing.
+  if ! image_on_disk; then
+    needs_install
+    exit 0
+  fi
+  ensure_dockerd agent
+  if ! image_present; then
+    "$PYBIN" "$LIB" write-status --state needs_install --image_present false --low_space false >/dev/null || true
+    echo "agent image is not installed" >&2
+    exit 0
+  fi
+  "$PYBIN" "$LIB" prepare-portable
+  # Read-only /a0/usr/plugins: our plugin + allowlisted plugins baked into the
+  # ISO. Anything else in the old plugins dir goes to vault quarantine.
+  if ! "$PYBIN" "$LIB" assemble-plugins; then
+    "$PYBIN" "$LIB" write-status --state error --image_present true >/dev/null || true
+    echo "agent plugins could not be assembled: agent not started" >&2
+    exit 1
+  fi
+  ensure_network
+  STICKLLM_HF_OFFLINE=0
+  if "$PYBIN" "$LIB" embedding-cached || cache_embedding; then
+    STICKLLM_HF_OFFLINE=1
+  fi
+  export STICKLLM_HF_OFFLINE
+  ensure_nft
+  ensure_relay
+  ensure_apps
+  ensure_open_app
+  local ref origins
+  ref="$("$PYBIN" "$LIB" image-ref)"
+  origins="$("$PYBIN" "$LIB" allowed-origins)"
+  "$PYBIN" "$LIB" write-status --state running --image_present true --low_space false >/dev/null || true
+  stop_container
+  local DNS_ARGS=()
+  mapfile -t DNS_ARGS < <(dns_args)
+  # Own bridge: llama relay and the internet only. UI is published on loopback.
+  # Kokoro and Whisper stay at the image defaults. No host disks except the
+  # vault addon and the portable settings dir.
+  # --log-driver none: container stdout (chat tool output) is not written to
+  # the json log under stickllm-docker on the unencrypted models drive.
+  docker_cli run --name "$CONTAINER" \
+    --log-driver none \
+    --network "$NETWORK" \
+    --add-host llama:host-gateway \
+    "${DNS_ARGS[@]}" \
+    -p 127.0.0.1:5099:5099 \
+    --cap-drop ALL \
+    --cap-add CHOWN \
+    --cap-add DAC_OVERRIDE \
+    --cap-add FOWNER \
+    --cap-add SETUID \
+    --cap-add SETGID \
+    --cap-add KILL \
+    --security-opt no-new-privileges=true \
+    --pids-limit 1024 \
+    -e NVIDIA_VISIBLE_DEVICES=void \
+    -e CUDA_VISIBLE_DEVICES= \
+    -e "ALLOWED_ORIGINS=${origins}" \
+    -e HF_HOME=/a0/usr/.cache/huggingface \
+    -e SENTENCE_TRANSFORMERS_HOME=/a0/usr/.cache/sentence-transformers \
+    -e HF_HUB_DISABLE_TELEMETRY=1 \
+    -e HF_HUB_OFFLINE="${STICKLLM_HF_OFFLINE:-0}" \
+    -e TRANSFORMERS_OFFLINE="${STICKLLM_HF_OFFLINE:-0}" \
+    -e HF_DATASETS_OFFLINE="${STICKLLM_HF_OFFLINE:-0}" \
+    -e A0_SET_update_check_enabled=false \
+    -e A0_SET_rfc_auto_docker=false \
+    -e A0_SET_a2a_server_enabled=false \
+    -e A0_SET_mcp_server_enabled=false \
+    -e A0_SET_workdir_path=/a0/usr/workdir \
+    --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+    -v "${ADDON}/state:/a0/usr" \
+    -v "${ADDON}/work:/a0/usr/workdir" \
+    -v "${ADDON}/memory:/a0/usr/memory" \
+    -v "${ADDON}/logs:/a0/usr/logs" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/.env:/a0/usr/.env" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/settings.json:/a0/usr/settings.json" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/prompts:/a0/usr/prompts" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/instruments:/a0/usr/instruments" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/skills:/a0/usr/skills" \
+    -v "${ADDON}/plugins:/a0/usr/plugins:ro" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/model-config:/a0/usr/plugins/_model_config" \
+    -v "${ADDON}/plugin-data/_goal/goals:/a0/usr/plugins/_goal/goals" \
+    -v "${ADDON}/plugin-data/_orchestrator/data:/a0/usr/plugins/_orchestrator/data" \
+    -v "${ADDON}/empty-ro:/a0/usr/api:ro" \
+    -v "${ADDON}/empty-ro:/a0/usr/extensions:ro" \
+    -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/open-app.token:/stickllm-open-app.token:ro" \
+    -v "${ENTRY}:/stickllm-entrypoint.sh:ro" \
+    --entrypoint /bin/bash \
+    "$ref" \
+    /stickllm-entrypoint.sh
+}
+
+cmd_run() {
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  # Unlock starts a container that is already installed. It does not pull.
+  cmd_run_container
+}
+
+cmd_stop() {
+  stop_container || true
+  stop_relay || true
+  stop_apps || true
+  stop_open_app || true
+  "$PYBIN" "$LIB" nft-delete >/dev/null 2>&1 || true
+  if install_running; then
+    # Never release dockerd under a running pull. The installer restarts this
+    # unit when it is done; vault lock still stops dockerd (stickllm-dockerd halt).
+    echo "stickllm-agent: install running, dockerd left to the installer" >&2
+    return 0
+  fi
+  release_dockerd agent
+  "$PYBIN" "$LIB" write-status --state stopped >/dev/null || true
+}
+
+cmd_start() {
+  if ! "$PYBIN" "$LIB" docker-may-start; then
+    refuse_locked
+    exit 0
+  fi
+  # Unlock never starts the service (or dockerd) for an image that is not there.
+  if ! image_on_disk; then
+    needs_install
+    exit 0
+  fi
+  if use_systemd; then
+    systemctl start stickllm-agent.service
+    exit 0
+  fi
+  cmd_run
+}
+
+usage() {
+  echo "usage: stickllm-agent {gate|start|run|stop|install|image-ready}" >&2
+  exit 1
+}
+
+case "${1:-}" in
+  gate) cmd_gate ;;
+  start) cmd_start ;;
+  run) cmd_run ;;
+  stop) cmd_stop ;;
+  install) cmd_install ;;
+  image-ready) cmd_image_ready ;;
+  *) usage ;;
+esac

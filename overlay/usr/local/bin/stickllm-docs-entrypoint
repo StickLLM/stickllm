@@ -1,0 +1,17 @@
+#!/bin/bash
+# Runs inside the ONLYOFFICE container. Reads the JWT secret from the
+# read-only bind of the settings partition, so it never appears in
+# `docker inspect` (no -e). Then hands over to the image's own start script.
+set -euo pipefail
+SECRET_FILE=/run/stickllm-secret/jwt.secret
+if [[ ! -r "$SECRET_FILE" ]]; then
+  echo "stickllm-docs: JWT secret missing" >&2
+  exit 1
+fi
+JWT_SECRET="$(tr -dc 'A-Za-z0-9' <"$SECRET_FILE")"
+if [[ "${#JWT_SECRET}" -lt 32 ]]; then
+  echo "stickllm-docs: JWT secret too short" >&2
+  exit 1
+fi
+export JWT_SECRET
+exec /app/ds/run-document-server.sh "$@"

@@ -1,0 +1,8 @@
+name: SolitaireLib
+upstream: https://github.com/zzymyn/SolitaireLib
+commit: 6342e1bd60581d5e0a81f9d89c8b834beb753173
+license: MIT
+pinned: 2026-09-10
+built: parcel build from that commit (package-lock parcel 2.16.4). This directory is the static output plus LICENSE. TypeScript sources and node_modules are not shipped.
+default: Klondike when the URL hash is empty
+note: Built HTML also has the StickLLM title, favicon link, and Back to Apps link.

@@ -17,6 +17,12 @@ e2fsprogs
 fdisk
 util-linux
 python3
+# Scanned PDF pages for a vision model (pdftoppm). Not downloaded at runtime.
+poppler-utils
+# Offline read-aloud. espeak-ng and python3-numpy are in bookworm.
+# whisper.cpp and python3-onnxruntime are not; see stickllm-speech.pin.
+espeak-ng
+python3-numpy
 jq
 iproute2
 iputils-ping
@@ -50,3 +56,9 @@ vulkan-tools
 # Encrypted vault (Phase C feature; LUKS2 tools present for SSH-tested vault work)
 cryptsetup
 cryptsetup-bin
+# Agent Zero runtime. The agent image is pulled onto the host SSD, not baked here.
+docker.io
+# apparmor_parser so Docker can load the docker-default profile.
+apparmor
+# stickllm-agent installs its own nftables rules. dockerd is started with --iptables=false.
+nftables

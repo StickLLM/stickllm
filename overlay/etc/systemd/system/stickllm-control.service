@@ -5,6 +5,8 @@ Before=stickllm-ui.service
 
 [Service]
 Type=simple
+# Downloads are started in the background. Restarting this API must not kill them.
+KillMode=process
 ExecStartPre=/usr/bin/mkdir -p /run/stickllm
 # Prefix '-' so a bad shebang/exit never blocks control; console-setup also mints.
 ExecStartPre=-/usr/local/bin/stickllm-pair --force

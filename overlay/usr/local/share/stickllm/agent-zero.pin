@@ -1,0 +1,6 @@
+# Official Agent Zero image. Pulled onto the mounted host SSD, next to models.
+# Not baked into the ISO. Digests recorded from registry.docker.io on 2026-10-24.
+image=agent0ai/agent-zero
+version=v2.14
+manifest_digest=sha256:b0c9763df7b8c4c5ddbdac9c101e8f84de8b7cdf9185203e446e2d7d8ebf2f1c
+amd64_digest=sha256:307a2ceffc8501ba05a1e7253e8b6e4d656d2e1c3b97f0eb943c18b9c40a30fd

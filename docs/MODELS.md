@@ -13,19 +13,18 @@ on demand from a **pinned Hugging Face catalog**, with hashes that live on the U
 | **Base (default ship)** | ~4–6 GB ISO | **16 GB** USB is enough | OS + runtime + **lite** model (anything / RAM / 8 GB class) |
 | **Optional fat build** | ~18–22 GB | 32–64 GB | Base + large model pre-baked (power users / air-gap) |
 
-Current ship **v0.3.8** (and earlier 0.3.x / `v0.2.1-local-nvidia-kbd`) ships small text
-models on the ISO (**3B + 7B** class) and downloads larger catalog entries (e.g. 27B) to
-`STICKLLM-DATA` when space/VRAM allow. Optional durable store: encrypted SSD vault
-([VAULT.md](VAULT.md)). Target retail base still moves toward a cheaper **16 GB** stick + lite GGUF.
+**v0.3.8** and earlier 0.3.x ships bake both the **3B** and the **7B**. Current ship
+**v0.3.9** bakes the 3B only and downloads larger catalog entries (including the 7B
+and 27B-class models) to `STICKLLM-DATA` when space and VRAM allow. Optional durable
+store: encrypted SSD vault ([VAULT.md](VAULT.md)). Target retail base still moves
+toward a cheaper **16 GB** stick + lite GGUF.
 
-**Next (post-v0.3.8) — plan only (ISS-020 / ISS-021):** stop baking **Qwen2.5-7B Instruct
-Q5_K_M** into the ISO; keep **~2 GB Qwen2.5-3B Q4_K_M** as the built-in test model.
-7B stays in `catalog.toml` as a pinned download. **HF download + search/browse does not
-exist yet** — next product work builds that entire flow (ISS-021), including filter UX
-(**Verified** / known-hash open-weight, **Fits in VRAM**, **Untrusted**, …). Those filters
-must apply to the **download browser and to installed models** when choosing what to load
-into memory/VRAM. Also activate Advanced model controls. Do **not** change v0.3.8
-artifacts while implementing that later.
+**v0.3.9** ships the **~2 GB Qwen2.5-3B Q4_K_M** only. **Qwen2.5-7B Instruct Q5_K_M**
+stays in `catalog.toml` as a pinned download (ISS-020, done). Hugging Face search,
+the download queue, hash checks, and VRAM fit labels ship in that image. **Still open
+(ISS-021):** those filters on **installed models** when choosing what to load, and
+Advanced controls that are on screen but not applied (sampling, KV cache type, backend).
+Do **not** change v0.3.8 or v0.3.9 artifacts while doing that later work.
 
 ## First boot / “upgrade models” flow
 
@@ -131,17 +130,23 @@ space so downloads survive reboot.
 1. Detect boot device (the StickLLM USB only — never auto-touch internal disks).  
 2. Show size, free/unallocated space, proposed `STICKLLM-DATA` partition.  
 3. User confirms (or countdown accepts on first-boot setup).  
-4. Create **one** data partition in unallocated space; label `STICKLLM-DATA`.  
-5. Layout (unencrypted by default for models is OK if user wants speed; prefer
-   encrypted vault — see below):
-   - `models/` — verified GGUFs (hash vs USB catalog before use)  
-   - optional `vault/` — encrypted context / chat export (opt-in)  
-6. Later boots: mount if present; if missing/corrupt, fall back to lite-in-RAM.
+4. Create the data partition in unallocated space; label `STICKLLM-DATA`.
+   Also reserve about **256 MB** at the end of that free space for the USB
+   settings partition. It is not inside the ISO. Do not shrink an existing
+   `STICKLLM-DATA` that already fills the stick.
+5. Layout:
+   - `STICKLLM-DATA/models/` — verified GGUFs (hash vs USB catalog before use)
+   - USB settings partition — LUKS with the SSD vault passcode; per-computer
+     vault locations and portable secrets. Not voice weights, not chats
+   - SSD vault blob — chats (and the models folder the user chose)
+6. Later boots: mount DATA if present; leave the settings partition locked
+   until the vault passcode is entered. If DATA is missing or corrupt, fall
+   back to lite-in-RAM.
 
 **Rules:** only the boot USB; never shrink existing host partitions; refuse if
 the stick looks like a full disk clone of something else; confirm before write.
 
-64 GB stick ≈ same boot image + ~50 GB `STICKLLM-DATA` for models/context.
+64 GB stick ≈ same boot image + ~50 GB `STICKLLM-DATA` for models, plus about 256 MB for the settings partition.
 
 ## Encrypted vault: models + context (optional, increases risk)
 
@@ -173,7 +178,8 @@ EFI/system/BitLocker, hash models against USB catalog after unlock.
 
 ```
 config/models/catalog.toml        # tiers, HF pins, sha256 (trust anchor)
-overlay/.../stickllm-usb-claim    # first-boot: probe USB, create STICKLLM-DATA
+overlay/.../stickllm-usb-claim    # first-boot: STICKLLM-DATA + ~256 MB settings slot
+overlay/.../stickllm-usb-settings # LUKS that slot with the vault passcode
 overlay/.../stickllm-model-probe  # VRAM + free space on DATA → optimum
 overlay/.../stickllm-model-menu   # first-boot 30s + chat “Download models”
 overlay/.../stickllm-model-fetch  # HF download + verify + activate on DATA

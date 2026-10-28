@@ -3,9 +3,12 @@
 set -euo pipefail
 RUN="${STICKLLM_RUN:-/run/stickllm}"
 mkdir -p "$RUN"
-PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)"
-if [[ ${#PASS} -lt 12 ]]; then
-  PASS="$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)"
+# No look-alike characters: 0 O o 1 l I i J j are left out so the password
+# can be read off the console and typed without guessing.
+ALPHABET='ABCDEFGHKLMNPQRSTUVWXYZabcdefghkmnpqrstuvwxyz23456789'
+PASS="$(tr -dc "$ALPHABET" </dev/urandom | head -c 16 || true)"
+if [[ ${#PASS} -lt 16 ]]; then
+  PASS="$(openssl rand 512 | tr -dc "$ALPHABET" | head -c 16)"
 fi
 echo "stickllm:${PASS}" | chpasswd
 umask 077

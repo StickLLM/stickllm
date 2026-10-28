@@ -2,7 +2,7 @@
 # StickLLM encrypted SSD vault — LUKS2 Argon2id file blob only (v0.3.3).
 #
 # SAFETY (fail-closed — when in doubt, hands off):
-# - Never partition, wipefs, or rewrite partition tables.
+# - Never partition, wipe a filesystem, or rewrite partition tables.
 # - Never cryptsetup/luksFormat against a block device (/dev/sd*, nvme*, …).
 # - Never unlock, reformat, or re-encrypt an existing host volume (BitLocker,
 #   host LUKS, FileVault, etc.). If the host FS is not already mounted and
@@ -12,6 +12,10 @@
 # - Writes only create NEW files/dirs inside a user-chosen, already-mounted
 #   ordinary filesystem after typed confirmation. Never fill disk to zero
 #   without warning. Wipe-after-N wrong PIN is OFF by default.
+# - The USB settings partition is not a host vault. stickllm-usb-claim creates
+#   that ~256 MiB boot-USB slot. stickllm-usb-settings encrypts it with this
+#   same passcode (no second password). This script still refuses to
+#   luksFormat or partition a host disk.
 #
 # Layout under user dir:
 #   <root>/models/              # create if missing; never delete existing files
@@ -71,9 +75,16 @@ json_state() {
   [[ -f "$META_DIR/unlock_fails" ]] && fails="$(tr -cd '0-9' <"$META_DIR/unlock_fails" || echo 0)"
   [[ -f "$META_DIR/root" ]] && root="$(tr -d '\n' <"$META_DIR/root" || true)"
   [[ -f "$META_DIR/container" ]] && blob="$(tr -d '\n' <"$META_DIR/container" || true)"
-  python3 - "$STATE_JSON" "$status" "$note" "$wipe" "$fails" "$MNT_POINT" "$root" "$blob" <<'PY'
+  local usb_settings="absent"
+  if findmnt -n "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}" >/dev/null 2>&1; then
+    usb_settings="unlocked"
+  elif [[ -f "$DATA_MNT/stickllm-settings-part.json" ]]; then
+    usb_settings="present-locked"
+  fi
+  python3 - "$STATE_JSON" "$status" "$note" "$wipe" "$fails" "$MNT_POINT" "$root" "$blob" "$usb_settings" <<'PY'
 import json, sys, os
 path, status, note, wipe, fails, mnt, root, blob = sys.argv[1:9]
+usb_settings = sys.argv[9] if len(sys.argv) > 9 else "absent"
 doc = {
   "ok": True,
   "status": status,
@@ -85,6 +96,8 @@ doc = {
   "wipe_after_failed_unlocks": int(wipe or 0),
   "failed_unlocks": int(fails or 0),
   "backend": "luks2-argon2id-file",
+  "usb_settings": usb_settings,
+  "usb_settings_mount": "/mnt/stickllm-settings",
   "safety": "file-blob-only; never formats host disks",
 }
 open(path, "w", encoding="utf-8").write(json.dumps(doc, indent=2) + "\n")
@@ -1780,7 +1793,20 @@ PY
 
 ensure_dirs_in_vault() {
   mkdir -p "$MNT_POINT"/{models,chats,settings}
-  chmod 700 "$MNT_POINT" "$MNT_POINT"/chats "$MNT_POINT"/settings 2>/dev/null || true
+  # The file helper runs as stickllm. Own the mount directory only, not the
+  # whole tree, and never follow a symlink out of the vault.
+  if [[ -L "$MNT_POINT" ]]; then
+    return 0
+  fi
+  chown stickllm:stickllm "$MNT_POINT" 2>/dev/null || true
+  chmod 700 "$MNT_POINT" 2>/dev/null || true
+  local dir
+  for dir in models chats settings; do
+    if [[ -d "$MNT_POINT/$dir" && ! -L "$MNT_POINT/$dir" ]]; then
+      chown stickllm:stickllm "$MNT_POINT/$dir" 2>/dev/null || true
+      chmod 700 "$MNT_POINT/$dir" 2>/dev/null || true
+    fi
+  done
 }
 
 ui_vault_mounted() {
@@ -1800,6 +1826,13 @@ schedule_ui_vault_refresh() {
   disown 2>/dev/null || true
 }
 
+download_policy() {
+  # Kiosk Chromium: downloads to vault/Downloads when unlocked, blocked when locked.
+  if [[ -x /usr/local/bin/stickllm-download-policy ]]; then
+    /usr/local/bin/stickllm-download-policy "$1" >/dev/null 2>&1 || true
+  fi
+}
+
 refresh_gateway_vault_view() {
   # stickllm-ui uses ProtectSystem=full (private mount NS). Vault mounts that
   # happen after the unit starts are invisible to stickllm-gateway ismount(),
@@ -1809,6 +1842,7 @@ refresh_gateway_vault_view() {
   # *deferred* try-restart so the unlock API response can finish first.
   local pid mapper log="/run/stickllm/vault-ui-refresh.log"
   mkdir -p /run/stickllm 2>/dev/null || true
+  download_policy unlocked
   pid="$(systemctl show -p MainPID --value stickllm-ui.service 2>/dev/null || true)"
   mapper="$(readlink -f "$MAPPER" 2>/dev/null || echo "$MAPPER")"
   {
@@ -1819,6 +1853,7 @@ refresh_gateway_vault_view() {
     nsenter --mount="/proc/$pid/ns/mnt" -- mkdir -p "$MNT_POINT" 2>/dev/null || true
     if ui_vault_mounted "$pid"; then
       echo "result=already-in-ui-ns" >>"$log" 2>/dev/null || true
+      start_agent_addon
       return 0
     fi
     # Mount mapper into UI private NS (same device already open on host).
@@ -1826,6 +1861,7 @@ refresh_gateway_vault_view() {
       || nsenter --mount="/proc/$pid/ns/mnt" -- mount "$mapper" "$MNT_POINT" 2>>"$log"; then
       if ui_vault_mounted "$pid"; then
         echo "result=nsenter-mounted" >>"$log" 2>/dev/null || true
+        start_agent_addon
         return 0
       fi
     fi
@@ -1834,7 +1870,43 @@ refresh_gateway_vault_view() {
     echo "result=no-ui-or-unmounted-defer-restart" >>"$log" 2>/dev/null || true
   fi
   schedule_ui_vault_refresh
+  start_agent_addon
   return 0
+}
+
+start_agent_addon() {
+  # Docker, Agent Zero and ONLYOFFICE Docs stay down until this vault is mounted.
+  if [[ -x /usr/local/bin/stickllm-agent ]]; then
+    /usr/local/bin/stickllm-agent start >/run/stickllm/agent-start.log 2>&1 &
+  fi
+  # Docs starts only when installed; its own gate re-checks vault + settings.
+  if [[ -x /usr/local/bin/stickllm-docs ]]; then
+    /usr/local/bin/stickllm-docs start >/run/stickllm/docs-start.log 2>&1 &
+  fi
+  # Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED): only the
+  # installed ones start; each gate re-checks the vault.
+  if [[ -x /usr/local/bin/stickllm-addon ]]; then
+    /usr/local/bin/stickllm-addon start-all >/run/stickllm/addons-start.log 2>&1 &
+  fi
+}
+
+stop_vault_addons() {
+  # Order matters: Docs first, while the vault is still mounted, so pending
+  # edits reach the save callback and land in vault/Documents. Then the
+  # starter add-ons (their databases are in vault/addons), then Agent Zero,
+  # then the shared dockerd, then the settings partition and the vault.
+  if [[ -x /usr/local/bin/stickllm-docs ]]; then
+    /usr/local/bin/stickllm-docs stop >/run/stickllm/docs-stop.log 2>&1 || true
+  fi
+  if [[ -x /usr/local/bin/stickllm-addon ]]; then
+    /usr/local/bin/stickllm-addon stop-all >/run/stickllm/addons-stop.log 2>&1 || true
+  fi
+  if [[ -x /usr/local/bin/stickllm-agent ]]; then
+    /usr/local/bin/stickllm-agent stop >/run/stickllm/agent-stop.log 2>&1 || true
+  fi
+  if [[ -x /usr/local/bin/stickllm-dockerd ]]; then
+    /usr/local/bin/stickllm-dockerd halt >/run/stickllm/dockerd-halt.log 2>&1 || true
+  fi
 }
 
 drop_gateway_vault_view() {
@@ -1970,6 +2042,129 @@ stick_keyfile_path() {
   fi
 }
 
+settings_helper() {
+  if [[ -x /usr/local/bin/stickllm-usb-settings ]]; then
+    printf '%s\n' /usr/local/bin/stickllm-usb-settings
+    return 0
+  fi
+  local here
+  here="$(cd "$(dirname "$0")" && pwd)/stickllm-usb-settings"
+  if [[ -f "$here" ]]; then
+    printf '%s\n' "$here"
+    return 0
+  fi
+  return 1
+}
+
+# Mount name that mount_host would pick for a partition. Keep in step with the
+# naming in mount_host: label, else disk model, else partition name, then -<part>.
+host_mount_name_for_dev() {
+  STICKLLM_MOUNT_DEV="${1:-}" python3 - <<'PY'
+import os, re, subprocess
+from pathlib import Path
+
+dev = os.environ.get("STICKLLM_MOUNT_DEV", "").strip()
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+pk = sh("lsblk", "-no", "PKNAME", dev)
+pk = (pk.splitlines()[0] if pk else "").strip()
+label = sh("lsblk", "-no", "LABEL", dev)
+model = sh("lsblk", "-no", "MODEL", f"/dev/{pk}") if pk else ""
+part = Path(dev).name
+safe = re.sub(r"[^A-Za-z0-9_-]+", "-", label or model or part).strip("-_")[:48] or part
+print(f"{safe}-{part}"[:64])
+PY
+}
+
+# After a reboot the host SSD holding the blob may not be mounted yet. If the
+# blob sits under $HOST_MNT_ROOT/<leaf>/ and <leaf> is not mounted, mount that
+# partition through mount_host (the Mount button path: partitions only, plain
+# unencrypted filesystems, same options, never formats). The partition comes
+# from the leaf suffix and must map back to the same leaf, so a renumbered or
+# different disk is never mounted in its place.
+# Returns 0 if the blob exists afterwards, 2 if this does not apply (not a host
+# mount path, or the leaf is already mounted), 1 if the mount could not be done;
+# on 1 the drive it wanted is printed on stdout for the error message.
+ensure_host_mount_for_blob() {
+  local blob="${1:-}" root="${HOST_MNT_ROOT%/}" rel leaf part dev name out
+  [[ -n "$blob" && -f "$blob" ]] && return 0
+  [[ -n "$root" && "$blob" == "$root/"* ]] || return 2
+  rel="${blob#"$root"/}"
+  leaf="${rel%%/*}"
+  [[ -n "$leaf" && "$leaf" != "$rel" ]] || return 2
+  findmnt -n "$root/$leaf" >/dev/null 2>&1 && return 2
+  part="${leaf##*-}"
+  if [[ "$part" == "$leaf" || ! "$part" =~ ^[A-Za-z0-9]+$ ]]; then
+    printf '%s\n' "$leaf"
+    return 1
+  fi
+  dev="/dev/$part"
+  name="$(host_mount_name_for_dev "$dev" 2>/dev/null || true)"
+  if [[ "$name" != "$leaf" ]]; then
+    echo "stickllm-vault: $dev does not match host drive $leaf (found '${name:-none}'); not mounting" >&2
+    printf '%s\n' "$leaf"
+    return 1
+  fi
+  if ! out="$(STICKLLM_VAULT_CONFIRM=MOUNT-HOST mount_host "$dev" 2>&1)"; then
+    echo "stickllm-vault: mount-host $dev failed: ${out##*$'\n'}" >&2
+    printf '%s\n' "$dev ($leaf)"
+    return 1
+  fi
+  [[ -f "$blob" ]] && return 0
+  printf '%s\n' "$dev ($leaf)"
+  return 1
+}
+
+# init=0 opens an existing settings LUKS volume and never formats.
+# init=1 may LUKS-format the raw boot-USB slot, and is only used after this
+# passcode has already been accepted for the SSD vault.
+sync_usb_settings() {
+  local pass="${1:-}" init="${2:-0}" helper=""
+  helper="$(settings_helper)" || return 0
+  if [[ "$init" == "1" ]]; then
+    STICKLLM_SETTINGS_INIT=1 STICKLLM_VAULT_PASS="$pass" "$helper" ensure-partition >/dev/null 2>&1 \
+      || echo "stickllm-vault: warning: usb settings ensure-partition failed (rc=$?)" >&2
+    STICKLLM_SETTINGS_INIT=1 STICKLLM_VAULT_PASS="$pass" "$helper" open-or-init >/dev/null 2>&1 \
+      || echo "stickllm-vault: warning: usb settings open-or-init failed (rc=$?)" >&2
+  elif [[ -n "$pass" ]]; then
+    # Pre-unlock open: only needed to read a saved per-computer location.
+    # rc=3 means no settings volume yet (first boot / raw slot): normal, quiet.
+    # Any other failure is retried with open-or-init once the vault accepts the
+    # passcode, which warns if it still fails, so this is a note, not a warning.
+    local rc=0
+    STICKLLM_VAULT_PASS="$pass" "$helper" open >/dev/null 2>&1 || rc=$?
+    if [[ "$rc" -ne 0 && "$rc" -ne 3 ]]; then
+      echo "stickllm-vault: note: usb settings not opened before vault unlock (rc=$rc); retried after unlock" >&2
+    fi
+  fi
+  "$helper" write-computer --from "$LOCATION_FILE" >/dev/null 2>&1 \
+    || echo "stickllm-vault: warning: usb settings write-computer failed (rc=$?)" >&2
+  return 0
+}
+
+maybe_bind_from_settings() {
+  [[ -f "$META_DIR/container" ]] && return 0
+  local helper="" blob=""
+  helper="$(settings_helper)" || return 0
+  blob="$("$helper" print-blob 2>/dev/null)" \
+    || echo "stickllm-vault: warning: usb settings print-blob failed (rc=$?)" >&2
+  [[ -n "$blob" ]] || return 0
+  if [[ ! -f "$blob" ]]; then
+    ensure_host_mount_for_blob "$blob" >/dev/null || true
+  fi
+  if [[ ! -f "$blob" ]]; then
+    echo "stickllm-vault: warning: settings vault location not found: $blob" >&2
+    return 0
+  fi
+  is_block_device_path "$blob" && return 0
+  # cmd_use calls die(), which exits the process. Keep a bad location from
+  # aborting unlock; the SSD vault open below still runs.
+  (cmd_use "$blob") || echo "stickllm-vault: warning: bind from usb settings failed (rc=$?)" >&2
+}
+
 cmd_status() {
   local st="absent"
   if is_mounted; then
@@ -1987,8 +2182,11 @@ cmd_status() {
 cmd_find_vault() {
   # Read-only discovery. Prefer USB DATA pointer (survives ISO reflash if DATA kept).
   STICKLLM_LOC_FILE="$LOCATION_FILE" STICKLLM_LOC_DATA="$DATA_MNT" \
-    STICKLLM_LOC_HOST="$HOST_MNT_ROOT" STICKLLM_BLOB_NAME="$BLOB_NAME" python3 <<'PY'
-import json, os, subprocess, time
+    STICKLLM_LOC_HOST="$HOST_MNT_ROOT" STICKLLM_BLOB_NAME="$BLOB_NAME" \
+    STICKLLM_SETTINGS_MNT="${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}" \
+    STICKLLM_SETTINGS_LIB="${STICKLLM_SETTINGS_LIB:-/usr/local/lib/stickllm_usb_settings.py}" \
+    python3 <<'PY'
+import json, os, subprocess, sys, time
 from pathlib import Path
 from collections import deque
 
@@ -2040,6 +2238,23 @@ def add(c):
         return
     seen.add(key)
     candidates.append(c)
+
+# Per-computer location inside the unlocked USB settings partition.
+# Absent until the vault passcode has opened that partition. The plaintext
+# DATA pointer below remains the pre-unlock hint and stores no passcode.
+settings_mnt = Path(os.environ.get("STICKLLM_SETTINGS_MNT", "/mnt/stickllm-settings"))
+settings_lib = os.environ.get("STICKLLM_SETTINGS_LIB", "/usr/local/lib/stickllm_usb_settings.py")
+try:
+    if settings_mnt.is_dir() and sh("findmnt", "-n", str(settings_mnt)) and os.path.isfile(settings_lib):
+        proc = subprocess.run(
+            [sys.executable, settings_lib, "print-blob", "--mnt", str(settings_mnt)],
+            capture_output=True, text=True, check=False,
+        )
+        blob_hint = (proc.stdout or "").strip()
+        if proc.returncode == 0 and blob_hint:
+            add(cand(Path(blob_hint), "usb_settings", 250, "per-computer location in USB settings"))
+except Exception:
+    pass
 
 pointer = None
 pointer_path = str(loc_file) if loc_file.is_file() else None
@@ -2326,7 +2541,9 @@ cmd_setup() {
   printf '%s\n' "$recovery" | sha256sum | awk '{print $1}' >"$META_DIR/recovery.sha256"
   chmod 600 "$META_DIR/recovery.sha256"
   write_meta "$root" "$blob"
-  printf 'models dir kept at %s; encrypted chats/settings in blob\n' "$models" >"$META_DIR/note"
+  # Same passcode. Formats the boot-USB settings slot only after this vault exists.
+  sync_usb_settings "$PASS" 1
+  printf 'models dir kept at %s; encrypted chats in blob; portable secrets on USB settings\n' "$models" >"$META_DIR/note"
   unset PASS PASS2 rec_key
   json_state unlocked "setup complete at $root"
   refresh_gateway_vault_view
@@ -2408,21 +2625,42 @@ bump_fail() {
 
 cmd_unlock() {
   need_root
+  local pass="${STICKLLM_VAULT_PASS:-}"
   if is_mounted; then
+    if [[ -n "$pass" ]]; then
+      sync_usb_settings "$pass" 1
+    fi
+    unset pass
     json_state unlocked "already mounted"
     refresh_gateway_vault_view
     echo "Vault unlocked at $MNT_POINT"
     return 0
   fi
-  local tgt
-  tgt="$(vault_target)" || die "no vault configured (run: stickllm-vault setup <dir>)"
-  [[ -f "$tgt" ]] || die "blob missing: $tgt"
-  is_block_device_path "$tgt" && die "refusing to open block device — meta corrupt?"
-
-  local pass="${STICKLLM_VAULT_PASS:-}"
   if [[ -z "$pass" ]]; then
     read -r -s -p "Vault passcode: " pass; echo
   fi
+  # Open an already-encrypted settings partition before binding a per-computer
+  # location. Do not format it until the SSD vault accepts this passcode.
+  sync_usb_settings "$pass" 0
+  if [[ ! -f "$META_DIR/container" ]]; then
+    maybe_bind_from_settings || true
+  fi
+
+  local tgt
+  tgt="$(vault_target)" || { unset pass; die "no vault configured (run: stickllm-vault setup <dir>)"; }
+  if [[ ! -f "$tgt" ]]; then
+    # Host SSD not mounted after reboot: mount it like the Mount button, then
+    # re-check. A missing drive is not a wrong passcode, so no bump_fail here.
+    local hm_rc=0 hm_what=""
+    hm_what="$(ensure_host_mount_for_blob "$tgt")" || hm_rc=$?
+    if [[ "$hm_rc" -eq 1 ]]; then
+      unset pass
+      die "Host SSD not mounted: ${hm_what:-$tgt}. Press Mount on the drive, then Unlock."
+    fi
+    [[ -f "$tgt" ]] || { unset pass; die "blob missing: $tgt"; }
+  fi
+  is_block_device_path "$tgt" && { unset pass; die "refusing to open block device — meta corrupt?"; }
+
   if cryptsetup status "$MAPPER_NAME" >/dev/null 2>&1; then
     # Already open — ensure mounted or remount.
     if ! is_mounted; then
@@ -2431,6 +2669,7 @@ cmd_unlock() {
     fi
     if is_mounted; then
       printf '0\n' >"$META_DIR/unlock_fails"
+      sync_usb_settings "$pass" 1
       unset pass
       json_state unlocked "already open"
       refresh_gateway_vault_view
@@ -2444,6 +2683,7 @@ cmd_unlock() {
     opened=1
   fi
   if [[ "$opened" -ne 1 ]]; then
+    unset pass
     bump_fail
     die "unlock failed"
   fi
@@ -2451,6 +2691,7 @@ cmd_unlock() {
   mount "$MAPPER" "$MNT_POINT"
   ensure_dirs_in_vault
   printf '0\n' >"$META_DIR/unlock_fails"
+  sync_usb_settings "$pass" 1
   unset pass
   json_state unlocked "unlocked $tgt"
   refresh_gateway_vault_view
@@ -2459,6 +2700,15 @@ cmd_unlock() {
 
 cmd_lock() {
   need_root
+  mkdir -p /run/stickllm
+  # Block kiosk downloads first, so none starts into the unmounted path.
+  download_policy locked
+  stop_vault_addons
+  local helper=""
+  helper="$(settings_helper || true)"
+  if [[ -n "$helper" ]]; then
+    "$helper" close >/dev/null 2>&1 || true
+  fi
   drop_gateway_vault_view
   if is_mounted; then
     sync || true
@@ -2614,8 +2864,14 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault list-movable        # USB models eligible to move
   stickllm-vault set-wipe-after <N>  # 0=off (default); WIPE-OK if N>0
   stickllm-vault verify-model <gguf>
+  stickllm-vault settings-status     # USB settings partition (no secret values)
+  stickllm-vault secret-list
+  stickllm-vault secret-set <name>   # value in STICKLLM_SECRET_VALUE
+  stickllm-vault secret-get <name>
+  stickllm-vault secret-delete <name>
 
 Mount: $MNT_POINT  (models/ chats/ settings/)
+USB settings: /mnt/stickllm-settings (computers/ secrets/) — same vault passcode.
 Wipe-after-N defaults OFF (STICKLLM_VAULT_WIPE_AFTER).
 EOF
 }
@@ -2655,6 +2911,14 @@ main() {
     list-movable) cmd_list_movable "$@" ;;
     set-wipe-after) cmd_set_wipe_after "$@" ;;
     verify-model) cmd_verify_model "$@" ;;
+    settings-status|usb-settings)
+      h="$(settings_helper)" || die "stickllm-usb-settings missing"
+      exec "$h" status
+      ;;
+    secret-list|secret-set|secret-get|secret-delete)
+      h="$(settings_helper)" || die "stickllm-usb-settings missing"
+      exec "$h" "$cmd" "$@"
+      ;;
     -h|--help|help) usage ;;
     *) usage; exit 2 ;;
   esac

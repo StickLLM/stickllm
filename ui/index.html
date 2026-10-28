@@ -4,7 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
-<link rel="stylesheet" href="style.css?v=gpufit1" />
+<link rel="icon" href="favicon.svg" />
+<link rel="stylesheet" href="style.css?v=v052f" />
 </head>
 <body>
 <div class="app" id="app">
@@ -13,7 +14,7 @@
   <!-- Sidebar: conversations -->
   <aside class="sidebar" id="sidebar" aria-label="Conversations">
     <div class="sideHead">
-      <div class="brand"><span class="logo" aria-hidden="true"></span>StickLLM</div>
+      <div class="brand"><span class="logo" aria-hidden="true"></span>StickLLM<button type="button" class="pairLink" data-state="unknown" aria-label="Pairing" title="Pairing"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="plA" d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path class="plB" d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/><path class="plX" d="M4 4l16 16"/></svg></button></div>
       <button class="iconBtn" id="collapseBtn" aria-label="Collapse sidebar" title="Collapse sidebar (Ctrl+B)">
         <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
@@ -31,6 +32,11 @@
       <button class="navBtn" data-open="models"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>Models</button>
       <button class="navBtn" data-open="storage"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Storage &amp; Vault</button>
       <button class="navBtn" data-open="general"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
+      <nav class="sideApps" aria-label="Apps">
+        <p class="sideAppsLabel">Apps</p>
+        <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="_blank" rel="noopener noreferrer" hidden><img class="agentMark" src="agent-zero.png?v=desk4" alt=""><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
+        <button class="navBtn" id="appsLink" type="button"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span class="appName"><span>Apps</span><small>Desktop</small></span></button>
+      </nav>
     </div>
   </aside>
 
@@ -40,6 +46,7 @@
       <button class="iconBtn" id="menuBtn" aria-label="Open conversations" title="Conversations (Ctrl+B)">
         <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
+      <button type="button" class="pairLink topPair" data-state="unknown" aria-label="Pairing" title="Pairing"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="plA" d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path class="plB" d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/><path class="plX" d="M4 4l16 16"/></svg></button>
       <h1 class="chatTitle" id="chatTitle">New chat</h1>
       <div class="topRight">
         <button class="chip" id="statusChip" aria-haspopup="true" aria-expanded="false" title="Model and connection status">
@@ -75,23 +82,265 @@
         <div class="attachments" id="attachments" hidden aria-label="Attachments"></div>
         <textarea id="input" rows="1" placeholder="Message StickLLM" aria-label="Message"></textarea>
         <div class="composerBar">
-          <button type="button" class="iconBtn" id="attachBtn" disabled title="Attach files — coming later" aria-label="Attach (coming later)">
+          <button type="button" class="iconBtn" id="attachBtn" title="Attach a file" aria-label="Attach a file">
             <svg viewBox="0 0 24 24"><path d="M21.4 11l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"/></svg>
           </button>
+          <input type="file" id="attachPick" multiple hidden>
           <button type="button" class="toggleChip" id="webToggle" aria-pressed="true" title="Allow live web lookup when needed (needs internet)">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>Web
           </button>
           <span class="grow"></span>
-          <button type="button" class="iconBtn" id="micBtn" disabled title="Voice input — coming later" aria-label="Mic (coming later)">
+          <button type="button" class="toggleChip" id="voiceModeBtn" aria-pressed="false" title="Voice off">Voice</button>
+          <button type="button" class="iconBtn" id="stopSpeechBtn" hidden title="Stop speaking" aria-label="Stop speaking">
+            <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9l5 6M21 9l-5 6"/></svg>
+          </button>
+          <button type="button" class="iconBtn" id="micBtn" hidden title="Voice input" aria-label="Voice input" aria-pressed="false">
             <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
+          </button>
+          <button type="button" class="sendBtn stop" id="stopBtn" hidden aria-label="Stop">
+            <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
           </button>
           <button type="submit" class="sendBtn" id="sendBtn" aria-label="Send (Enter)">
             <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
           </button>
         </div>
       </div>
-      <p class="composerNote"><span id="composerNote">Ephemeral · runs locally</span><span class="composerPerf" id="composerPerf" hidden></span></p>
+      <p class="composerNote"><span id="composerNote"></span><span class="composerPerf" id="composerPerf" hidden></span></p>
     </form>
+    <section class="appsView" id="appsView" hidden aria-label="Apps">
+      <div class="desk" id="desk">
+        <div class="deskIcons" id="deskIcons">
+          <a class="deskIcon" data-starter="files" href="/apps/files/" target="stickllm-files"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7z"/></svg></span><span class="deskLabel">Files</span></a>
+          <a class="deskIcon" data-starter="notepad" href="/apps/notepad/" target="stickllm-notepad"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v5h5M9 13h6M9 17h4"/></svg></span><span class="deskLabel">Notepad</span></a>
+          <a class="deskIcon" data-starter="minesweeper" href="/apps/minesweeper/" target="stickllm-minesweeper"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="#fff"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></span><span class="deskLabel">minesweep</span></a>
+          <a class="deskIcon" data-starter="solitaire" href="/apps/solitaire/" target="stickllm-solitaire"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="M12 8c1.4 1.6 2.2 2.6 2.2 4a2.2 2.2 0 01-4.4 0c0-1.4.8-2.4 2.2-4z" fill="#fff"/></svg></span><span class="deskLabel">Solitaire</span></a>
+          <a class="deskIcon" data-starter="tetris" href="/apps/tetris/" target="stickllm-tetris"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="5" height="5" fill="#fff"/><rect x="4" y="9" width="5" height="5" fill="#fff"/><rect x="4" y="15" width="5" height="5" fill="#fff"/><rect x="10" y="15" width="5" height="5" fill="#fff"/></svg></span><span class="deskLabel">Tetris</span></a>
+          <a class="deskIcon" data-starter="calculator" href="/apps/calculator/" target="stickllm-calculator"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M8 6h8"/><path d="M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 19h.01M12 19h.01M16 19h.01" stroke-width="3"/></svg></span><span class="deskLabel">Calculator</span></a>
+          <a class="deskIcon" data-starter="media" href="/apps/media/" target="stickllm-media"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l6 3-6 3z" fill="#fff"/></svg></span><span class="deskLabel">Media</span></a>
+          <a class="deskIcon" data-starter="monitor" href="/apps/monitor/" target="stickllm-monitor"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span><span class="deskLabel">Monitor</span></a>
+        </div>
+        <div class="deskBar">
+          <button type="button" class="deskStart" id="appsMenuBtn" aria-expanded="false" aria-controls="appsMenu">Install apps</button>
+        </div>
+        <div class="appsMenu" id="appsMenu" hidden>
+          <div class="appsInner">
+        <div class="appsLayout">
+          <div class="appsList" id="appsList">
+            <section class="appsGroup" data-group="Agent">
+              <div class="appsRows">
+                <div class="appsRow appsRowLive" id="agentCatalogRow" data-app="agent-zero" data-license="MIT" data-disk-min="4" data-ram-min="2" data-gpu="none">
+                  <span class="appName">
+                    <span>Agent Zero</span>
+                    <small id="agentCatalogMsg">Unlock the vault, then install. The image stays on the host drive.</small>
+                    <small class="appReq">Disk 4 GB (measured) · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Uses llama-server for the model; Kokoro TTS on CPU ~0.5-1 GB RAM; needs a few GB free while unpacking</small>
+                    <pre id="agentCatalogPull" class="mono appsPull" hidden></pre>
+                  </span>
+                  <span class="appsState">
+                    <button type="button" class="btn sm" id="agentCatalogInstall">Install Agent Zero</button>
+                  </span>
+                </div>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Core (starter apps)">
+              <div class="appsRows">
+                <div class="appsRow appsRowLive" data-app="onlyoffice" data-license="AGPL" data-disk-min="3" data-ram-min="2" data-gpu="none">
+                  <span class="appName">
+                    <span>ONLYOFFICE Docs</span>
+                    <small>Documents, spreadsheets, and slides. The bot can edit open files live.</small>
+                    <small class="appReq">Disk 3 GB · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Heavy for an office suite; 4 GB RAM for smooth editing</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="onlyoffice"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-onlyoffice" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+                <button type="button" class="appsRow" data-app="paperless-ngx" data-license="GPL" data-disk-min="1.5" data-ram-min="1" data-gpu="none">
+                  <span class="appName">
+                    <span>Paperless-ngx</span>
+                    <small>Scans and files receipts and documents, with text recognition and tagging, through a REST API.</small>
+                    <small class="appReq">Disk 1.5 GB · RAM 1 GB (2 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">+ Redis; OCR spikes RAM/CPU; documents stored extra</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="snappymail" data-license="AGPL" data-disk-min="0.1" data-ram-min="0.1" data-gpu="none">
+                  <span class="appName">
+                    <span>SnappyMail</span>
+                    <small>Webmail over IMAP and SMTP, so the bot can triage and draft. Sending is the user’s click.</small>
+                    <small class="appReq">Disk 0.1 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Very light</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <div class="appsRow appsRowLive" data-app="radicale" data-license="GPL" data-disk-min="0.05" data-ram-min="0.05" data-gpu="none">
+                  <span class="appName">
+                    <span>Radicale</span>
+                    <small>Calendar and contacts (CalDAV and CardDAV), very light.</small>
+                    <small class="appReq">Disk 0.05 GB · RAM 0.05 GB (0.1 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Very light</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="radicale"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-radicale" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+                <div class="appsRow appsRowLive" data-app="trilium" data-license="AGPL" data-disk-min="0.5" data-ram-min="0.25" data-gpu="none">
+                  <span class="appName">
+                    <span>Trilium Notes</span>
+                    <small>Notes and a knowledge base with an API.</small>
+                    <small class="appReq">Disk 0.5 GB · RAM 0.25 GB (0.5 GB recommended) · GPU: none · approx.</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="trilium"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-trilium" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Productivity">
+              <div class="appsRows">
+                <div class="appsRow appsRowLive" data-app="vikunja" data-license="AGPL" data-disk-min="0.15" data-ram-min="0.1" data-gpu="none">
+                  <span class="appName">
+                    <span>Vikunja</span>
+                    <small>Tasks and projects.</small>
+                    <small class="appReq">Disk 0.15 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="vikunja"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-vikunja" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+                <div class="appsRow appsRowLive" data-app="actual" data-license="MIT" data-disk-min="0.3" data-ram-min="0.15" data-gpu="none">
+                  <span class="appName">
+                    <span>Actual Budget</span>
+                    <small>Budgeting and bank CSV import.</small>
+                    <small class="appReq">Disk 0.3 GB · RAM 0.15 GB (0.3 GB recommended) · GPU: none · approx.</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="actual"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-actual" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+                <button type="button" class="appsRow" data-app="immich" data-license="AGPL" data-disk-min="5" data-ram-min="6" data-gpu="optional">
+                  <span class="appName">
+                    <span>Immich</span>
+                    <small>Photos, with search that runs on your local GPU.</small>
+                    <small class="appReq">Disk 5 GB · RAM 6 GB (8 GB recommended) · GPU: optional 0 or 1-2 GB · approx. <span data-free-vram>VRAM is unavailable</span></small>
+                    <small class="appNote">Server + ML + Postgres + Redis; photo library stored extra; GPU ML search uses ~1-2 GB VRAM</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="searxng" data-license="AGPL" data-disk-min="0.2" data-ram-min="0.25" data-gpu="none">
+                  <span class="appName">
+                    <span>SearXNG</span>
+                    <small>Private web search for the agent, which can run over Tor.</small>
+                    <small class="appReq">Disk 0.2 GB · RAM 0.25 GB (0.5 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">+ Valkey/Redis; Tor adds ~0.1 GB</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Communications">
+              <div class="appsRows">
+                <button type="button" class="appsRow" data-app="matrix" data-license="Apache" data-disk-min="0.2" data-ram-min="0.25" data-gpu="none">
+                  <span class="appName">
+                    <span>Matrix (Conduit + Element)</span>
+                    <small>Encrypted chat and calls, with bridges to other messengers.</small>
+                    <small class="appReq">Disk 0.2 GB · RAM 0.25 GB (0.5 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Conduit + Element web; bridges add more</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="simplex" data-license="AGPL" data-disk-min="0.1" data-ram-min="0.1" data-gpu="none">
+                  <span class="appName">
+                    <span>SimpleX Chat</span>
+                    <small>Anonymous messaging with no IDs, with self-hosted relays.</small>
+                    <small class="appReq">Disk 0.1 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">SMP/XFTP relay servers; clients are phone/desktop apps</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="jitsi" data-license="Apache" data-disk-min="2" data-ram-min="2" data-gpu="none">
+                  <span class="appName">
+                    <span>Jitsi Meet</span>
+                    <small>Browser video calls.</small>
+                    <small class="appReq">Disk 2 GB · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">4 containers incl. Java video bridge; CPU heavy with many callers</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="onionshare" data-license="GPL" data-disk-min="0.1" data-ram-min="0.1" data-gpu="none">
+                  <span class="appName">
+                    <span>OnionShare</span>
+                    <small>Anonymous file sharing and a drop box over Tor.</small>
+                    <small class="appReq">Disk 0.1 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">CLI + Tor</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Publishing">
+              <div class="appsRows">
+                <button type="button" class="appsRow" data-app="postiz" data-license="AGPL" data-disk-min="2.5" data-ram-min="2" data-gpu="none">
+                  <span class="appName">
+                    <span>Postiz</span>
+                    <small>Posts to many social networks at once, with an API.</small>
+                    <small class="appReq">Disk 2.5 GB · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Node + Postgres + Redis</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="opentimestamps" data-license="LGPL or MIT" data-disk-min="0.05" data-ram-min="0.05" data-gpu="none">
+                  <span class="appName">
+                    <span>OpenTimestamps + a signing tool</span>
+                    <small>Proof that a published file hasn’t been changed.</small>
+                    <small class="appReq">Disk 0.05 GB · RAM 0.05 GB · GPU: none · approx.</small>
+                    <small class="appNote">Client + minisign; negligible</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Creative and technical">
+              <div class="appsRows">
+                <button type="button" class="appsRow" data-app="comfyui" data-license="GPL" data-disk-min="8" data-ram-min="8" data-gpu="required">
+                  <span class="appName">
+                    <span>ComfyUI</span>
+                    <small>Image generation on the 3090.</small>
+                    <small class="appReq">Disk 8 GB · RAM 8 GB (16 GB recommended) · GPU: required 8 / 12-24 GB · approx. <span data-free-vram>VRAM is unavailable</span></small>
+                    <small class="appNote">PyTorch+CUDA install; models extra (SDXL ~7 GB, Flux 12-24 GB); unload or shrink the LLM to free VRAM</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="code-server-jupyter" data-license="MIT and BSD" data-disk-min="1.5" data-ram-min="1" data-gpu="optional">
+                  <span class="appName">
+                    <span>code-server and Jupyter</span>
+                    <small>Coding and data analysis.</small>
+                    <small class="appReq">Disk 1.5 GB · RAM 1 GB (2 GB recommended) · GPU: optional · approx. <span data-free-vram>VRAM is unavailable</span></small>
+                    <small class="appNote">GPU only if notebooks use it</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <button type="button" class="appsRow" data-app="n8n" data-license="fair-code (not OSI open source)" data-disk-min="0.5" data-ram-min="0.5" data-gpu="none">
+                  <span class="appName">
+                    <span>n8n</span>
+                    <small>Automations. Prefer an OSI-friendly stack unless license posture is explicit.</small>
+                    <small class="appReq">Disk 0.5 GB · RAM 0.5 GB (1 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Pick n8n or Node-RED, not both by default</small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
+                </button>
+                <div class="appsRow appsRowLive" data-app="node-red" data-license="Apache" data-disk-min="0.3" data-ram-min="0.2" data-gpu="none">
+                  <span class="appName">
+                    <span>Node-RED</span>
+                    <small>Flow-based automation. Flows can run code; no palette installs, no internet.</small>
+                    <small class="appReq">Disk 0.3 GB · RAM 0.2 GB (0.5 GB recommended) · GPU: none · approx.</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="node-red"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-node-red" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- Settings modal -->
@@ -101,6 +350,7 @@
         <div class="setNavHead" id="setTitle">Settings</div>
         <button data-sec="general">General</button>
         <button data-sec="models">Models</button>
+        <button data-sec="downloads">Downloads</button>
         <button data-sec="storage">Storage &amp; Vault</button>
         <button data-sec="chats">Chats</button>
         <button data-sec="devices">Devices &amp; Pairing</button>
@@ -144,19 +394,20 @@
 <section class="sec" id="sec-models" data-title="Models" hidden>
   <div class="summary">
     <div><small>Running</small><b id="runName">none</b><span class="pill" id="runPill">not loaded</span></div>
-    <div><small>Recommended for this GPU</small><b id="recName">—</b><button class="link" id="probeBtn">Re-check GPU</button></div>
+    <div><small id="recGpuLabel">Recommended for this GPU</small><b id="recName">—</b><button class="link" id="probeBtn">Re-check GPU</button></div>
     <div><small>Models folder</small><b class="mono" id="modelDir">…</b><button class="link" id="pickModelDir" type="button">Change…</button></div>
   </div>
   <div class="dl" id="dlBox" hidden>
     <div class="dlTop"><span id="dlName">Downloading</span><span id="dlPct">0%</span></div>
     <div class="bar"><i id="dlFill"></i></div>
     <small id="dlMeta" class="muted"></small>
+    <div id="dlQueue" class="dlQueue"></div>
   </div>
   <div class="policyBanner" id="policyBanner" hidden></div>
   <div class="tabs" role="tablist" aria-label="Model source">
     <button role="tab" data-tab="browse" class="on" aria-selected="true" type="button"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>Browse catalog</button>
     <button role="tab" data-tab="local" aria-selected="false" type="button"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 14h.01M11 14h6"/></svg>On this machine <span class="pill" id="localCount">0</span></button>
-    <span class="grow"></span><span class="muted small offlineNote">Pinned catalog · hash-verified downloads</span>
+    <span class="grow"></span><span class="muted small offlineNote" id="browseNote">Pinned catalog · type to search Hugging Face</span>
     <button class="btn sm" id="refreshCatalog" type="button">Refresh</button>
   </div>
   <div class="mb">
@@ -176,6 +427,7 @@
         <label title="Unknown source"><input type="checkbox" data-t="untrusted" checked><i class="tdot bad"></i>Untrusted</label>
         <label title="Hash mismatch"><input type="checkbox" data-t="blocked" checked><i class="tdot blk"></i>Blocked</label></div></div>
       <div class="fBlock"><div class="fTitle">Abliterated / uncensored</div><div class="seg full" id="mfAbl"><button type="button" data-v="include" class="on">Include</button><button type="button" data-v="only">Only</button><button type="button" data-v="exclude">Exclude</button></div></div>
+      <div class="fBlock"><div class="fTitle">Vision</div><div class="seg full" id="mfVis"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="only">Vision only</button></div></div>
       <div class="fBlock"><label class="fTitle" for="mfQuant">Quant</label><select id="mfQuant"><option value="any">Any</option><option>Q2_K</option><option>Q3_K_M</option><option>Q4_K_M</option><option>Q5_K_M</option><option>Q6_K</option><option>Q8_0</option><option>F16</option></select></div>
       <div class="fBlock"><div class="fTitle">Licence</div><div class="seg full" id="mfLic"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="commercial">Commercial</button><button type="button" data-v="noncommercial">Non-comm.</button></div></div>
       <p class="muted small fNote">GGUF only (llama.cpp). Pickle <span class="mono">.bin</span>/<span class="mono">.pt</span> checkpoints are never offered because they can run code when loaded.</p>
@@ -184,15 +436,15 @@
     <div class="mbMain">
       <div class="hfToken" id="hfTokenBox" hidden>
         <div class="hfRow"><label for="hfToken"><b>Hugging Face token</b></label>
-          <input type="password" id="hfToken" class="mono" placeholder="hf_…" autocomplete="off" spellcheck="false" aria-describedby="hfHint">
+          <input type="text" id="hfToken" class="mono secret" placeholder="hf_…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-describedby="hfHint">
           <button class="iconBtn sm" id="hfShow" type="button" aria-label="Show token" title="Show/hide"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
           <button class="btn sm" id="hfTest" type="button">Test</button>
           <span class="hfState" id="hfState"></span></div>
-        <small class="muted" id="hfHint">Optional for future gated HF downloads. Use a <b>read-only, fine-grained</b> token. <span id="hfWhere">Session only until vault save ships.</span></small>
+        <small class="muted" id="hfHint">Optional, for gated models. Use a <b>read-only</b> token. <span id="hfWhere">Unlock the vault to keep this token on the encrypted USB settings partition.</span></small>
       </div>
       <div class="mbTools">
-        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mfSearch" placeholder="Search models" aria-label="Search models"></div>
-        <label class="sortSel">Sort <select id="mfSort"><option value="fit">Best fit</option><option value="size">Size</option><option value="name">Name</option></select></label>
+        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mfSearch" placeholder="Search Hugging Face (GGUF)" aria-label="Search Hugging Face GGUF models"></div>
+        <label class="sortSel">Sort <select id="mfSort"><option value="fit" selected>Best fit</option><option value="size">Size</option><option value="name">Name</option><option value="running">Running</option></select></label>
       </div>
       <div class="mbCount"><span id="modelCount"></span><span id="policyHidden"></span></div>
       <div class="cards" id="modelList" role="list" aria-label="Models"></div>
@@ -201,17 +453,19 @@
 
   <div id="localTune" hidden>
   <h3>Preset</h3>
-  <div class="presets" id="presets" role="radiogroup">
+  <div class="presets" id="presets" role="radiogroup" aria-label="Preset">
     <button type="button" data-preset="fast"><b>Fast</b><small>4k ctx · q8 KV · temp 0.7</small></button>
     <button type="button" data-preset="balanced" class="on"><b>Balanced</b><small>8k ctx · f16 KV · temp 0.7</small></button>
     <button type="button" data-preset="long"><b>Long context</b><small>32k ctx · q4 KV · temp 0.6</small></button>
   </div>
+  <p class="muted small" id="presetCustom" hidden>Custom settings (no preset matches).</p>
 
   <details class="adv" id="advanced">
     <summary>Advanced</summary>
     <div class="advBody">
       <label class="field"><span>Context size <b id="ctxVal">8,192</b> tokens</span>
         <input type="range" id="ctx" min="2048" max="32768" step="1024" value="8192"></label>
+      <p class="muted small" id="ctxNote">The stick runs at least 32,768 tokens so Agent Zero works. A smaller value only lowers the memory estimate here.</p>
       <div class="vram">
         <div class="vramBar" aria-label="VRAM usage"><i class="w" id="vW"></i><i class="kv" id="vKV"></i><i class="free" id="vFree"></i></div>
         <div class="legend"><span><i class="w"></i>Weights <b id="lW"></b></span><span><i class="kv"></i>KV cache <b id="lKV"></b></span><span><i class="free"></i>Free <b id="lFree"></b></span><span class="muted" id="vramTotal">of — GB</span></div>
@@ -226,6 +480,7 @@
         <label class="field"><span>Repeat penalty</span><input type="number" id="rep" value="1.1" step="0.05" min="1" max="2"></label>
         <label class="field"><span>Max reply tokens</span><input type="number" id="maxtok" value="1024" min="64" max="8192" step="64"></label>
       </div>
+      <p class="muted small" id="tuneApplies">Context and KV cache type apply on the next Load. Temperature, Top-p, Top-k, Repeat penalty and Max reply tokens apply to Chat messages (Agent Zero uses its own settings).</p>
       <button class="link" id="resetPreset" type="button">Reset to preset</button>
     </div>
   </details>
@@ -241,12 +496,18 @@
   </div>
 </section>
 
+<!-- DOWNLOADS -->
+<section class="sec" id="sec-downloads" data-title="Downloads" hidden>
+  <p class="muted">One model downloads at a time. Stop keeps the partial file so Start can resume it. Delete only removes it from this queue.</p>
+  <div class="group" id="queueList"></div>
+</section>
+
 <!-- STORAGE -->
 <section class="sec" id="sec-storage" data-title="Storage &amp; Vault" hidden>
   <div class="vaultCard" id="vaultCard">
     <div class="vcIcon"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg></div>
     <div class="vcText"><b id="vcState">Vault locked</b><small id="vcSub">No vault attached yet</small></div>
-    <form class="vcUnlock" id="unlockForm"><input type="password" id="vaultPass" placeholder="Vault passcode" autocomplete="off" aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
+    <form class="vcUnlock" id="unlockForm" autocomplete="off"><input type="text" id="vaultPass" class="secret" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
     <button class="btn" id="lockBtn2" hidden>Lock</button>
   </div>
 
@@ -268,10 +529,10 @@
     <div class="advBody">
       <p class="muted small" id="ctHint" style="margin-top:12px">Creates <span class="mono">stickllm-vault.img</span> in the selected folder. Nothing else on the drive is touched.</p>
       <div class="row2">
-        <div class="field"><span>Folder</span><div class="pathPick"><input class="mono" id="vaultPath" value="" placeholder="/mnt/…/stickllm" readonly aria-label="Vault folder"><button class="btn sm" id="pickCreate">Choose…</button></div></div>
+        <div class="field"><span>Folder</span><div class="pathPick"><input class="mono" id="vaultPath" value="" autocomplete="off" placeholder="/mnt/…/stickllm" readonly aria-label="Vault folder"><button class="btn sm" id="pickCreate">Choose…</button></div></div>
         <label class="field" id="sizeField"><span>Size (GiB)</span><input type="number" id="vaultSize" value="32" min="1" max="2000"></label>
-        <label class="field"><span>Passcode (min 8)</span><input type="password" id="np1" autocomplete="new-password"></label>
-        <label class="field"><span>Confirm passcode</span><input type="password" id="np2" autocomplete="new-password"></label>
+        <label class="field"><span>Passcode (min 8)</span><input type="text" id="np1" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
+        <label class="field"><span>Confirm passcode</span><input type="text" id="np2" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
       </div>
       <button class="btn primary" id="createVault">Create vault…</button>
     </div>
@@ -328,7 +589,7 @@
   <h3>WiFi</h3>
   <div class="row2">
     <label class="field"><span>Network name (SSID)</span><input id="ssid" placeholder="HomeLAN"></label>
-    <label class="field"><span>Password</span><input id="wpass" type="password" autocomplete="off"></label>
+    <label class="field"><span>Password</span><input id="wpass" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
   </div>
   <div class="actions"><button class="btn primary" id="wifiBtn">Connect</button></div>
   <p class="muted small">No network yet? Run <span class="mono">stickllm-wifi-setup</span> in the stick's terminal. A WiFi access point mode is coming later.</p>
@@ -343,6 +604,11 @@
     <div class="row"><div><b>Stick storage</b><small>USB DATA partition</small></div><span class="mono">28 GiB free</span></div>
     <div class="row"><div><b>Memory</b><small>System RAM</small></div><span class="mono">64 GB</span></div>
   </div>
+  <h3>Agent Zero</h3>
+  <div class="group">
+    <div class="row"><div><b>Agent Zero</b><small id="agentInstallMsg">Unlock the vault, then install. The image stays on the host drive.</small></div><button class="btn sm" id="agentInstallBtn" type="button" hidden>Install Agent Zero</button></div>
+    <pre id="agentPullLog" class="mono" hidden></pre>
+  </div>
   <h3>Updates</h3>
   <div class="group">
     <div class="row"><div><b>StickLLM (live)</b><small>Updates not available in TEST MODE � F9 or P = new PAIR CODE � Ctrl+Shift+P same � greyed = not wired</small></div><button class="btn sm" id="checkUpd" disabled title="Coming soon">Check for updates</button></div>
@@ -351,7 +617,7 @@
   <div class="group">
     <div class="row"><div><b>Loading a model</b><small>No model loads at boot. Go to Models, pick one, choose a preset, then Reload.</small></div><button class="btn sm" data-sec-go="models">Open Models</button></div>
     <div class="row"><div><b>Connecting another device</b><small>Open the LAN address and enter the pair code from the stick's screen.</small></div><button class="btn sm" data-sec-go="devices">Open Pairing</button></div>
-    <div class="row"><div><b>Terminal access (SSH)</b><small>Login details are shown on the stick's console only, never in the browser.</small></div></div>
+    <div class="row"><div><b>Terminal access (SSH)</b><small>F9 makes a new pair code. F10 shows the SSH password. Both work from any StickLLM screen.</small></div><button class="btn sm" id="showSsh" type="button">Show SSH password</button></div>
   </div>
 </section>
 
@@ -364,16 +630,16 @@
     <div class="group">
       <div class="row"><span>Version</span><span class="mono" id="aboutVer">hotfix</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono">b4521</span></div>
-      <div class="row"><span>UI</span><span class="mono">v0.3.8</span></div>
+      <div class="row"><span>UI</span><span class="mono">v0.5.2</span></div>
       <div class="row"><span>License</span><span>MIT</span></div>
-      <div class="row"><span>Website</span><a href="https://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
+      <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
     </div>
     <h3 style="margin-top:16px">Keyboard (stick screen)</h3>
     <div class="group kbd">
       <div class="row"><span>New PAIR CODE</span><span><kbd>F9</kbd></span></div>
       <div class="row"><span>Show SSH password</span><span><kbd>F10</kbd></span></div>
     </div>
-    <p class="muted small">F10 only works on the stick (Server/kiosk). SSH must be enabled this boot (GRUB menu 2 or 3).</p>
+    <p class="muted small">F9 and F10 work from any screen in this UI. SSH must be enabled this boot (GRUB menu 2 or 3).</p>
   </div>
 </section>
 
@@ -392,7 +658,7 @@
         <button class="iconBtn" id="fpFwd" aria-label="Forward" title="Forward (Alt+→)"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
         <button class="iconBtn" id="fpUp" aria-label="Up one folder" title="Up (Backspace)"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
         <div class="crumbs" id="fpCrumbs" title="Click empty space to type a path"></div>
-        <input class="mono fpPathIn" id="fpPathIn" hidden aria-label="Path">
+        <input class="mono fpPathIn" id="fpPathIn" autocomplete="off" hidden aria-label="Path">
         <div class="fpFileTools" id="fpFileTools" hidden>
           <div class="seg" id="fpFilter" role="radiogroup" aria-label="File type"><button data-flt="images">Images</button><button data-flt="docs">Documents</button><button data-flt="all" class="on">All</button></div>
           <div class="seg icons" id="fpView" aria-label="View"><button data-view="list" class="on" aria-label="List view" title="List"><svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg></button><button data-view="grid" aria-label="Grid view" title="Grid"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button></div>
@@ -428,6 +694,46 @@
     </div>
   </div>
 
+  <!-- 0.5.2: not paired (LAN browser) -->
+  <div class="modalWrap top2" id="notPaired" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="npTitle">
+      <div class="cfBody">
+        <h2 id="npTitle">Not paired — re-pair this browser</h2>
+        <p id="npMsg">This browser is not paired with the stick.</p>
+        <p class="sideHint">The pair code is only shown on the stick's own screen (press F9 there). You can ask the stick to show it:</p>
+        <div class="actions"><button class="btn" id="npAsk" type="button">Show a new code on the stick screen</button></div>
+        <form id="npForm" autocomplete="off">
+          <label class="field"><span>Pair code from the stick screen</span><input id="npCode" inputmode="numeric" maxlength="9" autocomplete="one-time-code" placeholder="123 456"></label>
+          <p class="err" id="npErr" hidden></p>
+          <div class="actions"><span class="grow"></span><button class="btn primary" id="npPair" type="submit">Pair</button></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 0.5.2: kiosk — a LAN browser asks for a code while another one is paired -->
+  <div class="modalWrap top2" id="kioskPairReq" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="kprTitle">
+      <div class="cfBody">
+        <h2 id="kprTitle">Pair request</h2>
+        <p id="kioskPairReqText"></p>
+        <div class="actions"><span class="grow"></span><button class="btn" id="kprNo" type="button">Ignore</button><button class="btn primary" id="kprYes" type="button">Make new code</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 0.5.2: Agent Zero asks to install an app; only this click installs it -->
+  <div class="modalWrap top2" id="agentInstall" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="aiTitle">
+      <div class="cfBody">
+        <h2 id="aiTitle">Install an app?</h2>
+        <p id="aiText"></p>
+        <p class="err" id="aiErr" hidden></p>
+        <div class="actions"><span class="grow"></span><button class="btn" id="aiNo" type="button">Not now</button><button class="btn primary" id="aiYes" type="button">Install</button></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Confirm dialog -->
   <div class="modalWrap top2" id="confirm" hidden>
     <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="cfTitle">
@@ -451,6 +757,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=gpufit1"></script>
+<script src="app.js?v=v052f"></script>
 </body>
 </html>

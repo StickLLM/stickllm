@@ -1,0 +1,19 @@
+[Unit]
+Description=StickLLM Agent Zero (host SSD image, loopback UI only)
+After=local-fs.target
+# The unit is skipped until the server vault is actually mounted.
+ConditionPathIsMountPoint=/var/lib/stickllm/vault
+
+[Service]
+Type=simple
+# No image on the host SSD: the unit is skipped (no dockerd, no ExecStop).
+ExecCondition=/usr/local/bin/stickllm-agent image-ready
+ExecStart=/usr/local/bin/stickllm-agent run
+ExecStop=/usr/local/bin/stickllm-agent stop
+Restart=on-failure
+RestartSec=5
+# Host mount namespace so the vault, settings, and host SSD mounts are visible.
+# Docker data-root is a folder on the host SSD. The daemon is not started by docker.service.
+
+[Install]
+WantedBy=multi-user.target

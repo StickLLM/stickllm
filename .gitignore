@@ -17,6 +17,7 @@ models/*.gguf.partial
 models/*.partial
 models/*.bin
 models/*.sha256
+models/speech/
 !models/.gitkeep
 
 # Vendor binaries built at build time (CUDA + CPU llama; never commit SSE-only forks)

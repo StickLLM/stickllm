@@ -88,8 +88,7 @@ sha256 = [
   "beba9d4f2f5a1fe7d144dcae332e68b52c26705c5310dece2e5d1997e091e134",
 ]
 vision = false
-# TODO(post-v0.3.8 / ISS-020): stop baking this into the ISO; keep as download-only pin.
-notes = "Also baked on ISO through v0.3.8 (upgrade from default 3B); re-downloadable. Next ship: download-only."
+notes = "Download only. Not baked on the stick."
 
 [[model]]
 id = "qwen25-3b-q4km"

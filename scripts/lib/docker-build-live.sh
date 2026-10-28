@@ -4,9 +4,7 @@
 set -euo pipefail
 
 MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
-# TODO(post-v0.3.8 / ISS-020): stop copying 7B shards into the live image; 3B bake only.
-MODEL_SHARD1="qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
-MODEL_SHARD2="qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf"
+# ISO bake is the 3B only. The 7B Q5 stays a catalog download (ISS-020).
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -14,7 +12,8 @@ apt-get install -y --no-install-recommends \
   live-build live-boot live-config live-config-systemd \
   ca-certificates curl rsync xz-utils \
   squashfs-tools xorriso isolinux syslinux-common \
-  grub-pc-bin grub-efi-amd64-bin mtools dosfstools
+  grub-pc-bin grub-efi-amd64-bin mtools dosfstools \
+  build-essential cmake pkg-config python3 git
 
 cd /work
 rm -rf /work/*
@@ -64,6 +63,7 @@ else
   echo "ERROR: missing /stickllm/live-build/package-lists/stickllm.list.chroot" >&2
   exit 1
 fi
+grep -q '^docker.io$' config/package-lists/stickllm.list.chroot
 grep -q '^chromium$' config/package-lists/stickllm.list.chroot
 grep -q '^cage$' config/package-lists/stickllm.list.chroot
 grep -q '^seatd$' config/package-lists/stickllm.list.chroot
@@ -88,8 +88,6 @@ rsync -a /stickllm/ui/ config/includes.chroot/opt/stickllm/ui/
 
 mkdir -p config/includes.chroot/opt/stickllm/models
 cp "/stickllm/models/${MODEL_3B}" config/includes.chroot/opt/stickllm/models/
-cp "/stickllm/models/${MODEL_SHARD1}" config/includes.chroot/opt/stickllm/models/
-cp "/stickllm/models/${MODEL_SHARD2}" config/includes.chroot/opt/stickllm/models/
 
 mkdir -p config/includes.chroot/etc/stickllm config/includes.chroot/etc/stickllm/models
 cp /stickllm/config/profiles/amd-rtx3090.toml config/includes.chroot/etc/stickllm/profile.toml
@@ -99,13 +97,69 @@ test -x config/includes.chroot/opt/stickllm/bin/llama-server
 test -x config/includes.chroot/opt/stickllm/bin/llama-server-cpu
 test -f config/includes.chroot/opt/stickllm/lib/libllama-server-impl.so
 test -f "config/includes.chroot/opt/stickllm/models/${MODEL_3B}"
-test -f "config/includes.chroot/opt/stickllm/models/${MODEL_SHARD1}"
-test -f "config/includes.chroot/opt/stickllm/models/${MODEL_SHARD2}"
+if compgen -G "config/includes.chroot/opt/stickllm/models/*7b*" >/dev/null; then
+  echo "ERROR: 7B GGUF must not be baked into the ISO" >&2
+  exit 1
+fi
+
+# Voice weights live in /opt/stickllm/speech (a normal folder). Not the SSD vault.
+echo "[stickllm] bake speech (whisper.cpp CPU + KittenTTS mini 0.8)…"
+bash /stickllm/scripts/lib/bake-speech.sh /work
+test -x config/includes.chroot/usr/local/bin/whisper-cli
+test -x config/includes.chroot/usr/local/bin/whisper-server
+test -f config/includes.chroot/opt/stickllm/speech/ggml-tiny.en.bin
+test -f config/includes.chroot/opt/stickllm/speech/kitten_tts_mini_v0_8.onnx
+test -f config/includes.chroot/opt/stickllm/speech/voices.npz
+test -f config/includes.chroot/opt/stickllm/speech/py/onnxruntime/__init__.py
+test -x config/includes.chroot/usr/local/bin/stickllm-usb-claim
+test -x config/includes.chroot/usr/local/bin/stickllm-usb-settings
+test -f config/includes.chroot/usr/local/lib/stickllm_usb_settings.py
+if find config/includes.chroot -path '*vault*' \( -name 'ggml-tiny.en.bin' -o -name 'kitten_tts_mini_v0_8.onnx' -o -name 'voices.npz' \) | grep -q .; then
+  echo "ERROR: voice weights must not be inside the vault" >&2
+  exit 1
+fi
 test -x config/includes.chroot/usr/local/bin/stickllm-kiosk
 test -f config/includes.chroot/etc/systemd/system/stickllm-kiosk.service
 grep -q 'base_model_id = "qwen25-3b-q4km"' config/includes.chroot/etc/stickllm/models/catalog.toml
 grep -q 'stickllm-llama-start' config/includes.chroot/etc/systemd/system/stickllm-llama.service
 grep -q 'STICKLLM_LLAMA_HOST=127.0.0.1' config/includes.chroot/etc/systemd/system/stickllm-llama.service
+test -f config/includes.chroot/usr/local/share/stickllm/agent-zero.pin
+grep -q 'amd64_digest=sha256:307a2ceffc8501ba05a1e7253e8b6e4d656d2e1c3b97f0eb943c18b9c40a30fd' \
+  config/includes.chroot/usr/local/share/stickllm/agent-zero.pin
+test -f config/includes.chroot/usr/local/bin/stickllm-agent
+test -f config/includes.chroot/etc/systemd/system/stickllm-agent.service
+test -f config/includes.chroot/etc/systemd/system/stickllm-agent-install.service
+test -f config/includes.chroot/usr/local/bin/stickllm-dockerd
+test -f config/includes.chroot/etc/systemd/system/stickllm-dockerd.service
+test -f config/includes.chroot/usr/local/bin/stickllm-docs
+test -f config/includes.chroot/usr/local/bin/stickllm-docs-entrypoint
+test -f config/includes.chroot/usr/local/lib/stickllm_docs.py
+test -f config/includes.chroot/etc/systemd/system/stickllm-docs.service
+test -f config/includes.chroot/etc/systemd/system/stickllm-docs-install.service
+test -f config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
+grep -q 'amd64_digest=sha256:bff1a9fd46f2b79ada776fd0447c3fccf66cbf44c1996ec9316efa8ac4ee3fd5' \
+  config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
+# Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED).
+test -f config/includes.chroot/usr/local/bin/stickllm-addon
+test -f config/includes.chroot/usr/local/lib/stickllm_addons.py
+test -f config/includes.chroot/etc/systemd/system/stickllm-addon@.service
+test -f config/includes.chroot/etc/systemd/system/stickllm-addon-install@.service
+test -f config/includes.chroot/usr/local/share/stickllm/addons/radicale/config
+test -f config/includes.chroot/usr/local/share/stickllm/addons/node-red-settings.js
+for pin in radicale vikunja actual trilium node-red; do
+  grep -q '^amd64_digest=sha256:' "config/includes.chroot/usr/local/share/stickllm/addons/${pin}.pin"
+done
+
+# Agent Zero plugins: banned unless allowlisted. Fetch each allowlisted plugin
+# once here at its pinned commit, hash-check it, bake it read-only. A pin or
+# hash mismatch stops the build. The stick never fetches plugins at runtime.
+A0_PLUGINS_OUT=config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins
+test -f config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow
+python3 /stickllm/scripts/lib/a0_plugins.py bake \
+  config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow \
+  "$A0_PLUGINS_OUT"
+chown -R root:root "$A0_PLUGINS_OUT"
+test -f "$A0_PLUGINS_OUT/MANIFEST"
 
 mkdir -p config/bootloaders/grub-pc config/bootloaders/grub-efi
 # Prefer tracked boot/grub.cfg (LF). Fall back to inline copy if missing.
@@ -138,6 +192,22 @@ fi
 if [[ -f /stickllm/boot/grub/splash.png ]]; then
   cp -f /stickllm/boot/grub/splash.png config/includes.binary/boot/grub/splash.png
 fi
+
+# Docker Desktop: sync(2) walks every VM superblock and can block forever in
+# fuse_sync_fs on the Windows file share. debootstrap calls sync after the
+# base system is unpacked. Flush only the live-build volume.
+if [[ -x /bin/sync && ! -e /bin/sync.real ]]; then
+  mv /bin/sync /bin/sync.real
+fi
+cat > /bin/sync << 'EOF'
+#!/bin/sh
+# Sync the live-build volume only. A global sync(2) hangs on Docker Desktop.
+if [ -x /bin/sync.real ]; then
+  /bin/sync.real -f /work >/dev/null 2>&1 || true
+fi
+exit 0
+EOF
+chmod 755 /bin/sync
 
 echo "[stickllm] lb build (long)…"
 lb build

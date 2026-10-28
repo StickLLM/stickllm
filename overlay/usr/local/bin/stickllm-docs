@@ -1,0 +1,381 @@
+#!/bin/bash
+# ONLYOFFICE Docs for StickLLM. Documents are only ever saved in the vault.
+#
+# Host SSD (shared dockerd data-root): the pinned public image and a local
+# "prepared" image made from it (fonts, JS caches and api.js generated from
+# the image itself, no user data). The container is --read-only with
+# --log-driver none. Its writable paths are vault bind mounts or RAM tmpfs:
+#
+#   vault/addons/onlyoffice/lib   -> /var/lib/onlyoffice   (editor cache)
+#   vault/addons/onlyoffice/logs  -> /var/log/onlyoffice
+#   vault/addons/onlyoffice/data  -> /var/www/onlyoffice/Data
+#   vault/addons/onlyoffice/etc   -> /etc/onlyoffice       (seeded from the image)
+#   tmpfs (RAM): /tmp /run /root /var/lib/nginx /var/log/nginx
+#                /var/log/supervisor /usr/share/ca-certificates/ds
+#                /usr/share/fonts/truetype/custom (read-only, empty)
+#
+# User documents are in vault/Documents. That folder is not mounted into the
+# container: the gateway alone reads and writes it (/api/docs/*).
+# The JWT secret is on the settings partition (0600), mounted read-only and
+# never passed with -e. /var/run and /var/lock are symlinks to /run in the
+# image, so /run covers them.
+#
+#   install  pull by digest, prepare, seed the vault, then start
+#   start    start when installed (vault unlock); no-op otherwise
+#   run      foreground for stickllm-docs.service
+#   stop     flush edits back to the vault, stop the container, drop secrets
+#   uninstall  stop and remove the images (vault/Documents is kept)
+#   gate | status | docker-args
+set -euo pipefail
+
+PYBIN="$(command -v python3 || command -v python || true)"
+LIB="${STICKLLM_DOCS_LIB:-/usr/local/lib/stickllm_docs.py}"
+DOCKERD="${STICKLLM_DOCKERD:-/usr/local/bin/stickllm-dockerd}"
+VAULT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
+SETTINGS="${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}"
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+SOCK="/run/stickllm/agent-docker.sock"
+ENTRY="/usr/local/bin/stickllm-docs-entrypoint"
+CONTAINER="stickllm-docs"
+PREP="stickllm-docs-prep"
+NETWORK="stickllm-docs"
+UNIT="stickllm-docs.service"
+INSTALL_LOG="${RUN}/docs-install.log"
+LOCK="${RUN}/docs.lock"
+STOPPING="${RUN}/docs-stopping"
+
+if [[ -z "${PYBIN}" || ! -f "$LIB" ]]; then
+  echo "stickllm-docs: python helper missing" >&2
+  exit 1
+fi
+
+mount_ns() {
+  readlink "/proc/$1/ns/mnt" 2>/dev/null || true
+}
+
+# Same reason as stickllm-agent: the gateway has a private mount namespace.
+enter_host_mount_ns() {
+  [[ "$(id -u)" -eq 0 ]] || return 0
+  [[ -z "${STICKLLM_AGENT_HOST_NS:-}" ]] || return 0
+  local self host
+  self="$(mount_ns self)"
+  host="$(mount_ns 1)"
+  if [[ -z "$self" || -z "$host" || "$self" == "$host" ]]; then
+    return 0
+  fi
+  if command -v nsenter >/dev/null 2>&1 && nsenter --mount=/proc/1/ns/mnt -- true >/dev/null 2>&1; then
+    export STICKLLM_AGENT_HOST_NS=1
+    exec nsenter --mount=/proc/1/ns/mnt -- "$(readlink -f "$0")" "$@"
+  fi
+  echo "stickllm-docs: could not enter the host mount namespace" >&2
+}
+
+case "${1:-}" in
+  install|start|run|stop|uninstall) enter_host_mount_ns "$@" ;;
+esac
+
+lib() { "$PYBIN" "$LIB" "$@"; }
+docker_cli() { DOCKER_HOST="unix://${SOCK}" docker "$@"; }
+
+use_systemd() {
+  [[ -z "${STICKLLM_AGENT_NO_SYSTEMD:-}" ]] || return 1
+  [[ -d /run/systemd/system ]] || return 1
+  command -v systemctl >/dev/null 2>&1
+}
+
+status() {
+  if [[ -n "${2:-}" ]]; then
+    lib write-status --state "$1" --message "$2" >/dev/null 2>&1 || true
+  else
+    lib write-status --state "$1" >/dev/null 2>&1 || true
+  fi
+}
+
+# Never start without the vault (documents, cache, logs) and the settings
+# partition (JWT secret).
+gate() {
+  if ! lib vault-open; then
+    status locked "Unlock the vault to use Docs. Documents are only ever saved in the vault."
+    echo "vault locked: Docs not started" >&2
+    return 2
+  fi
+  if ! lib settings-open; then
+    status settings_missing "USB settings partition is not mounted: Docs not started."
+    echo "settings partition not mounted: Docs not started" >&2
+    return 2
+  fi
+  return 0
+}
+
+addon() { lib addon-dir; }
+
+ensure_network() {
+  local sub
+  if docker_cli network inspect "$NETWORK" >/dev/null 2>&1; then
+    sub="$(docker_cli network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$NETWORK" 2>/dev/null || true)"
+    [[ "$sub" == "172.30.1.0/24" ]] && return 0
+    docker_cli network rm "$NETWORK" >/dev/null 2>&1 || true
+  fi
+  docker_cli network create \
+    --driver bridge \
+    --subnet 172.30.1.0/24 \
+    --gateway 172.30.1.1 \
+    -o com.docker.network.bridge.name=stickllm-d0 \
+    "$NETWORK" >/dev/null
+}
+
+# Prep run: no network, no logs, every image VOLUME on RAM tmpfs (so no
+# anonymous volume is created on the SSD and no user font gets in). It only
+# generates files from the image itself, then is committed and removed.
+prepare_image() {
+  local ref prepared hash
+  ref="$(lib image-ref)"
+  prepared="$(lib prepared-ref)"
+  if docker_cli image inspect "$prepared" >/dev/null 2>&1; then
+    return 0
+  fi
+  hash="$(lib digest | cut -d: -f2 | cut -c1-12)"
+  docker_cli rm -f -v "$PREP" >/dev/null 2>&1 || true
+  docker_cli run --name "$PREP" \
+    --network none \
+    --log-driver none \
+    --tmpfs /var/log/onlyoffice \
+    --tmpfs /var/lib/onlyoffice \
+    --tmpfs /var/www/onlyoffice/Data \
+    --tmpfs /usr/share/fonts/truetype/custom \
+    --tmpfs /tmp \
+    --entrypoint /bin/sh \
+    "$ref" \
+    -c "documentserver-generate-allfonts.sh true && documentserver-flush-cache.sh -h ${hash} -r false" \
+    >>"$INSTALL_LOG" 2>&1 || { docker_cli rm -f -v "$PREP" >/dev/null 2>&1 || true; return 1; }
+  docker_cli commit \
+    --change 'ENTRYPOINT ["/app/ds/run-document-server.sh"]' \
+    --change 'CMD []' \
+    "$PREP" "$prepared" >/dev/null || { docker_cli rm -f -v "$PREP" >/dev/null 2>&1 || true; return 1; }
+  docker_cli rm -f -v "$PREP" >/dev/null 2>&1 || true
+}
+
+# /etc/onlyoffice is writable config (local.json gets the JWT secret from the
+# entrypoint, ds.conf the secure-link secret), so it lives in the vault.
+# Re-seeded when the pinned digest changes. Templates go to the vault too.
+seed_vault() {
+  local dir prepared want
+  dir="$(addon)"
+  prepared="$(lib prepared-ref)"
+  want="$(lib digest)"
+  if [[ "$(cat "${dir}/etc/.stickllm-seed" 2>/dev/null || true)" != "$want" ]]; then
+    find "${dir}/etc" -mindepth 1 -delete 2>/dev/null || true
+    docker_cli run --rm --network none --log-driver none --read-only \
+      --entrypoint /bin/tar "$prepared" -C /etc/onlyoffice -cf - . \
+      | tar -C "${dir}/etc" --numeric-owner -xpf -
+    printf '%s\n' "$want" >"${dir}/etc/.stickllm-seed"
+  fi
+  if [[ ! -s "${dir}/templates/new.docx" ]]; then
+    docker_cli run --rm --network none --log-driver none --read-only \
+      --entrypoint /bin/tar "$prepared" \
+      -C /var/www/onlyoffice/documentserver/document-templates/new/en-US -cf - new.docx new.xlsx new.pptx \
+      | tar -C "${dir}/templates" --no-same-owner -xf -
+    chmod 0644 "${dir}"/templates/new.* 2>/dev/null || true
+  fi
+}
+
+container_args() {
+  local dir secret
+  dir="$(addon)"
+  secret="$(lib secret-path)"
+  # Each source is checked by stickllm_docs.prepare-vault (no symlinks,
+  # same filesystem as the vault) right before this runs.
+  printf '%s\n' \
+    --name "$CONTAINER" \
+    --rm \
+    -d \
+    --read-only \
+    --log-driver none \
+    --network "$NETWORK" \
+    --ip 172.30.1.2 \
+    -p 127.0.0.1:8083:80 \
+    --cap-drop ALL \
+    --cap-add CHOWN \
+    --cap-add DAC_OVERRIDE \
+    --cap-add FOWNER \
+    --cap-add SETUID \
+    --cap-add SETGID \
+    --cap-add KILL \
+    --cap-add NET_BIND_SERVICE \
+    --security-opt no-new-privileges=true \
+    --pids-limit 2048 \
+    --stop-timeout 60 \
+    -e ALLOW_PRIVATE_IP_ADDRESS=true \
+    -e ALLOW_META_IP_ADDRESS=false \
+    -e JWT_ENABLED=true \
+    -e JWT_HEADER=Authorization \
+    -e JWT_IN_BODY=true \
+    -e PLUGINS_ENABLED=false \
+    -e GENERATE_FONTS=false \
+    -e WELCOME_PAGE_ENABLED=false \
+    -e EXAMPLE_ENABLED=false \
+    -e METRICS_ENABLED=false \
+    -e NGINX_ACCESS_LOG=false \
+    -e DS_LOG_LEVEL=WARN \
+    --tmpfs /tmp:rw,nosuid,nodev,size=2g \
+    --tmpfs /run:rw,nosuid,nodev,size=64m \
+    --tmpfs /root:rw,nosuid,nodev,size=16m \
+    --tmpfs /var/lib/nginx:rw,nosuid,nodev,size=512m \
+    --tmpfs /var/log/nginx:rw,nosuid,nodev,size=32m \
+    --tmpfs /var/log/supervisor:rw,nosuid,nodev,size=32m \
+    --tmpfs /usr/share/ca-certificates/ds:rw,nosuid,nodev,size=4m \
+    --tmpfs /usr/share/fonts/truetype/custom:ro,size=1m \
+    -v "${dir}/lib:/var/lib/onlyoffice" \
+    -v "${dir}/logs:/var/log/onlyoffice" \
+    -v "${dir}/data:/var/www/onlyoffice/Data" \
+    -v "${dir}/etc:/etc/onlyoffice" \
+    -v "${secret}:/run/stickllm-secret/jwt.secret:ro" \
+    -v "${ENTRY}:/usr/local/bin/stickllm-docs-entrypoint:ro" \
+    --entrypoint /usr/local/bin/stickllm-docs-entrypoint \
+    "$(lib prepared-ref)"
+}
+
+stop_container() {
+  docker_cli inspect "$CONTAINER" >/dev/null 2>&1 || return 0
+  # Ask Docs to send pending edits to the save callback (into the vault)
+  # before the container goes away.
+  timeout 60 env DOCKER_HOST="unix://${SOCK}" docker exec "$CONTAINER" \
+    documentserver-prepare4shutdown.sh >/dev/null 2>&1 || true
+  docker_cli stop -t 60 "$CONTAINER" >/dev/null 2>&1 || true
+  docker_cli rm -f -v "$CONTAINER" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  lib nft-delete >/dev/null 2>&1 || true
+  lib drop-runtime-secret >/dev/null 2>&1 || true
+}
+
+cmd_run() {
+  gate || exit 0
+  if ! lib installed; then
+    status not_installed
+    echo "ONLYOFFICE Docs is not installed" >&2
+    exit 0
+  fi
+  lib prepare-vault
+  "$DOCKERD" ensure docs 9>&- || { status error "Docker did not start."; exit 1; }
+  if ! docker_cli image inspect "$(lib prepared-ref)" >/dev/null 2>&1; then
+    status error "The Docs image is missing from the host drive. Install Docs again from Apps."
+    exit 1
+  fi
+  seed_vault
+  ensure_network
+  lib nft-apply || { status error "Firewall rules failed. Docs not started."; exit 1; }
+  lib runtime-secret
+  docker_cli rm -f -v "$CONTAINER" >/dev/null 2>&1 || true
+  rm -f "$STOPPING"
+  status starting
+  local args=()
+  mapfile -t args < <(container_args)
+  # Re-check right before the container gets its vault mounts.
+  gate || { cleanup; exit 0; }
+  lib prepare-vault
+  docker_cli run "${args[@]}" >/dev/null
+  status running
+  trap 'stop_container; cleanup; status stopped' TERM INT
+  # stdout of the container goes nowhere (--log-driver none).
+  docker_cli wait "$CONTAINER" >/dev/null 2>&1 &
+  wait $! || true
+  trap - TERM INT
+  cleanup
+  if [[ -e "$STOPPING" ]]; then
+    status stopped
+    exit 0
+  fi
+  # Exited on its own: let Restart=on-failure try again (vault still gated).
+  status error "ONLYOFFICE Docs stopped unexpectedly."
+  exit 1
+}
+
+cmd_start() {
+  gate || exit 0
+  lib installed || exit 0
+  if use_systemd; then
+    systemctl start --no-block "$UNIT"
+    exit 0
+  fi
+  cmd_run >/dev/null 2>&1 9>&- &
+}
+
+cmd_stop() {
+  mkdir -p "$RUN"
+  : >"$STOPPING"
+  # From a shell: stop the unit too. As its ExecStop the unit is already
+  # "deactivating", so is-active is false and this does not recurse.
+  if use_systemd && systemctl is-active --quiet "$UNIT" 2>/dev/null; then
+    systemctl stop "$UNIT" >/dev/null 2>&1 || true
+  fi
+  if [[ -S "$SOCK" ]]; then
+    stop_container
+  fi
+  cleanup
+  "$DOCKERD" release docs 9>&- >/dev/null 2>&1 || true
+  status stopped
+}
+
+cmd_install() {
+  mkdir -p "$RUN"
+  exec 9>"$LOCK"
+  flock -n 9 || { echo "stickllm-docs: install already running" >&2; exit 0; }
+  : >"$INSTALL_LOG"
+  gate || exit 0
+  status installing
+  lib prepare-vault || { status error "Vault folders could not be prepared."; exit 1; }
+  lib secret-path >/dev/null || { status error "Settings partition is not writable."; exit 1; }
+  "$DOCKERD" ensure docs 9>&- || { status error "Docker did not start. Mount the host drive used for Agent Zero."; exit 1; }
+  local ref
+  ref="$(lib image-ref)"
+  if ! docker_cli image inspect "$ref" >/dev/null 2>&1; then
+    # By digest only: a moved tag cannot change what runs.
+    if ! docker_cli pull "$ref" >>"$INSTALL_LOG" 2>&1; then
+      status error "Image pull failed. Check the network and try again."
+      exit 1
+    fi
+  fi
+  if ! prepare_image; then
+    status error "Preparing the Docs image failed."
+    exit 1
+  fi
+  gate || exit 0
+  seed_vault
+  lib mark-installed
+  status stopped
+  exec 9>&-
+  if use_systemd; then
+    systemctl start --no-block "$UNIT"
+  else
+    cmd_run >/dev/null 2>&1 &
+  fi
+}
+
+cmd_uninstall() {
+  cmd_stop
+  if "$DOCKERD" ensure docs 9>&- >/dev/null 2>&1; then
+    docker_cli rmi -f "$(lib prepared-ref)" >/dev/null 2>&1 || true
+    docker_cli rmi -f "$(lib image-ref)" >/dev/null 2>&1 || true
+    docker_cli network rm "$NETWORK" >/dev/null 2>&1 || true
+    "$DOCKERD" release docs 9>&- >/dev/null 2>&1 || true
+  fi
+  if lib vault-open; then
+    rm -f "$(addon)/installed.json"
+  fi
+  status not_installed
+}
+
+case "${1:-}" in
+  gate) gate ;;
+  install) cmd_install ;;
+  start) cmd_start ;;
+  run) cmd_run ;;
+  stop) cmd_stop ;;
+  uninstall) cmd_uninstall ;;
+  status) lib status ;;
+  # Print the docker run arguments (one per line) for review and tests.
+  docker-args) gate && container_args ;;
+  *) echo "usage: stickllm-docs {gate|install|start|run|stop|uninstall|status|docker-args}" >&2; exit 1 ;;
+esac

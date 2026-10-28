@@ -1,0 +1,112 @@
+#!/bin/bash
+# Inside the Agent Zero container. Listen on 0.0.0.0:5099 in this netns so the
+# host can publish 127.0.0.1:5099 only. Do not start sshd (the host sshd owns
+# port 22). No host drives are mounted here.
+set -eu
+
+if [ -f /exe/self_update_manager.py ]; then
+  sed -i \
+    -e 's/--port=80/--port=5099/g' \
+    -e 's#http://127.0.0.1:80/api/health#http://127.0.0.1:5099/api/health#g' \
+    /exe/self_update_manager.py
+fi
+
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("/etc/supervisor/conf.d/supervisord.conf")
+if not path.is_file():
+    raise SystemExit(0)
+text = path.read_text(encoding="utf-8", errors="replace")
+lines = text.splitlines()
+out = []
+program = ""
+seen_autostart = False
+muted = {"run_sshd", "run_tunnel_api"}
+
+def flush_autostart(buf, prog, seen):
+    if prog in muted and not seen:
+        buf.append("autostart=false")
+        buf.append("autorestart=false")
+    return buf
+
+buf_start = 0
+for line in lines:
+    if line.startswith("[program:"):
+        if program:
+            out = flush_autostart(out, program, seen_autostart)
+        program = line[len("[program:") :].rstrip("]")
+        seen_autostart = False
+        out.append(line)
+        continue
+    if program in muted and line.startswith("command="):
+        out.append("command=/bin/true")
+        continue
+    if program in muted and line.startswith("autorestart="):
+        out.append("autorestart=false")
+        continue
+    if program in muted and line.startswith("autostart="):
+        seen_autostart = True
+        out.append("autostart=false")
+        continue
+    out.append(line)
+if program:
+    out = flush_autostart(out, program, seen_autostart)
+path.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+
+if [ -f /etc/searxng/settings.yml ] && ! grep -q 'bind_address:' /etc/searxng/settings.yml; then
+  sed -i '/^server:/a\  bind_address: "127.0.0.1"' /etc/searxng/settings.yml
+fi
+
+# Plugins are locked (read-only /a0/usr/plugins). Drop the upstream skills that
+# teach installing, creating, or publishing plugins before /git/agent-zero is
+# copied into /a0. The container is recreated on every start.
+for skill in a0-manage-plugin a0-create-plugin; do
+  rm -rf "/git/agent-zero/skills/${skill}" "/a0/skills/${skill}"
+done
+
+mkdir -p /a0/usr/workdir /a0/usr/memory /a0/usr/logs /a0/usr/.cache
+
+# Prove the bridge control port from this container. Do not print the token.
+# A real open (no dry_run) is the open_app tool, so this check does not pop a tab.
+python3 - <<'PY' || true
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+out = Path("/a0/usr/open-app-container-check.json")
+token = ""
+try:
+    token = Path("/stickllm-open-app.token").read_text(encoding="utf-8").strip()
+except OSError:
+    token = ""
+url = "http://172.30.0.1:8082/open"
+
+def post(app_id, auth, dry=False):
+    body = {"id": app_id}
+    if dry:
+        body["dry_run"] = True
+    data = json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    if auth:
+        headers["Authorization"] = "Bearer " + auth
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception:
+        return 0
+
+report = {
+    "missing_token": post("minesweeper", ""),
+    "bad_id": post("nope", token),
+    "dry_run": post("minesweeper", token, dry=True) if token else 0,
+}
+out.write_text(json.dumps(report) + "\n", encoding="utf-8")
+PY
+
+exec /exe/initialize.sh main

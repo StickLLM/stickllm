@@ -777,7 +777,7 @@ draw_ready() {
   say ""
   if [[ -z "${ip:-}" ]]; then
     say "  No network yet (browser Settings cannot reach the stick):"
-    say "    Ctrl+Alt+F2 -> login user / stickllm -> stickllm-wifi-setup"
+    say "    Ctrl+Alt+F2 (console) -> stickllm-wifi-setup"
     say "    Or: Local once to save WiFi on DATA, then reboot Server"
     say "    Or: plug Ethernet once, then Settings -> Network in the UI"
   else

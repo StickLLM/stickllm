@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
-"""StickLLM UI + chat gateway: web lookup, pair auth, control proxy (LAN :80)."""
+"""StickLLM UI + chat gateway: web lookup, pair auth, control proxy (LAN :80).
+
+Agent Zero is not under /agent. A second TLS listener on :5443 proxies 1:1 to
+127.0.0.1:5099, including websockets, behind the same pairing check.
+"""
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import http.client
+import importlib.machinery
+import importlib.util
 import json
+import mimetypes
 import os
 import re
 import secrets
+import shutil
+import socket
+import ssl
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -21,6 +34,12 @@ LLAMA = os.environ.get("STICKLLM_API", "http://127.0.0.1:8080").rstrip("/")
 CONTROL = os.environ.get("STICKLLM_CONTROL", "http://127.0.0.1:8091").rstrip("/")
 HOST = os.environ.get("STICKLLM_BIND", "0.0.0.0")
 PORT = int(os.environ.get("STICKLLM_PORT", "80"))
+# Mic pages need a secure origin. HTTP :80 stays the pair/chat listener.
+TLS_PORT = int(os.environ.get("STICKLLM_TLS_PORT", "443"))
+# Agent Zero's own origin. Not a raw publish of the loopback UI port.
+AGENT_TLS_PORT = int(os.environ.get("STICKLLM_AGENT_TLS_PORT", "5443"))
+# Desktop file helper. Loopback only; this gateway is the LAN entry.
+FILES_PORT = int(os.environ.get("STICKLLM_FILES_PORT", "8096"))
 UA = "StickLLM/0.3 (+local privacy USB; StickLLM UI only)"
 RUN_DIR = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 AUTH_PATH = RUN_DIR / "auth.json"
@@ -39,12 +58,574 @@ CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; "
+    "img-src 'self' data: blob:; "
+    "media-src 'self' blob:; "
     "connect-src 'self'; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'"
 )
+# Vendored apps keep their own scripts, including inline startup code.
+# No external hosts: every script and image is served from this stick.
+VENDORED_APPS = (
+    "/apps/minesweeper",
+    "/apps/solitaire",
+    "/apps/notepad",
+    "/apps/tetris",
+)
+CSP_VENDORED = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "media-src 'self' blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "worker-src 'none'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+mimetypes.add_type("image/svg+xml", ".svg")
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
+
+
+# What the StickLLM tab did with open_app: its own window, an in-page app
+# panel (pop-up blocked), a toast with an Open button, or nothing.
+OPEN_APP_SEEN_RESULTS = frozenset({"opened", "embedded", "toast-shown", "blocked"})
+
+
+def csp_for_path(path: str) -> str:
+    bare = urllib.parse.urlparse(path or "").path
+    if any(bare == prefix or bare.startswith(prefix + "/") for prefix in VENDORED_APPS):
+        policy = CSP_VENDORED
+    else:
+        policy = CSP
+    # App pages may be framed by the StickLLM tab itself (same origin only),
+    # so open_app works in a LAN browser that blocks pop-ups. Everything else
+    # still refuses to be framed.
+    if bare.startswith("/apps/"):
+        policy = policy.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+    return policy
+
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def ui_peer_key(ip: str) -> str:
+    """The stick's own screen is "kiosk"; a LAN browser is its IP."""
+    ip = str(ip or "")
+    return "kiosk" if ip in _LOOPBACK_HOSTS else ip
+
+
+# Each browser's StickLLM tab sets a random, non-secret device id cookie. Cookies
+# are per host, not per port, so the same browser's Agent tab on :5443 sends it
+# too. open_app then goes to the device that sent the chat (phone, laptop,
+# desktop), even when several share one NAT IP or a phone changes IP. A browser
+# without it falls back to its IP. It only routes events; every stream and
+# reply still needs the pairing.
+DEVICE_COOKIE = "stickllm_device"
+_DEVICE_RE = re.compile(r"[0-9a-f]{16,64}")
+
+
+def device_key(value: str) -> str:
+    value = str(value or "").strip().lower()
+    return "d-" + value[:32] if _DEVICE_RE.fullmatch(value) else ""
+
+
+def _target_log(target: str) -> str:
+    if not target:
+        return ""
+    if target.startswith("d-") and re.fullmatch(r"d-[0-9a-f]{16,32}", target):
+        return f" target=device:{target[2:10]}"
+    safe = target if re.fullmatch(r"[0-9A-Fa-f:.]+|kiosk", target) else "-"
+    return f" target={safe}"
+
+
+# A LAN browser that SENT A CHAT MESSAGE to Agent on :5443 this recently is
+# the screen open_app goes to; otherwise the kiosk. An Agent tab merely left
+# open (it polls and keeps a websocket) does not count: that is how open_app
+# from a kiosk chat went to a background desktop tab. The kiosk talks to Agent
+# on 127.0.0.1:5099 directly, so its own messages are never seen here.
+AGENT_TARGET_WINDOW = 300.0
+# Agent Zero's web UI posts chat messages to /api/message_async (api.js puts
+# every call under /api/); the bare paths are older builds.
+AGENT_PROMPT_PATHS = ("/api/message_async", "/api/message", "/message_async", "/message")
+
+
+
+def _sampling_num(raw, default, lo, hi):
+    """Clamp one chat sampling value from the UI. Bad input -> default."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    return max(lo, min(hi, v))
+
+
+class _AgentClients:
+    """Which LAN browser is driving Agent Zero right now. Loopback is never recorded."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seen: dict[str, float] = {}
+        self._ws: dict[str, int] = {}
+        self._prompted: dict[str, float] = {}
+
+    def prompt(self, ip: str, now: float | None = None) -> None:
+        """A chat message from this LAN browser."""
+        if not ip or ip in _LOOPBACK_HOSTS:
+            return
+        with self._lock:
+            self._prompted[ip] = time.time() if now is None else now
+
+    def note(self, ip: str, now: float | None = None) -> None:
+        if not ip or ip in _LOOPBACK_HOSTS:
+            return
+        with self._lock:
+            self._seen[ip] = time.time() if now is None else now
+
+    def websocket(self, ip: str, delta: int) -> None:
+        if not ip or ip in _LOOPBACK_HOSTS:
+            return
+        with self._lock:
+            count = self._ws.get(ip, 0) + int(delta)
+            if count > 0:
+                self._ws[ip] = count
+            else:
+                self._ws.pop(ip, None)
+            self._seen[ip] = time.time()
+
+    def target(self, now: float | None = None) -> str:
+        current = time.time() if now is None else now
+        best, best_at = "", -1.0
+        with self._lock:
+            for ip, at in list(self._prompted.items()):
+                if current - at > AGENT_TARGET_WINDOW:
+                    if current - at > 24 * 3600:
+                        self._prompted.pop(ip, None)
+                    continue
+                if at > best_at:
+                    best, best_at = ip, at
+        return best
+
+
+AGENT_CLIENTS = _AgentClients()
+
+
+def ui_target(now: float | None = None) -> tuple[str, str]:
+    """(screen, reason): the device that just chatted with Agent, else the kiosk."""
+    lan = AGENT_CLIENTS.target(now)
+    if lan:
+        return lan, "agent_lan"
+    return "kiosk", "no_lan_agent"
+
+
+class _UiOpenBus:
+    """Fan out open-app events to the kiosk and paired browsers on the UI SSE."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._seq = 0
+        self._last: dict | None = None
+        self._loaded: dict | None = None
+        self._seen: dict | None = None
+        self._subscribers = 0
+        self._events: list[dict] = []
+        self._pending: dict[str, dict] = {}
+        # One entry per open stream: {"key": "kiosk" | LAN IP, "app": "" | app id}.
+        # app is set by an app page (stickllm-bridge.js, ?app=<id>).
+        self._conns: dict[int, dict] = {}
+        self._conn_seq = 0
+        # app id -> screen open_app last sent it to (app_state / app_act go there).
+        self._app_screen: dict[str, str] = {}
+
+    def connect(self, ip: str, app: str = "", key: str | None = None) -> int:
+        with self._cond:
+            self._subscribers += 1
+            self._conn_seq += 1
+            conn = self._conn_seq
+            self._conns[conn] = {"key": ui_peer_key(ip) if key is None else key, "app": app}
+        self._log_events("connect", ip, app)
+        return conn
+
+    def disconnect(self, ip: str, conn: int | None = None) -> None:
+        with self._cond:
+            self._subscribers = max(0, self._subscribers - 1)
+            info = self._conns.pop(conn, None) if conn is not None else None
+        self._log_events("disconnect", ip, (info or {}).get("app", ""))
+
+    def conn_alive(self, conn: int) -> bool:
+        with self._cond:
+            return conn in self._conns
+
+    def ui_conn_for(self, key: str) -> int | None:
+        """Newest main StickLLM tab stream (not an app page) for this screen."""
+        with self._cond:
+            found = [cid for cid, c in self._conns.items() if c["key"] == key and not c["app"]]
+        return max(found) if found else None
+
+    def has_app_page(self, key: str, app_id: str) -> bool:
+        with self._cond:
+            return any(c["key"] == key and c["app"] == app_id for c in self._conns.values())
+
+    def screen_for_app(self, app_id: str) -> str:
+        """The screen open_app last put this app on, if its page is still open."""
+        with self._cond:
+            screen = self._app_screen.get(app_id, "")
+        return screen if screen and self.has_app_page(screen, app_id) else ""
+
+    def subscriber_count(self) -> int:
+        with self._cond:
+            return self._subscribers
+
+    def publish_install(self, app_id: str, name: str, target: str = "", conn: int | None = None) -> dict:
+        """Ask the screen driving Agent to confirm an install (never replayed)."""
+        event = {
+            "kind": "install_confirm",
+            "id": app_id,
+            "name": name,
+            "target": target,
+            "conn": conn,
+            "published_at": time.time(),
+        }
+        with self._cond:
+            self._seq += 1
+            event["seq"] = self._seq
+            self._events.append(dict(event))
+            del self._events[:-40]
+            self._cond.notify_all()
+        return event
+
+    def publish(
+        self,
+        app_id: str,
+        target: str = "",
+        conn: int | None = None,
+        reason: str = "",
+        path: str = "",
+        doc: str = "",
+    ) -> dict:
+        event = {
+            "id": app_id,
+            "path": path or f"/apps/{app_id}/",
+            "window": f"stickllm-{app_id}",
+            "published_at": time.time(),
+        }
+        event["kind"] = "open_app"
+        if doc:
+            event["doc"] = doc
+        # Only the screen that is driving Agent gets the event ("" = everyone).
+        event["target"] = target
+        event["conn"] = conn
+        with self._cond:
+            self._seq += 1
+            event["seq"] = self._seq
+            if target:
+                self._app_screen[app_id] = target
+            self._last = dict(event)
+            self._events.append(dict(event))
+            del self._events[:-40]
+            subscribers = self._subscribers
+            self._cond.notify_all()
+        self._log(app_id, "published", subscribers, target=target, reason=reason)
+        return event
+
+    def request_app(
+        self,
+        kind: str,
+        app_id: str,
+        action: dict | None = None,
+        timeout: float = 6.0,
+        target: str = "",
+    ) -> dict:
+        req_id = secrets.token_hex(8)
+        holder = {"done": threading.Event(), "result": None, "target": target}
+        event = {
+            "kind": kind,
+            "id": app_id,
+            "req": req_id,
+            "published_at": time.time(),
+            "target": target,
+        }
+        if action is not None:
+            event["action"] = action
+        with self._cond:
+            self._pending[req_id] = holder
+            self._seq += 1
+            event["seq"] = self._seq
+            self._events.append(dict(event))
+            del self._events[:-40]
+            self._cond.notify_all()
+        if not holder["done"].wait(timeout):
+            with self._cond:
+                self._pending.pop(req_id, None)
+            phase = "act" if kind == "app_act" else "state"
+            self._write_log(
+                f"STICKLLM_APP phase={phase} id={app_id} ok=false error=timeout{_target_log(target)}\n"
+            )
+            return {
+                "ok": False,
+                "error": "timeout",
+                "id": app_id,
+                "req": req_id,
+                "message": "The app page did not answer in time. Make sure its tab is in front, then try again.",
+            }
+        result = holder["result"] if isinstance(holder["result"], dict) else {"ok": False, "error": "bad_reply"}
+        return result
+
+    def reply_app(self, req_id: str, result: dict, key: str | None = None) -> bool:
+        with self._cond:
+            holder = self._pending.get(str(req_id))
+            # A reply only counts from the screen the request was sent to.
+            if holder is None or (key is not None and holder.get("target") and holder["target"] != key):
+                return False
+            self._pending.pop(str(req_id), None)
+        holder["result"] = result
+        ok = bool(result.get("ok"))
+        app_id = str(result.get("id") or "")
+        phase = "act" if result.get("kind") == "app_act" else "state"
+        self._write_log(
+            f"STICKLLM_APP phase={phase} id={app_id} ok={'true' if ok else 'false'}"
+            f"{_target_log(holder.get('target') or '')}\n"
+        )
+        holder["done"].set()
+        return True
+
+    def note_load(self, app_id: str, client: str) -> None:
+        with self._cond:
+            last = self._last
+            if not last or last.get("id") != app_id:
+                return
+            self._loaded = {
+                "id": app_id,
+                "seq": last["seq"],
+                "at": time.time(),
+                "from": client,
+            }
+        self._log(app_id, "loaded")
+
+    def note_seen(self, app_id: str, opened: bool, result: str | None = None) -> str | None:
+        if result not in OPEN_APP_SEEN_RESULTS:
+            result = "opened" if opened else "blocked"
+        with self._cond:
+            last = self._last
+            if not last or last.get("id") != app_id:
+                return None
+            self._seen = {
+                "id": app_id,
+                "seq": last["seq"],
+                "at": time.time(),
+                "opened": result in ("opened", "embedded"),
+                "result": result,
+            }
+        self._write_log(
+            f"STICKLLM_OPEN_APP phase=seen id={app_id} path=/apps/{app_id}/ result={result}\n"
+        )
+        return result
+
+    def snapshot(self) -> dict:
+        with self._cond:
+            last = dict(self._last or {})
+            loaded = dict(self._loaded or {})
+            seen = dict(self._seen or {})
+        if not last:
+            return {"ok": True, "pending": False}
+        out = {
+            "ok": True,
+            "pending": True,
+            "id": last.get("id"),
+            "path": last.get("path"),
+            "window": last.get("window"),
+            "published_at": last.get("published_at"),
+            "seq": last.get("seq"),
+        }
+        if loaded.get("seq") == last.get("seq"):
+            out["loaded_at"] = loaded.get("at")
+            out["loaded_from"] = loaded.get("from")
+        if seen.get("seq") == last.get("seq"):
+            out["seen_at"] = seen.get("at")
+            out["opened"] = seen.get("opened")
+            if seen.get("result"):
+                out["result"] = seen.get("result")
+        return out
+
+    def catch_up(self) -> tuple[int, dict | None]:
+        """Replay an open that is still in flight. Skip an old one on a fresh page."""
+        with self._cond:
+            last = self._last
+            if not last:
+                return 0, None
+            seq = int(last["seq"])
+            age = time.time() - float(last["published_at"])
+            if age <= 5:
+                return seq, dict(last)
+            return seq, None
+
+    def wait_after(self, seq: int, timeout: float = 15.0) -> dict | None:
+        deadline = time.time() + timeout
+        with self._cond:
+            while True:
+                nxt = None
+                for event in self._events:
+                    if int(event.get("seq") or 0) > seq:
+                        nxt = dict(event)
+                        break
+                if nxt is None:
+                    last = self._last
+                    if last and int(last.get("seq") or 0) > seq:
+                        nxt = dict(last)
+                if nxt is not None:
+                    return nxt
+                remain = deadline - time.time()
+                if remain <= 0:
+                    return None
+                self._cond.wait(min(remain, 1.0))
+
+    def _log(
+        self,
+        app_id: str,
+        phase: str,
+        subscribers: int | None = None,
+        target: str = "",
+        reason: str = "",
+    ) -> None:
+        extra = f" subscribers={int(subscribers)}" if subscribers is not None else ""
+        extra += _target_log(target)
+        if reason:
+            extra += f" reason={reason}"
+        self._write_log(
+            f"STICKLLM_OPEN_APP phase={phase} id={app_id} path=/apps/{app_id}/{extra}\n"
+        )
+
+    def _log_events(self, phase: str, ip: str, app: str = "") -> None:
+        safe_ip = ip if re.fullmatch(r"[0-9A-Fa-f:.]+", ip or "") else "-"
+        extra = f" app={app}" if app and re.fullmatch(r"[a-z]{1,32}", app) else ""
+        self._write_log(f"STICKLLM_UI_EVENTS {phase} ip={safe_ip}{extra}\n")
+
+    def _write_log(self, line: str) -> None:
+        try:
+            path = RUN_DIR / "kiosk.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError:
+            pass
+
+
+UI_OPEN = _UiOpenBus()
+
+
+class _LlamaCancel:
+    """Close the in-flight llama HTTP connection so one question can replace another.
+
+    Each chat snapshots the stop counter when it starts. Stop bumps that counter
+    and closes the llama socket. A chat that started earlier does not call llama.
+    The next question starts only after the cancelled one has left.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._conn: http.client.HTTPConnection | None = None
+        self._epoch = 0
+        self._stop_id = 0
+        self._born: dict[int, int] = {}
+        self._llama_epoch = 0
+        self._inflight = 0
+        self._idle = threading.Event()
+        self._idle.set()
+
+    def enter(self) -> int:
+        with self._lock:
+            self._epoch += 1
+            epoch = self._epoch
+            self._born[epoch] = self._stop_id
+            self._inflight += 1
+            self._idle.clear()
+            if len(self._born) > 8:
+                for old in [k for k in self._born if k < epoch - 4]:
+                    self._born.pop(old, None)
+            return epoch
+
+    def leave(self) -> None:
+        with self._lock:
+            self._inflight = max(0, self._inflight - 1)
+            if self._inflight == 0:
+                self._conn = None
+                self._idle.set()
+
+    def superseded(self, epoch: int) -> bool:
+        with self._lock:
+            born = self._born.get(epoch)
+            return born is None or born != self._stop_id
+
+    def arm(self, epoch: int) -> None:
+        with self._lock:
+            self._llama_epoch = epoch
+            self._conn = None
+
+    def is_cancelled(self) -> bool:
+        with self._lock:
+            born = self._born.get(self._llama_epoch)
+            return born is not None and born != self._stop_id
+
+    def bind(self, conn: http.client.HTTPConnection) -> None:
+        with self._lock:
+            self._conn = conn
+            born = self._born.get(self._llama_epoch)
+            kill = born is not None and born != self._stop_id
+        if kill:
+            _close_http_conn(conn)
+
+    def cancel(self) -> bool:
+        with self._lock:
+            self._stop_id += 1
+            conn = self._conn
+        if conn is None:
+            return False
+        _close_http_conn(conn)
+        return True
+
+    def take_cancelled(self) -> bool:
+        return self.is_cancelled()
+
+    def wait_idle(self, timeout: float = 8.0) -> bool:
+        return self._idle.wait(timeout)
+
+
+def _close_http_conn(conn: http.client.HTTPConnection) -> None:
+    sock = getattr(conn, "sock", None)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            sock.close()
+        except Exception:
+            pass
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+LLAMA_CANCEL = _LlamaCancel()
+_CHAT_GATE = threading.Lock()
+
+
+class _TrackHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        super().connect()
+        LLAMA_CANCEL.bind(self)
+
+
+class _TrackHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):  # noqa: ANN001
+        return self.do_open(_TrackHTTPConnection, req)
 
 
 def http_json(url: str, payload: dict | None = None, timeout: int = 300, headers: dict | None = None) -> dict:
@@ -60,6 +641,51 @@ def http_json(url: str, payload: dict | None = None, timeout: int = 300, headers
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
+
+
+def http_json_llama(url: str, payload: dict, timeout: int = 300) -> dict:
+    """POST to llama-server. Stop closes this connection so the slot is released."""
+    if LLAMA_CANCEL.is_cancelled():
+        raise InterruptedError("stopped")
+    opener = urllib.request.build_opener(_TrackHTTPHandler)
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "User-Agent": UA},
+        method="POST",
+    )
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    finally:
+        pass
+
+
+def log_stt_stats(result: dict) -> None:
+    """Journal the clip size only. Never the transcript and never the audio."""
+    if not isinstance(result, dict):
+        return
+    if "webm_bytes" not in result and "pcm_bytes" not in result:
+        return
+    try:
+        webm_bytes = int(result.get("webm_bytes") or 0)
+        pcm_bytes = int(result.get("pcm_bytes") or 0)
+        rate = int(result.get("rate") or 0)
+        duration_s = float(result.get("duration_s") or 0)
+        rms = float(result.get("rms") or 0)
+    except (TypeError, ValueError):
+        return
+    msg = (
+        "stickllm-speech stt webm_bytes=%d pcm_bytes=%d rate=%d duration_s=%.3f rms=%.5f"
+        % (webm_bytes, pcm_bytes, rate, duration_s, rms)
+    )
+    try:
+        import syslog
+        syslog.syslog(syslog.LOG_INFO, msg)
+    except Exception:
+        pass
+    for key in ("webm_bytes", "pcm_bytes", "rate", "duration_s", "rms"):
+        result.pop(key, None)
 
 
 def http_text(url: str, timeout: int = 12) -> str:
@@ -84,6 +710,197 @@ def save_auth(doc: dict) -> None:
         pass
 
 
+_AGENT_LIB = None
+
+
+def _agent_port_open(port: int = 5099) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def agent_lib():
+    """Load the vault/docker gate beside this script. Tests and the unit share it."""
+    global _AGENT_LIB
+    if _AGENT_LIB is not None:
+        return _AGENT_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_agent.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_agent", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_agent helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _AGENT_LIB = mod
+    return mod
+
+
+_APPS_LIB = None
+
+
+def apps_lib():
+    """Catalog and install/uninstall gate. Shared with the Apps page tests."""
+    global _APPS_LIB
+    if _APPS_LIB is not None:
+        return _APPS_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_apps.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_apps", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_apps helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _APPS_LIB = mod
+    return mod
+
+
+_DOCS_LIB = None
+
+
+def docs_lib():
+    """ONLYOFFICE Docs: vault-only document storage, links, JWT, callback."""
+    global _DOCS_LIB
+    if _DOCS_LIB is not None:
+        return _DOCS_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_docs.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_docs", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_docs helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _DOCS_LIB = mod
+    return mod
+
+
+_ADDONS_LIB = None
+
+
+def addons_lib():
+    """Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED)."""
+    global _ADDONS_LIB
+    if _ADDONS_LIB is not None:
+        return _ADDONS_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_addons.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_addons", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_addons helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _ADDONS_LIB = mod
+    return mod
+
+
+# Request headers never forwarded to the Docs container. Cookie and the
+# pair bearer are StickLLM credentials; the rest are hop-by-hop.
+DOCS_DROP_HEADERS = frozenset(
+    {
+        "host",
+        "cookie",
+        "authorization",
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+        "content-length",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+        "x-stickllm-client",
+    }
+)
+
+
+def docs_proxy_headers(headers: dict, host: str, proto: str, client_ip: str, *, websocket: bool = False) -> dict:
+    """Headers for a request relayed to ONLYOFFICE on 127.0.0.1:8083.
+
+    X-Forwarded-Host carries the /docs-server virtual path, so the editor
+    builds its URLs under this origin.
+    """
+    out: dict = {}
+    for key, value in headers.items():
+        if key.lower() in DOCS_DROP_HEADERS:
+            continue
+        out[key] = value
+    host = re.sub(r"[^A-Za-z0-9.:\[\]-]", "", str(host or ""))[:255] or "127.0.0.1"
+    out["Host"] = "127.0.0.1:8083"
+    out["X-Forwarded-Host"] = host + "/docs-server"
+    out["X-Forwarded-Proto"] = "https" if proto == "https" else "http"
+    out["X-Forwarded-For"] = str(client_ip or "")
+    if websocket:
+        out["Connection"] = "Upgrade"
+        out["Upgrade"] = "websocket"
+    else:
+        out["Connection"] = "close"
+    return out
+
+
+DOCS_STATE_LABELS = {
+    "running": "Running",
+    "starting": "Starting",
+    "stopped": "Installed",
+    "installing": "Installing",
+    "removing": "Removing",
+    "locked": "Unlock the vault",
+    "settings_missing": "Unlock USB settings",
+    "not_installed": "Not installed",
+    "error": "Error",
+}
+
+
+def docs_container_ip(ip: str) -> bool:
+    """A request from the ONLYOFFICE bridge (never loopback)."""
+    ip = str(ip or "")
+    if ip.startswith("::ffff:"):
+        ip = ip[7:]
+    return ip.startswith("172.30.1.")
+
+
+def docs_container_route_ok(method: str, path: str) -> bool:
+    """The Docs container may only fetch a signed document and post a save."""
+    if method == "GET" and path.startswith("/api/docs/storage/"):
+        return True
+    if method == "POST" and path.startswith("/api/docs/callback/"):
+        return True
+    return False
+
+
+_FILES_LIB = None
+_SYSTEM_LIB = None
+
+
+def _load_sibling(cache_name: str, filename: str):
+    path = Path(__file__).resolve().parent.parent / "lib" / filename
+    loader = importlib.machinery.SourceFileLoader(cache_name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError(f"{filename} is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def files_lib():
+    global _FILES_LIB
+    if _FILES_LIB is None:
+        _FILES_LIB = _load_sibling("stickllm_files", "stickllm_files.py")
+    return _FILES_LIB
+
+
+def system_lib():
+    global _SYSTEM_LIB
+    if _SYSTEM_LIB is None:
+        _SYSTEM_LIB = _load_sibling("stickllm_system", "stickllm_system.py")
+    return _SYSTEM_LIB
+
+
 def token_ok(header: str | None, doc: dict) -> bool:
     if not header:
         return False
@@ -96,6 +913,326 @@ def token_ok(header: str | None, doc: dict) -> bool:
         return False
     return hmac.compare_digest(th, stored)
 
+
+UI_EVENTS_TICKET_TTL = 120
+
+
+def ui_events_secret(doc: dict) -> bytes | None:
+    """HMAC key for short-lived SSE tickets. Not the pair token."""
+    if not isinstance(doc, dict) or not doc.get("paired"):
+        return None
+    stored = str(doc.get("token_hash") or "")
+    if len(stored) != 64:
+        return None
+    return hmac.new(b"stickllm-ui-events-v1", stored.encode("ascii"), hashlib.sha256).digest()
+
+
+def mint_ui_events_ticket(doc: dict, now: float | None = None, ttl: int = UI_EVENTS_TICKET_TTL) -> str:
+    secret = ui_events_secret(doc)
+    if secret is None:
+        return ""
+    exp = int((now if now is not None else time.time()) + max(1, int(ttl)))
+    sig = hmac.new(secret, str(exp).encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def ui_events_ticket_ok(ticket: object, doc: dict, now: float | None = None) -> bool:
+    """Accept a short-lived signed ticket. Never the long-lived pair token."""
+    if not isinstance(ticket, str):
+        return False
+    if token_ok("Bearer " + ticket, doc):
+        return False
+    if len(ticket) > 96 or ticket.count(".") != 1:
+        return False
+    exp_s, sig = ticket.split(".", 1)
+    if not exp_s.isdigit() or len(sig) != 64:
+        return False
+    if any(ch not in "0123456789abcdef" for ch in sig):
+        return False
+    secret = ui_events_secret(doc)
+    if secret is None:
+        return False
+    current = int(now if now is not None else time.time())
+    exp = int(exp_s)
+    if exp < current or exp > current + 300:
+        return False
+    expected = hmac.new(secret, exp_s.encode("ascii"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+
+# One pairing for the main UI and the Agent Zero port. Cookies set by the
+# http:// UI do not reach https://<ip>:5443 (different scheme = different
+# site for SameSite=Strict), so a paired UI tab hands off with a short-lived,
+# one-time ticket. The :5443 server then sets its own HttpOnly Secure cookie.
+# Neither value is the pair token, and both die when the pairing is reminted.
+AGENT_HANDOFF_TTL = 60
+AGENT_SESSION_COOKIE = "stickllm_agent"
+_AGENT_HANDOFF_USED: dict[str, int] = {}
+_AGENT_HANDOFF_LOCK = threading.Lock()
+
+
+def _pairing_secret(doc: dict, label: bytes) -> bytes | None:
+    if not isinstance(doc, dict) or not doc.get("paired"):
+        return None
+    stored = str(doc.get("token_hash") or "")
+    if len(stored) != 64:
+        return None
+    return hmac.new(label, stored.encode("ascii"), hashlib.sha256).digest()
+
+
+def agent_session_value(doc: dict) -> str:
+    secret = _pairing_secret(doc, b"stickllm-agent-session-v1")
+    if secret is None:
+        return ""
+    return hmac.new(secret, b"agent-session", hashlib.sha256).hexdigest()
+
+
+def agent_session_ok(value: object, doc: dict) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    expected = agent_session_value(doc)
+    return bool(expected) and hmac.compare_digest(value, expected)
+
+
+def mint_agent_handoff(doc: dict, now: float | None = None, ttl: int = AGENT_HANDOFF_TTL) -> str:
+    secret = _pairing_secret(doc, b"stickllm-agent-handoff-v1")
+    if secret is None:
+        return ""
+    exp = int((now if now is not None else time.time()) + max(1, int(ttl)))
+    nonce = secrets.token_hex(16)
+    msg = f"{exp}.{nonce}"
+    sig = hmac.new(secret, msg.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{msg}.{sig}"
+
+
+def agent_handoff_redeem(ticket: object, doc: dict, now: float | None = None) -> bool:
+    """Accept a fresh handoff ticket once. Never the pair token."""
+    if not isinstance(ticket, str) or len(ticket) > 128 or ticket.count(".") != 2:
+        return False
+    exp_s, nonce, sig = ticket.split(".")
+    if not exp_s.isdigit() or len(nonce) != 32 or len(sig) != 64:
+        return False
+    if any(ch not in "0123456789abcdef" for ch in nonce + sig):
+        return False
+    secret = _pairing_secret(doc, b"stickllm-agent-handoff-v1")
+    if secret is None:
+        return False
+    current = int(now if now is not None else time.time())
+    exp = int(exp_s)
+    if exp < current or exp > current + AGENT_HANDOFF_TTL + 5:
+        return False
+    expected = hmac.new(secret, f"{exp_s}.{nonce}".encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return False
+    with _AGENT_HANDOFF_LOCK:
+        for old, old_exp in list(_AGENT_HANDOFF_USED.items()):
+            if old_exp < current:
+                _AGENT_HANDOFF_USED.pop(old, None)
+        if nonce in _AGENT_HANDOFF_USED:
+            return False
+        _AGENT_HANDOFF_USED[nonce] = exp
+    return True
+
+
+# Starter add-ons get one TLS port each (5451-5455) so every app has its own
+# origin: an app page can never read StickLLM's or another app's storage.
+# Same handoff as Agent: a paired UI tab gets a one-time ticket for that app
+# only; the app port then sets its own HttpOnly Secure cookie. StickLLM
+# cookies are stripped before anything reaches the app container.
+ADDON_COOKIE_PREFIX = "stickllm_addon_"
+ADDON_MAX_BODY = 512 * 1024 * 1024
+ADDON_HOP_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "proxy-authorization",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+    }
+)
+ADDON_STATE_LABELS = {
+    "running": "Running",
+    "starting": "Starting",
+    "stopped": "Installed",
+    "installing": "Installing",
+    "removing": "Removing",
+    "install_failed": "Install failed",
+    "locked": "Unlock the vault",
+    "not_installed": "Not installed",
+    "error": "Error",
+}
+
+
+def _addon_label(app_id: str, kind: str) -> bytes:
+    return f"stickllm-addon-{kind}-v1:{app_id}".encode("ascii")
+
+
+def addon_session_value(doc: dict, app_id: str) -> str:
+    secret = _pairing_secret(doc, _addon_label(app_id, "session"))
+    if secret is None:
+        return ""
+    return hmac.new(secret, b"addon-session", hashlib.sha256).hexdigest()
+
+
+def addon_session_ok(value: object, doc: dict, app_id: str) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    expected = addon_session_value(doc, app_id)
+    return bool(expected) and hmac.compare_digest(value, expected)
+
+
+def mint_addon_handoff(doc: dict, app_id: str, now: float | None = None, ttl: int = AGENT_HANDOFF_TTL) -> str:
+    secret = _pairing_secret(doc, _addon_label(app_id, "handoff"))
+    if secret is None:
+        return ""
+    exp = int((now if now is not None else time.time()) + max(1, int(ttl)))
+    msg = f"{exp}.{secrets.token_hex(16)}"
+    return msg + "." + hmac.new(secret, msg.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def addon_handoff_redeem(ticket: object, doc: dict, app_id: str, now: float | None = None) -> bool:
+    """One-time, 60 s, bound to one app. Never the pair token."""
+    if not isinstance(ticket, str) or len(ticket) > 128 or ticket.count(".") != 2:
+        return False
+    exp_s, nonce, sig = ticket.split(".")
+    if not exp_s.isdigit() or len(nonce) != 32 or len(sig) != 64:
+        return False
+    if any(ch not in "0123456789abcdef" for ch in nonce + sig):
+        return False
+    secret = _pairing_secret(doc, _addon_label(app_id, "handoff"))
+    if secret is None:
+        return False
+    current = int(now if now is not None else time.time())
+    exp = int(exp_s)
+    if exp < current or exp > current + AGENT_HANDOFF_TTL + 5:
+        return False
+    expected = hmac.new(secret, f"{exp_s}.{nonce}".encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return False
+    with _AGENT_HANDOFF_LOCK:
+        for old, old_exp in list(_AGENT_HANDOFF_USED.items()):
+            if old_exp < current:
+                _AGENT_HANDOFF_USED.pop(old, None)
+        if nonce in _AGENT_HANDOFF_USED:
+            return False
+        _AGENT_HANDOFF_USED[nonce] = exp
+    return True
+
+
+def _stickllm_cookie_name(name: str) -> bool:
+    n = name.strip().lower()
+    if n.startswith("__secure-") or n.startswith("__host-"):
+        n = n.split("-", 1)[1]
+    return n.startswith("stickllm")
+
+
+def addon_request_cookie(raw: str) -> str:
+    """The app's own cookies only. stickllm_* (pair, apps, agent, addon
+    sessions) never reach a container."""
+    keep = []
+    for bit in str(raw or "").split(";"):
+        bit = bit.strip()
+        if not bit:
+            continue
+        name = bit.partition("=")[0]
+        if _stickllm_cookie_name(name):
+            continue
+        keep.append(bit)
+    return "; ".join(keep)
+
+
+def addon_proxy_headers(headers: dict, host: str, client_ip: str, *, websocket: bool = False) -> dict:
+    """Headers for a request relayed to an add-on on 127.0.0.1.
+
+    Host is kept, so the app builds links for the origin the browser sees.
+    The app's own Authorization (Vikunja's JWT) and cookies pass; StickLLM's
+    cookies do not."""
+    out: dict = {}
+    for key, value in headers.items():
+        low = key.lower()
+        if low in ADDON_HOP_HEADERS or low in ("host", "cookie", "content-length"):
+            continue
+        out[key] = value
+    cookie = addon_request_cookie(headers.get("Cookie") or headers.get("cookie") or "")
+    if cookie:
+        out["Cookie"] = cookie
+    out["Host"] = re.sub(r"[^A-Za-z0-9.:\[\]-]", "", str(host or ""))[:255] or "127.0.0.1"
+    out["X-Forwarded-Proto"] = "https"
+    out["X-Forwarded-For"] = str(client_ip or "")
+    if websocket:
+        out["Connection"] = "Upgrade"
+        out["Upgrade"] = "websocket"
+    else:
+        out["Connection"] = "close"
+    return out
+
+
+def addon_response_header_ok(key: str, value: str) -> bool:
+    low = key.lower()
+    if low in ("transfer-encoding", "connection", "keep-alive", "content-length"):
+        return False
+    if low == "set-cookie" and _stickllm_cookie_name(str(value).partition("=")[0]):
+        return False
+    return True
+
+
+class _LimitedReader:
+    """Request body for http.client: exactly Content-Length bytes."""
+
+    def __init__(self, src, length: int):
+        self._src = src
+        self._left = length
+
+    def read(self, n: int = -1) -> bytes:
+        if self._left <= 0:
+            return b""
+        if n is None or n < 0 or n > self._left:
+            n = self._left
+        data = self._src.read(min(n, 65536))
+        self._left -= len(data)
+        if not data:
+            self._left = 0
+        return data
+
+
+# App pages (/apps/<id>/, opened by a desktop icon or by open_app) must not
+# depend on the script-set stickllm_pair cookie: every StickLLM tab on the host
+# (http:// or https://, either port) shares that cookie jar and a tab without
+# the token clears or overwrites it. The paired StickLLM tab therefore asks the
+# gateway (Bearer) to set an HttpOnly cookie derived from the pairing; scripts
+# cannot touch it and a remint kills it. It opens /apps/* and the app's own
+# event stream and replies, nothing else, and it is never the pair token.
+APPS_SESSION_COOKIE = "stickllm_apps"
+# Over TLS the gateway uses __Secure- names so an http:// tab on the same host
+# (same cookie jar, no Secure flag) can neither read nor clobber them. Either
+# name is accepted on read.
+APPS_SESSION_COOKIE_TLS = "__Secure-stickllm_apps"
+PAIR_COOKIE = "stickllm_pair"
+PAIR_COOKIE_TLS = "__Secure-stickllm_pair"
+PAIR_REQUEST_PATH = RUN_DIR / "pair-request.json"
+PAIR_REQUEST_MIN_GAP = 30
+
+
+def apps_session_value(doc: dict) -> str:
+    secret = _pairing_secret(doc, b"stickllm-apps-session-v1")
+    if secret is None:
+        return ""
+    return hmac.new(secret, b"apps-session", hashlib.sha256).hexdigest()
+
+
+def apps_session_ok(value: object, doc: dict) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    expected = apps_session_value(doc)
+    return bool(expected) and hmac.compare_digest(value, expected)
 
 
 def read_text_safe(path: Path) -> str:
@@ -116,23 +1253,32 @@ def _parse_env_kv(text: str) -> dict[str, str]:
     return out
 
 
-def resolve_model() -> tuple[str, str]:
-    """Return (display_name, model_path) from Activate model.env or live llama breadcrumb."""
+def resolve_model() -> tuple[str, str, str, str]:
+    """Return (display_name, requested_path, model_id, running_path).
+
+    requested_path / model_id come only from Activate's model.env.
+    running_path is the file the live llama process was started with.
+    A missing display name becomes that file's basename — never the baked 3B.
+    """
     model_name = ""
     model_path = ""
+    model_id = ""
     envf = RUN_DIR / "model.env"
     if envf.is_file():
         kv = _parse_env_kv(read_text_safe(envf))
         model_name = kv.get("STICKLLM_MODEL_NAME") or ""
         model_path = kv.get("STICKLLM_MODEL") or ""
+        model_id = kv.get("STICKLLM_MODEL_ID") or ""
+    running = ""
+    rt = RUN_DIR / "llama-runtime.env"
+    if rt.is_file():
+        rtkv = _parse_env_kv(read_text_safe(rt))
+        running = rtkv.get("model") or rtkv.get("STICKLLM_MODEL") or ""
     if not model_path:
-        rt = RUN_DIR / "llama-runtime.env"
-        if rt.is_file():
-            kv = _parse_env_kv(read_text_safe(rt))
-            model_path = kv.get("model") or kv.get("STICKLLM_MODEL") or ""
+        model_path = running
     if not model_name and model_path:
         model_name = Path(model_path).name
-    return model_name, model_path
+    return model_name, model_path, model_id, running
 
 
 def llama_load_info() -> dict:
@@ -163,6 +1309,7 @@ def llama_load_info() -> dict:
         ngl = int(plan.get("STICKLLM_PLAN_NGL") or 0)
     except ValueError:
         ngl = 0
+    fit_doc = read_json_safe(RUN_DIR / "llama-fit.json") or {}
     return {
         "caption": plan.get("STICKLLM_PLAN_CAPTION") or "",
         "fit": plan.get("STICKLLM_PLAN_FIT") or "",
@@ -171,7 +1318,44 @@ def llama_load_info() -> dict:
         "devices": plan.get("STICKLLM_PLAN_DEVICES") or "",
         "error": fail,
         "fail_count": n_fail,
+        "model": str(fit_doc.get("model") or ""),
     }
+
+
+def llama_unit_state() -> dict:
+    """Whether stickllm-llama is actually starting or running. No secrets."""
+    snap = {"active_state": "", "sub_state": "", "process_alive": False}
+    try:
+        proc = subprocess.run(
+            [
+                "systemctl",
+                "show",
+                "stickllm-llama.service",
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        vals: dict[str, str] = {}
+        for line in (proc.stdout or "").splitlines():
+            if "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            vals[key.strip()] = val.strip()
+        snap["active_state"] = vals.get("ActiveState") or ""
+        snap["sub_state"] = vals.get("SubState") or ""
+    except (OSError, subprocess.SubprocessError):
+        pass
+    snap["process_alive"] = (
+        snap["active_state"] == "active" and snap["sub_state"] == "running"
+    )
+    return snap
 
 
 def detect_backend() -> str:
@@ -263,9 +1447,10 @@ def active_ctx_size() -> int | None:
 def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
     """IP / model / URL (+ pair code / SSH password on loopback only)."""
     ip = discover_lan_ip()
-    model_name, model_path = resolve_model()
+    model_name, model_path, model_id, running_model = resolve_model()
     if not model_name:
-        # No Activate yet — do not imply a boot-time load is in progress.
+        # No Activate yet — do not imply a boot-time load is in progress,
+        # and do not substitute the baked 3B for a missing name.
         model_name = "ready" if llama_ok else "none"
     elif model_name.lower().startswith("loading") and llama_ok:
         model_name = Path(model_path).name if model_path else "ready"
@@ -281,8 +1466,11 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
     out: dict = {
         "ip": ip or "",
         "model": display,
+        "model_id": model_id,
         "model_path": model_path,
+        "running_model": running_model,
         "ctx_size": active_ctx_size(),
+        "vision": bool(active_mmproj()),
         "url": url,
         "local_url": local_url,
         "backend": detect_backend(),
@@ -294,19 +1482,35 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         )
         code = read_text_safe(RUN_DIR / "pair-code.txt")
         auth = load_auth()
-        if auth.get("paired"):
-            out["pair_code"] = "(paired — Pair remints)"
-            out["pair_state"] = "paired"
-        elif code:
+        remint = read_json_safe(PAIR_REMINT_PATH) or {}
+        remint_code = str(remint.get("code") or "").strip()
+        # The file is what F9 should show. A stuck "paired" flag must not hide
+        # a code that New code just wrote (pair success deletes the file).
+        if re.fullmatch(r"[0-9]{4,8}", code):
             out["pair_code"] = code
             out["pair_state"] = "code"
+        elif re.fullmatch(r"[0-9]{4,8}", remint_code) and not auth.get("paired"):
+            out["pair_code"] = remint_code
+            out["pair_state"] = "code"
+        elif auth.get("paired"):
+            out["pair_code"] = "(paired — Pair remints)"
+            out["pair_state"] = "paired"
         else:
             out["pair_code"] = "(starting…)"
             out["pair_state"] = "waiting"
-        remint = read_json_safe(PAIR_REMINT_PATH) or {}
         rid = str(remint.get("id") or "").strip()
         if rid:
             out["remint_id"] = rid
+        if re.fullmatch(r"[0-9]{4,8}", remint_code):
+            out["remint_code"] = remint_code
+        preq = read_json_safe(PAIR_REQUEST_PATH) or {}
+        if preq.get("id") and time.time() - float(preq.get("at") or 0) < 600:
+            out["pair_request"] = {
+                "id": str(preq.get("id")),
+                "at": int(preq.get("at") or 0),
+                "ip": str(preq.get("ip") or ""),
+                "needs_confirm": bool(preq.get("needs_confirm")) and bool(auth.get("paired")),
+            }
         # Test/Term: surface SSH password in Settings on the stick only.
         out.update(ssh_password_for_loopback())
     else:
@@ -316,6 +1520,20 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         out["ssh_password"] = None
         out["ssh_note"] = "SSH password is only shown on the stick screen / Settings (loopback)."
     return out
+
+
+def active_mmproj() -> str:
+    env = RUN_DIR / "model.env"
+    if not env.is_file():
+        return ""
+    path = ""
+    try:
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line.startswith("STICKLLM_MMPROJ="):
+                path = line.split("=", 1)[1].strip()
+    except Exception:
+        return ""
+    return path if path and Path(path).is_file() else ""
 
 
 def stickllm_ui_client(headers) -> bool:
@@ -392,6 +1610,18 @@ VAULT_MNT = Path(os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault")
 CHATS_DIR = VAULT_MNT / "chats"
 
 
+def stickllm_version() -> str:
+    """Release version from stickllm.json (the same file About reads)."""
+    try:
+        doc = json.loads((UI_ROOT / "stickllm.json").read_text(encoding="utf-8"))
+        version = str(doc.get("version") or "").strip() if isinstance(doc, dict) else ""
+        if re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,31}", version):
+            return version
+    except Exception:
+        pass
+    return "unknown"
+
+
 def vault_unlocked() -> bool:
     """True when the LUKS vault is mounted in *this* process mount namespace."""
     try:
@@ -410,6 +1640,14 @@ def vault_unlocked() -> bool:
     except Exception:
         pass
     return False
+
+
+def vault_health() -> dict:
+    """/api/health "vault" object. Same shape as stickllm-control vault_status
+    (status + mounted), which ui/app.js reads; a bare string made the UI show
+    "Vault locked" while the vault was open."""
+    mounted = vault_unlocked()
+    return {"status": "unlocked" if mounted else "locked", "mounted": mounted}
 
 
 def chats_available() -> tuple[bool, str]:
@@ -512,7 +1750,171 @@ def delete_vault_chat(chat_id: str) -> dict:
     path = CHATS_DIR / f"{cid}.json"
     if path.is_file():
         path.unlink()
+    # Converted files live beside the chat, only inside the vault mount.
+    folder = CHATS_DIR / cid
+    if folder.is_dir() and str(folder).startswith(str(CHATS_DIR)):
+        shutil.rmtree(folder, ignore_errors=True)
     return {"ok": True, "deleted": cid}
+
+
+_CONVERT_MOD = None
+_SPEECH_MOD = None
+
+
+def convert_mod():
+    """Sibling converter. Parsers run in a child; this import is for budgeting text."""
+    global _CONVERT_MOD
+    if _CONVERT_MOD is not None:
+        return _CONVERT_MOD
+    path = Path(__file__).resolve().with_name("stickllm-convert")
+    loader = importlib.machinery.SourceFileLoader("stickllm_convert", str(path))
+    spec = importlib.util.spec_from_loader("stickllm_convert", loader)
+    if spec is None:
+        raise RuntimeError("stickllm-convert is not installed")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _CONVERT_MOD = mod
+    return mod
+
+
+def _safe_chat_id(chat_id: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
+
+
+def persist_attachment(chat_id: str, name: str, raw: bytes, plain: str) -> None:
+    """Write the upload only when the encrypted vault is mounted. Never /tmp."""
+    if get_session_mode() != "vault" or not vault_unlocked():
+        return
+    if not os.path.ismount(str(VAULT_MNT)):
+        return
+    cid = _safe_chat_id(chat_id)
+    if not cid:
+        return
+    dest = CHATS_DIR / cid / "files"
+    if not str(dest).startswith(str(VAULT_MNT)):
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(CHATS_DIR / cid, 0o700)
+        os.chmod(dest, 0o700)
+    except Exception:
+        pass
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name or "file").name)[:80] or "file"
+    stem = f"{secrets.token_hex(4)}-{safe}"
+    blob = dest / stem
+    text = dest / f"{stem}.txt"
+    blob.write_bytes(raw)
+    text.write_text(plain or "", encoding="utf-8")
+    try:
+        os.chmod(blob, 0o600)
+        os.chmod(text, 0o600)
+    except Exception:
+        pass
+
+
+def run_attachment_convert(data: bytes, name: str, vision: bool) -> dict:
+    """Convert in a short-lived child: no network, 60s, memory cap, not as root."""
+    mod = convert_mod()
+    if len(data) > mod.MAX_BYTES:
+        mb = mod.MAX_BYTES // (1024 * 1024)
+        return {"ok": False, "error": f"{name} is over the {mb} MB limit."}
+    script = str(Path(__file__).resolve().with_name("stickllm-convert"))
+    argv = mod.sandbox_argv(script)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "HOME": "/nonexistent",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "STICKLLM_ATTACH_NAME": Path(name or "file").name[:180],
+        "STICKLLM_ATTACH_VISION": "1" if vision else "0",
+    }
+    kwargs = {
+        "input": data,
+        "capture_output": True,
+        "timeout": mod.CONVERT_TIMEOUT_SECS,
+        "env": env,
+        "check": False,
+    }
+    if os.name == "posix":
+        kwargs["preexec_fn"] = mod.limit_child
+    try:
+        proc = subprocess.run(argv, **kwargs)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Conversion took too long (60 second limit)."}
+    except OSError:
+        if argv[:3] == ["unshare", "--net", "--"]:
+            # Drop the net namespace wrapper and try once more as the unprivileged user.
+            argv = argv[3:]
+            try:
+                proc = subprocess.run(argv, **kwargs)
+            except (OSError, subprocess.TimeoutExpired):
+                return {"ok": False, "error": "Could not start the file converter."}
+        else:
+            return {"ok": False, "error": "Could not start the file converter."}
+    raw = proc.stdout.decode("utf-8", "replace").strip()
+    try:
+        result = json.loads(raw or "{}")
+    except Exception:
+        return {"ok": False, "error": "The converter returned nothing readable."}
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "The converter returned nothing readable."}
+    return result
+
+
+def speech_mod():
+    """Sibling speech runner. whisper.cpp and KittenTTS run in a child, not in this process."""
+    global _SPEECH_MOD
+    if _SPEECH_MOD is not None:
+        return _SPEECH_MOD
+    path = Path(__file__).resolve().with_name("stickllm-speech")
+    loader = importlib.machinery.SourceFileLoader("stickllm_speech", str(path))
+    spec = importlib.util.spec_from_loader("stickllm_speech", loader)
+    if spec is None:
+        raise RuntimeError("stickllm-speech is not installed")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _SPEECH_MOD = mod
+    return mod
+
+
+def run_speech(command: str, payload: bytes) -> dict:
+    """One shot: no network namespace, unprivileged when we are root, hard timeout.
+
+    payload is audio or a short JSON request. It is not logged. The child
+    stdout is parsed and not logged (it may be a transcript or wav).
+    """
+    try:
+        mod = speech_mod()
+    except Exception:
+        return {"ok": False, "error": "Speech support is not installed."}
+    script = str(Path(__file__).resolve().with_name("stickllm-speech"))
+    return mod.run_sandboxed(script, command, payload)
+
+
+def llama_token_count(text: str) -> int:
+    rough = convert_mod().rough_tokens(text)
+    try:
+        data = http_json_llama(LLAMA + "/tokenize", {"content": text}, timeout=20)
+        toks = data.get("tokens")
+        if isinstance(toks, list) and toks:
+            return len(toks)
+    except Exception:
+        pass
+    return rough
+
+
+def fit_chat_messages(messages, ctx, counter):
+    """Apply the attachment budget. A failure must not forward the original attachment."""
+    mod = convert_mod()
+    try:
+        fitted, meta = mod.budget_for_chat(messages, ctx, counter)
+        return fitted, meta, ""
+    except Exception:
+        if mod.messages_have_attachment(messages):
+            return None, {}, "Could not fit the attachment into the context window."
+        return messages, {"used": False, "truncated": False, "note": ""}, ""
 
 
 def pair_rate_load() -> dict:
@@ -609,6 +2011,30 @@ def remint_rate_mark() -> None:
         os.chmod(REMINT_RATE_PATH, 0o600)
     except Exception:
         pass
+
+
+def pair_request_note(ip: str, paired: bool) -> tuple[bool, str, dict]:
+    """A LAN browser asks the kiosk to show a pair code (never returned here)."""
+    now = time.time()
+    prev = read_json_safe(PAIR_REQUEST_PATH) or {}
+    if now - float(prev.get("at") or 0) < PAIR_REQUEST_MIN_GAP:
+        wait = int(PAIR_REQUEST_MIN_GAP - (now - float(prev.get("at") or 0))) + 1
+        return False, f"Already asked — look at the stick screen (try again in {wait}s)", prev
+    doc = {
+        "id": secrets.token_hex(8),
+        "at": int(now),
+        "ip": ip,
+        # Stick already paired to another browser: the kiosk must confirm,
+        # because a new code unpairs that browser.
+        "needs_confirm": bool(paired),
+    }
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        PAIR_REQUEST_PATH.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+        os.chmod(PAIR_REQUEST_PATH, 0o600)
+    except Exception:
+        pass
+    return True, "", doc
 
 
 def remint_pair_code() -> tuple[str, str]:
@@ -734,6 +2160,69 @@ def fetch_url(url: str) -> str:
     return text[:6000]
 
 
+def message_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        bits = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                bits.append(str(part.get("text") or ""))
+        return "\n".join(b for b in bits if b)
+    return ""
+
+
+def _chat_image_cap() -> int:
+    """3 paperclip photos, plus scanned document pages (8)."""
+    try:
+        pages = int(convert_mod().MAX_PAGE_IMAGES)
+    except Exception:
+        pages = 8
+    return 3 + max(0, pages)
+
+
+def sanitize_chat_messages(messages: list) -> list[dict]:
+    """Keep text, and image data-URLs only. Drop remote image URLs."""
+    out: list[dict] = []
+    images = 0
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "")
+        if role not in ("system", "user", "assistant"):
+            continue
+        content = m.get("content")
+        if isinstance(content, list) and role == "user":
+            parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text = str(part.get("text") or "")[:100_000]
+                    if text:
+                        parts.append({"type": "text", "text": text})
+                elif part.get("type") == "image_url" and images < _chat_image_cap():
+                    iu = part.get("image_url")
+                    url = iu.get("url") if isinstance(iu, dict) else iu
+                    url = str(url or "")
+                    if url.startswith("data:image/") and len(url) <= 180_000:
+                        parts.append({"type": "image_url", "image_url": {"url": url}})
+                        images += 1
+            if parts:
+                out.append({"role": role, "content": parts})
+            continue
+        text = message_text(content)[:100_000]
+        if text:
+            out.append({"role": role, "content": text})
+    return out
+
+
+def _content_has_image(content) -> bool:
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(p, dict) and p.get("type") == "image_url" for p in content)
+
+
 def needs_web(text: str) -> bool:
     t = text.lower()
     keys = (
@@ -750,7 +2239,7 @@ def augment_with_web(messages: list[dict], force: bool) -> tuple[list[dict], lis
     user_text = ""
     for m in reversed(messages):
         if m.get("role") == "user":
-            user_text = str(m.get("content") or "")
+            user_text = message_text(m.get("content"))
             break
     if not user_text:
         return messages, []
@@ -778,11 +2267,15 @@ def augment_with_web(messages: list[dict], force: bool) -> tuple[list[dict], lis
         ),
     }
     rest = [m for m in messages if m.get("role") != "system"]
-    web_note = {"role": "user", "content": block + "\n\nUser question:\n" + user_text}
-    if rest and rest[-1].get("role") == "user":
-        rest = rest[:-1] + [web_note]
+    # Keep an image message intact. A text-only replacement would drop the picture.
+    if rest and rest[-1].get("role") == "user" and _content_has_image(rest[-1].get("content")):
+        rest = [{"role": "user", "content": block}] + rest
     else:
-        rest = rest + [web_note]
+        web_note = {"role": "user", "content": block + "\n\nUser question:\n" + user_text}
+        if rest and rest[-1].get("role") == "user":
+            rest = rest[:-1] + [web_note]
+        else:
+            rest = rest + [web_note]
     return [sys] + rest, hits
 
 
@@ -808,16 +2301,24 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         import sys
 
-        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+        redacted = []
+        for arg in args:
+            if isinstance(arg, str):
+                arg = re.sub(r"([?&]t=)[^&\s]+", r"\1redacted", arg)
+            redacted.append(arg)
+        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % tuple(redacted)))
 
     def end_headers(self) -> None:
-        self.send_header("Content-Security-Policy", CSP)
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        path = urllib.parse.urlparse(self.path).path
-        if path.endswith((".js", ".css", ".html")) or path in ("/", ""):
-            self.send_header("Cache-Control", "no-store, max-age=0")
-            self.send_header("Pragma", "no-cache")
+        # Proxied Agent Zero responses keep their own headers. StickLLM's CSP
+        # would block that UI's inline startup script.
+        if not getattr(self, "_skip_stick_headers", False):
+            self.send_header("Content-Security-Policy", csp_for_path(self.path))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            path = urllib.parse.urlparse(self.path).path
+            if path.endswith((".js", ".css", ".html")) or path in ("/", ""):
+                self.send_header("Cache-Control", "no-store, max-age=0")
+                self.send_header("Pragma", "no-cache")
         super().end_headers()
 
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
@@ -825,26 +2326,1724 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Content-Security-Policy", csp_for_path(self.path))
         self.end_headers()
         self.wfile.write(body)
 
     def _json(self, code: int, obj: dict) -> None:
         self._send(code, json.dumps(obj).encode())
 
+    def _agent_refused(self) -> bool:
+        doc, ok = self._auth()
+        try:
+            allowed = agent_lib().agent_http_allowed(bool(doc.get("require_pair")), ok)
+        except Exception:
+            allowed = ok or not bool(doc.get("require_pair"))
+        if allowed:
+            return False
+        accept = self.headers.get("Accept") or ""
+        if self.command == "GET" and "text/html" in accept and self._is_agent_server():
+            self._agent_html(
+                401,
+                "Agent: pair_required",
+                "This browser is not signed in to Agent yet. Open StickLLM in this "
+                "browser (pair it there if needed), then click Agent.",
+            )
+            return True
+        self._json(
+            401,
+            {
+                "error": "pair_required",
+                "message": "Pair this browser using the code on the stick screen.",
+            },
+        )
+        return True
+
+    def _agent_status(self) -> None:
+        if self._agent_refused():
+            return
+        try:
+            mod = agent_lib()
+            doc = mod.status_document(
+                vault_open=vault_unlocked(),
+                settings_open=mod.settings_mounted(),
+                upstream_up=_agent_port_open(),
+                saved=mod.read_status(),
+            )
+            doc["agent_url"] = self._agent_public_url()
+            doc["gateway_port"] = AGENT_TLS_PORT
+        except Exception:
+            self._json(500, {"ok": False, "error": "agent status failed"})
+            return
+        self._json(200, doc)
+
+    def _agent_public_url(self) -> str:
+        # Console browsers are already on the stick. Open the loopback HTTP UI
+        # so they do not handshake the self-signed :5443 certificate. 5099 is
+        # published on 127.0.0.1 only. LAN clients keep the paired TLS port.
+        if self._is_loopback():
+            try:
+                port = int(agent_lib().AGENT_PORT)
+            except Exception:
+                port = 5099
+            return f"http://127.0.0.1:{port}/"
+        host = (self.headers.get("Host") or "").split(":")[0].strip()
+        if not host or host == "0.0.0.0":
+            host = discover_lan_ip() or "127.0.0.1"
+        return f"https://{host}:{AGENT_TLS_PORT}/"
+
+    def _stickllm_home_url(self) -> str:
+        """UI origin for interstitial back links. Never this Agent port."""
+        try:
+            mod = agent_lib()
+        except Exception:
+            return "https://127.0.0.1/"
+        fallback = discover_lan_ip() or "127.0.0.1"
+        return mod.stickllm_home_url(self.headers.get("Host") or "", fallback)
+
+    def _agent_handoff_mint(self) -> None:
+        """Paired StickLLM tab -> one-time link that signs this browser in to :5443."""
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 2048:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        if length:
+            self.rfile.read(length)
+        if not stickllm_ui_client(self.headers):
+            self._json(403, {"ok": False, "error": "ui_only"})
+            return
+        if self._is_loopback():
+            # The kiosk opens the loopback Agent UI; no cookie is needed there.
+            self._json(200, {"ok": True, "url": self._agent_public_url()})
+            return
+        doc, ok = self._auth()
+        ticket = mint_agent_handoff(doc) if ok else ""
+        if not ticket:
+            self._json(401, {"ok": False, "error": "pair_required"})
+            return
+        url = self._agent_public_url() + "__stickllm/handoff?t=" + urllib.parse.quote(ticket)
+        self._json(200, {"ok": True, "url": url})
+
+    def _is_agent_server(self) -> bool:
+        return bool(getattr(self.server, "stickllm_agent_gateway", False))
+
+    def _agent_install(self) -> None:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(min(n, 1024 * 1024))
+        if self._agent_refused():
+            return
+        if not vault_unlocked():
+            self._json(403, {"ok": False, "error": "Unlock vault to use Agent"})
+            return
+        # Own unit, not this process: anything started here lives in the
+        # stickllm-ui cgroup and dies when the UI restarts.
+        try:
+            started = (
+                subprocess.run(
+                    ["systemctl", "start", "--no-block", "stickllm-agent-install.service"],
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                ).returncode
+                == 0
+            )
+        except (OSError, subprocess.SubprocessError):
+            started = False
+        if not started:
+            # No systemd (tests, chroot). The installer still hands the
+            # container to stickllm-agent.service when systemctl exists.
+            try:
+                subprocess.Popen(
+                    ["/usr/local/bin/stickllm-agent", "install"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError:
+                self._json(500, {"ok": False, "error": "Could not start the installer"})
+                return
+        if self._is_agent_server():
+            try:
+                mod = agent_lib()
+                page = mod.status_document(
+                    vault_open=vault_unlocked(),
+                    settings_open=mod.settings_mounted(),
+                    upstream_up=_agent_port_open(),
+                    saved=mod.read_status(),
+                )
+                page["state"] = "installing"
+                page["message"] = "Installing Agent Zero"
+                body = mod.status_html(page, home=self._stickllm_home_url()).encode("utf-8")
+            except Exception:
+                body = b"Installing Agent Zero\n"
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+        self._json(200, {"ok": True, "message": "Install started. The image is pulled onto the host drive."})
+
+    # ------------------------------------------------------------ ONLYOFFICE
+
+    def _client_ip(self) -> str:
+        return (self.client_address[0] if self.client_address else "") or ""
+
+    def _docs_container_refused(self) -> bool:
+        """The Docs bridge reaches only the signed storage/callback routes."""
+        if not docs_container_ip(self._client_ip()):
+            return False
+        path = urllib.parse.urlparse(self.path).path
+        if docs_container_route_ok(self.command, path):
+            return False
+        self.close_connection = True
+        self._json(403, {"ok": False, "error": "forbidden"})
+        return True
+
+    def _docs_error(self, exc: Exception) -> None:
+        status = int(getattr(exc, "status", 500) or 500)
+        doc = exc.document() if hasattr(exc, "document") else {"ok": False, "error": "docs_failed"}
+        if status == 423:
+            doc.setdefault("locked", True)
+        self._json(status, doc)
+
+    def _docs_ui_allowed(self, mutate: bool = False) -> bool:
+        if not self._desktop_allowed():
+            return False
+        if mutate and not stickllm_ui_client(self.headers) and not self._is_loopback():
+            # The custom header forces a CORS preflight, so another site
+            # cannot post into vault/Documents with the apps cookie.
+            self._json(403, {"ok": False, "error": "ui_only"})
+            return False
+        return True
+
+    def _docs_read_body(self, limit: int) -> bytes | None:
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > limit:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large", "message": "That file is too large."})
+            return None
+        return self.rfile.read(n) if n else b""
+
+    def _docs_api(self, method: str, path: str) -> None:
+        """/api/docs/*. Every document byte is read from or written to vault/Documents."""
+        try:
+            mod = docs_lib()
+        except Exception:
+            self._json(500, {"ok": False, "error": "Docs support is not installed."})
+            return
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+
+        def q(name: str) -> str:
+            return (query.get(name) or [""])[0]
+
+        # Container-facing routes: signed link, Docs bridge or loopback only.
+        if path.startswith("/api/docs/storage/") or path.startswith("/api/docs/callback/"):
+            if not mod.ds_client_ok(self._client_ip()):
+                self._json(403, {"ok": False, "error": "forbidden"})
+                return
+            token = path.rsplit("/", 1)[-1]
+            if path.startswith("/api/docs/storage/") and method == "GET":
+                try:
+                    mod.require_vault()
+                    rel = mod.link_verify(token, mod.runtime_secret())
+                    target, data = mod.read_doc(rel)
+                except Exception as exc:
+                    self._docs_error(exc)
+                    return
+                self._send(200, data, "application/octet-stream")
+                return
+            if path.startswith("/api/docs/callback/") and method == "POST":
+                body = self._docs_read_body(64 * 1024)
+                if body is None:
+                    return
+                try:
+                    result = mod.handle_callback(token, body, self.headers.get("Authorization") or "")
+                except Exception as exc:
+                    # ONLYOFFICE retries a callback that is not {"error": 0}.
+                    msg = getattr(exc, "message", "save failed")
+                    UI_OPEN._write_log(f"STICKLLM_DOCS_CALLBACK failed: {str(msg)[:200]}\n")
+                    self._json(200, {"error": 1})
+                    return
+                self._json(200, result)
+                return
+            self._json(405, {"ok": False, "error": "method not allowed"})
+            return
+
+        if path == "/api/docs/status" and method == "GET":
+            if not self._docs_ui_allowed():
+                return
+            try:
+                self._json(200, mod.status_document())
+            except Exception as exc:
+                self._docs_error(exc)
+            return
+
+        if not self._docs_ui_allowed(mutate=(method == "POST")):
+            return
+        try:
+            # 423 when the vault is locked: no document is read or written.
+            mod.require_vault()
+            if path == "/api/docs/list" and method == "GET":
+                self._json(200, mod.list_documents())
+                return
+            if path == "/api/docs/config" and method == "GET":
+                doc = mod.editor_config(q("path"), mod.runtime_secret(), lang=q("lang") or "en")
+                doc["server"] = "/docs-server/"
+                self._json(200, doc)
+                return
+            if path == "/api/docs/download" and method == "GET":
+                target, data = mod.read_doc(q("path"))
+                name = re.sub(r'[^A-Za-z0-9 ._()-]', "_", target.name)[:120]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if path == "/api/docs/create" and method == "POST":
+                body = self._docs_read_body(8192)
+                if body is None:
+                    return
+                req = json.loads(body.decode("utf-8") or "{}") if body else {}
+                if not isinstance(req, dict):
+                    req = {}
+                rel = mod.create_document(
+                    str(req.get("name") or "Untitled"),
+                    str(req.get("kind") or "docx"),
+                    str(req.get("folder") or ""),
+                )
+                self._json(200, {"ok": True, "path": rel})
+                return
+            if path == "/api/docs/upload" and method == "POST":
+                body = self._docs_read_body(mod.MAX_UPLOAD)
+                if body is None:
+                    return
+                rel = mod.upload_document(q("name"), body, q("folder"))
+                self._json(200, {"ok": True, "path": rel})
+                return
+        except ValueError:
+            self._json(400, {"ok": False, "error": "bad_json"})
+            return
+        except Exception as exc:
+            self._docs_error(exc)
+            return
+        self._json(404, {"ok": False, "error": "not_found"})
+
+    def _docs_proto(self) -> str:
+        return "https" if isinstance(self.connection, ssl.SSLSocket) else "http"
+
+    def _docs_proxy(self, method: str) -> None:
+        """/docs-server/* -> ONLYOFFICE on 127.0.0.1:8083 (paired browsers only)."""
+        if not self._desktop_allowed():
+            return
+        try:
+            mod = docs_lib()
+            if not mod.vault_open():
+                self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
+                return
+        except Exception:
+            self._json(500, {"ok": False, "error": "Docs support is not installed."})
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        upstream = parsed.path[len("/docs-server"):] or "/"
+        if not upstream.startswith("/"):
+            upstream = "/" + upstream
+        target = upstream + (("?" + parsed.query) if parsed.query else "")
+        headers = docs_proxy_headers(
+            dict(self.headers),
+            self.headers.get("Host") or "",
+            self._docs_proto(),
+            self._client_ip(),
+            websocket=(self.headers.get("Upgrade") or "").lower() == "websocket",
+        )
+        if (self.headers.get("Upgrade") or "").lower() == "websocket":
+            self._docs_websocket(target, headers)
+            return
+        body = None
+        if method in ("POST", "PUT"):
+            body = self._docs_read_body(mod.MAX_SAVE)
+            if body is None:
+                return
+        conn = http.client.HTTPConnection("127.0.0.1", mod.DS_PORT, timeout=300)
+        try:
+            conn.request(method, target, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+        except Exception:
+            self._json(502, {"ok": False, "error": "ONLYOFFICE Docs is not running"})
+            return
+        finally:
+            conn.close()
+        # ONLYOFFICE sends its own CSP; StickLLM's would block the editor.
+        self._skip_stick_headers = True
+        self.send_response(resp.status)
+        for key, value in resp.getheaders():
+            if key.lower() in ("transfer-encoding", "connection", "content-length", "keep-alive", "set-cookie"):
+                continue
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if method != "HEAD" and data:
+            self.wfile.write(data)
+
+    def _docs_websocket(self, target: str, headers: dict) -> None:
+        try:
+            sock = socket.create_connection(("127.0.0.1", docs_lib().DS_PORT), timeout=10)
+        except OSError:
+            self._json(502, {"ok": False, "error": "ONLYOFFICE Docs is not running"})
+            return
+        lines = [f"GET {target} HTTP/1.1"] + [f"{k}: {v}" for k, v in headers.items()]
+        try:
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1", errors="replace"))
+            header = b""
+            while b"\r\n\r\n" not in header and len(header) < 65536:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                header += chunk
+            if header.find(b"\r\n\r\n") < 0:
+                sock.close()
+                self._json(502, {"ok": False, "error": "ONLYOFFICE Docs did not accept the socket"})
+                return
+            self.connection.sendall(header)
+        except OSError:
+            sock.close()
+            return
+        self.close_connection = True
+        sock.settimeout(None)
+
+        def _pump(src, dst) -> None:
+            try:
+                while True:
+                    data = src.recv(65536)
+                    if not data:
+                        break
+                    dst.sendall(data)
+            except OSError:
+                pass
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+        left = threading.Thread(target=_pump, args=(self.connection, sock), daemon=True)
+        right = threading.Thread(target=_pump, args=(sock, self.connection), daemon=True)
+        left.start()
+        right.start()
+        left.join()
+        right.join()
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def _apps_allowed(self) -> bool:
+        if not stickllm_ui_client(self.headers) and not self._is_loopback():
+            self._json(403, {"ok": False, "error": "ui_only", "message": "Apps are StickLLM UI only."})
+            return False
+        doc, ok = self._auth()
+        if doc.get("require_pair") and not ok:
+            self._json(401, {"ok": False, "error": "pair_required"})
+            return False
+        return True
+
+    def _apps_catalog(self) -> None:
+        if not self._apps_allowed():
+            return
+        try:
+            doc = apps_lib().catalog_document()
+        except Exception:
+            self._json(500, {"ok": False, "error": "apps catalog failed"})
+            return
+        try:
+            docs = docs_lib().status_document()
+            for row in doc.get("apps") or []:
+                if isinstance(row, dict) and row.get("id") == "onlyoffice":
+                    row["installed"] = bool(docs.get("installed"))
+                    row["installer"] = "stickllm-docs"
+                    row["state"] = docs.get("state")
+                    row["message"] = docs.get("message")
+                    row["running"] = bool(docs.get("running"))
+                    row["open_url"] = "/apps/docs/"
+                    row["label"] = DOCS_STATE_LABELS.get(str(docs.get("state") or ""), row.get("label"))
+        except Exception:
+            pass
+        try:
+            addons = addons_lib()
+            for row in doc.get("apps") or []:
+                if isinstance(row, dict) and row.get("id") in addons.APPS:
+                    st = addons.status_document(row["id"])
+                    row["installed"] = bool(st.get("installed"))
+                    row["installer"] = "stickllm-addon"
+                    row["state"] = st.get("state")
+                    row["message"] = st.get("message")
+                    row["running"] = bool(st.get("running"))
+                    row["open_url"] = self._addon_public_url(row["id"])
+                    row["open_link"] = "/api/apps/open-link"
+                    row["version"] = st.get("version")
+                    row["label"] = ADDON_STATE_LABELS.get(str(st.get("state") or ""), row.get("label"))
+        except Exception:
+            pass
+        # ONLYOFFICE and the add-ons override "installed" above, so the count
+        # from catalog_document() is stale. Recount from the final rows.
+        rows = [row for row in doc.get("apps") or [] if isinstance(row, dict)]
+        for row in rows:
+            row["not_installed"] = not row.get("installed")
+        doc["installed_count"] = sum(1 for row in rows if row.get("installed"))
+        self._json(200, doc)
+
+    # ---------------------------------------------- Agent Zero install/docs
+    # Reached only from the open-app control (Bearer token, loopback). The
+    # install itself is never done here: the screen driving Agent gets an
+    # install_confirm event and the user clicks Install (POST /api/apps/install).
+
+    def _agent_catalog_status(self, app_id: str) -> dict:
+        names = {}
+        try:
+            names = dict(agent_lib().CATALOG_APP_NAMES)
+        except Exception:
+            pass
+        out = {"id": app_id, "name": names.get(app_id, app_id), "installed": False, "running": False, "state": ""}
+        try:
+            if app_id == "docs":
+                st = docs_lib().status_document()
+            elif app_id in addons_lib().APPS:
+                st = addons_lib().status_document(app_id)
+            else:
+                return out
+        except Exception:
+            return out
+        out["installed"] = bool(st.get("installed"))
+        out["running"] = bool(st.get("running"))
+        out["state"] = str(st.get("state") or "")
+        return out
+
+    def _agent_install_request(self, req: dict) -> None:
+        try:
+            lib = agent_lib()
+            app_id = lib.normalize_app_id(req.get("id"))
+            ok = lib.catalog_app_id_ok(app_id)
+        except Exception:
+            ok = False
+            app_id = ""
+        if not ok:
+            self._json(400, {"ok": False, "error": "bad_id"})
+            return
+        st = self._agent_catalog_status(app_id)
+        if st["installed"]:
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "id": app_id,
+                    "status": "already_installed",
+                    "message": f"{st['name']} is already installed. Open it with open_app id {app_id}.",
+                },
+            )
+            return
+        if st["state"] in ("installing", "pulling", "starting"):
+            self._json(200, {"ok": True, "id": app_id, "status": "installing", "message": f"{st['name']} is already installing."})
+            return
+        target, reason = ui_target()
+        conn = UI_OPEN.ui_conn_for(target)
+        if target != "kiosk" and conn is None:
+            self._json(
+                409,
+                {
+                    "ok": False,
+                    "error": "no_ui_tab",
+                    "message": "The user's StickLLM tab is not open, so they cannot confirm. Ask them to open StickLLM and try once more.",
+                },
+            )
+            return
+        UI_OPEN.publish_install(app_id, st["name"], target=target, conn=conn)
+        self._json(
+            200,
+            {
+                "ok": True,
+                "id": app_id,
+                "status": "awaiting_user",
+                "screen": "kiosk" if target == "kiosk" else "browser",
+                "message": f"Asked the user to confirm installing {st['name']} on their screen. "
+                "Tell them to click Install; do not call install_app again for it.",
+            },
+        )
+
+    def _agent_docs(self, req: dict) -> None:
+        try:
+            lib = docs_lib()
+        except Exception:
+            self._json(503, {"ok": False, "error": "docs_unavailable"})
+            return
+        op = req.get("op")
+        try:
+            if op == "create":
+                kind = req.get("kind")
+                if kind not in ("xlsx", "docx"):
+                    self._json(400, {"ok": False, "error": "bad_type", "message": "kind is xlsx or docx"})
+                    return
+                name = str(req.get("name") or ("Spreadsheet" if kind == "xlsx" else "Document"))
+                title = req.get("title")
+                rel = lib.agent_create(
+                    kind,
+                    name,
+                    rows=req.get("rows"),
+                    text=req.get("text"),
+                    title=str(title) if isinstance(title, str) else "",
+                )
+            elif op == "open":
+                raw = req.get("path")
+                if not isinstance(raw, str) or not raw.strip():
+                    self._json(400, {"ok": False, "error": "bad_path", "message": "path is relative to vault/Documents"})
+                    return
+                lib.require_vault()
+                target_path = lib.resolve_doc(raw.strip().lstrip("/").removeprefix("Documents/"))
+                if not target_path.is_file():
+                    self._json(404, {"ok": False, "error": "not_found", "message": "No such file in vault/Documents."})
+                    return
+                rel = lib.rel_of(target_path)
+            else:
+                self._json(400, {"ok": False, "error": "bad_op"})
+                return
+        except lib.DocsError as exc:
+            self._json(
+                int(getattr(exc, "status", 400) or 400),
+                {"ok": False, "error": getattr(exc, "code", "docs_error"), "message": str(exc)},
+            )
+            return
+        except Exception:
+            self._json(500, {"ok": False, "error": "docs_failed"})
+            return
+        out = {"ok": True, "path": rel, "folder": "vault/Documents"}
+        if req.get("open") is False:
+            out["opened"] = False
+            out["message"] = f"Saved {rel} in vault/Documents."
+            self._json(200, out)
+            return
+        st = self._agent_catalog_status("docs")
+        if not st["installed"]:
+            out["opened"] = False
+            out["message"] = (
+                f"Saved {rel} in vault/Documents, but ONLYOFFICE Docs is not installed so it cannot open yet. "
+                "Call install_app with id docs once and tell the user to click Install."
+            )
+            self._json(200, out)
+            return
+        target, reason = ui_target()
+        conn = UI_OPEN.ui_conn_for(target)
+        if target != "kiosk" and conn is None:
+            reason = "no_ui_tab"
+        UI_OPEN.publish("docs", target=target, conn=conn, reason=reason, path="/apps/docs/", doc=rel)
+        out["opened"] = reason != "no_ui_tab"
+        out["screen"] = "kiosk" if target == "kiosk" else "browser"
+        out["message"] = (
+            f"Saved {rel} in vault/Documents and opened it in ONLYOFFICE on the user's screen."
+            if out["opened"]
+            else f"Saved {rel} in vault/Documents. The user's StickLLM tab is not open, so it was not shown."
+        )
+        self._json(200, out)
+
+    def _apps_mutate(self, action: str, req: dict) -> None:
+        if not self._apps_allowed():
+            return
+        app_id = str((req or {}).get("id") or "")
+        if app_id == "onlyoffice":
+            self._docs_mutate(action)
+            return
+        try:
+            is_addon = app_id in addons_lib().APPS
+        except Exception:
+            is_addon = False
+        if is_addon:
+            self._addon_mutate(action, app_id)
+            return
+        try:
+            mod = apps_lib()
+            if action == "install":
+                result = mod.install_app(app_id)
+            else:
+                result = mod.uninstall_app(app_id)
+        except Exception:
+            self._json(
+                500,
+                {
+                    "ok": False,
+                    "installed": False,
+                    "error": "apps action failed",
+                    "message": "Nothing was changed.",
+                    "deleted": [],
+                },
+            )
+            return
+        self._json(200 if result.get("ok") else 409, result)
+
+    def _docs_mutate(self, action: str) -> None:
+        """Apps page Install/Uninstall for ONLYOFFICE Docs (vault required)."""
+        try:
+            mod = docs_lib()
+            if not mod.vault_open():
+                self._json(423, {"ok": False, "installed": False, "error": "vault_locked",
+                                 "message": mod.VAULT_LOCKED_MESSAGE, "deleted": []})
+                return
+            if not mod.settings_open():
+                self._json(409, {"ok": False, "installed": False, "error": "settings_missing",
+                                 "message": mod.SETTINGS_MISSING_MESSAGE, "deleted": []})
+                return
+        except Exception:
+            self._json(500, {"ok": False, "installed": False, "error": "Docs support is not installed.",
+                             "message": "Nothing was changed.", "deleted": []})
+            return
+        if action == "install":
+            if mod.is_installed():
+                self._json(200, {"ok": True, "installed": True, "state": "installed",
+                                 "message": "ONLYOFFICE Docs is installed.", "deleted": []})
+                return
+            unit = ["systemctl", "start", "--no-block", "stickllm-docs-install.service"]
+            fallback = ["/usr/local/bin/stickllm-docs", "install"]
+            message = "Installing ONLYOFFICE Docs. The image is pulled onto the host drive; documents stay in the vault."
+        else:
+            unit = None
+            fallback = ["/usr/local/bin/stickllm-docs", "uninstall"]
+            message = "Removing ONLYOFFICE Docs. vault/Documents is kept."
+        started = False
+        if unit:
+            try:
+                started = subprocess.run(unit, capture_output=True, timeout=15, check=False).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                started = False
+        if not started:
+            try:
+                subprocess.Popen(fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except OSError:
+                self._json(500, {"ok": False, "installed": False, "error": "Could not start the installer",
+                                 "message": "Nothing was changed.", "deleted": []})
+                return
+        if action == "install":
+            mod.write_status("installing")
+            self._json(200, {"ok": True, "started": True, "installed": False, "state": "installing",
+                             "message": message, "deleted": []})
+        else:
+            self._json(200, {"ok": True, "started": True, "installed": False, "state": "removing",
+                             "message": message, "deleted": []})
+
+    def _apps_cookie_ok(self, doc: dict) -> bool:
+        return any(
+            apps_session_ok(self._cookie(n), doc)
+            for n in (APPS_SESSION_COOKIE_TLS, APPS_SESSION_COOKIE)
+        )
+
+    def _is_tls(self) -> bool:
+        return isinstance(self.connection, ssl.SSLSocket)
+
+    def _pair_cookie_values(self) -> list[str]:
+        names = (PAIR_COOKIE_TLS, PAIR_COOKIE) if self._is_tls() else (PAIR_COOKIE,)
+        out: list[str] = []
+        for n in names:
+            out.extend(self._cookies(n))
+        return out
+
+    def _pair_cookie_ok(self, doc: dict) -> bool:
+        return any(token_ok("Bearer " + v, doc) for v in self._pair_cookie_values())
+
+    def _session_cookie_headers(self, doc: dict, pair_token: str = "", clear: bool = False) -> list[str]:
+        """HttpOnly pair + apps cookies for this scheme (server-set, scripts can't touch)."""
+        tls = self._is_tls()
+        pair_name = PAIR_COOKIE_TLS if tls else PAIR_COOKIE
+        apps_name = APPS_SESSION_COOKIE_TLS if tls else APPS_SESSION_COOKIE
+        attrs = "; Path=/; HttpOnly; SameSite=Strict" + ("; Secure" if tls else "")
+        if clear:
+            return [f"{pair_name}=; Max-Age=0{attrs}", f"{apps_name}=; Max-Age=0{attrs}"]
+        out: list[str] = []
+        if pair_token:
+            out.append(f"{pair_name}={urllib.parse.quote(pair_token, safe='')}{attrs}")
+        value = apps_session_value(doc)
+        if value:
+            out.append(f"{apps_name}={value}{attrs}")
+        return out
+
+    def _json_cookies(self, code: int, obj: dict, cookies: list[str]) -> None:
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for c in cookies:
+            self.send_header("Set-Cookie", c)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _pair_cookie_state(self, doc: dict) -> str:
+        """For logs only: absent / valid / stale. Never the value."""
+        values = self._pair_cookie_values()
+        if not values:
+            return "absent"
+        return "valid" if self._pair_cookie_ok(doc) else "stale"
+
+    def _desktop_allowed(self) -> bool:
+        """Loopback, a paired browser, or the paired browser's HttpOnly apps cookie."""
+        doc, ok = self._auth()
+        if doc.get("require_pair") and not ok and not self._apps_cookie_ok(doc):
+            path = urllib.parse.urlparse(self.path).path
+            if path.startswith("/apps/"):
+                UI_OPEN._write_log(
+                    f"STICKLLM_APPS_AUTH denied ip={self._ui_client_ip()} "
+                    f"pair_cookie={self._pair_cookie_state(doc)} "
+                    f"apps_cookie={'present' if (self._cookie(APPS_SESSION_COOKIE) or self._cookie(APPS_SESSION_COOKIE_TLS)) else 'absent'}\n"
+                )
+            self._json(401, {"ok": False, "error": "pair_required"})
+            return False
+        return True
+
+    def _serve_desktop(self, path: str) -> None:
+        if not self._desktop_allowed():
+            return
+        parts = [part for part in path.split("/") if part]
+        if not parts or parts[0] != "apps" or any(part in {".", ".."} for part in parts):
+            self._json(400, {"ok": False, "error": "bad_path"})
+            return
+        try:
+            root = UI_ROOT.resolve()
+            target = root.joinpath(*parts).resolve()
+        except OSError:
+            self._json(404, {"ok": False, "error": "not_found"})
+            return
+        if target != root and root not in target.parents:
+            self._json(400, {"ok": False, "error": "bad_path"})
+            return
+        if target.is_dir():
+            target = target / "index.html"
+        if not target.is_file():
+            self._json(404, {"ok": False, "error": "not_found", "message": "That app is not on this stick."})
+            return
+        data = target.read_bytes()
+        suffix = target.suffix.lower()
+        ctype = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".mjs": "text/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".ico": "image/x-icon",
+            ".json": "application/json",
+            ".webmanifest": "application/manifest+json",
+            ".txt": "text/plain; charset=utf-8",
+            ".woff": "font/woff",
+            ".woff2": "font/woff2",
+            ".wasm": "application/wasm",
+        }.get(suffix, "application/octet-stream")
+        if target.name == "index.html" and len(parts) >= 2 and parts[0] == "apps":
+            client = self.client_address[0] if self.client_address else ""
+            UI_OPEN.note_load(parts[1], client)
+        self._send(200, data, ctype)
+
+    def _ui_stream_allowed(self) -> bool:
+        """Kiosk loopback, pair cookie/bearer, or a short-lived ?t= ticket.
+
+        EventSource cannot send Authorization. The pair cookie is accepted.
+        A signed ticket from POST /api/ui/events-ticket is the other path.
+        The long-lived pair token is never valid in the URL.
+        """
+        doc, ok = self._auth()
+        if ok or not doc.get("require_pair"):
+            return True
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        # An app page with the apps cookie: only its own stream and replies.
+        app_page = parsed.path == "/api/ui/app-reply" or (
+            parsed.path == "/api/ui/events" and bool(query.get("app"))
+        )
+        if app_page and self._apps_cookie_ok(doc):
+            return True
+        ticket = (query.get("t") or [""])[0]
+        if ui_events_ticket_ok(ticket, doc):
+            return True
+        self._json(401, {"ok": False, "error": "pair_required"})
+        return False
+
+    def _open_app_control_ok(self) -> bool:
+        """Loopback plus the stick open-app token. The pair token is not enough."""
+        if not self._is_loopback():
+            self._json(403, {"ok": False, "error": "loopback_only"})
+            return False
+        try:
+            expected = agent_lib().read_open_app_token()
+        except Exception:
+            expected = ""
+        if not agent_lib().open_app_token_ok(self.headers.get("Authorization"), expected):
+            self._json(401, {"ok": False, "error": "unauthorized"})
+            return False
+        return True
+
+    def _ui_client_ip(self) -> str:
+        return (self.client_address[0] if self.client_address else "") or ""
+
+    def _ui_screen_key(self) -> str:
+        """"kiosk" for the stick's own screen, else the browser's device id
+        cookie ("d-<hex>"), else its IP."""
+        if self._is_loopback():
+            return "kiosk"
+        return device_key(self._cookie(DEVICE_COOKIE)) or (self._ui_client_ip() or "-")
+
+    def _stream_ui_events(self) -> None:
+        if not self._ui_stream_allowed():
+            return
+        ip = self._ui_client_ip() or "-"
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        app = str((query.get("app") or [""])[0])
+        if not re.fullmatch(r"[a-z]{1,32}", app):
+            app = ""
+        key = self._ui_screen_key()
+        conn = UI_OPEN.connect(ip, app, key)
+        try:
+            try:
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Content-Encoding", "identity")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+
+            def send_chunk(payload: bytes) -> None:
+                self.wfile.write(b"%X\r\n" % len(payload) + payload + b"\r\n")
+                self.wfile.flush()
+
+            def send_event(event: dict) -> None:
+                kind = str(event.get("kind") or "open_app")
+                target = str(event.get("target") or "")
+                if target and target != key:
+                    return
+                if kind == "open_app":
+                    if app:
+                        return
+                    # One StickLLM tab per screen opens the app: the newest one,
+                    # unless it went away before the event was sent.
+                    want = event.get("conn")
+                    if want and want != conn and UI_OPEN.conn_alive(int(want)):
+                        return
+                    payload = {
+                        "id": event["id"],
+                        "path": event["path"],
+                        "window": event["window"],
+                        "seq": event.get("seq"),
+                    }
+                    if event.get("doc"):
+                        payload["doc"] = event["doc"]
+                elif kind == "install_confirm":
+                    if app:
+                        return
+                    want = event.get("conn")
+                    if want and want != conn and UI_OPEN.conn_alive(int(want)):
+                        return
+                    payload = {"id": event["id"], "name": event.get("name") or event["id"], "seq": event.get("seq")}
+                elif kind in ("app_state", "app_act"):
+                    payload = {"id": event["id"], "req": event["req"], "seq": event.get("seq")}
+                    if "action" in event:
+                        payload["action"] = event["action"]
+                else:
+                    return
+                raw = json.dumps(payload, ensure_ascii=True).encode("ascii")
+                send_chunk(b"event: " + kind.encode("ascii") + b"\ndata: " + raw + b"\n\n")
+
+            seq, replay = UI_OPEN.catch_up()
+            if replay:
+                send_event(replay)
+            while True:
+                event = UI_OPEN.wait_after(seq, timeout=15)
+                if event is None:
+                    send_chunk(b": keepalive\n\n")
+                    continue
+                seq = int(event.get("seq") or seq)
+                send_event(event)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+        finally:
+            UI_OPEN.disconnect(ip, conn)
+
+    def _proxy_files(self, method: str) -> None:
+        if not self._desktop_allowed():
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(min(length, 1024 * 1024))
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        upstream = parsed.path[len("/api/files") :] or "/"
+        if not upstream.startswith("/"):
+            upstream = "/" + upstream
+        target = upstream + (("?" + parsed.query) if parsed.query else "")
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 33 * 1024 * 1024:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large", "message": "That file is over the 32 MB limit."})
+            return
+        body = self.rfile.read(length) if length else None
+        conn = http.client.HTTPConnection("127.0.0.1", FILES_PORT, timeout=120)
+        try:
+            headers = {"Host": f"127.0.0.1:{FILES_PORT}"}
+            if body is not None:
+                headers["Content-Length"] = str(len(body))
+            ctype = self.headers.get("Content-Type")
+            if ctype:
+                headers["Content-Type"] = ctype
+            conn.request(method, target, body=body, headers=headers)
+            resp = conn.getresponse()
+            self.send_response(resp.status)
+            for key, value in resp.getheaders():
+                low = key.lower()
+                if low in ("transfer-encoding", "connection", "content-length"):
+                    continue
+                self.send_header(key, value)
+            self.send_header("Cache-Control", "no-store")
+            size = resp.getheader("Content-Length")
+            if size and size.isdigit():
+                self.send_header("Content-Length", size)
+                self.end_headers()
+                remaining = int(size)
+                while remaining > 0:
+                    chunk = resp.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+            else:
+                data = resp.read()
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                if data:
+                    self.wfile.write(data)
+        except Exception:
+            self._json(503, {"ok": False, "error": "files_down", "message": "The file helper is not running."})
+        finally:
+            conn.close()
+
+    def _system_status(self) -> None:
+        if not self._desktop_allowed():
+            return
+        try:
+            self._json(200, system_lib().snapshot())
+        except Exception:
+            self._json(500, {"ok": False, "error": "system status failed"})
+
+    def _agent_status_doc(self) -> dict:
+        mod = agent_lib()
+        return mod.status_document(
+            vault_open=vault_unlocked(),
+            settings_open=mod.settings_mounted(),
+            upstream_up=_agent_port_open(),
+            saved=mod.read_status(),
+        )
+
+    def _serve_agent_gateway(self, method: str) -> None:
+        """1:1 proxy to the loopback UI. No path or body rewriting."""
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path or "/"
+        if method == "GET" and path == "/__stickllm/handoff":
+            self._agent_handoff(parsed.query)
+            return
+        if self._agent_refused():
+            return
+        if not self._is_loopback():
+            AGENT_CLIENTS.note(self._ui_client_ip())
+            if method == "POST" and path in AGENT_PROMPT_PATHS:
+                ip = self._ui_client_ip()
+                screen = self._ui_screen_key()
+                AGENT_CLIENTS.prompt(screen)
+                safe_ip = ip if re.fullmatch(r"[0-9A-Fa-f:.]+", ip or "") else "-"
+                try:
+                    UI_OPEN._write_log(
+                        f"STICKLLM_AGENT_PROMPT ip={safe_ip}{_target_log(screen).replace(' target=', ' screen=')} path={path}\n"
+                    )
+                except Exception:
+                    pass
+        upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
+        try:
+            mod = agent_lib()
+            status = self._agent_status_doc()
+        except Exception:
+            self._json(500, {"ok": False, "error": "agent helper missing"})
+            return
+        if method == "POST" and path in ("/install", "/api/agent/install"):
+            self._agent_install()
+            return
+        if not status.get("running"):
+            if method == "GET" and not upgrade:
+                body = mod.status_html(status, home=self._stickllm_home_url()).encode("utf-8")
+                self._send(200, body, "text/html; charset=utf-8")
+                return
+            self._json(503, {"ok": False, "error": status.get("message") or "Agent is not running"})
+            return
+        if upgrade and method == "GET":
+            if mod.agent_request_denied(method, path, None):
+                self._json(403, {"ok": False, "error": "plugins_locked"})
+                return
+            self._relay_websocket(path, parsed.query)
+            return
+        self._relay_http(method, path, parsed.query)
+
+    # ------------------------------------------------------------ add-ons
+
+    def _addon_id(self) -> str:
+        return str(getattr(self.server, "stickllm_addon", "") or "")
+
+    def _addon_cookie_name(self, app_id: str) -> str:
+        return ADDON_COOKIE_PREFIX + app_id.replace("-", "_")
+
+    def _addon_allowed(self, app_id: str) -> bool:
+        if self._is_loopback():
+            return True
+        doc = load_auth()
+        if addon_session_ok(self._cookie(self._addon_cookie_name(app_id)), doc, app_id):
+            return True
+        if self._pair_cookie_ok(doc) or self._apps_cookie_ok(doc):
+            return True
+        return not bool(doc.get("require_pair"))
+
+    def _addon_page(self, code: int, title: str, text: str, extra: dict | None = None,
+                    refresh: bool = False) -> None:
+        method = self.command or "GET"
+        accept = self.headers.get("Accept") or ""
+        if method == "GET" and ("text/html" in accept or refresh or extra):
+            self._agent_html(code, title, text, extra, refresh=refresh)
+            return
+        self._json(code, {"ok": False, "error": title, "message": text})
+
+    def _addon_public_url(self, app_id: str) -> str:
+        spec = addons_lib().app(app_id)
+        if self._is_loopback():
+            # The console browser uses the loopback publish; no certificate.
+            return f"http://127.0.0.1:{spec['local_port']}/"
+        raw = (self.headers.get("Host") or "").strip()
+        if raw.startswith("["):
+            host = raw[: raw.find("]") + 1] if "]" in raw else ""
+        else:
+            host = raw.split(":")[0]
+        host = re.sub(r"[^A-Za-z0-9.\[\]:-]", "", host)[:255]
+        if not host or host == "0.0.0.0":
+            host = discover_lan_ip() or "127.0.0.1"
+        return f"https://{host}:{spec['tls_port']}/"
+
+    def _addon_open_link(self) -> None:
+        """Paired StickLLM tab -> one-time link that signs this browser in to
+        one app's TLS port (its own HttpOnly cookie)."""
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 2048:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        raw = self.rfile.read(length) if length else b""
+        if not stickllm_ui_client(self.headers) and not self._is_loopback():
+            self._json(403, {"ok": False, "error": "ui_only"})
+            return
+        try:
+            req = json.loads(raw.decode("utf-8") or "{}")
+            app_id = str(req.get("id") or "") if isinstance(req, dict) else ""
+            mod = addons_lib()
+            mod.app(app_id)
+        except (ValueError, UnicodeDecodeError):
+            self._json(400, {"ok": False, "error": "bad_json"})
+            return
+        except Exception:
+            self._json(404, {"ok": False, "error": "unknown_app"})
+            return
+        doc: dict = {}
+        if not self._is_loopback():
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"ok": False, "error": "pair_required"})
+                return
+        # A locked vault has no app to open: no URL, no handoff ticket.
+        if not mod.vault_open():
+            self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
+            return
+        base = self._addon_public_url(app_id)
+        if self._is_loopback():
+            self._json(200, {"ok": True, "url": base})
+            return
+        ticket = mint_addon_handoff(doc, app_id)
+        if not ticket:
+            # Pairing is off on this stick: the app port is open to the LAN.
+            self._json(200, {"ok": True, "url": base})
+            return
+        self._json(200, {"ok": True, "url": base + "__stickllm/handoff?t=" + urllib.parse.quote(ticket)})
+
+    def _addon_down(self, app_id: str) -> None:
+        mod = addons_lib()
+        name = mod.app(app_id)["name"]
+        try:
+            st = mod.status_document(app_id, upstream_up=False)
+            text = f"{name} is not running ({st.get('message') or st.get('state')}). Open StickLLM, then Apps."
+        except Exception:
+            text = f"{name} is not running. Open StickLLM, then Apps."
+        self._addon_page(503, f"{name}: not running", text)
+
+    def _serve_addon(self, method: str) -> None:
+        """Paired TLS proxy for one starter add-on on its own port."""
+        app_id = self._addon_id()
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path or "/"
+        try:
+            mod = addons_lib()
+            spec = mod.app(app_id)
+        except Exception:
+            self._json(500, {"ok": False, "error": "add-on helper missing"})
+            return
+        name = spec["name"]
+        if method == "GET" and path == "/__stickllm/handoff":
+            ticket = (urllib.parse.parse_qs(parsed.query).get("t") or [""])[0]
+            doc = load_auth()
+            value = addon_session_value(doc, app_id) if addon_handoff_redeem(ticket, doc, app_id) else ""
+            if not value:
+                self._agent_html(401, f"{name}: pair_required",
+                                 f"This {name} link expired or was already used. "
+                                 "Go back to StickLLM, Apps, and click Open again.")
+                return
+            cookie = f"{self._addon_cookie_name(app_id)}={value}; Path=/; Secure; HttpOnly; SameSite=Strict"
+            self._agent_html(200, f"Opening {name}", f"Opening {name}...", {"Set-Cookie": cookie}, refresh=True)
+            return
+        if not self._addon_allowed(app_id):
+            self.close_connection = True
+            self._addon_page(401, f"{name}: pair_required",
+                             f"This browser is not signed in to {name}. Open StickLLM in this browser "
+                             "(pair it there if needed), then Apps and Open.")
+            return
+        if not mod.vault_open():
+            self.close_connection = True
+            self._addon_page(423, f"{name}: vault_locked", mod.VAULT_LOCKED_MESSAGE)
+            return
+        target = path + (("?" + parsed.query) if parsed.query else "")
+        upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
+        if upgrade and method == "GET":
+            if not spec.get("websocket"):
+                self._json(400, {"ok": False, "error": "no_websocket"})
+                return
+            headers = addon_proxy_headers(dict(self.headers), self.headers.get("Host") or "",
+                                          self._client_ip(), websocket=True)
+            self._addon_websocket(app_id, spec["local_port"], target, headers)
+            return
+        self._addon_relay(method, app_id, spec["local_port"], target)
+
+    def _addon_relay(self, method: str, app_id: str, port: int, target: str) -> None:
+        te = (self.headers.get("Transfer-Encoding") or "").strip().lower()
+        if te and te != "identity":
+            self.close_connection = True
+            self._json(411, {"ok": False, "error": "length_required"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > ADDON_MAX_BODY:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        headers = addon_proxy_headers(dict(self.headers), self.headers.get("Host") or "", self._client_ip())
+        body = None
+        if length:
+            headers["Content-Length"] = str(length)
+            body = _LimitedReader(self.rfile, length)
+        elif method not in ("GET", "HEAD", "OPTIONS", "DELETE"):
+            headers["Content-Length"] = "0"
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+        try:
+            conn.request(method, target, body=body, headers=headers, encode_chunked=False)
+            resp = conn.getresponse()
+        except Exception:
+            conn.close()
+            self.close_connection = True
+            self._addon_down(app_id)
+            return
+        try:
+            # The app sends its own CSP and headers; StickLLM's would break it.
+            self._skip_stick_headers = True
+            self.send_response(resp.status)
+            for key, value in resp.getheaders():
+                if addon_response_header_ok(key, value):
+                    self.send_header(key, value)
+            clen = resp.getheader("Content-Length") or ""
+            if method == "HEAD" or resp.status in (204, 304) or resp.status < 200:
+                if method == "HEAD" and clen.isdigit():
+                    self.send_header("Content-Length", clen)
+                self.end_headers()
+                return
+            if clen.isdigit():
+                self.send_header("Content-Length", clen)
+                self.end_headers()
+                left = int(clen)
+                while left > 0:
+                    chunk = resp.read(min(65536, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+                if left:
+                    self.close_connection = True
+                return
+            data = resp.read()
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            if data:
+                self.wfile.write(data)
+        except OSError:
+            self.close_connection = True
+        finally:
+            conn.close()
+
+    def _addon_websocket(self, app_id: str, port: int, target: str, headers: dict) -> None:
+        try:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        except OSError:
+            self._addon_down(app_id)
+            return
+        lines = [f"GET {target} HTTP/1.1"] + [f"{k}: {v}" for k, v in headers.items()]
+        try:
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1", errors="replace"))
+            header = b""
+            while b"\r\n\r\n" not in header and len(header) < 65536:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                header += chunk
+            if header.find(b"\r\n\r\n") < 0:
+                sock.close()
+                self._json(502, {"ok": False, "error": "the app did not accept the socket"})
+                return
+            self.connection.sendall(header)
+        except OSError:
+            sock.close()
+            return
+        self.close_connection = True
+        sock.settimeout(None)
+
+        def _pump(src, dst) -> None:
+            try:
+                while True:
+                    data = src.recv(65536)
+                    if not data:
+                        break
+                    dst.sendall(data)
+            except OSError:
+                pass
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+        left = threading.Thread(target=_pump, args=(self.connection, sock), daemon=True)
+        right = threading.Thread(target=_pump, args=(sock, self.connection), daemon=True)
+        left.start()
+        right.start()
+        left.join()
+        right.join()
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def _addon_mutate(self, action: str, app_id: str) -> None:
+        """Apps page Install/Uninstall for a starter add-on (vault required)."""
+        mod = addons_lib()
+        name = mod.app(app_id)["name"]
+        if not mod.vault_open():
+            self._json(423, {"ok": False, "installed": False, "error": "vault_locked",
+                             "message": mod.VAULT_LOCKED_MESSAGE, "deleted": []})
+            return
+        if action == "install":
+            if mod.is_installed(app_id):
+                self._json(200, {"ok": True, "installed": True, "state": "installed",
+                                 "message": f"{name} is installed.", "deleted": []})
+                return
+            unit = ["systemctl", "start", "--no-block", f"stickllm-addon-install@{app_id}.service"]
+            fallback = ["/usr/local/bin/stickllm-addon", app_id, "install"]
+            message = f"Installing {name}. The image is pulled onto the host drive; its data stays in the vault."
+        else:
+            unit = None
+            fallback = ["/usr/local/bin/stickllm-addon", app_id, "uninstall"]
+            message = f"Removing {name}. Its data in vault/addons/{app_id} is kept."
+        started = False
+        if unit:
+            try:
+                started = subprocess.run(unit, capture_output=True, timeout=15, check=False).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                started = False
+        if not started:
+            try:
+                subprocess.Popen(fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except OSError:
+                self._json(500, {"ok": False, "installed": False, "error": "Could not start the installer",
+                                 "message": "Nothing was changed.", "deleted": []})
+                return
+        if action == "install":
+            mod.write_status(app_id, "installing")
+            self._json(200, {"ok": True, "started": True, "installed": False, "state": "installing",
+                             "message": message, "deleted": []})
+        else:
+            mod.write_status(app_id, "removing")
+            self._json(200, {"ok": True, "started": True, "installed": False, "state": "removing",
+                             "message": message, "deleted": []})
+
+    def _agent_html(self, code: int, title: str, text: str, extra_headers: dict | None = None,
+                    refresh: bool = False) -> None:
+        import html as _html
+
+        home = _html.escape(self._stickllm_home_url(), quote=True)
+        head = '<meta http-equiv="refresh" content="0;url=/">' if refresh else ""
+        link = '<a href="/">Continue</a>' if refresh else f'<a href="{home}">Back to StickLLM</a>'
+        body = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f"{head}<title>{_html.escape(title)}</title></head><body>"
+            f"<p>{_html.escape(text)}</p><p>{link}</p></body></html>"
+        ).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _agent_handoff(self, query: str) -> None:
+        """Redeem a one-time ticket from a paired StickLLM tab (any origin)."""
+        ticket = (urllib.parse.parse_qs(query).get("t") or [""])[0]
+        doc = load_auth()
+        value = agent_session_value(doc) if agent_handoff_redeem(ticket, doc) else ""
+        if not value:
+            self._agent_html(
+                401,
+                "Agent: pair_required",
+                "This Agent link expired or was already used. Go back to StickLLM and click Agent again.",
+            )
+            return
+        cookie = f"{AGENT_SESSION_COOKIE}={value}; Path=/; Secure; HttpOnly; SameSite=Strict"
+        self._agent_html(200, "Opening Agent", "Opening Agent...", {"Set-Cookie": cookie}, refresh=True)
+
+    def _relay_http(self, method: str, upstream: str, query: str) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        # Plugins are locked: no installer, Plugin Hub, scan, delete, or
+        # execute-script calls reach Agent Zero through this proxy.
+        if agent_lib().agent_request_denied(method, upstream, body):
+            self._json(
+                403,
+                {
+                    "ok": False,
+                    "error": "plugins_locked",
+                    "message": "Plugins are locked on StickLLM. Only reviewed plugins built into the ISO load.",
+                },
+            )
+            return
+        target = upstream + (("?" + query) if query else "")
+        headers = agent_lib().agent_proxy_headers(dict(self.headers))
+        conn = http.client.HTTPConnection("127.0.0.1", 5099, timeout=300)
+        try:
+            conn.request(method, target, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+        except Exception:
+            self._json(502, {"ok": False, "error": "Agent is not running"})
+            return
+        finally:
+            conn.close()
+        self._skip_stick_headers = True
+        self.send_response(resp.status)
+        for key, value in resp.getheaders():
+            low = key.lower()
+            if low in ("transfer-encoding", "connection", "content-length"):
+                continue
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if method != "HEAD" and data:
+            self.wfile.write(data)
+
+    def _relay_websocket(self, upstream: str, query: str) -> None:
+        target = upstream + (("?" + query) if query else "")
+        try:
+            sock = socket.create_connection(("127.0.0.1", 5099), timeout=10)
+        except OSError:
+            self._json(502, {"ok": False, "error": "Agent is not running"})
+            return
+        lines = [f"GET {target} HTTP/1.1"]
+        for key, value in agent_lib().agent_proxy_headers(dict(self.headers), websocket=True).items():
+            lines.append(f"{key}: {value}")
+        try:
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1", errors="replace"))
+            header = b""
+            while b"\r\n\r\n" not in header and len(header) < 65536:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                header += chunk
+            marker = header.find(b"\r\n\r\n")
+            if marker < 0:
+                sock.close()
+                self._json(502, {"ok": False, "error": "Agent did not accept the socket"})
+                return
+            head = header[: marker + 4]
+            rest = header[marker + 4 :]
+            self.connection.sendall(head)
+            if rest:
+                self.connection.sendall(rest)
+        except OSError:
+            sock.close()
+            return
+        self.close_connection = True
+
+        def _pump(src, dst) -> None:
+            try:
+                while True:
+                    data = src.recv(65536)
+                    if not data:
+                        break
+                    dst.sendall(data)
+            except OSError:
+                pass
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+        peer = "" if self._is_loopback() else self._ui_client_ip()
+        AGENT_CLIENTS.websocket(peer, +1)
+        left = threading.Thread(target=_pump, args=(self.connection, sock), daemon=True)
+        right = threading.Thread(target=_pump, args=(sock, self.connection), daemon=True)
+        left.start()
+        right.start()
+        try:
+            left.join()
+            right.join()
+        finally:
+            AGENT_CLIENTS.websocket(peer, -1)
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("HEAD")
+            return
+        if self._is_agent_server():
+            self._serve_agent_gateway("HEAD")
+            return
+        if self._docs_container_refused():
+            return
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/docs-server" or path.startswith("/docs-server/"):
+            self._docs_proxy("HEAD")
+            return
+        super().do_HEAD()
+
+    def do_PUT(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("PUT")
+            return
+        if self._is_agent_server():
+            self._serve_agent_gateway("PUT")
+            return
+        if self._docs_container_refused():
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("DELETE")
+            return
+        if self._is_agent_server():
+            self._serve_agent_gateway("DELETE")
+            return
+        if self._docs_container_refused():
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("PATCH")
+            return
+        if self._is_agent_server():
+            self._serve_agent_gateway("PATCH")
+            return
+        if self._docs_container_refused():
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("OPTIONS")
+            return
+        if self._is_agent_server():
+            self._serve_agent_gateway("OPTIONS")
+            return
+        if self._docs_container_refused():
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_PROPFIND(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("PROPFIND")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_PROPPATCH(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("PROPPATCH")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_MKCOL(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("MKCOL")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_MKCALENDAR(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("MKCALENDAR")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_REPORT(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("REPORT")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_MOVE(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("MOVE")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_COPY(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("COPY")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_LOCK(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("LOCK")
+            return
+        self._json(405, {"error": "method not allowed"})
+
+    def do_UNLOCK(self) -> None:  # noqa: N802
+        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        if self._addon_id():
+            self._serve_addon("UNLOCK")
+            return
+        self._json(405, {"error": "method not allowed"})
+
     def _is_loopback(self) -> bool:
         host = (self.client_address[0] if self.client_address else "") or ""
         return host in ("127.0.0.1", "::1", "localhost")
+
+    def _may_show_secrets(self) -> bool:
+        """Stick screen only. A LAN browser never gets the pair code or SSH
+        password, paired or not (the code must only appear on the kiosk)."""
+        return self._is_loopback()
+
+    def _cookie(self, wanted: str) -> str:
+        vals = self._cookies(wanted)
+        return vals[0] if vals else ""
+
+    def _cookies(self, wanted: str) -> list[str]:
+        """All values for a cookie name (a jar can hold several, e.g. a stale
+        script-set one next to the HttpOnly one)."""
+        out: list[str] = []
+        for h in self.headers.get_all("Cookie") or []:
+            for bit in h.split(";"):
+                name, _, value = bit.strip().partition("=")
+                if name == wanted and value:
+                    out.append(urllib.parse.unquote(value.strip()))
+        return out
+
+    def _presented_token(self) -> str | None:
+        header = self.headers.get("Authorization")
+        if header:
+            return header
+        # Page loads cannot send the localStorage bearer. The gateway sets an
+        # HttpOnly pair cookie at pairing (and on apps-session). Prefer a value
+        # that validates when the jar holds more than one.
+        values = self._pair_cookie_values()
+        if not values:
+            return None
+        doc = load_auth()
+        for v in values:
+            if token_ok("Bearer " + v, doc):
+                return "Bearer " + v
+        return "Bearer " + values[0]
 
     def _auth(self) -> tuple[dict, bool]:
         doc = load_auth()
         if self._is_loopback():
             return doc, True
-        ok = token_ok(self.headers.get("Authorization"), doc)
+        ok = token_ok(self._presented_token(), doc)
+        if not ok and self._is_agent_server():
+            # Agent port only: the cookie set by a /__stickllm/handoff.
+            ok = agent_session_ok(self._cookie(AGENT_SESSION_COOKIE), doc)
         return doc, ok
 
+    def _speech_block(self) -> bool:
+        """Loopback or StickLLM UI, plus the pair token when require_pair is set."""
+        try:
+            mod = speech_mod()
+        except Exception:
+            self._json(500, {"ok": False, "error": "Speech support is not installed."})
+            return True
+        doc, ok = self._auth()
+        denied = mod.speech_denied(
+            self._is_loopback(),
+            stickllm_ui_client(self.headers),
+            bool(doc.get("require_pair")),
+            ok,
+        )
+        if not denied:
+            return False
+        code, message = denied
+        if code == 401:
+            self._json(401, {"ok": False, "error": "pair_required", "message": message})
+        else:
+            self._json(code, {"ok": False, "error": "external_api_removed", "message": message})
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("GET")
+            return
+        if self._is_agent_server():
+            self._serve_agent_gateway("GET")
+            return
+        if self._docs_container_refused():
+            return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/docs/"):
+            self._docs_api("GET", path)
+            return
+        if path == "/docs-server" or path.startswith("/docs-server/"):
+            self._docs_proxy("GET")
+            return
         if path in ("/health", "/api/health"):
             auth = load_auth()
             # Pair skip is loopback-only; Chat serves LAN with pair.
@@ -875,7 +4074,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "gateway": "ok",
                 "web": online,
                 "online": online,
-                "version": "0.3.2",
+                "version": stickllm_version(),
+                "vault": vault_health(),
                 "bind": f"{HOST}:{PORT}",
                 "llama": llama,
                 "llama_ok": llama_ok,
@@ -883,8 +4083,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "pair": pair,
                 "external_api": False,
                 "session_mode": session_mode,
-                "connect": connect_info(self._is_loopback(), llama_ok=llama_ok),
+                "connect": connect_info(self._may_show_secrets(), llama_ok=llama_ok),
                 "llama_load": llama_load_info(),
+                "llama_service": llama_unit_state(),
             }
             if path == "/api/health":
                 self._json(200, data)
@@ -912,11 +4113,15 @@ class Handler(SimpleHTTPRequestHandler):
                     },
                 )
                 return
+            _d, this_ok = self._auth()
             self._json(
                 200,
                 {
                     "require_pair": bool(auth.get("require_pair", True)),
+                    # "paired" = the stick has a paired browser (maybe another one).
                     "paired": bool(auth.get("paired")),
+                    # "this_paired" = this request (Bearer or HttpOnly cookie) is it.
+                    "this_paired": bool(this_ok),
                     "session_mode": get_session_mode(),
                 },
             )
@@ -960,6 +4165,15 @@ class Handler(SimpleHTTPRequestHandler):
             probe = read_json_safe(RUN_DIR / "model-probe.json") or {}
             self._json(200, {"version": "0.3", "storage": storage, "probe": probe})
             return
+        if path == "/api/speech/power":
+            if self._speech_block():
+                return
+            try:
+                on = bool(speech_mod().voice_power_on())
+            except Exception:
+                on = False
+            self._json(200, {"ok": True, "on": on})
+            return
         if path == "/api/web/search":
             doc, ok = self._auth()
             if doc.get("require_pair") and not ok:
@@ -969,16 +4183,364 @@ class Handler(SimpleHTTPRequestHandler):
             hits = duckduckgo_search(q or "StickLLM", n=5)
             self._json(200, {"results": hits, "online": uplink_ok()})
             return
+        if path == "/api/agent/status":
+            self._agent_status()
+            return
+        if path == "/api/apps":
+            self._apps_catalog()
+            return
+        if path == "/api/system":
+            self._system_status()
+            return
+        if path == "/api/ui/events":
+            self._stream_ui_events()
+            return
+        if path == "/api/ui/open-app":
+            if not self._ui_stream_allowed():
+                return
+            self._json(200, UI_OPEN.snapshot())
+            return
+        if path.startswith("/api/files"):
+            self._proxy_files("GET")
+            return
+        if path == "/apps" or path.startswith("/apps/"):
+            self._serve_desktop(path)
+            return
         return super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._addon_id():
+            self._serve_addon("POST")
+            return
+        if self._is_agent_server():
+            self._serve_agent_gateway("POST")
+            return
+        if self._docs_container_refused():
+            return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/docs/"):
+            self._docs_api("POST", path)
+            return
+        if path == "/docs-server" or path.startswith("/docs-server/"):
+            self._docs_proxy("POST")
+            return
+        if path.startswith("/api/files"):
+            self._proxy_files("POST")
+            return
+        if path == "/api/agent/install":
+            self._agent_install()
+            return
+        if path == "/api/agent/handoff":
+            self._agent_handoff_mint()
+            return
+        if path == "/api/apps/open-link":
+            self._addon_open_link()
+            return
         n = int(self.headers.get("Content-Length") or 0)
+        if path == "/api/ui/app-reply" and n > 65536:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        if path == "/api/ui/install-request" and n > 2048:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        if path == "/api/ui/docs-agent" and n > 262144:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        if path in ("/api/ui/app-state", "/api/ui/app-act") and n > 8192:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        if path in ("/api/ui/open-app", "/api/ui/open-app-seen", "/api/ui/events-ticket", "/api/ui/apps-session") and n > 2048:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        # Base64 of a 50 MB file is about 67 MB. Refuse anything larger up front.
+        if path == "/api/attachments/convert" and n > 70 * 1024 * 1024:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "That file is over the 50 MB limit."})
+            return
+        if path == "/api/speech/transcribe" and n > 4 * 1024 * 1024:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "That recording is too long."})
+            return
+        if path == "/api/speech/speak" and n > 64 * 1024:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "That reply is too long to read aloud."})
+            return
         raw = self.rfile.read(n) if n else b"{}"
         try:
             req = json.loads(raw.decode() or "{}")
         except Exception:
             self._json(400, {"error": "bad json"})
+            return
+
+        if path in ("/api/apps/install", "/api/apps/uninstall"):
+            action = "install" if path.endswith("/install") else "uninstall"
+            self._apps_mutate(action, req if isinstance(req, dict) else {})
+            return
+
+        if path == "/api/ui/open-app":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._open_app_control_ok():
+                return
+            try:
+                lib = agent_lib()
+                app_id = lib.normalize_app_id(req.get("id"))
+                if not lib.open_target_ok(app_id):
+                    self._json(400, {"ok": False, "error": "bad_id"})
+                    return
+                is_catalog = lib.catalog_app_id_ok(app_id)
+            except Exception:
+                self._json(400, {"ok": False, "error": "bad_id"})
+                return
+            open_path = ""
+            if is_catalog:
+                st = self._agent_catalog_status(app_id)
+                if not st["installed"]:
+                    self._json(
+                        409,
+                        {
+                            "ok": False,
+                            "error": "not_installed",
+                            "id": app_id,
+                            "message": f"{st['name']} is not installed. Call install_app with id {app_id}; "
+                            "the user confirms the install on their screen.",
+                        },
+                    )
+                    return
+                open_path = lib.catalog_app_path(app_id)
+            target, reason = ui_target()
+            conn = UI_OPEN.ui_conn_for(target)
+            if target != "kiosk" and conn is None:
+                # The browser driving Agent has no StickLLM tab open. Do not
+                # put the app on the kiosk instead; app_state explains why.
+                reason = "no_ui_tab"
+            event = UI_OPEN.publish(str(app_id), target=target, conn=conn, reason=reason, path=open_path)
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "id": event["id"],
+                    "path": event["path"],
+                    "window": event["window"],
+                    "screen": "kiosk" if target == "kiosk" else "browser",
+                    "reason": reason,
+                },
+            )
+            return
+
+        if path == "/api/ui/install-request":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._open_app_control_ok():
+                return
+            self._agent_install_request(req)
+            return
+
+        if path == "/api/ui/docs-agent":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._open_app_control_ok():
+                return
+            self._agent_docs(req)
+            return
+
+        if path in ("/api/ui/app-state", "/api/ui/app-act"):
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._open_app_control_ok():
+                return
+            app_id = req.get("id")
+            try:
+                if not agent_lib().open_app_id_ok(app_id):
+                    self._json(400, {"ok": False, "error": "bad_id"})
+                    return
+            except Exception:
+                self._json(400, {"ok": False, "error": "bad_id"})
+                return
+            if UI_OPEN.subscriber_count() < 1:
+                self._json(409, {"ok": False, "error": "no_subscriber"})
+                return
+            kind = "app_act" if path.endswith("app-act") else "app_state"
+            action = req.get("action")
+            if kind == "app_act" and not isinstance(action, dict):
+                self._json(400, {"ok": False, "error": "bad_action"})
+                return
+            # The screen open_app put the app on, while its page is open;
+            # otherwise the screen open_app would pick now.
+            target = UI_OPEN.screen_for_app(str(app_id)) or ui_target()[0]
+            if not UI_OPEN.has_app_page(target, str(app_id)):
+                # Fail fast instead of waiting for a reply that cannot come.
+                # Never fall back to the other screen: that is how a game ends
+                # up on the kiosk while the user watches their own browser.
+                phase = "act" if kind == "app_act" else "state"
+                UI_OPEN._write_log(
+                    f"STICKLLM_APP phase={phase} id={app_id} ok=false error=app_not_open{_target_log(target)}\n"
+                )
+                where = "the stick's screen" if target == "kiosk" else "the user's browser"
+                self._json(
+                    409,
+                    {
+                        "ok": False,
+                        "error": "app_not_open",
+                        "id": str(app_id),
+                        "screen": "kiosk" if target == "kiosk" else "browser",
+                        "message": (
+                            f"{app_id} is not open on {where}. Call open_app with id {app_id} first. "
+                            "If nothing opened, ask the user to keep a StickLLM tab open (the app "
+                            "opens inside that tab when pop-ups are blocked) and reload it, then try again."
+                        ),
+                    },
+                )
+                return
+            result = UI_OPEN.request_app(
+                kind,
+                str(app_id),
+                action if kind == "app_act" else None,
+                target=target,
+            )
+            code = 200 if result.get("ok") else 504
+            self._json(code, result)
+            return
+
+        if path == "/api/ui/app-reply":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._ui_stream_allowed():
+                return
+            app_id = req.get("id")
+            try:
+                if not agent_lib().open_app_id_ok(app_id):
+                    self._json(400, {"ok": False, "error": "bad_id"})
+                    return
+            except Exception:
+                self._json(400, {"ok": False, "error": "bad_id"})
+                return
+            reply = {
+                "ok": bool(req.get("ok")),
+                "id": str(app_id),
+                "req": str(req.get("req") or ""),
+                "kind": str(req.get("kind") or ""),
+            }
+            if "state" in req:
+                reply["state"] = req.get("state")
+            if req.get("error"):
+                reply["error"] = str(req.get("error"))[:300]
+            if not UI_OPEN.reply_app(str(req.get("req") or ""), reply, self._ui_screen_key()):
+                self._json(404, {"ok": False, "error": "unknown_req"})
+                return
+            self._json(200, {"ok": True})
+            return
+
+        if path == "/api/ui/open-app-seen":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._ui_stream_allowed():
+                return
+            try:
+                lib = agent_lib()
+                app_id = lib.normalize_app_id(req.get("id"))
+                if not lib.open_target_ok(app_id):
+                    self._json(400, {"ok": False, "error": "bad_id"})
+                    return
+            except Exception:
+                self._json(400, {"ok": False, "error": "bad_id"})
+                return
+            result = req.get("result")
+            if result is not None and result not in OPEN_APP_SEEN_RESULTS:
+                self._json(400, {"ok": False, "error": "bad_result"})
+                return
+            if result is None:
+                result = "opened" if req.get("opened") else "blocked"
+            UI_OPEN.note_seen(str(app_id), result in ("opened", "embedded"), str(result))
+            self._json(200, {"ok": True, "result": result})
+            return
+
+        if path == "/api/ui/apps-session":
+            # Paired StickLLM tab -> HttpOnly cookie for app pages, so a click
+            # on an app (desktop icon or open_app) opens it in a new tab.
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"ok": False, "error": "ui_only"})
+                return
+            doc, ok = self._auth()
+            if self._is_loopback() or not doc.get("require_pair"):
+                self._json(200, {"ok": True, "cookie": False})
+                return
+            value = apps_session_value(doc) if ok else ""
+            had = self._apps_cookie_ok(doc)
+            if not had or not value:
+                UI_OPEN._write_log(
+                    f"STICKLLM_APPS_AUTH session={'set' if value else 'refused'} "
+                    f"ip={self._ui_client_ip()} pair_cookie={self._pair_cookie_state(doc)}\n"
+                )
+            if not value:
+                self._json(401, {"ok": False, "error": "pair_required"})
+                return
+            bearer = (self.headers.get("Authorization") or "").split()
+            pair_tok = bearer[1] if len(bearer) == 2 and token_ok(" ".join(bearer), doc) else ""
+            self._json_cookies(200, {"ok": True, "cookie": True}, self._session_cookie_headers(doc, pair_tok))
+            return
+
+        if path == "/api/pair/forget":
+            # "Unpair this browser": drop this scheme's HttpOnly cookies.
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"ok": False, "error": "ui_only"})
+                return
+            self._json_cookies(200, {"ok": True}, self._session_cookie_headers({}, clear=True))
+            return
+
+        if path == "/api/pair/request":
+            # Not-paired LAN browser: ask the kiosk to show a pair code. The
+            # code is never returned here; remint stays kiosk-only.
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"ok": False, "error": "ui_only"})
+                return
+            if self._is_loopback():
+                self._json(400, {"ok": False, "error": "kiosk", "message": "Press F9 on this screen."})
+                return
+            blocked, reason = pair_rate_blocked()
+            if blocked:
+                self._json(429, {"ok": False, "error": "rate_limited", "message": reason})
+                return
+            auth = load_auth()
+            ok_req, reason, doc_req = pair_request_note(self._ui_client_ip(), bool(auth.get("paired")))
+            if not ok_req:
+                self._json(429, {"ok": False, "error": "rate_limited", "message": reason})
+                return
+            self._json(200, {
+                "ok": True,
+                "needs_confirm": bool(doc_req.get("needs_confirm")),
+                "message": (
+                    "Asked the stick. Someone at the stick screen must press Make new code "
+                    "(that unpairs the other browser), then enter the code here."
+                    if doc_req.get("needs_confirm")
+                    else "Look at the stick screen: it now shows the pair code. Enter it here."
+                ),
+            })
+            return
+
+        if path == "/api/ui/events-ticket":
+            if not self._ui_stream_allowed():
+                return
+            doc = load_auth()
+            ticket = mint_ui_events_ticket(doc)
+            if not ticket:
+                if self._is_loopback() or not doc.get("require_pair"):
+                    self._json(200, {"ok": True, "t": ""})
+                    return
+                self._json(401, {"ok": False, "error": "pair_required"})
+                return
+            self._json(200, {"ok": True, "t": ticket, "ttl": UI_EVENTS_TICKET_TTL})
             return
 
         if path == "/api/session-mode":
@@ -1026,16 +4588,34 @@ class Handler(SimpleHTTPRequestHandler):
                     },
                 )
                 return
+            if not self._is_loopback():
+                # The kiosk is the only place a code is made or shown. A LAN
+                # browser (paired or not) must not unpair everyone.
+                self._json(
+                    403,
+                    {
+                        "error": "kiosk_only",
+                        "message": "Make a new pair code on the stick's own screen (press F9 there).",
+                    },
+                )
+                return
             blocked, reason = remint_rate_blocked()
             if blocked:
                 self._json(429, {"error": "rate_limited", "message": reason})
                 return
+            # Decide before remint. Remint clears the bearer, so a check after
+            # it always hides the new digits from the browser that asked.
+            show_code = self._may_show_secrets()
             try:
                 code, remint_id = remint_pair_code()
             except Exception as e:
                 self._json(500, {"error": "remint_failed", "message": str(e)})
                 return
             remint_rate_mark()
+            try:
+                PAIR_REQUEST_PATH.unlink(missing_ok=True)
+            except Exception:
+                pass
             body: dict = {
                 "ok": True,
                 "remint_id": remint_id,
@@ -1049,8 +4629,8 @@ class Handler(SimpleHTTPRequestHandler):
                     )
                 ),
             }
-            # Plaintext code only on the stick itself (same as banner / chat).
-            if self._is_loopback():
+            # Plaintext code for this StickLLM UI (stick screen or a paired browser).
+            if show_code:
                 body["pair_code"] = code
             self._json(200, body)
             return
@@ -1103,13 +4683,18 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
             save_auth(auth)
             pair_rate_ok()
-            self._json(
+            try:
+                PAIR_REQUEST_PATH.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._json_cookies(
                 200,
                 {
                     "ok": True,
                     "token": token,
                     "message": "Paired. This StickLLM browser can chat until reboot.",
                 },
+                self._session_cookie_headers(auth, token),
             )
             return
 
@@ -1169,6 +4754,91 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             path = "/api/chat"
 
+        if path == "/api/attachments/convert":
+            if not (self._is_loopback() or stickllm_ui_client(self.headers)):
+                self._json(410, {"ok": False, "error": "external_api_removed", "message": "Use the StickLLM web UI only."})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"ok": False, "error": "pair_required", "message": "Pair this browser using the code on the stick screen."})
+                return
+            try:
+                payload = base64.b64decode(req.get("data_base64") or "", validate=False)
+            except Exception:
+                self._json(400, {"ok": False, "error": "Attachment data is not valid."})
+                return
+            name = str(req.get("name") or "file")
+            vision = bool(req.get("vision"))
+            result = run_attachment_convert(payload, name, vision)
+            if result.get("ok") and get_session_mode() == "vault":
+                try:
+                    persist_attachment(str(req.get("chat_id") or ""), name, payload, str(result.get("plain") or ""))
+                except Exception:
+                    pass
+            code = 200 if result.get("ok") else 400
+            # Never echo the raw upload back. plain text is what the model will see.
+            result.pop("plain_bytes", None)
+            self._json(code, result)
+            return
+
+        if path == "/api/speech/power":
+            if self._speech_block():
+                return
+            try:
+                result = speech_mod().set_voice_power(bool(req.get("on")))
+            except Exception:
+                result = {"ok": False, "on": False, "error": "Voice is not ready."}
+            code = 200 if result.get("ok") else 500
+            self._json(code, {
+                "ok": bool(result.get("ok")),
+                "on": bool(result.get("on")),
+                "error": result.get("error") or "",
+            })
+            return
+
+        if path == "/api/speech/transcribe":
+            if self._speech_block():
+                return
+            try:
+                audio = base64.b64decode(req.get("audio_base64") or "", validate=False)
+            except Exception:
+                self._json(400, {"ok": False, "error": "The recording could not be read."})
+                return
+            result = run_speech("stt", audio)
+            log_stt_stats(result)
+            if result.get("ok"):
+                self._json(200, {"ok": True, "text": str(result.get("text") or "")})
+            else:
+                self._json(400, {"ok": False, "error": result.get("error") or "Speech recognition failed."})
+            return
+
+        if path == "/api/speech/speak":
+            if self._speech_block():
+                return
+            voice = str(req.get("voice") or "Bella")
+            body = json.dumps({"text": str(req.get("text") or ""), "voice": voice}).encode("utf-8")
+            result = run_speech("tts", body)
+            if result.get("ok") and result.get("audio_base64"):
+                self._json(200, {"ok": True, "audio_base64": result["audio_base64"], "mime": "audio/wav"})
+            else:
+                self._json(400, {"ok": False, "error": result.get("error") or "Text to speech failed."})
+            return
+
+        if path == "/api/chat/stop":
+            if not (self._is_loopback() or stickllm_ui_client(self.headers)):
+                self._json(410, {"error": "external_api_removed", "message": "Use the StickLLM web UI only."})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required", "message": "Pair this browser using the code on the stick screen."})
+                return
+            stopped = LLAMA_CANCEL.cancel()
+            # The cancelled chat closes its llama socket and leaves. Do not
+            # start another generation until that handler is gone.
+            idle = LLAMA_CANCEL.wait_idle(8)
+            self._json(200, {"ok": True, "stopped": bool(stopped or idle)})
+            return
+
         if path != "/api/chat":
             self._json(404, {"error": "not found"})
             return
@@ -1194,7 +4864,197 @@ class Handler(SimpleHTTPRequestHandler):
             )
             return
 
-        messages = list(req.get("messages") or [])
+        chat_epoch = LLAMA_CANCEL.enter()
+        try:
+            self._finish_chat(req, messages_in=req.get("messages") or [], chat_epoch=chat_epoch)
+        finally:
+            LLAMA_CANCEL.leave()
+        return
+
+    def _relay_chat_stream(self, upstream: dict, hits: list, attach_meta: dict, chat_epoch: int) -> None:
+        """Stream llama tokens to the browser. Speech is the client's job."""
+        opener = urllib.request.build_opener(_TrackHTTPHandler)
+        req = urllib.request.Request(
+            LLAMA + "/v1/chat/completions",
+            data=json.dumps(upstream).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": UA},
+            method="POST",
+        )
+        try:
+            resp = opener.open(req, timeout=300)
+        except urllib.error.HTTPError as e:
+            if LLAMA_CANCEL.take_cancelled() or LLAMA_CANCEL.superseded(chat_epoch):
+                self._json(200, {"stopped": True, "choices": []})
+                return
+            body = e.read()[:2000]
+            try:
+                err = json.loads(body.decode())
+                if isinstance(err, dict):
+                    err["error"] = friendly_llama_error(Exception(str(err.get("error") or e)))
+                    self._json(e.code, err)
+                    return
+            except Exception:
+                pass
+            self._json(e.code, {"error": friendly_llama_error(e)})
+            return
+        except Exception as e:
+            if LLAMA_CANCEL.take_cancelled() or LLAMA_CANCEL.superseded(chat_epoch):
+                self._json(200, {"stopped": True, "choices": []})
+                return
+            self._json(502, {"error": friendly_llama_error(e)})
+            return
+
+        content_parts: list[str] = []
+        reason_parts: list[str] = []
+        usage = None
+        headers_sent = False
+        chunks_closed = False
+
+        def send_raw(payload: bytes) -> None:
+            self.wfile.write(payload)
+            self.wfile.flush()
+
+        def send_chunk(payload: bytes) -> None:
+            # One HTTP chunk per SSE event. Flush past the socket buffer so a
+            # browser paint is not held until the reply ends. No gzip.
+            send_raw(b"%X\r\n" % len(payload) + payload + b"\r\n")
+
+        def send_obj(obj: dict) -> None:
+            send_chunk(b"data: " + json.dumps(obj, ensure_ascii=True).encode("ascii") + b"\n\n")
+
+        def end_chunks() -> None:
+            nonlocal chunks_closed
+            if not headers_sent or chunks_closed:
+                return
+            chunks_closed = True
+            try:
+                send_raw(b"0\r\n\r\n")
+            except Exception:
+                pass
+
+        try:
+            try:
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Content-Encoding", "identity")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.flush()
+            headers_sent = True
+            meta: dict = {"stickllm_web": {"used": bool(hits), "results": hits or []}}
+            if attach_meta.get("used"):
+                meta["stickllm_attachments"] = {
+                    "truncated": bool(attach_meta.get("truncated")),
+                    "budget_tokens": attach_meta.get("budget_tokens"),
+                    "included_tokens": attach_meta.get("included_tokens"),
+                    "note": attach_meta.get("note") or "",
+                }
+            send_obj(meta)
+            while True:
+                if LLAMA_CANCEL.superseded(chat_epoch):
+                    send_obj({
+                        "done": True,
+                        "stopped": True,
+                        "content": "".join(content_parts),
+                        "reasoning": "".join(reason_parts),
+                    })
+                    return
+                line = resp.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", "replace").strip()
+                if not text.startswith("data:"):
+                    continue
+                payload = text[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    ev = json.loads(payload)
+                except Exception:
+                    continue
+                if isinstance(ev.get("usage"), dict):
+                    usage = ev["usage"]
+                choices = ev.get("choices") or []
+                delta = choices[0].get("delta") if choices and isinstance(choices[0], dict) else None
+                if not isinstance(delta, dict):
+                    delta = {}
+                piece = delta.get("content")
+                think = delta.get("reasoning_content")
+                if think is None:
+                    think = delta.get("reasoning")
+                if piece:
+                    content_parts.append(str(piece))
+                    send_obj({"content": str(piece)})
+                if think:
+                    reason_parts.append(str(think))
+                    send_obj({"reasoning": str(think)})
+            done = {
+                "done": True,
+                "stopped": LLAMA_CANCEL.superseded(chat_epoch),
+                "content": "".join(content_parts),
+                "reasoning": "".join(reason_parts),
+            }
+            if usage:
+                done["usage"] = usage
+            send_obj(done)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        except Exception:
+            try:
+                if headers_sent:
+                    send_obj({
+                        "done": True,
+                        "error": "The model did not answer.",
+                        "content": "".join(content_parts),
+                        "reasoning": "".join(reason_parts),
+                    })
+            except Exception:
+                pass
+        finally:
+            end_chunks()
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    def _finish_chat(self, req: dict, messages_in, chat_epoch: int) -> None:
+        messages = sanitize_chat_messages(messages_in)
+        attach_meta = {"used": False, "truncated": False, "note": ""}
+        try:
+            mod = convert_mod()
+            if messages and sum(
+                (m.get("content") or "").count("<attachment ")
+                if isinstance(m.get("content"), str)
+                else sum(str(p.get("text") or "").count("<attachment ") for p in m.get("content") if isinstance(p, dict))
+                if isinstance(m.get("content"), list)
+                else 0
+                for m in messages
+            ) > mod.MAX_FILES:
+                self._json(400, {"error": "too_many_files", "message": f"{mod.MAX_FILES} files per message."})
+                return
+            ctx = active_ctx_size() or 8192
+            fitted, attach_meta, budget_err = fit_chat_messages(messages, ctx, llama_token_count)
+            if budget_err:
+                self._json(400, {"error": "attachment_budget", "message": budget_err})
+                return
+            messages = fitted
+        except Exception:
+            raw = json.dumps(messages, default=str)
+            if "<attachment " in raw or '"image_url"' in raw:
+                self._json(
+                    400,
+                    {
+                        "error": "attachment_budget",
+                        "message": "Could not fit the attachment into the context window.",
+                    },
+                )
+                return
+            attach_meta = {"used": False, "truncated": False, "note": ""}
         web_mode = req.get("web", "auto")
         if web_mode is True or web_mode == "on":
             force, use = True, True
@@ -1208,37 +5068,288 @@ class Handler(SimpleHTTPRequestHandler):
         if use:
             out_messages, hits = augment_with_web(messages, force=force)
 
+        try:
+            max_tokens = int(req.get("max_tokens") or 1024)
+        except (TypeError, ValueError):
+            max_tokens = 1024
+        # Room for a Qwen think block plus an answer. Not an unbounded generation.
+        if max_tokens < 1:
+            max_tokens = 1
+        if max_tokens > 4096:
+            max_tokens = 4096
+        want_stream = req.get("stream") is True
         upstream = {
             "model": req.get("model") or "stickllm",
             "messages": out_messages,
-            "temperature": req.get("temperature", 0.7),
-            "stream": False,
-            "max_tokens": req.get("max_tokens", 1024),
+            "temperature": _sampling_num(req.get("temperature"), 0.7, 0.0, 2.0),
+            "stream": want_stream,
+            "max_tokens": max_tokens,
         }
+        # Models > Advanced sampling knobs (only when the UI sent them).
+        for key, lo, hi, as_int in (
+            ("top_p", 0.0, 1.0, False),
+            ("top_k", 0, 200, True),
+            ("repeat_penalty", 1.0, 2.0, False),
+        ):
+            if req.get(key) is not None:
+                v = _sampling_num(req.get(key), None, lo, hi)
+                if v is not None:
+                    upstream[key] = int(v) if as_int else v
+        think = req.get("chat_template_kwargs")
+        if isinstance(think, dict) and "enable_thinking" in think:
+            upstream["chat_template_kwargs"] = {"enable_thinking": bool(think.get("enable_thinking"))}
+        if LLAMA_CANCEL.superseded(chat_epoch):
+            self._json(200, {"stopped": True, "choices": []})
+            return
+        if not _CHAT_GATE.acquire(blocking=False):
+            self._json(409, {"error": "busy", "message": "Still answering. Press Stop first."})
+            return
+        LLAMA_CANCEL.arm(chat_epoch)
         try:
-            data = http_json(LLAMA + "/v1/chat/completions", upstream, timeout=300)
-            if hits:
-                data["stickllm_web"] = {"used": True, "results": hits}
-            else:
-                data["stickllm_web"] = {"used": False, "results": []}
-            self._json(200, data)
-        except urllib.error.HTTPError as e:
-            body = e.read()[:2000]
             try:
-                err = json.loads(body.decode())
-                if isinstance(err, dict):
-                    err["error"] = friendly_llama_error(Exception(str(err.get("error") or e)))
-                    self._json(e.code, err)
+                if LLAMA_CANCEL.superseded(chat_epoch):
+                    self._json(200, {"stopped": True, "choices": []})
                     return
+                if want_stream:
+                    self._relay_chat_stream(upstream, hits, attach_meta, chat_epoch)
+                    return
+                data = http_json_llama(LLAMA + "/v1/chat/completions", upstream, timeout=300)
+                if LLAMA_CANCEL.superseded(chat_epoch):
+                    self._json(200, {"stopped": True, "choices": []})
+                    return
+                if hits:
+                    data["stickllm_web"] = {"used": True, "results": hits}
+                else:
+                    data["stickllm_web"] = {"used": False, "results": []}
+                if attach_meta.get("used"):
+                    data["stickllm_attachments"] = {
+                        "truncated": bool(attach_meta.get("truncated")),
+                        "budget_tokens": attach_meta.get("budget_tokens"),
+                        "included_tokens": attach_meta.get("included_tokens"),
+                        "note": attach_meta.get("note") or "",
+                    }
+                self._json(200, data)
+            except urllib.error.HTTPError as e:
+                if LLAMA_CANCEL.take_cancelled():
+                    self._json(200, {"stopped": True, "choices": []})
+                    return
+                body = e.read()[:2000]
+                try:
+                    err = json.loads(body.decode())
+                    if isinstance(err, dict):
+                        err["error"] = friendly_llama_error(Exception(str(err.get("error") or e)))
+                        self._json(e.code, err)
+                        return
+                except Exception:
+                    pass
+                self._json(e.code, {"error": friendly_llama_error(e)})
+            except Exception as e:
+                if LLAMA_CANCEL.take_cancelled():
+                    self._json(200, {"stopped": True, "choices": []})
+                    return
+                self._json(502, {"error": friendly_llama_error(e)})
+        finally:
+            _CHAT_GATE.release()
+
+
+class _ReuseHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+def _tls_ips() -> list[str]:
+    """IPv4 addresses to put on the self-signed cert. Loopback always included."""
+    found: list[str] = []
+    try:
+        probed = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        for line in (probed.stdout or "").splitlines():
+            parts = line.split()
+            if "inet" not in parts:
+                continue
+            addr = parts[parts.index("inet") + 1].split("/", 1)[0]
+            if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", addr) and addr not in found:
+                found.append(addr)
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        found = []
+    lan = discover_lan_ip()
+    if lan and lan not in found:
+        found.append(lan)
+    if "127.0.0.1" not in found:
+        found.insert(0, "127.0.0.1")
+    return found
+
+
+def _set_tls_enabled(on: bool) -> None:
+    """connect_info already switches the banner to https when this file exists."""
+    flag = RUN_DIR / "tls.enabled"
+    try:
+        if on:
+            RUN_DIR.mkdir(parents=True, exist_ok=True)
+            flag.write_text("1\n", encoding="utf-8")
+        elif flag.is_file():
+            flag.unlink()
+    except OSError:
+        pass
+
+
+def _ensure_tls_cert(ips: list[str]) -> tuple[Path, Path]:
+    """Self-signed server cert in /run (regenerated when addresses change)."""
+    tls_dir = RUN_DIR / "tls"
+    cert = tls_dir / "cert.pem"
+    key = tls_dir / "key.pem"
+    stamp = tls_dir / "sans.txt"
+    want = ",".join(ips)
+    if cert.is_file() and key.is_file() and read_text_safe(stamp).strip() == want:
+        return cert, key
+    if not shutil.which("openssl"):
+        raise RuntimeError("openssl is not installed")
+    tls_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(tls_dir, 0o700)
+    san = ",".join(["DNS:localhost"] + [f"IP:{ip}" for ip in ips])
+    cnf = tls_dir / "openssl.cnf"
+    cnf.write_text(
+        "[req]\n"
+        "distinguished_name=dn\n"
+        "x509_extensions=v3_req\n"
+        "prompt=no\n"
+        "[dn]\n"
+        "CN=stickllm\n"
+        "[v3_req]\n"
+        "basicConstraints=CA:FALSE\n"
+        "keyUsage=digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        f"subjectAltName={san}\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(key), "-out", str(cert), "-days", "30",
+            "-config", str(cnf), "-extensions", "v3_req",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0 or not cert.is_file() or not key.is_file():
+        for path in (cert, key):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        err = (proc.stderr or proc.stdout or "openssl failed").strip().splitlines()
+        raise RuntimeError(err[-1] if err else "openssl failed")
+    os.chmod(key, 0o600)
+    os.chmod(cert, 0o644)
+    stamp.write_text(want + "\n", encoding="utf-8")
+    return cert, key
+
+
+def start_tls_server() -> int | None:
+    """Serve the same UI and /api/speech/* on HTTPS. Leave HTTP :80 alone."""
+    httpd = None
+    try:
+        ips = _tls_ips()
+        cert, key = _ensure_tls_cert(ips)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
+        httpd = _ReuseHTTPServer((HOST, TLS_PORT), Handler)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        threading.Thread(target=httpd.serve_forever, name="stickllm-tls", daemon=True).start()
+        _set_tls_enabled(True)
+        lan = discover_lan_ip() or next((ip for ip in ips if not ip.startswith("127.")), "")
+        shown = f"https://{lan}/" if lan else f"https://127.0.0.1:{TLS_PORT}/"
+        print(f"stickllm-gateway TLS on {shown}", flush=True)
+        return TLS_PORT
+    except Exception as exc:
+        if httpd is not None:
+            try:
+                httpd.server_close()
             except Exception:
                 pass
-            self._json(e.code, {"error": friendly_llama_error(e)})
-        except Exception as e:
-            self._json(502, {"error": friendly_llama_error(e)})
+        _set_tls_enabled(False)
+        print(f"stickllm-gateway TLS off ({exc})", flush=True)
+        return None
+
+
+def start_agent_tls_server() -> int | None:
+    """Paired TLS proxy for Agent Zero. Does not publish 5099 on the LAN."""
+    httpd = None
+    try:
+        ips = _tls_ips()
+        cert, key = _ensure_tls_cert(ips)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
+        httpd = _ReuseHTTPServer((HOST, AGENT_TLS_PORT), Handler)
+        httpd.stickllm_agent_gateway = True
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        threading.Thread(target=httpd.serve_forever, name="stickllm-agent-tls", daemon=True).start()
+        lan = discover_lan_ip() or next((ip for ip in ips if not ip.startswith("127.")), "")
+        shown = f"https://{lan}:{AGENT_TLS_PORT}/" if lan else f"https://127.0.0.1:{AGENT_TLS_PORT}/"
+        print(f"stickllm-gateway agent TLS on {shown}", flush=True)
+        return AGENT_TLS_PORT
+    except Exception as exc:
+        if httpd is not None:
+            try:
+                httpd.server_close()
+            except Exception:
+                pass
+        print(f"stickllm-gateway agent TLS off ({exc})", flush=True)
+        return None
+
+
+def start_addon_tls_servers() -> list[int]:
+    """One paired TLS port per starter add-on (own origin per app). The app
+    itself listens on 127.0.0.1 only."""
+    started: list[int] = []
+    try:
+        mod = addons_lib()
+        ips = _tls_ips()
+        cert, key = _ensure_tls_cert(ips)
+    except Exception as exc:
+        print(f"stickllm-gateway add-on TLS off ({exc})", flush=True)
+        return started
+    for app_id in mod.ORDER:
+        port = int(mod.APPS[app_id]["tls_port"])
+        httpd = None
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
+            httpd = _ReuseHTTPServer((HOST, port), Handler)
+            httpd.stickllm_addon = app_id
+            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+            threading.Thread(target=httpd.serve_forever, name=f"stickllm-addon-{app_id}", daemon=True).start()
+            started.append(port)
+        except Exception as exc:
+            if httpd is not None:
+                try:
+                    httpd.server_close()
+                except Exception:
+                    pass
+            print(f"stickllm-gateway {app_id} TLS off ({exc})", flush=True)
+    if started:
+        print("stickllm-gateway add-on TLS on ports " + ",".join(str(p) for p in started), flush=True)
+    return started
 
 
 def main() -> int:
     os.chdir(UI_ROOT)
+    try:
+        speech_mod().reconcile_voice_power()
+    except Exception:
+        pass
+    start_tls_server()
+    start_agent_tls_server()
+    start_addon_tls_servers()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"stickllm-gateway on http://{HOST}:{PORT} → {LLAMA} control={CONTROL}", flush=True)
     httpd.serve_forever()

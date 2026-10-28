@@ -1,0 +1,2127 @@
+"""Agent Zero gates: unlock does not install, and unpaired :5443 is refused."""
+from __future__ import annotations
+
+import re
+import base64
+import fnmatch
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import socket
+import subprocess
+import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+GATEWAY = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-gateway"
+AGENT = ROOT / "overlay" / "usr" / "local" / "lib" / "stickllm_agent.py"
+SCRIPT = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-agent"
+DOCKERD = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-dockerd"
+ENTRY = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-agent-entrypoint"
+LLAMA = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-llama-start"
+PIN = ROOT / "overlay" / "usr" / "local" / "share" / "stickllm" / "agent-zero.pin"
+PACKAGES = ROOT / "live-build" / "package-lists" / "stickllm.list.chroot"
+
+
+def _load(path: Path, name: str, env: dict | None = None):
+    if env:
+        os.environ.update(env)
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def _script() -> str:
+    return SCRIPT.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def _dockerd() -> str:
+    return DOCKERD.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def test_pin_is_a_real_digest():
+    agent = _load(AGENT, "stickllm_agent_pin")
+    pin = agent.load_pin(PIN)
+    assert pin["image"] == "agent0ai/agent-zero"
+    assert pin["version"] == "v2.14"
+    assert pin["amd64_digest"] == (
+        "sha256:307a2ceffc8501ba05a1e7253e8b6e4d656d2e1c3b97f0eb943c18b9c40a30fd"
+    )
+    assert agent.image_ref(pin).endswith("@" + pin["amd64_digest"])
+
+
+def test_locked_vault_does_not_allow_docker():
+    agent = _load(AGENT, "stickllm_agent_gate")
+    assert agent.docker_may_start(False) is False
+    assert agent.docker_may_start(True) is True
+    assert agent.MIN_FREE_BYTES == 12 * 1024 * 1024 * 1024
+    assert agent.pull_allowed(agent.MIN_FREE_BYTES - 1) is False
+    assert agent.pull_allowed(agent.MIN_FREE_BYTES) is True
+    assert agent.pull_allowed(15_000_000_000) is True
+    assert agent.pull_allowed(None) is False
+    # A large vault does not satisfy a small SSD folder.
+    assert agent.pull_allowed(1024) is False
+
+
+def test_docker_dir_is_beside_models_and_missing_ssd_is_visible(tmp_path):
+    host = tmp_path / "host" / "nvme0n1p3"
+    models = host / "home" / "someone" / "models"
+    models.mkdir(parents=True)
+    mounts_file = tmp_path / "mounts"
+    mounts_file.write_text(f"ext4 {host} ext4 rw 0 0\n", encoding="utf-8")
+    models_file = tmp_path / "models-dir.json"
+    models_file.write_text(json.dumps({"path": str(models)}), encoding="utf-8")
+    agent = _load(
+        AGENT,
+        "stickllm_agent_dockerdir",
+        {
+            "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+            "STICKLLM_HOST_MNT": str(tmp_path / "host"),
+            "STICKLLM_MOUNTS_FILE": str(mounts_file),
+            "STICKLLM_MODELS_DIR_FILE": str(models_file),
+            "STICKLLM_DOCKER_DIR": "",
+        },
+    )
+    (tmp_path / "vault").mkdir()
+    root = agent.docker_data_root(use_env=False)
+    assert root == models.parent / "stickllm-docker"
+    assert "vault" not in root.parts
+    assert root.name == "stickllm-docker"
+    explicit = agent.docker_data_root(
+        models=models,
+        mounts=[str(host)],
+        use_env=False,
+    )
+    assert explicit == models.parent / "stickllm-docker"
+    assert agent.docker_data_root(mounts=[], use_env=False) is None
+    missing = agent.status_document(
+        vault_open=True,
+        settings_open=True,
+        upstream_up=False,
+        saved={},
+        mounts=[],
+    )
+    assert missing["message"] == "Mount a drive for Agent Zero"
+    assert missing["state"] == "no_ssd"
+    assert missing["needs_install"] is False
+    ready = agent.status_document(
+        vault_open=True,
+        settings_open=True,
+        upstream_up=False,
+        saved={"image_present": False},
+        mounts=[str(host)],
+    )
+    assert ready["needs_install"] is True
+    assert ready["message"] == "Agent Zero is not installed yet"
+    assert "vault" not in agent.LOW_SPACE_MESSAGE.lower()
+    assert "12 GB" in agent.LOW_SPACE_MESSAGE
+    inside = agent.docker_data_root(override=str(tmp_path / "vault" / "docker"), use_env=False)
+    assert inside is None
+
+
+def test_run_does_not_install_and_checks_the_ssd_folder():
+    text = _script()
+    run = text.split("cmd_run()", 1)[1].split("\ncmd_stop()", 1)[0]
+    assert "cmd_install" not in run
+    assert "docker_cli pull" not in run
+    assert "Unlock starts a container that is already installed" in run
+    install = text.split("cmd_install()", 1)[1].split("\nstop_container()", 1)[0]
+    assert "docker_cli pull" in install
+    assert "smoke_image" in install
+    assert install.index("docker_cli pull") < install.index("smoke_image")
+    assert install.index("smoke_image") < install.index("stickllm-agent-zero:rollback")
+    assert "docker_cli rmi" not in install
+    assert "docker rmi" not in install
+    assert "pull-allowed" in install
+    assert "Mount a drive for Agent Zero" in text
+    assert "host SSD has under 12 GB free" in text
+    assert "vault free space" not in text
+    assert "15 GB" not in text
+    assert '${VAULT}/docker' not in text
+    shared = _dockerd()
+    assert "/var/lib/stickllm/vault/docker" in shared
+    assert "never pointed back at the vault" in shared
+    assert "--data-root \"${DOCKER_DIR}\"" in shared
+    assert "--iptables=false" in shared
+    assert 'SOCK="/run/stickllm/agent-docker.sock"' in text
+    assert 'SOCK="/run/stickllm/agent-docker.sock"' in shared
+    assert "apparmor=unconfined" not in text
+    assert "no-new-privileges=true" in text
+    assert "no-new-privileges:true" not in text
+    assert "--network host" not in text
+    assert "-p 127.0.0.1:5099:5099" in text
+    assert "nft-apply" in text
+    assert "nft-delete" in text
+    assert "write-status --state error" in text
+    assert "ALLOWED_ORIGINS" in text
+    assert "0.0.0.0:8080" not in text
+    assert "kitten" not in text.lower()
+    assert "whisper-server" not in text
+    body = text.split("cmd_run_container()", 1)[1].split("\ncmd_run()", 1)[0]
+    assert "docker-may-start" in body
+    assert body.index("docker-may-start") < body.index("ensure_dockerd")
+    daemon = text.split("ensure_dockerd()", 1)[1].split("\nimage_present()", 1)[0]
+    assert daemon.index("docker-may-start") < daemon.index('"$DOCKERD" ensure "$holder"')
+    ensure = shared.split("cmd_ensure()", 1)[1].split("\nrunning_containers()", 1)[0]
+    assert ensure.index("gate") < ensure.index("start_daemon_background")
+    run = shared.split("cmd_run()", 1)[1].split("\ncmd_ensure()", 1)[0]
+    assert run.index("gate") < run.index("\n  dockerd")
+    assert "/run/stickllm/agent-dockerd.log" in shared
+    assert "stickllm-logs/agent-dockerd.log" in shared
+    assert "/var/log/stickllm-dockerd.log" not in shared + text
+
+
+def test_dockerd_runs_in_the_host_mount_namespace():
+    """The gateway has a private mount namespace (ProtectSystem/ProtectHome).
+
+    dockerd mounts the container rootfs, but containerd and runc run in the
+    host namespace. A dockerd started from the gateway gave runc an empty
+    rootfs and the smoke test failed with "stat /bin/sh".
+    """
+    text = _script()
+    ui = (ROOT / "overlay" / "etc" / "systemd" / "system" / "stickllm-ui.service").read_text(
+        encoding="utf-8"
+    )
+    assert "ProtectSystem=" in ui
+    gateway = GATEWAY.read_text(encoding="utf-8")
+    assert '["/usr/local/bin/stickllm-agent", "install"]' in gateway
+    assert "exec nsenter --mount=/proc/1/ns/mnt --" in text
+    assert 'readlink "/proc/$1/ns/mnt"' in text
+    guard = text.split("\ncase \"${1:-}\" in\n  start|run|stop|install) enter_host_mount_ns", 1)
+    assert len(guard) == 2, "enter_host_mount_ns must run before any command"
+    head = guard[0]
+    assert "\ndocker_cli()" not in head
+    assert "\n  dockerd" not in head
+    shared = _dockerd()
+    assert "exec nsenter --mount=/proc/1/ns/mnt --" in shared
+    sguard = shared.split("\ncase \"${1:-}\" in\n  ensure|release|halt|run|stale) enter_host_mount_ns", 1)
+    assert len(sguard) == 2, "stickllm-dockerd must enter the host namespace first"
+    assert "\n  dockerd" not in sguard[0]
+    ensure = shared.split("cmd_ensure()", 1)[1].split("\nrunning_containers()", 1)[0]
+    # A daemon left in the gateway namespace is restarted before it is used.
+    assert ensure.index("dockerd_in_this_ns") < ensure.index("stop_dockerd")
+    assert ensure.index("stop_dockerd") < ensure.index("start_daemon_background")
+    stop = text.split("cmd_stop()", 1)[1].split("\ncmd_start()", 1)[0]
+    assert "release_dockerd" in stop
+    assert "stop_dockerd" not in stop
+    # The smoke test stays before the previous image is retagged.
+    install = text.split("cmd_install()", 1)[1].split("\nstop_container()", 1)[0]
+    assert install.index("smoke_image") < install.index("stickllm-agent-zero:rollback")
+
+def test_background_daemons_do_not_keep_the_install_lock():
+    """dockerd once inherited fd 9, so every later install said "already running"."""
+    text = _script()
+    assert 'exec 9>"$INSTALL_LOCK"' in text
+    assert 'INSTALL_LOCK="${RUN_DIR}/agent-install.lock"' in text
+    assert 'RUN_DIR="${STICKLLM_AGENT_RUN:-/run/stickllm}"' in text
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if stripped.endswith("&") and not stripped.endswith("&&"):
+            assert "9>&-" in stripped, stripped
+    shared = _dockerd()
+    for line in shared.splitlines():
+        stripped = line.rstrip()
+        if stripped.endswith("&") and not stripped.endswith("&&"):
+            assert "8>&- 9>&-" in stripped, stripped
+    daemon = shared.split("start_daemon_background()", 1)[1].split("\ncmd_run()", 1)[0]
+    assert '8>&- 9>&- 2>&1 | tee -a /run/stickllm/agent-dockerd.log >>"$persist_log" 8>&- 9>&- &' in daemon
+    assert '"$DOCKERD" ensure "$holder" 9>&-' in text
+
+def test_install_and_container_run_in_their_own_units():
+    """A process started by the gateway lives in the stickllm-ui cgroup.
+
+    Restarting stickllm-ui then killed dockerd and Agent Zero, and
+    stickllm-agent.service read inactive while the installer ran the container.
+    """
+    units = ROOT / "overlay" / "etc" / "systemd" / "system"
+    unit = (units / "stickllm-agent-install.service").read_text(encoding="utf-8")
+    assert "Type=oneshot" in unit
+    assert "ExecStart=/usr/local/bin/stickllm-agent install" in unit
+    assert "ConditionPathIsMountPoint=/var/lib/stickllm/vault" in unit
+    assert "[Install]" not in unit, "the installer is started on demand only"
+    agent_unit = (units / "stickllm-agent.service").read_text(encoding="utf-8")
+    assert "ExecStart=/usr/local/bin/stickllm-agent run" in agent_unit
+    hook = (ROOT / "live-build" / "hooks" / "normal" / "0100-stickllm-setup.hook.chroot").read_text(
+        encoding="utf-8"
+    )
+    assert "systemctl enable stickllm-agent.service" in hook
+    build = (ROOT / "scripts" / "lib" / "docker-build-live.sh").read_text(encoding="utf-8")
+    assert "etc/systemd/system/stickllm-agent-install.service" in build
+
+    gateway = GATEWAY.read_text(encoding="utf-8")
+    body = gateway.split("def _agent_install(self)", 1)[1].split("\n    def ", 1)[0]
+    assert '["systemctl", "start", "--no-block", "stickllm-agent-install.service"]' in body
+    assert body.index("stickllm-agent-install.service") < body.index("subprocess.Popen(")
+
+    text = _script()
+    install = text.split("cmd_install()", 1)[1].split("\nuse_systemd()", 1)[0]
+    tail = install.split("--state pulled", 1)[1]
+    # dockerd lives in its own unit now, so the install no longer stops it.
+    assert "stop_dockerd" not in tail
+    assert tail.index("use_systemd") < tail.index("systemctl restart stickllm-agent.service")
+    assert tail.index("systemctl restart stickllm-agent.service") < tail.index("cmd_run_container")
+    start = text.split("cmd_start()", 1)[1].split("\nusage()", 1)[0]
+    assert "use_systemd" in start and "systemctl start stickllm-agent.service" in start
+    helper = text.split("use_systemd()", 1)[1].split("\n}", 1)[0]
+    assert "STICKLLM_AGENT_NO_SYSTEMD" in helper and "/run/systemd/system" in helper
+
+
+def test_agent_page_is_not_rewritten_under_agent():
+    agent = _load(AGENT, "stickllm_agent_norewrite")
+    assert not hasattr(agent, "rewrite_text")
+    assert not hasattr(agent, "upstream_path")
+    assert not hasattr(agent, "rewrite_location")
+    preset = agent.preset_text("qwen.gguf")
+    assert agent.LLAMA_BASE in preset
+    assert "172.30.0.1:8080/v1" in preset
+    assert "device: cpu" in preset
+    assert "llama_cpp" in preset
+    assert "timeout: 90" in preset
+    assert "api_key: dummy" in preset
+    script = _script()
+    assert "HF_HUB_OFFLINE" in script
+    assert "embedding-cached" in script
+    rules = agent.nft_ruleset()
+    assert rules.index("172.30.0.0/24") < rules.index("192.168.0.0/16")
+    assert rules.index("172.30.0.0/24") < rules.index("10.0.0.0/8")
+    assert rules.index("172.30.0.0/24") < rules.index("172.16.0.0/12")
+    assert "drop" in rules
+    assert 'iifname "lo" accept' in rules
+    gateway = GATEWAY.read_text(encoding="utf-8")
+    assert "agent_proxy_headers" in gateway
+    assert "rewrite_text" not in gateway
+    assert "rewrite_bytes" not in gateway
+    assert 'path == "/agent"' not in gateway
+    assert "stickllm_agent_gateway" in gateway
+    assert "5443" in gateway
+    entry = ENTRY.read_text(encoding="utf-8")
+    assert "--host=127.0.0.1" not in entry
+    assert "--port=5099" in entry
+    llama = LLAMA.read_text(encoding="utf-8")
+    assert "--jinja" in llama
+    assert 'HOST="${STICKLLM_LLAMA_HOST:-127.0.0.1}"' in llama
+    assert "--host 0.0.0.0" not in llama
+    packages = PACKAGES.read_text(encoding="utf-8")
+    assert "\napparmor\n" in packages
+    assert "\nnftables\n" in packages
+    origins = agent.allowed_origins(["192.168.72.70"])
+    parts = origins.split(",")
+    assert "https://192.168.72.70:5443" in parts
+    assert "*://127.0.0.1:*" in parts
+    assert "https://192.168.72.70" not in parts
+
+
+def test_allowed_origins_include_lan_port_not_the_bare_host(tmp_path):
+    """A browser on another PC sends Origin https://<lan-ip>:5443.
+
+    Agent Zero's matcher is fnmatch. ``https://<ip>`` does not match that
+    origin, so the generated list has to carry the gateway port itself.
+    """
+    agent = _load(AGENT, "stickllm_agent_origins_port")
+    origins = agent.allowed_origins(["192.168.72.70", "127.0.0.1", "10.9.8.7"])
+    parts = origins.split(",")
+    browser = "https://192.168.72.70:5443"
+    assert "https://192.168.72.70:5443" in parts
+    assert "*://192.168.72.70:*" in parts
+    assert "https://10.9.8.7:5443" in parts
+    assert "*://10.9.8.7:*" in parts
+    assert "https://192.168.72.70" not in parts
+    assert "https://10.9.8.7" not in parts
+    assert "https://127.0.0.1:5443" not in parts
+    assert "*://localhost" in parts
+    assert "*://localhost:*" in parts
+    assert "*://127.0.0.1" in parts
+    assert "*://127.0.0.1:*" in parts
+    assert any(fnmatch.fnmatch(browser, item) for item in parts)
+    assert not fnmatch.fnmatch(browser, "https://192.168.72.70")
+    bare_only = [
+        "*://localhost",
+        "*://localhost:*",
+        "*://127.0.0.1",
+        "*://127.0.0.1:*",
+        "*://0.0.0.0",
+        "*://0.0.0.0:*",
+        "https://192.168.72.70",
+    ]
+    assert not any(fnmatch.fnmatch(browser, item) for item in bare_only)
+    assert any(fnmatch.fnmatch("http://127.0.0.1:5099", item) for item in parts)
+    assert not any(":5099" in item and "192.168.72.70" in item for item in parts)
+    assert "-p 127.0.0.1:5099:5099" in _script()
+    env = tmp_path / ".env"
+    env.write_text(
+        "API_KEY_LLAMA_CPP=dummy\n"
+        "ALLOWED_ORIGINS=*://localhost,*://127.0.0.1,https://192.168.72.70\n",
+        encoding="utf-8",
+    )
+    agent.ensure_env_file(env, origins=origins)
+    text = env.read_text(encoding="utf-8")
+    assert "API_KEY_LLAMA_CPP=dummy" in text
+    stored = next(
+        line.split("=", 1)[1]
+        for line in text.splitlines()
+        if line.startswith("ALLOWED_ORIGINS=")
+    )
+    assert stored.split(",") == parts
+    assert "https://192.168.72.70" not in stored.split(",")
+    assert "https://192.168.72.70:5443" in stored.split(",")
+
+
+def test_llama_relay_forwards_on_loopback_only():
+    agent = _load(AGENT, "stickllm_agent_relay")
+    assert agent.LLAMA_BRIDGE_HOST != "0.0.0.0"
+    try:
+        agent.run_tcp_relay("0.0.0.0", 9, "127.0.0.1", 9)
+        raise AssertionError("relay accepted 0.0.0.0")
+    except SystemExit:
+        pass
+    target = socket.socket()
+    target.bind(("127.0.0.1", 0))
+    target.listen(1)
+    tport = target.getsockname()[1]
+
+    def accept_one() -> None:
+        conn, _addr = target.accept()
+        data = conn.recv(100)
+        conn.sendall(b"ok:" + data)
+        conn.close()
+
+    threading.Thread(target=accept_one, daemon=True).start()
+    listen = socket.socket()
+    listen.bind(("127.0.0.1", 0))
+    lport = listen.getsockname()[1]
+    listen.close()
+    threading.Thread(
+        target=agent.run_tcp_relay,
+        args=("127.0.0.1", lport, "127.0.0.1", tport),
+        daemon=True,
+    ).start()
+    client = socket.socket()
+    last = None
+    for _ in range(30):
+        try:
+            client.connect(("127.0.0.1", lport))
+            break
+        except OSError as exc:
+            last = exc
+            time.sleep(0.05)
+    else:
+        raise AssertionError(f"relay did not listen: {last}")
+    client.sendall(b"ping")
+    client.shutdown(socket.SHUT_WR)
+    data = b""
+    client.settimeout(2)
+    while True:
+        try:
+            chunk = client.recv(100)
+        except OSError:
+            break
+        if not chunk:
+            break
+        data += chunk
+    client.close()
+    target.close()
+    assert data == b"ok:ping"
+
+
+def test_unpaired_agent_port_is_refused(tmp_path):
+    ui = tmp_path / "ui"
+    ui.mkdir()
+    (ui / "index.html").write_text("<html></html>", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    token = "paired-token"
+    auth = {
+        "require_pair": True,
+        "paired": True,
+        "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+    }
+    (run / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_SETTINGS_MNT": str(tmp_path / "settings"),
+        "STICKLLM_AGENT_STATUS": str(run / "agent-status.json"),
+        "STICKLLM_AGENT_PIN": str(PIN),
+        "STICKLLM_MOUNTS_FILE": str(tmp_path / "empty-mounts"),
+        "STICKLLM_AGENT_TLS_PORT": "5443",
+    }
+    (tmp_path / "empty-mounts").write_text("", encoding="utf-8")
+    (tmp_path / "vault").mkdir()
+    gateway = _load(GATEWAY, "stickllm_gateway_agent", env)
+    assert gateway.AGENT_TLS_PORT == 5443
+
+    class LanHandler(gateway.Handler):
+        def _is_loopback(self) -> bool:
+            return False
+
+    httpd = gateway.ThreadingHTTPServer(("127.0.0.1", 0), LanHandler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    agent_httpd = gateway.ThreadingHTTPServer(("127.0.0.1", 0), LanHandler)
+    agent_httpd.stickllm_agent_gateway = True
+    agent_port = agent_httpd.server_address[1]
+    agent_thread = threading.Thread(target=agent_httpd.serve_forever, daemon=True)
+    agent_thread.start()
+    try:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{agent_port}/", timeout=5)
+            raise AssertionError("unpaired agent port was allowed")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode()
+            assert exc.code == 401
+            assert "pair_required" in body
+
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{agent_port}/ui/index", timeout=5)
+            raise AssertionError("unpaired agent asset was allowed")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 401
+
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/agent", timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+        else:
+            raise AssertionError("main gateway still served /agent")
+
+        status_req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/agent/status",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(status_req, timeout=5) as resp:
+            doc = json.loads(resp.read().decode())
+        assert doc["vault_unlocked"] is False
+        assert doc["message"] == "Unlock vault to use Agent"
+        assert doc["gateway_port"] == 5443
+        assert doc["agent_url"].endswith(":5443/")
+
+        page_req = urllib.request.Request(
+            f"http://127.0.0.1:{agent_port}/ui/asset-bundle",
+            headers={"Cookie": f"stickllm_pair={token}"},
+        )
+        with urllib.request.urlopen(page_req, timeout=5) as resp:
+            html = resp.read().decode()
+        assert "Unlock vault to use Agent" in html
+        assert 'href="https://127.0.0.1/"' in html
+        assert "Back to StickLLM" in html
+        assert ":5443" not in html
+        assert 'href="/"' not in html
+        assert "/agent/" not in html
+
+        lan_req = urllib.request.Request(
+            f"http://127.0.0.1:{agent_port}/",
+            headers={"Cookie": f"stickllm_pair={token}", "Host": "192.168.72.70:5443"},
+        )
+        with urllib.request.urlopen(lan_req, timeout=5) as resp:
+            lan_html = resp.read().decode()
+        assert 'href="https://192.168.72.70/"' in lan_html
+        assert ":5443" not in lan_html
+        assert 'href="/"' not in lan_html
+    finally:
+        httpd.shutdown()
+        agent_httpd.shutdown()
+
+
+def test_interstitial_links_home_not_agent_port():
+    agent = _load(AGENT, "stickllm_agent_home_link")
+    assert agent.stickllm_home_url("192.168.72.70:5443") == "https://192.168.72.70/"
+    assert agent.stickllm_home_url("[2001:db8::1]:5443") == "https://[2001:db8::1]/"
+    assert ":5443" not in agent.stickllm_home_url("192.168.72.70:5443")
+    locked = {"state": "locked", "message": "Unlock vault to use Agent"}
+    html = agent.status_html(locked, home="https://192.168.72.70/")
+    assert "Unlock vault to use Agent" in html
+    assert html.count('href="https://192.168.72.70/"') >= 2
+    assert "Back to StickLLM" in html
+    assert ":5443" not in html
+    assert 'href="/"' not in html
+    rejected = agent.status_html(locked, home="https://192.168.72.70:5443/")
+    assert ":5443" not in rejected
+    assert 'href="https://127.0.0.1/"' in rejected
+    missing = {
+        "state": "needs_install",
+        "message": "Agent Zero is not installed yet",
+        "needs_install": True,
+    }
+    page = agent.status_html(missing, home="https://192.168.72.70/")
+    assert "Agent Zero is not installed yet" in page
+    assert 'href="https://192.168.72.70/"' in page
+    assert 'action="/install"' in page
+    assert ":5443" not in page
+
+
+def test_agent_sidebar_opens_a_new_tab():
+    html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+    side = html.split('<aside class="sidebar"', 1)[1].split("</aside>", 1)[0]
+    assert 'id="agentLink"' in side
+    tag_at = side.index('id="agentLink"')
+    tag = side[side.rfind("<", 0, tag_at) : side.index(">", tag_at) + 1]
+    assert tag.rstrip(">").split()[-1] == "hidden"
+    assert 'target="_blank"' in side
+    assert "noopener" in side
+    assert ":5443" in side
+    assert 'id="appsLink"' in side
+    assert "comfyLink" not in side
+    assert "writerLink" not in side
+    assert "Comfy" not in side
+    assert "Word processor" not in side
+    apps_at = side.index('id="appsLink"')
+    apps_tag = side[side.rfind("<", 0, apps_at) : side.index(">", apps_at) + 1]
+    assert apps_tag.startswith("<button")
+    assert "target=" not in apps_tag
+    assert ":5443" not in apps_tag
+    js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+    assert 'link.target = "_blank"' in js
+    assert "noopener" in js
+    assert 'label.textContent = "Agent"' in js
+    assert "function agentIsInstalled" in js
+    assert "link.hidden = !installed" in js
+    assert "agentDeskIcon" in js
+    assert "agent-zero.png" in js
+    assert 's.state === "starting"' in js
+    assert 's.state === "error"' in js
+    assert "http://127.0.0.1:5099/" in js
+    logo = ROOT / "ui" / "agent-zero.png"
+    raw = logo.read_bytes()
+    assert raw.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(raw) > 10000
+
+
+def test_console_browser_keeps_a_tab_strip():
+    text = (ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-kiosk").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        assert "--kiosk" not in line
+        assert "--app=" not in line
+        assert " --app " not in f" {line} "
+        assert "--no-sandbox" not in line
+        assert "--allow-insecure-localhost" not in line
+        assert "--ignore-certificate-errors" not in line
+        assert "--disable-web-security" not in line
+        assert "--test-type" not in line
+        assert "userChrome" not in line
+    assert 'KIOSK_USER="${STICKLLM_KIOSK_USER:-stickllm}"' in text
+    assert "--hide-crash-restore-bubble" in text
+    assert "clear_restore_prompt" in text
+    assert "FullscreenAllowed" in text
+    assert "ensure_browser_tabs" in text
+    assert "http://127.0.0.1:5099/" in text
+    assert "chromium_trust_args" not in text
+    assert "stick_cert_spki" not in text
+    policy = json.loads(
+        (
+            ROOT / "overlay" / "etc" / "chromium" / "policies" / "managed" / "stickllm-tabs.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert policy["FullscreenAllowed"] is False
+    assert "http://127.0.0.1" in policy["PopupsAllowedForUrls"]
+
+
+def _nft_check(text: str) -> None:
+    """Run ``nft -c -f -`` when nft or a bookworm container is available.
+
+    Debian 12's nftables is 1.0.6. ``destroy table`` is rejected there, so the
+    generated script must check cleanly on that version. When neither nft nor
+    Docker is available, the caller still asserts the script text.
+    """
+    payload = text.replace("\r\n", "\n").encode()
+    nft = shutil.which("nft")
+    if nft:
+        proc = subprocess.run(
+            [nft, "-c", "-f", "-"],
+            input=payload,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        err = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace")
+        assert proc.returncode == 0, err
+        return
+    docker = shutil.which("docker")
+    if not docker:
+        return
+    # Bytes on a Windows pipe can still arrive as CRLF. Pass the ruleset as
+    # base64 so nft 1.0.6 sees the real newlines.
+    encoded = base64.b64encode(payload).decode("ascii")
+    script = f"""
+printf '%s' '{encoded}' | base64 -d >/tmp/ok.nft || exit 1
+apt-get update -qq || exit 1
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables >/dev/null || exit 1
+nft --version || exit 1
+nft -c -f /tmp/ok.nft || exit 1
+if nft --version | grep -q 'v1.0.6'; then
+  if printf '%s\\n' 'destroy table inet stickllm_agent' | nft -c -f -; then
+    echo DESTROY_ACCEPTED >&2
+    exit 4
+  fi
+fi
+"""
+    try:
+        proc = subprocess.run(
+            [docker, "run", "--rm", "--cap-add", "NET_ADMIN", "debian:bookworm", "bash", "-lc", script],
+            capture_output=True,
+            timeout=240,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    combined = ((proc.stdout or b"") + (proc.stderr or b"")).decode("utf-8", "replace")
+    lowered = combined.lower()
+    if proc.returncode != 0 and "v1.0." not in combined and any(
+        part in lowered for part in ("cannot connect", "error during connect", "daemon", "not found")
+    ):
+        return
+    assert proc.returncode == 0, combined[-2500:]
+    if "v1.0." in combined:
+        assert "v1.0.6" in combined
+
+
+def test_nft_apply_text_is_safe_on_debian12():
+    agent = _load(AGENT, "stickllm_agent_nft")
+    text = agent.nft_apply_text(dns_servers=())
+    assert text.startswith("add table inet stickllm_agent\n")
+    assert "delete table inet stickllm_agent\n" in text
+    assert agent.nft_ruleset().strip() in text
+    lan = agent.nft_apply_text(dns_servers=["192.168.72.1"])
+    assert agent.nft_ruleset(dns_servers=["192.168.72.1"]).strip() in lan
+    _nft_check(lan)
+    for line in text.splitlines():
+        assert line.strip() != "destroy table inet stickllm_agent"
+        assert not line.strip().startswith("destroy table")
+    assert "destroy table" not in text
+    _nft_check(text)
+    doc = agent.status_document(
+        vault_open=True,
+        settings_open=True,
+        upstream_up=False,
+        saved={
+            "state": "error",
+            "image_present": True,
+            "message": "syntax error, unexpected destroy",
+        },
+        mounts=["/mnt/host"],
+    )
+    assert doc["state"] == "error"
+    assert doc["message"] == "syntax error, unexpected destroy"
+    assert doc["needs_install"] is False
+    assert "starting" not in doc["message"].lower()
+    page = agent.status_html(doc)
+    assert "Agent failed to start" in page
+    assert "unexpected destroy" in page
+    assert "Agent is starting" not in page
+    running = agent.status_document(
+        vault_open=True,
+        settings_open=True,
+        upstream_up=True,
+        saved={"state": "error", "image_present": True, "message": "old"},
+        mounts=["/mnt/host"],
+    )
+    assert running["state"] == "running"
+
+
+def test_loopback_agent_url_stays_on_the_stick(tmp_path):
+    ui = tmp_path / "ui"
+    ui.mkdir()
+    (ui / "index.html").write_text("<html></html>", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_SETTINGS_MNT": str(tmp_path / "settings"),
+        "STICKLLM_AGENT_STATUS": str(run / "agent-status.json"),
+        "STICKLLM_AGENT_PIN": str(PIN),
+        "STICKLLM_MOUNTS_FILE": str(tmp_path / "empty-mounts"),
+        "STICKLLM_AGENT_TLS_PORT": "5443",
+    }
+    (tmp_path / "empty-mounts").write_text("", encoding="utf-8")
+    (tmp_path / "vault").mkdir()
+    token = "paired-token"
+    (run / "auth.json").write_text(
+        json.dumps(
+            {
+                "require_pair": True,
+                "paired": True,
+                "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    gateway = _load(GATEWAY, "stickllm_gateway_loop_agent", env)
+
+    class LanHandler(gateway.Handler):
+        def _is_loopback(self) -> bool:
+            return False
+
+    lan = gateway.ThreadingHTTPServer(("127.0.0.1", 0), LanHandler)
+    local = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    threads = [
+        threading.Thread(target=lan.serve_forever, daemon=True),
+        threading.Thread(target=local.serve_forever, daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{local.server_address[1]}/api/agent/status", timeout=5) as resp:
+            doc = json.loads(resp.read().decode())
+        assert doc["agent_url"] == "http://127.0.0.1:5099/"
+        assert ":5443" not in doc["agent_url"]
+        unpaired = urllib.request.Request(
+            f"http://127.0.0.1:{lan.server_address[1]}/api/agent/status",
+            headers={"Host": "192.168.72.70"},
+        )
+        try:
+            urllib.request.urlopen(unpaired, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 401
+        else:
+            raise AssertionError("unpaired LAN status was allowed")
+        paired = urllib.request.Request(
+            f"http://127.0.0.1:{lan.server_address[1]}/api/agent/status",
+            headers={"Host": "192.168.72.70", "Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(paired, timeout=5) as resp:
+            lan_doc = json.loads(resp.read().decode())
+        assert lan_doc["agent_url"] == "https://192.168.72.70:5443/"
+    finally:
+        lan.shutdown()
+        local.shutdown()
+    run_text = _script()
+    assert "-p 127.0.0.1:5099:5099" in run_text
+    assert "-p 0.0.0.0:5099" not in run_text
+    assert "-p 5099:5099" not in run_text
+
+
+def test_model_settings_merge_keeps_user_fields_and_uses_the_relay(tmp_path):
+    agent = _load(AGENT, "stickllm_agent_model_merge")
+    model_id = "/models/Qwen3.6-35B-A3B-Q8_0.gguf"
+    assert agent.model_id_from_list(
+        {"data": [{"id": model_id}, {"id": "other"}]},
+        "fallback.gguf",
+    ) == model_id
+    assert agent.model_id_from_list({}, "fallback.gguf") == "fallback.gguf"
+    existing = {
+        "auth_login": "kept",
+        "secrets": {"token": "leave-me"},
+        "chat_model_provider": "openrouter",
+        "chat_model_name": "openai/gpt-5.6-terra",
+        "workdir_path": "/a0/usr/workdir",
+    }
+    merged = agent.merge_model_settings(existing, model_id)
+    assert merged["auth_login"] == "kept"
+    assert merged["secrets"] == {"token": "leave-me"}
+    assert merged["workdir_path"] == "/a0/usr/workdir"
+    assert merged["chat_model_provider"] == "llama_cpp"
+    assert merged["util_model_provider"] == "llama_cpp"
+    assert merged["chat_model_name"] == model_id
+    assert merged["util_model_name"] == model_id
+    assert merged["chat_model_api_base"] == agent.LLAMA_BASE
+    assert merged["util_model_api_base"] == agent.LLAMA_BASE
+    assert merged["chat_model_ctx_length"] == 32768
+    assert merged["chat_model_kwargs"]["api_key"] == "dummy"
+    assert merged["chat_model_kwargs"]["timeout"] == 90
+    headers = agent.agent_proxy_headers(
+        {
+            "Host": "192.168.72.70:5443",
+            "Origin": "https://192.168.72.70:5443",
+            "Content-Length": "4",
+            "Connection": "keep-alive",
+        }
+    )
+    assert headers["Host"] == "127.0.0.1:5099"
+    assert headers["X-Forwarded-Host"] == "192.168.72.70:5443"
+    assert headers["X-Forwarded-Proto"] == "https"
+    assert headers["Origin"] == "https://192.168.72.70:5443"
+    assert "Content-Length" not in headers
+    assert "Connection" not in headers
+    socket_headers = agent.agent_proxy_headers(
+        {"Host": "192.168.72.70:5443", "Connection": "Upgrade", "Upgrade": "websocket"},
+        websocket=True,
+    )
+    assert socket_headers["Connection"] == "Upgrade"
+    assert socket_headers["X-Forwarded-Host"] == "192.168.72.70:5443"
+    cache = tmp_path / "sentence-transformers" / "snapshots"
+    cache.mkdir(parents=True)
+    weights = cache / "model.safetensors"
+    weights.write_bytes(b"x" * 1_000_001)
+    assert agent.embedding_cached(tmp_path / "sentence-transformers")
+    assert not agent.embedding_cached(tmp_path / "missing")
+
+
+def test_apps_bridge_serves_only_static_apps(tmp_path):
+    apps = tmp_path / "ui" / "apps"
+    calc = apps / "calculator"
+    calc.mkdir(parents=True)
+    (calc / "index.html").write_text("<title>Calculator — StickLLM</title>\n", encoding="utf-8")
+    (calc / "calc.js").write_text("/* 12*34 */\n", encoding="utf-8")
+    (tmp_path / "ui" / "index.html").write_text("chat", encoding="utf-8")
+    agent = _load(AGENT, "stickllm_agent_apps_only")
+    root = apps
+    assert agent.apps_target(root, "/apps/calculator/").name == "index.html"
+    assert agent.apps_target(root, "/apps/calculator/calc.js").name == "calc.js"
+    assert agent.apps_target(root, "/api/chat") is None
+    assert agent.apps_target(root, "/api/vault") is None
+    assert agent.apps_target(root, "/") is None
+    assert agent.apps_target(root, "/apps/../index.html") is None
+    assert agent.apps_target(root, "/index.html") is None
+    try:
+        agent.apps_server("0.0.0.0", 0, root)
+    except SystemExit as exc:
+        assert "all interfaces" in str(exc)
+    else:
+        raise AssertionError("apps bridge accepted 0.0.0.0")
+    httpd = agent.apps_server("127.0.0.1", 0, root)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/apps/calculator/", timeout=5) as resp:
+            page = resp.read().decode("utf-8")
+            assert resp.status == 200
+            assert "Calculator" in page
+        for blocked in ("/api/chat", "/api/vault", "/", "/apps/../index.html"):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}{blocked}", timeout=5)
+            except urllib.error.HTTPError as exc:
+                assert exc.code == 404
+            else:
+                raise AssertionError(blocked)
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/apps/calculator/",
+            data=b"{}",
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+        else:
+            raise AssertionError("POST served an app")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    rules = agent.nft_ruleset()
+    assert 'iifname "lo" accept' in rules
+    assert rules.index('iifname "lo" accept') < rules.index('iifname "stickllm-a0" drop')
+    assert "tcp dport { 8080, 8081, 8082 }" in rules
+    assert 'iifname "stickllm-a0" ip daddr 172.30.0.1 tcp dport { 8080, 8081, 8082 } accept' in rules
+    assert "192.168.0.0/16 drop" in rules
+    assert "5099" not in rules
+    assert "0.0.0.0:8081" not in rules
+    assert "0.0.0.0:8080" not in rules
+    assert "0.0.0.0:8082" not in rules
+    script = _script()
+    assert "apps-bridge" in script
+    assert "ensure_apps" in script
+    assert "0.0.0.0:8081" not in script
+    assert "0.0.0.0:8082" not in script
+    assert "open-app-bridge" in script
+    assert "/stickllm-open-app.token:ro" in script
+    assert "-p 127.0.0.1:5099:5099" in script
+    run = script.split("docker_cli run --name", 1)[1].split("--entrypoint", 1)[0]
+    assert ":8081" not in run
+    assert ":8082" not in run
+    assert "/opt/stickllm/ui" not in run
+    assert 'iifname "lo" accept' in agent.nft_apply_text()
+
+
+def test_apps_prompt_names_url_ids(tmp_path):
+    vault = tmp_path / "vault"
+    settings = tmp_path / "settings"
+    vault.mkdir()
+    settings.mkdir()
+    mounts = tmp_path / "mounts"
+    mounts.write_text(
+        f"dev {vault} ext4 rw 0 0\ndev {settings} ext4 rw 0 0\n",
+        encoding="utf-8",
+    )
+    agent = _load(
+        AGENT,
+        "stickllm_agent_apps_prompt",
+        {
+            "STICKLLM_VAULT_MNT": str(vault),
+            "STICKLLM_SETTINGS_MNT": str(settings),
+            "STICKLLM_MOUNTS_FILE": str(mounts),
+        },
+    )
+    agent.ensure_apps_instructions()
+    agent.assemble_plugins()
+    prompt = (
+        vault
+        / "addons"
+        / "agent-zero"
+        / "state"
+        / "agents"
+        / "agent0"
+        / "prompts"
+        / "agent.system.main.specifics.md"
+    ).read_text(encoding="utf-8")
+    note = (
+        "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
+        "(minesweeper, solitaire, tetris, notepad, calculator, files, media, monitor)."
+    )
+    rule = "When the user says open/start/show an app, use open_app, not the browser tool."
+    assert note in prompt
+    assert "http://172.30.0.1:8081/apps/solitaire/" in prompt
+    assert rule in prompt
+    assert "http://172.30.0.1:8081/apps/minesweeper/" in prompt
+    assert "minesweep" in prompt
+    skill = (
+        settings / "agent-zero" / "skills" / "stickllm-apps" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert note in skill
+    assert rule in skill
+    assert "Use open_app / app_state / app_act for StickLLM apps." in skill
+    assert "At most 30 actions, then summarise." in skill
+    assert "URL ids are minesweeper, solitaire, tetris" in skill
+    assert agent.APPS_PLAYABLE_NOTE in skill
+    assert '{"move":"t3->f1"}' in skill
+    assert '{"draw":true}' in skill
+    act_prompt = (
+        vault / "addons" / "agent-zero" / "plugins" / "stickllm_apps" / "prompts" / "agent.system.tool.app_act.md"
+    ).read_text(encoding="utf-8")
+    assert '{"move":"t3->f1"}' in act_prompt
+    assert agent.APPS_PLAYABLE_NOTE in act_prompt
+    state_tool = (
+        vault / "addons" / "agent-zero" / "plugins" / "stickllm_apps" / "tools" / "app_state.py"
+    ).read_text(encoding="utf-8")
+    act_tool = (
+        vault / "addons" / "agent-zero" / "plugins" / "stickllm_apps" / "tools" / "app_act.py"
+    ).read_text(encoding="utf-8")
+    assert "class AppState" in state_tool
+    assert "http://172.30.0.1:8082/state" in state_tool
+    assert "class AppAct" in act_tool
+    assert "http://172.30.0.1:8082/act" in act_tool
+    assert "URL id minesweeper" in skill or "minesweeper" in skill
+    assert "minesweep" in skill
+    tool = (
+        vault
+        / "addons"
+        / "agent-zero"
+        / "plugins"
+        / "stickllm_apps"
+        / "tools"
+        / "open_app.py"
+    ).read_text(encoding="utf-8")
+    prompt_tool = (
+        vault
+        / "addons"
+        / "agent-zero"
+        / "plugins"
+        / "stickllm_apps"
+        / "prompts"
+        / "agent.system.tool.open_app.md"
+    ).read_text(encoding="utf-8")
+    assert "class OpenApp" in tool
+    assert "http://172.30.0.1:8082/open" in tool
+    assert rule in prompt_tool
+    assert "browser.py" not in tool
+
+
+def test_open_app_allowlist_and_token(tmp_path):
+    agent = _load(AGENT, "stickllm_agent_open_app")
+    assert agent.open_app_id_ok("minesweeper") is True
+    for good in ("files", "media", "monitor", "calculator", "solitaire", "tetris", "notepad"):
+        assert agent.open_app_id_ok(good) is True
+    for bad in (
+        "Solitaire",
+        "../solitaire",
+        "minesweep",
+        "Minesweeper",
+        "../minesweeper",
+        "minesweeper/../files",
+        "http://127.0.0.1/apps/minesweeper/",
+        "https://example.test",
+        "onlyoffice",
+        "",
+        "minesweeper\n",
+        " notepad",
+        "files/../../etc/passwd",
+        None,
+    ):
+        assert agent.open_app_id_ok(bad) is False
+    token = "correct-token-value-0123456789"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    assert agent.open_app_token_ok(None, token) is False
+    assert agent.open_app_token_ok("", token) is False
+    assert agent.open_app_token_ok("Bearer " + ("x" * len(token)), token) is False
+    assert agent.open_app_token_ok("Bearer " + token, token) is True
+    assert agent.open_app_token_ok(token, "") is False
+    apps = tmp_path / "apps"
+    (apps / "minesweeper").mkdir(parents=True)
+    (apps / "minesweeper" / "index.html").write_text("mines", encoding="utf-8")
+    assert agent.open_app_page_ready(apps, "minesweeper") is True
+    assert agent.open_app_page_ready(apps, "monitor") is False
+    opened: list[str] = []
+    httpd = agent.open_app_server(
+        "127.0.0.1",
+        0,
+        root=apps,
+        token_file=token_file,
+        notify=lambda app_id: opened.append(app_id),
+    )
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    def post(app_id, auth=None):
+        data = json.dumps({"id": app_id}).encode()
+        headers = {"Content-Type": "application/json"}
+        if auth is not None:
+            headers["Authorization"] = auth
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/open",
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode())
+
+    try:
+        code, _body = post("minesweeper")
+        assert code == 401
+        code, _body = post("minesweeper", "Bearer " + ("x" * len(token)))
+        assert code == 401
+        code, _body = post("minesweep", "Bearer " + token)
+        assert code == 400
+        code, _body = post("http://evil.test/apps/minesweeper/", "Bearer " + token)
+        assert code == 400
+        code, _body = post("../minesweeper", "Bearer " + token)
+        assert code == 400
+        code, _body = post("monitor", "Bearer " + token)
+        assert code == 404
+        code, body = post("minesweeper", "Bearer " + token)
+        assert code == 200
+        assert body["path"] == "/apps/minesweeper/"
+        assert body["window"] == "stickllm-minesweeper"
+        assert opened == ["minesweeper"]
+        data = json.dumps({"id": "minesweeper", "dry_run": True}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/open",
+            data=data,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer " + token},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            dry = json.loads(resp.read().decode())
+            assert resp.status == 200
+        assert dry["ok"] is True
+        assert opened == ["minesweeper"]
+        try:
+            agent.open_app_server(
+                "0.0.0.0",
+                0,
+                root=apps,
+                token_file=token_file,
+                notify=lambda _app_id: None,
+            )
+        except SystemExit as exc:
+            assert "all interfaces" in str(exc)
+        else:
+            raise AssertionError("open app control accepted 0.0.0.0")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_open_app_event_stays_off_the_lan(tmp_path):
+    token = "gateway-open-token-0123456789ab"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    pair = "paired-browser-token"
+    (run / "auth.json").write_text(
+        json.dumps(
+            {
+                "require_pair": True,
+                "paired": True,
+                "token_hash": hashlib.sha256(pair.encode()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    ui = tmp_path / "ui"
+    page = ui / "apps" / "minesweeper"
+    page.mkdir(parents=True)
+    (page / "index.html").write_text("<!DOCTYPE html><title>Mines</title>", encoding="utf-8")
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_OPEN_APP_TOKEN_FILE": str(token_file),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }
+    saved = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    gateway = _load(GATEWAY, "stickllm_gateway_open_app", env)
+
+    class LanHandler(gateway.Handler):
+        def _is_loopback(self) -> bool:
+            return False
+
+    lan = gateway.ThreadingHTTPServer(("127.0.0.1", 0), LanHandler)
+    local = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    lan_port = lan.server_address[1]
+    local_port = local.server_address[1]
+    for httpd in (lan, local):
+        httpd.daemon_threads = True
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def call(port, path, *, method="GET", auth=None, body=None, cookie=None):
+        data = None if body is None else json.dumps(body).encode()
+        headers = {}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if auth:
+            headers["Authorization"] = auth
+        if cookie:
+            headers["Cookie"] = cookie
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                raw = resp.read().decode()
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = raw
+                return resp.status, parsed
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode()
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {"raw": raw}
+            return exc.code, parsed
+
+    try:
+        code, body = call(
+            lan_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth="Bearer " + token,
+            body={"id": "minesweeper"},
+        )
+        assert code == 403
+        assert body["error"] == "loopback_only"
+        code, body = call(lan_port, "/api/ui/events")
+        assert code == 401
+        assert body["error"] == "pair_required"
+        code, _body = call(local_port, "/api/ui/open-app", method="POST", body={"id": "minesweeper"})
+        assert code == 401
+        code, _body = call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth="Bearer wrong-token-value-0123456789",
+            body={"id": "nope"},
+        )
+        assert code == 401
+        code, body = call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth="Bearer " + token,
+            body={"id": "nope"},
+        )
+        assert code == 400
+        code, body = call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth="Bearer " + token,
+            body={"id": "minesweeper"},
+        )
+        assert code == 200
+        assert body["window"] == "stickllm-minesweeper"
+        code, body = call(local_port, "/api/ui/open-app")
+        assert code == 200
+        assert body["id"] == "minesweeper"
+        code, snap = call(
+            lan_port,
+            "/apps/minesweeper/?stickllm_open=1",
+            cookie=f"stickllm_pair={pair}",
+        )
+        assert code == 200
+        assert "Mines" in snap
+        code, body = call(local_port, "/api/ui/open-app")
+        assert body.get("loaded_from") == "127.0.0.1"
+        sock = socket.create_connection(("127.0.0.1", local_port), timeout=3)
+        sock.sendall(b"GET /api/ui/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        sock.settimeout(2)
+        data = b""
+        try:
+            while b"open_app" not in data and len(data) < 12000:
+                chunk = sock.recv(2048)
+                if not chunk:
+                    break
+                data += chunk
+        except (TimeoutError, socket.timeout):
+            pass
+        finally:
+            sock.close()
+        assert b"event: open_app" in data
+        assert b"minesweeper" in data
+    finally:
+        lan.shutdown()
+        local.shutdown()
+        lan.server_close()
+        local.server_close()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_ui_events_cookie_ticket_and_subscribers(tmp_path):
+    token = "gateway-open-token-0123456789ab"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    pair = "paired-browser-token"
+    auth = {
+        "require_pair": True,
+        "paired": True,
+        "token_hash": hashlib.sha256(pair.encode()).hexdigest(),
+    }
+    (run / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+    ui = tmp_path / "ui"
+    page = ui / "apps" / "minesweeper"
+    page.mkdir(parents=True)
+    (page / "index.html").write_text("<!DOCTYPE html><title>Mines</title>", encoding="utf-8")
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_OPEN_APP_TOKEN_FILE": str(token_file),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }
+    saved = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    gateway = _load(GATEWAY, "stickllm_gateway_ui_events", env)
+    assert gateway.ui_events_ticket_ok(pair, auth) is False
+    expired = gateway.mint_ui_events_ticket(auth, now=time.time() - 500)
+    assert gateway.ui_events_ticket_ok(expired, auth) is False
+
+    class LanHandler(gateway.Handler):
+        def _is_loopback(self) -> bool:
+            return False
+
+    lan = gateway.ThreadingHTTPServer(("127.0.0.1", 0), LanHandler)
+    local = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    lan_port = lan.server_address[1]
+    local_port = local.server_address[1]
+    for httpd in (lan, local):
+        httpd.daemon_threads = True
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def call(port, path, *, method="GET", auth_header=None, body=None, cookie=None):
+        data = None if body is None else json.dumps(body).encode()
+        headers = {}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if auth_header:
+            headers["Authorization"] = auth_header
+        if cookie:
+            headers["Cookie"] = cookie
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                raw = resp.read().decode()
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = raw
+                return resp.status, parsed
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode()
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {"raw": raw}
+            return exc.code, parsed
+
+    def hold(path, headers):
+        sock = socket.create_connection(("127.0.0.1", lan_port), timeout=3)
+        req = f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n"
+        for key, value in headers.items():
+            req += f"{key}: {value}\r\n"
+        sock.sendall((req + "\r\n").encode())
+        sock.settimeout(2)
+        data = b""
+        while b"\r\n\r\n" not in data:
+            data += sock.recv(2048)
+        return sock, data
+
+    socks = []
+    try:
+        code, body = call(lan_port, "/api/ui/events")
+        assert code == 401
+        assert body["error"] == "pair_required"
+        code, body = call(lan_port, "/api/ui/events?t=" + pair)
+        assert code == 401
+        code, body = call(
+            lan_port,
+            "/api/ui/events-ticket",
+            method="POST",
+            auth_header="Bearer " + pair,
+            body={},
+        )
+        assert code == 200
+        ticket = body["t"]
+        assert ticket and ticket != pair and pair not in ticket
+        assert gateway.ui_events_ticket_ok(ticket, auth) is True
+        sock_cookie, head_cookie = hold("/api/ui/events", {"Cookie": f"stickllm_pair={pair}"})
+        sock_ticket, head_ticket = hold("/api/ui/events?t=" + ticket, {})
+        socks.extend((sock_cookie, sock_ticket))
+        assert b"200" in head_cookie and b"text/event-stream" in head_cookie
+        assert b"200" in head_ticket and b"text/event-stream" in head_ticket
+        deadline = time.time() + 3
+        log = ""
+        while time.time() < deadline:
+            log = (run / "kiosk.log").read_text(encoding="utf-8")
+            if log.count("STICKLLM_UI_EVENTS connect ip=127.0.0.1") >= 2:
+                break
+            time.sleep(0.05)
+        assert log.count("STICKLLM_UI_EVENTS connect ip=127.0.0.1") >= 2
+        code, body = call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper"},
+        )
+        assert code == 200
+        log = (run / "kiosk.log").read_text(encoding="utf-8")
+        assert "STICKLLM_OPEN_APP phase=published id=minesweeper path=/apps/minesweeper/ subscribers=2" in log
+        for result in ("toast-shown", "opened", "embedded", "blocked"):
+            code, body = call(
+                lan_port,
+                "/api/ui/open-app-seen",
+                method="POST",
+                cookie=f"stickllm_pair={pair}",
+                body={"id": "minesweeper", "result": result},
+            )
+            assert code == 200
+            assert body["result"] == result
+        code, body = call(
+            lan_port,
+            "/api/ui/open-app-seen",
+            method="POST",
+            cookie=f"stickllm_pair={pair}",
+            body={"id": "minesweeper", "result": "nope"},
+        )
+        assert code == 400
+        log = (run / "kiosk.log").read_text(encoding="utf-8")
+        assert "STICKLLM_OPEN_APP phase=seen id=minesweeper path=/apps/minesweeper/ result=toast-shown" in log
+        assert "result=opened" in log
+        assert "result=blocked" in log
+    finally:
+        for sock in socks:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        lan.shutdown()
+        local.shutdown()
+        lan.server_close()
+        local.server_close()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_app_act_roundtrip_and_bridge(tmp_path):
+    token = "gateway-open-token-0123456789ab"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    ui = tmp_path / "ui"
+    page = ui / "apps" / "minesweeper"
+    page.mkdir(parents=True)
+    (page / "index.html").write_text("<!DOCTYPE html><title>Mines</title>", encoding="utf-8")
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_OPEN_APP_TOKEN_FILE": str(token_file),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }
+    saved = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    gateway = _load(GATEWAY, "stickllm_gateway_app_act", env)
+    local = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    local.daemon_threads = True
+    port = local.server_address[1]
+    threading.Thread(target=local.serve_forever, daemon=True).start()
+
+    def call(path, *, method="GET", auth_header=None, body=None, timeout=8):
+        data = None if body is None else json.dumps(body).encode()
+        headers = {}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if auth_header:
+            headers["Authorization"] = auth_header
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode() or "{}")
+
+    sock = None
+    try:
+        code, body = call(
+            "/api/ui/app-act",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper", "action": {"reveal": [0, 0]}},
+            timeout=3,
+        )
+        assert code == 409
+        assert body["error"] == "no_subscriber"
+        main_ui = socket.create_connection(("127.0.0.1", port), timeout=3)
+        main_ui.sendall(b"GET /api/ui/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n")
+        deadline = time.time() + 3
+        while time.time() < deadline and "STICKLLM_UI_EVENTS connect" not in (
+            (run / "kiosk.log").read_text(encoding="utf-8") if (run / "kiosk.log").exists() else ""
+        ):
+            time.sleep(0.05)
+        started = time.time()
+        code, body = call(
+            "/api/ui/app-act",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper", "action": {"reveal": [0, 0]}},
+            timeout=3,
+        )
+        assert time.time() - started < 2
+        assert code == 409
+        assert body["error"] == "app_not_open"
+        assert "open_app" in body["message"]
+        main_ui.close()
+
+        def listen():
+            nonlocal sock
+            sock = socket.create_connection(("127.0.0.1", port), timeout=3)
+            sock.sendall(
+                b"GET /api/ui/events?app=minesweeper HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"
+            )
+            sock.settimeout(8)
+            data = b""
+            while b"event: app_act" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+            rest = data[data.find(b"event: app_act"):]
+            line = rest.split(b"data: ", 1)[1].split(b"\n", 1)[0]
+            payload = json.loads(line.decode())
+            call(
+                "/api/ui/app-reply",
+                method="POST",
+                body={
+                    "id": "minesweeper",
+                    "req": payload["req"],
+                    "kind": "app_act",
+                    "ok": True,
+                    "state": {"grid": "#1"},
+                },
+            )
+
+        threading.Thread(target=listen, daemon=True).start()
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            try:
+                log = (run / "kiosk.log").read_text(encoding="utf-8")
+            except OSError:
+                log = ""
+            if "STICKLLM_UI_EVENTS connect ip=127.0.0.1 app=minesweeper" in log:
+                break
+            time.sleep(0.05)
+        code, body = call(
+            "/api/ui/app-act",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper", "action": {"reveal": [0, 0]}},
+        )
+        assert code == 200
+        assert body["ok"] is True
+        assert body["state"]["grid"] == "#1"
+        log = (run / "kiosk.log").read_text(encoding="utf-8")
+        assert "STICKLLM_APP phase=act id=minesweeper ok=true target=kiosk" in log
+    finally:
+        if sock is not None:
+            sock.close()
+        local.shutdown()
+        local.server_close()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    agent = _load(AGENT, "stickllm_agent_app_act_bridge")
+    apps = tmp_path / "bridge-apps"
+    (apps / "minesweeper").mkdir(parents=True)
+    (apps / "minesweeper" / "index.html").write_text("mines", encoding="utf-8")
+    (apps / "monitor").mkdir(parents=True)
+    (apps / "monitor" / "index.html").write_text("monitor", encoding="utf-8")
+    seen = {}
+
+    def relay(path, app_id, action):
+        seen["path"] = path
+        seen["id"] = app_id
+        seen["action"] = action
+        return {"ok": True, "id": app_id, "state": {"grid": "#1"}}
+
+    bridge = agent.open_app_server(
+        "127.0.0.1",
+        0,
+        root=apps,
+        token_file=token_file,
+        relay=relay,
+    )
+    bridge.daemon_threads = True
+    threading.Thread(target=bridge.serve_forever, daemon=True).start()
+    bport = bridge.server_address[1]
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{bport}/state",
+            data=json.dumps({"id": "minesweeper"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=3)
+            raise AssertionError("bridge state accepted a missing token")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 401
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{bport}/act",
+            data=json.dumps({"id": "minesweeper", "action": {"reveal": [0, 0]}}).encode(),
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            body = json.loads(resp.read().decode())
+        assert body["ok"] is True
+        assert seen == {"path": "/act", "id": "minesweeper", "action": {"reveal": [0, 0]}}
+        # Apps without an adapter answer no_adapter at once instead of timing out.
+        seen.clear()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{bport}/state",
+            data=json.dumps({"id": "monitor"}).encode(),
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=3)
+            raise AssertionError("bridge relayed state for an app without an adapter")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 409
+            err = json.loads(exc.read().decode())
+        assert err["error"] == "no_adapter" and "open_app only" in err["hint"]
+        assert seen == {}
+    finally:
+        bridge.shutdown()
+        bridge.server_close()
+
+def test_playable_apps_have_adapters_and_solitaire_maps_cards_by_position():
+    agent = _load(AGENT, "stickllm_agent_playable")
+    apps = ROOT / "ui" / "apps"
+    for app_id in agent.APPS_PLAYABLE_IDS:
+        assert agent.open_app_id_ok(app_id) is True
+        page = (apps / app_id / "index.html").read_text(encoding="utf-8")
+        assert '<script src="stickllm-adapter.js"></script>' in page
+        assert '<script src="/apps/stickllm-bridge.js"></script>' in page
+        adapter = (apps / app_id / "stickllm-adapter.js").read_text(encoding="utf-8")
+        assert "window.stickllmApp" in adapter
+        assert f'id: "{app_id}"' in adapter
+    for app_id in agent.APPS_URL_IDS:
+        assert (apps / app_id / "index.html").is_file()
+        if app_id not in agent.APPS_PLAYABLE_IDS:
+            assert not (apps / app_id / "stickllm-adapter.js").exists()
+            assert app_id in agent.APPS_PLAYABLE_NOTE
+    sol = (apps / "solitaire" / "stickllm-adapter.js").read_text(encoding="utf-8")
+    # Cards live under .cardTable, not inside .pile, so piles come from geometry.
+    assert '".cardTable .card"' in sol
+    assert "getBoundingClientRect" in sol
+    assert '{ 1: "S", 2: "H", 3: "D", 4: "C" }' in sol
+    assert '100: "J", 101: "Q", 102: "K"' in sol
+    assert '"undoButton"' in sol and "illegal_move" in sol
+    css = next((apps / "solitaire").glob("SolitaireLib.*.css")).read_text(encoding="utf-8")
+    assert ".s1c1r1 .cardFront{background-image:url(AS." in css
+    assert ".s2c1r100 .cardFront{background-image:url(JH." in css
+    assert ".s3c1r101 .cardFront{background-image:url(QD." in css
+    assert ".s4c1r102 .cardFront{background-image:url(KC." in css
+
+
+def test_tetris_adapter_plays_turn_by_turn_and_suggests_a_placement():
+    agent = _load(AGENT, "stickllm_agent_tetris")
+    assert "tetris" in agent.APPS_PLAYABLE_IDS
+    assert "files, media, and monitor open with open_app only" in agent.APPS_PLAYABLE_NOTE
+    assert "start a new Agent Zero chat" in agent.APPS_PLAYABLE_NOTE
+    skill = agent.apps_skill_text()
+    for text in ('{"place":"suggested"}', '{"place":{"col":3,"rot":1}}', '{"new_game":true}', "Turn mode"):
+        assert text in agent.APP_ACTIONS_TEXT and text in skill
+    tetris = ROOT / "ui" / "apps" / "tetris"
+    page = (tetris / "index.html").read_text(encoding="utf-8")
+    # The vendored game script stays as-is; the adapter only wraps its globals.
+    assert page.index("stickllm-adapter.js") > page.rindex("function play()")
+    adapter = (tetris / "stickllm-adapter.js").read_text(encoding="utf-8")
+    assert "\r" not in adapter
+    for text in ('"place"', '"suggested"', '"hard_drop"', '"pause"', '"resume"', '"realtime"',
+                 "suggest", "holes_after", "game_over", "col_out_of_range", "window.update"):
+        assert text in adapter
+    assert "http://" not in adapter and "https://" not in adapter
+    assert "stickllm-adapter.js" in (tetris / "SOURCES.txt").read_text(encoding="utf-8")
+
+
+def test_gateway_app_call_passes_on_gateway_error_reason():
+    import http.server
+    agent = _load(AGENT, "stickllm_agent_app_call_err")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self.path.endswith("app-act"):
+                code, body = 504, {"ok": False, "error": "illegal_move", "id": "solitaire"}
+            else:
+                code, body = 502, {}
+            raw = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/api/ui/open-app"
+    try:
+        out = agent.gateway_app_call("app_act", "solitaire", "tok", {"move": "t1->f1"}, url=url)
+        assert out == {"ok": False, "error": "illegal_move", "id": "solitaire"}
+        try:
+            agent.gateway_app_call("app_state", "solitaire", "tok", None, url=url)
+            raise AssertionError("an error without a reason must still raise")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 502
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_agent_clients_pick_the_lan_browser_that_just_chatted():
+    gateway = _load(GATEWAY, "stickllm_gateway_agent_clients")
+    clients = gateway._AgentClients()
+    assert clients.target() == ""
+    clients.prompt("127.0.0.1", now=1000.0)
+    clients.prompt("::1", now=1000.0)
+    assert clients.target(now=1001.0) == ""
+    # An Agent tab left open (polls, websocket) is not "driving": kiosk wins.
+    clients.note("192.168.72.76", now=1000.0)
+    clients.websocket("192.168.72.76", +1)
+    assert clients.target(now=1001.0) == ""
+    clients.websocket("192.168.72.76", -1)
+    clients.prompt("192.168.72.76", now=1000.0)
+    assert clients.target(now=1000.0 + gateway.AGENT_TARGET_WINDOW) == "192.168.72.76"
+    assert clients.target(now=1001.0 + gateway.AGENT_TARGET_WINDOW) == ""
+    clients.prompt("192.168.72.80", now=1010.0)
+    assert clients.target(now=1011.0) == "192.168.72.80"
+    assert "/message_async" in gateway.AGENT_PROMPT_PATHS
+    # The Agent Zero web UI sends chat as POST /api/message_async (api.js).
+    assert "/api/message_async" in gateway.AGENT_PROMPT_PATHS
+    # A device id cookie wins over the IP (phones behind one NAT, changing IPs).
+    assert gateway.device_key("0123456789abcdef0123456789abcdef") == "d-0123456789abcdef0123456789abcdef"
+    assert gateway.device_key("nope") == "" and gateway.device_key("") == ""
+    assert gateway._target_log("d-0123456789abcdef") == " target=device:01234567"
+    clients.prompt("d-0123456789abcdef", now=1020.0)
+    assert clients.target(now=1021.0) == "d-0123456789abcdef"
+    assert gateway.ui_peer_key("127.0.0.1") == "kiosk"
+    assert gateway.ui_peer_key("192.168.72.76") == "192.168.72.76"
+
+
+def test_open_app_and_app_calls_go_only_to_the_agent_browser(tmp_path):
+    token = "gateway-open-token-0123456789ab"
+    token_file = tmp_path / "open-app.token"
+    token_file.write_text(token + "\n", encoding="utf-8")
+    run = tmp_path / "run"
+    run.mkdir()
+    pair = "paired-browser-token"
+    (run / "auth.json").write_text(
+        json.dumps(
+            {
+                "require_pair": True,
+                "paired": True,
+                "token_hash": hashlib.sha256(pair.encode()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    ui = tmp_path / "ui"
+    page = ui / "apps" / "minesweeper"
+    page.mkdir(parents=True)
+    (page / "index.html").write_text("<!DOCTYPE html><title>Mines</title>", encoding="utf-8")
+    env = {
+        "STICKLLM_UI": str(ui),
+        "STICKLLM_RUN": str(run),
+        "STICKLLM_OPEN_APP_TOKEN_FILE": str(token_file),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }
+    saved = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    gateway = _load(GATEWAY, "stickllm_gateway_targeting", env)
+    desk = "192.168.72.76"
+
+    class LanHandler(gateway.Handler):
+        def _is_loopback(self) -> bool:
+            return False
+
+        def _ui_client_ip(self) -> str:
+            return desk
+
+    lan = gateway.ThreadingHTTPServer(("127.0.0.1", 0), LanHandler)
+    local = gateway.ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+    lan_port = lan.server_address[1]
+    local_port = local.server_address[1]
+    for httpd in (lan, local):
+        httpd.daemon_threads = True
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def call(port, path, *, method="GET", auth_header=None, body=None, cookie=None, timeout=8):
+        data = None if body is None else json.dumps(body).encode()
+        headers = {}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if auth_header:
+            headers["Authorization"] = auth_header
+        if cookie:
+            headers["Cookie"] = cookie
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=data, headers=headers, method=method
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode() or "{}")
+
+    def hold(port, path, cookie=None):
+        sock = socket.create_connection(("127.0.0.1", port), timeout=3)
+        req = f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n"
+        if cookie:
+            req += f"Cookie: {cookie}\r\n"
+        sock.sendall((req + "\r\n").encode())
+        sock.settimeout(2)
+        data = b""
+        while b"\r\n\r\n" not in data:
+            data += sock.recv(2048)
+        assert b"200" in data.split(b"\r\n", 1)[0]
+        return sock
+
+    def read_for(sock, marker: bytes, seconds: float) -> bytes:
+        sock.settimeout(0.2)
+        data = b""
+        end = time.time() + seconds
+        while marker not in data and time.time() < end:
+            try:
+                chunk = sock.recv(4096)
+            except (TimeoutError, socket.timeout):
+                continue
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    def wait_log(text: str, count: int = 1) -> str:
+        end = time.time() + 3
+        log = ""
+        while time.time() < end:
+            log = (run / "kiosk.log").read_text(encoding="utf-8") if (run / "kiosk.log").exists() else ""
+            if log.count(text) >= count:
+                break
+            time.sleep(0.05)
+        return log
+
+    def open_app():
+        return call(
+            local_port,
+            "/api/ui/open-app",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper"},
+        )
+
+    cookie = f"stickllm_pair={pair}"
+    socks = []
+    try:
+        kiosk_ui = hold(local_port, "/api/ui/events")
+        desk_ui = hold(lan_port, "/api/ui/events", cookie)
+        socks += [kiosk_ui, desk_ui]
+        wait_log(f"STICKLLM_UI_EVENTS connect ip={desk}")
+
+        # Nobody used Agent from the LAN: the kiosk opens it, the desktop does not.
+        code, body = open_app()
+        assert code == 200 and body["screen"] == "kiosk" and body["reason"] == "no_lan_agent"
+        assert b"event: open_app" in read_for(kiosk_ui, b"event: open_app", 2)
+        assert b"event: open_app" not in read_for(desk_ui, b"event: open_app", 0.8)
+        log = wait_log("reason=no_lan_agent")
+        assert "phase=published id=minesweeper path=/apps/minesweeper/ subscribers=2 target=kiosk reason=no_lan_agent" in log
+
+        # An Agent tab merely open on the desktop: still the kiosk.
+        gateway.AGENT_CLIENTS.note(desk)
+        gateway.AGENT_CLIENTS.websocket(desk, +1)
+        code, body = open_app()
+        assert code == 200 and body["screen"] == "kiosk" and body["reason"] == "no_lan_agent"
+        assert b"event: open_app" in read_for(kiosk_ui, b"event: open_app", 2)
+        gateway.AGENT_CLIENTS.websocket(desk, -1)
+
+        # The desktop sent a chat message on :5443: only the desktop gets the event.
+        gateway.AGENT_CLIENTS.prompt(desk)
+        code, body = open_app()
+        assert code == 200 and body["screen"] == "browser" and body["reason"] == "agent_lan"
+        assert b"event: open_app" in read_for(desk_ui, b"event: open_app", 2)
+        assert b"event: open_app" not in read_for(kiosk_ui, b"event: open_app", 0.8)
+        log = wait_log(f"target={desk} reason=agent_lan")
+        assert f"target={desk} reason=agent_lan" in log
+
+        # A phone behind the same NAT IP, with its own device id cookie, sent the
+        # chat: only the phone's tab gets the event, not the desktop on that IP.
+        dev = "0123456789abcdef0123456789abcdef"
+        phone_ui = hold(lan_port, "/api/ui/events", cookie + "; stickllm_device=" + dev)
+        socks.append(phone_ui)
+        wait_log(f"STICKLLM_UI_EVENTS connect ip={desk}", 2)
+        gateway.AGENT_CLIENTS.prompt("d-" + dev)
+        code, body = open_app()
+        assert code == 200 and body["screen"] == "browser" and body["reason"] == "agent_lan"
+        assert b"event: open_app" in read_for(phone_ui, b"event: open_app", 2)
+        assert b"event: open_app" not in read_for(desk_ui, b"event: open_app", 0.8)
+        assert b"event: open_app" not in read_for(kiosk_ui, b"event: open_app", 0.3)
+        assert "target=device:01234567 reason=agent_lan" in wait_log("target=device:01234567")
+        phone_ui.close()
+        socks.remove(phone_ui)
+        gateway.AGENT_CLIENTS.prompt(desk)
+
+        # Kiosk has the app open, the desktop does not: fail fast, no kiosk fallback.
+        kiosk_app = hold(local_port, "/api/ui/events?app=minesweeper")
+        socks.append(kiosk_app)
+        wait_log("connect ip=127.0.0.1 app=minesweeper")
+        started = time.time()
+        code, body = call(
+            local_port,
+            "/api/ui/app-state",
+            method="POST",
+            auth_header="Bearer " + token,
+            body={"id": "minesweeper"},
+            timeout=4,
+        )
+        assert time.time() - started < 2
+        assert code == 409
+        assert body["error"] == "app_not_open" and body["screen"] == "browser"
+        assert desk not in body["message"]
+        assert f"STICKLLM_APP phase=state id=minesweeper ok=false error=app_not_open target={desk}" in wait_log(
+            "error=app_not_open"
+        )
+
+        # The desktop opens the app page: it alone gets the request and answers.
+        desk_app = hold(lan_port, "/api/ui/events?app=minesweeper", cookie)
+        socks.append(desk_app)
+        wait_log(f"connect ip={desk} app=minesweeper")
+        result = {}
+
+        def ask():
+            result["resp"] = call(
+                local_port,
+                "/api/ui/app-state",
+                method="POST",
+                auth_header="Bearer " + token,
+                body={"id": "minesweeper"},
+            )
+
+        asker = threading.Thread(target=ask, daemon=True)
+        asker.start()
+        data = read_for(desk_app, b"event: app_state", 3)
+        assert b"event: app_state" in data
+        assert b"event: app_state" not in read_for(kiosk_app, b"event: app_state", 0.5)
+        rest = data[data.find(b"event: app_state"):]
+        payload = json.loads(rest.split(b"data: ", 1)[1].split(b"\n", 1)[0].decode())
+        reply = {"id": "minesweeper", "req": payload["req"], "kind": "app_state", "ok": True, "state": {"grid": "#1"}}
+        code, _ = call(local_port, "/api/ui/app-reply", method="POST", body=reply)
+        assert code == 404
+        code, _ = call(lan_port, "/api/ui/app-reply", method="POST", body=reply, cookie=cookie)
+        assert code == 200
+        asker.join(5)
+        code, body = result["resp"]
+        assert code == 200 and body["state"]["grid"] == "#1"
+        assert f"STICKLLM_APP phase=state id=minesweeper ok=true target={desk}" in wait_log("ok=true")
+    finally:
+        for sock in socks:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        lan.shutdown()
+        local.shutdown()
+        lan.server_close()
+        local.server_close()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
+    bridge = (ROOT / "ui" / "apps" / "stickllm-bridge.js").read_text(encoding="utf-8")
+    assert 'new EventSource("/api/ui/events?app=" + encodeURIComponent(id))' in bridge
+    app = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+    index = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+    assert '<a class="deskIcon" data-starter="solitaire" href="/apps/solitaire/" target="stickllm-solitaire">' in index
+    start = app.index("function openStickApp(id")
+    body = app[start:app.index("function startOpenAppEvents", start)]
+    # Kiosk and LAN browser: the desktop icon's own href and target (a new
+    # tab), then a toast with one click doing the same; never the panel.
+    assert "detectLocalHost" not in body
+    assert "window.open" not in body
+    # No click: tab first; refused, the in-page panel so app_state works at
+    # once (the user is usually on the Agent tab); then the toast.
+    assert body.index("openAppTab(id") < body.index("showAppInPage(id)") < body.index("showOpenAppToast(id)")
+    assert 'reportOpenApp(id, "embedded")' in body
+    assert 'reportOpenApp(id, "opened")' in body and "cueHiddenTab(id)" in body
+    tab = app[app.index("function appTabLink(id)"):app.index("function openAppFromClick(id)")]
+    assert '#deskIcons a.deskIcon[' in tab and 'sel("data-starter", id)' in tab
+    assert 'icon.getAttribute("href")' in tab and 'icon.getAttribute("target")' in tab
+    assert "window.open(link.href, link.target)" in tab
+    click = app[app.index("function openAppFromClick(id)"):app.index("// In-page app panel")]
+    assert click.index("openAppTab(id") < click.index("showAppInPage(id)")
+    toast = app[app.index("function showOpenAppToast(id)"):app.index("function hideOpenAppToast()")]
+    assert '"Open in new tab"' in toast and "openAppFromClick(id)" in toast
+    cue = app[app.index("function cueHiddenTab(id)"):start]
+    assert "document.title" in cue and "new Notification(" in cue and "window.focus()" in cue
+    assert "openAppFromClick(id)" in cue
+    # Fallback panel: its iframe never shares the app tab's target name.
+    panel = app[app.index("function showAppInPage(id)"):app.index("function cueHiddenTab(id)")]
+    assert 'const name = "stickllm-embed-" + id;' in panel and "frame.name = name;" in panel
+    assert 'pop.textContent = "Open in new tab"' in app and "Open in window" not in app
+    assert 'window.open("", "stickllm-' not in app
+    assert 'window.name === "stickllm-" + id || window.name === "stickllm-embed-" + id' in bridge
+    # The app tab tells the StickLLM tab to drop the fallback panel.
+    assert '"tab-ready"' in bridge and "window.top !== window" in bridge
+    assert 'm.type !== "tab-ready"' in app
+    # App pages get the HttpOnly apps cookie from the paired tab, not a URL ticket.
+    prime = app[app.index("function primeAppsSession("):app.index("function clearPairSession()")]
+    assert '"/api/ui/apps-session"' in prime and "detectLocalHost()" in prime
+    assert "app-ticket" not in app and "appPageUrl" not in app
+    assert re.search(r"app\.js\?v=[A-Za-z0-9]+", index)
+
+
+def test_app_pages_may_be_framed_by_stickllm_only(tmp_path, monkeypatch):
+    for key, value in {
+        "STICKLLM_UI": str(tmp_path / "ui"),
+        "STICKLLM_RUN": str(tmp_path / "run"),
+        "STICKLLM_VAULT_MNT": str(tmp_path / "vault"),
+        "STICKLLM_FILES_PORT": "9",
+    }.items():
+        monkeypatch.setenv(key, value)
+    gw = _load(GATEWAY, "stickllm_gateway_frames")
+    for path in ("/apps/solitaire/", "/apps/solitaire/index.html?stickllm_open=1", "/apps/calculator/", "/apps/stickllm-bridge.js"):
+        policy = gw.csp_for_path(path)
+        assert "frame-ancestors 'self'" in policy, path
+        assert "frame-ancestors 'none'" not in policy, path
+    for path in ("/", "/index.html", "/app.js", "/api/ui/events", "/appsx/"):
+        assert "frame-ancestors 'none'" in gw.csp_for_path(path), path
+    assert gw.csp_for_path("/apps/solitaire/") == gw.CSP_VENDORED.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+    assert "embedded" in gw.OPEN_APP_SEEN_RESULTS
+
+
+def _run_dockerd(tmp_path, *args):
+    import subprocess
+
+    env = dict(os.environ)
+    env.update({
+        "STICKLLM_DOCKERD_RUN": str(tmp_path / "run"),
+        "STICKLLM_AGENT_NO_SYSTEMD": "1",
+        "STICKLLM_AGENT_HOST_NS": "1",
+        "STICKLLM_AGENT_LIB": str(AGENT),
+    })
+    return subprocess.run(["bash", str(DOCKERD), *args], env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_shared_dockerd_is_kept_while_another_addon_uses_it(tmp_path):
+    """Stopping Agent Zero must not stop dockerd while ONLYOFFICE uses it."""
+    import shutil
+
+    import sys
+
+    if sys.platform == "win32" or not shutil.which("bash") or not shutil.which("flock"):
+        import pytest
+
+        pytest.skip("bash/flock not available")
+    users = tmp_path / "run" / "dockerd-users"
+    users.mkdir(parents=True)
+    (users / "agent").write_text("")
+    (users / "docs").write_text("")
+    kept = _run_dockerd(tmp_path, "release", "agent")
+    assert kept.returncode == 0, kept.stderr
+    assert "kept for docs" in kept.stderr
+    assert not (users / "agent").exists()
+    assert (users / "docs").exists()
+    last = _run_dockerd(tmp_path, "release", "docs")
+    assert last.returncode == 0, last.stderr
+    assert "kept for" not in last.stderr
+    assert list(users.iterdir()) == []
+    bad = _run_dockerd(tmp_path, "release", "../x")
+    assert bad.returncode != 0
+
+
+def test_dockerd_unit_and_agent_use_the_shared_helper():
+    units = ROOT / "overlay" / "etc" / "systemd" / "system"
+    unit = (units / "stickllm-dockerd.service").read_text(encoding="utf-8")
+    assert "ExecStart=/usr/local/bin/stickllm-dockerd run" in unit
+    assert "ConditionPathIsMountPoint=/var/lib/stickllm/vault" in unit
+    assert "[Install]" not in unit, "dockerd starts only on demand after unlock"
+    text = _script()
+    assert "\n  dockerd " not in text and "\n  dockerd\n" not in text
+    assert '"$DOCKERD" ensure "$holder"' in text
+    assert '"$DOCKERD" release "${1:-agent}"' in text

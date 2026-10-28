@@ -49,13 +49,29 @@ Encoded from product docs and shipping rules:
 
 When unlocked, blob mounts at `/var/lib/stickllm/vault` (`models/`, `chats/`, `settings/`).
 
+## Opening an existing vault
+
+The vault file (`stickllm-vault.img`) is already on the SSD. These steps opened that file from a new stick. Creating a vault is a different action, below. You can also open the same file from **Open an existing vault** on that screen, or with `stickllm-vault attach`.
+
+1. Select Storage and Vault
+2. Mount SSD
+3. Search for Vault
+4. Attach vault
+5. Unlock vault
+
+A new USB boot creates a raw ~256 MB settings partition and does not format it. The stick does not already know the vault passcode. Formatting happens when that existing vault is unlocked with the passcode. After unlock, Storage & Vault shows the vault unlocked and `/mnt/stickllm-settings` mounted (about 252 MB free). That area remembers this computer's SSD vault location. Voice model files stay in `/opt/stickllm/speech`.
+
+## Creating a new vault
+
+**Create a new vault file** on the Storage & Vault screen, or `stickllm-vault setup` under Commands, makes a new `stickllm-vault.img` in a folder you choose. Setup refuses if that file is already there and never overwrites it. The SSD is not formatted.
+
 ## Commands (SSH)
 
 ```bash
 sudo stickllm-vault list-disks          # read-only
 sudo stickllm-vault setup /mnt/host/StickLLM 32   # NEW blob only
 # After reflash (meta wiped, blob still on SSD) — attach without format:
-sudo stickllm-vault attach /mnt/stickllm-host/.../home/nink/models
+sudo stickllm-vault attach /mnt/stickllm-host/<ssd-mount>/models
 # (aliases: use | setup --existing)
 sudo stickllm-vault unlock
 sudo stickllm-vault lock
@@ -75,12 +91,41 @@ after successful setup/attach, StickLLM writes
 only — **never** the passcode. **Find existing vault** reads that pointer, else
 scans `/mnt/stickllm-host` for `stickllm-vault.img`, then attaches + prompts Unlock.
 
-**UI (this branch / hot-deploy):** Settings → **Find existing vault** (or Mount SSD →
-browse → **Open existing vault**) → Unlock with passcode.
+**Current UI:** [Opening an existing vault](#opening-an-existing-vault).
 
 **UI on shipping v0.3.6:** Find/Open existing vault + attach are included. CREATE-VAULT
 does **not** attach an existing blob (refuses if img exists). Paste SSH password
 from Settings → System (Test/Term, on-stick) for hot-deploy on older sticks.
+
+## USB settings partition (~256 MB)
+
+This is **not** inside the ISO and **not** the SSD vault file. On a stick with
+free space beside the live image, `stickllm-usb-claim` reserves about **256 MB**
+as its own partition. `STICKLLM-DATA` (models) stays a separate partition.
+Claim does **not** shrink a `STICKLLM-DATA` that already goes to the end of the stick.
+
+The partition stays raw until the SSD vault passcode is accepted. Then
+`stickllm-usb-settings` formats it LUKS2 Argon2id with **that same passcode**.
+There is no second password. If `vault.key` and `vault-meta/recovery.sha256`
+already exist, those same slots are added, matching `stickllm-vault` setup.
+Boot does not prompt and does not unlock it (`stickllm-vault-boot` is unchanged).
+
+Mounted at `/mnt/stickllm-settings` while the vault is unlocked:
+
+| Path | Contents |
+|---|---|
+| `computers/<machine-id>.json` | This computer's SSD vault location. Path hints only |
+| `secrets/` | Portable secrets (API keys, passwords). The Hugging Face token is stored here |
+
+Voice weights stay in `/opt/stickllm/speech`. Chats stay in the SSD vault blob.
+
+`stickllm-vault-location.json` on `STICKLLM-DATA` is still written. It has no
+passcode. Find existing vault can use it **before** the settings partition is
+opened. After unlock, the per-computer file inside settings is preferred.
+
+Host disks are unchanged: `stickllm-vault create-partition` stays disabled, and
+the settings script refuses any partition that is not the ~256 MB slot on the
+boot USB.
 
 ## Workflow
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=StickLLM ONLYOFFICE Docs install (pull pinned image, prepare, then stickllm-docs.service)
+After=local-fs.target
+ConditionPathIsMountPoint=/var/lib/stickllm/vault
+ConditionPathIsMountPoint=/mnt/stickllm-settings
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/stickllm-docs install
+TimeoutStartSec=infinity
+# Started on demand by stickllm-gateway (Apps page). Its own cgroup, so a
+# stickllm-ui restart does not stop a pull. Not enabled: never at boot.
