@@ -1219,6 +1219,49 @@ def addon_response_header_ok(key: str, value: str) -> bool:
     return True
 
 
+def _chromium_major(user_agent: str) -> int:
+    ua = str(user_agent or "")
+    if "Android" in ua or "Mobile" in ua:
+        return 0
+    m = re.search(r"(?:Chrome|Chromium|HeadlessChrome)/(\d+)\.", ua)
+    return int(m.group(1)) if m else 0
+
+
+def addon_response_headers(pairs, user_agent: str = ""):
+    """Headers to send for one add-on response.
+
+    Apps that need cross-origin isolation (Actual Budget needs SharedArrayBuffer)
+    send COOP same-origin plus COEP. Dropping COOP for tab reuse (A3) broke them.
+    Desktop Chromium 137+ gets Document-Isolation-Policy instead: isolated, and
+    the named tab still reuses. Other browsers keep the app's COOP/COEP: the app
+    works, and a second Open may open a new tab there."""
+    pairs = list(pairs)
+    coop = ""
+    coep = ""
+    for key, value in pairs:
+        low = key.lower()
+        if low == "cross-origin-opener-policy":
+            coop = str(value).strip().lower()
+        elif low == "cross-origin-embedder-policy":
+            coep = str(value).strip().lower()
+    wants_isolation = coop.startswith("same-origin") and coep in ("require-corp", "credentialless")
+    use_dip = wants_isolation and _chromium_major(user_agent) >= 137
+    out = []
+    for key, value in pairs:
+        low = key.lower()
+        if wants_isolation and not use_dip and low in TAB_REUSE_DROP:
+            out.append((key, value))
+            continue
+        if use_dip and low == "cross-origin-embedder-policy":
+            continue
+        if addon_response_header_ok(key, value):
+            out.append((key, value))
+    if use_dip:
+        mode = "isolate-and-credentialless" if coep == "credentialless" else "isolate-and-require-corp"
+        out.append(("Document-Isolation-Policy", mode))
+    return out
+
+
 class _LimitedReader:
     """Request body for http.client: exactly Content-Length bytes."""
 
@@ -3543,8 +3586,10 @@ class Handler(SimpleHTTPRequestHandler):
     def _addon_public_url(self, app_id: str) -> str:
         spec = addons_lib().app(app_id)
         if self._is_loopback():
-            # The console browser uses the loopback publish; no certificate.
-            return f"http://127.0.0.1:{spec['local_port']}/"
+            # The console browser uses the gateway's loopback relay (no certificate).
+            # Not the container's own publish: the relay applies the same headers as
+            # the LAN ports, so tab reuse and isolation behave the same (v0.5.3).
+            return f"http://127.0.0.1:{spec.get('kiosk_port') or spec['local_port']}/"
         raw = (self.headers.get("Host") or "").strip()
         if raw.startswith("["):
             host = raw[: raw.find("]") + 1] if "]" in raw else ""
@@ -3689,9 +3734,8 @@ class Handler(SimpleHTTPRequestHandler):
             # The app sends its own CSP and headers; StickLLM's would break it.
             self._skip_stick_headers = True
             self.send_response(resp.status)
-            for key, value in resp.getheaders():
-                if addon_response_header_ok(key, value):
-                    self.send_header(key, value)
+            for key, value in addon_response_headers(resp.getheaders(), self.headers.get("User-Agent") or ""):
+                self.send_header(key, value)
             clen = resp.getheader("Content-Length") or ""
             if method == "HEAD" or resp.status in (204, 304) or resp.status < 200:
                 if method == "HEAD" and clen.isdigit():
@@ -5469,6 +5513,30 @@ def start_addon_tls_servers() -> list[int]:
     return started
 
 
+def start_addon_kiosk_servers() -> list[int]:
+    """Plain HTTP relay per add-on on 127.0.0.1 only, for the console browser."""
+    started: list[int] = []
+    try:
+        mod = addons_lib()
+    except Exception as exc:
+        print(f"stickllm-gateway add-on kiosk relay off ({exc})", flush=True)
+        return started
+    for app_id in mod.ORDER:
+        port = int(mod.APPS[app_id].get("kiosk_port") or 0)
+        if not port:
+            continue
+        try:
+            httpd = _ReuseHTTPServer(("127.0.0.1", port), Handler)
+            httpd.stickllm_addon = app_id
+            threading.Thread(target=httpd.serve_forever, name=f"stickllm-addon-kiosk-{app_id}", daemon=True).start()
+            started.append(port)
+        except Exception as exc:
+            print(f"stickllm-gateway {app_id} kiosk relay off ({exc})", flush=True)
+    if started:
+        print("stickllm-gateway add-on kiosk relay on 127.0.0.1 ports " + ",".join(str(p) for p in started), flush=True)
+    return started
+
+
 def main() -> int:
     os.chdir(UI_ROOT)
     try:
@@ -5478,6 +5546,7 @@ def main() -> int:
     start_tls_server()
     start_agent_tls_server()
     start_addon_tls_servers()
+    start_addon_kiosk_servers()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"stickllm-gateway on http://{HOST}:{PORT} → {LLAMA} control={CONTROL}", flush=True)
     httpd.serve_forever()

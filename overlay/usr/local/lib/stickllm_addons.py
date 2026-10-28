@@ -47,6 +47,8 @@ APPS: dict[str, dict] = {
         "user": (2999, 2999),
         "port": 5232,
         "local_port": 8101,
+        # Console (kiosk) browser: gateway relay on 127.0.0.1, plain HTTP (v0.5.3).
+        "kiosk_port": 8111,
         "tls_port": 5451,
         "dirs": ("data",),
         "binds": (("data", "/data"),),
@@ -72,6 +74,8 @@ APPS: dict[str, dict] = {
         "user": (1000, 1000),
         "port": 3456,
         "local_port": 8102,
+        # Console (kiosk) browser: gateway relay on 127.0.0.1, plain HTTP (v0.5.3).
+        "kiosk_port": 8112,
         "tls_port": 5452,
         "dirs": ("config", "db", "files"),
         "binds": (("config", "/etc/vikunja:ro"), ("db", "/db"), ("files", "/app/vikunja/files")),
@@ -96,6 +100,8 @@ APPS: dict[str, dict] = {
         "user": (1000, 1000),
         "port": 5006,
         "local_port": 8103,
+        # Console (kiosk) browser: gateway relay on 127.0.0.1, plain HTTP (v0.5.3).
+        "kiosk_port": 8113,
         "tls_port": 5453,
         "dirs": ("data",),
         "binds": (("data", "/data"),),
@@ -120,6 +126,8 @@ APPS: dict[str, dict] = {
         "user": (1000, 1000),
         "port": 8080,
         "local_port": 8104,
+        # Console (kiosk) browser: gateway relay on 127.0.0.1, plain HTTP (v0.5.3).
+        "kiosk_port": 8114,
         "tls_port": 5454,
         "dirs": ("data",),
         "binds": (("data", "/home/node/trilium-data"),),
@@ -146,6 +154,8 @@ APPS: dict[str, dict] = {
         "user": (1000, 1000),
         "port": 1880,
         "local_port": 8105,
+        # Console (kiosk) browser: gateway relay on 127.0.0.1, plain HTTP (v0.5.3).
+        "kiosk_port": 8115,
         "tls_port": 5455,
         "dirs": ("data",),
         "binds": (("data", "/data"),),

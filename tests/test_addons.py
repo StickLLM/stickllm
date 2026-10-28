@@ -474,7 +474,8 @@ def test_gateway_addon_proxy_live(tmp_path):
         # installed_count is recounted after the add-on rows are overridden.
         assert catalog["installed_count"] == sum(1 for r in catalog["apps"] if r["installed"]) >= 1
         assert rows["vikunja"]["not_installed"] is False
-        assert rows["vikunja"]["open_url"] == f"http://127.0.0.1:{up.server_address[1]}/"
+        # v0.5.3: the console opens the gateway loopback relay, not the container publish.
+        assert rows["vikunja"]["open_url"] == f"http://127.0.0.1:{mod.APPS['vikunja']['kiosk_port']}/"
         assert rows["radicale"]["installed"] is False and rows["radicale"]["state"] == "not_installed"
         assert "immich" not in rows  # hidden in v0.5.3 (needs four containers + GPU)
         # Locked vault: 423, the app is never contacted.

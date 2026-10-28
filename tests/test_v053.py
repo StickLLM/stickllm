@@ -311,3 +311,37 @@ def test_c_agent_zero_is_told_and_cannot_bypass():
 def test_c_docs():
     text = (ROOT / "docs/VERIFIED.md").read_text()
     assert WARNING in text and "pins.py upstream" in text and "pins.py manifest" in text
+
+
+def test_a3_isolated_apps_keep_shared_array_buffer():
+    # Actual Budget needs crossOriginIsolated; dropping COOP alone broke it.
+    gw = _load(BIN / "stickllm-gateway", "gw_v053_dip")
+    actual = [("Cross-Origin-Opener-Policy", "same-origin"), ("Cross-Origin-Embedder-Policy", "require-corp"), ("Content-Type", "text/html")]
+    chrome = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    got = dict((k.lower(), v) for k, v in gw.addon_response_headers(actual, chrome))
+    assert got.get("document-isolation-policy") == "isolate-and-require-corp"
+    assert "cross-origin-opener-policy" not in got and "cross-origin-embedder-policy" not in got
+    firefox = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
+    got = dict((k.lower(), v) for k, v in gw.addon_response_headers(actual, firefox))
+    assert got.get("cross-origin-opener-policy") == "same-origin" and "document-isolation-policy" not in got
+    plain = [("Cross-Origin-Opener-Policy", "same-origin"), ("Content-Type", "text/html")]
+    got = dict((k.lower(), v) for k, v in gw.addon_response_headers(plain, firefox))
+    assert "cross-origin-opener-policy" not in got
+
+
+def test_a3_kiosk_opens_addons_through_gateway_relay():
+    # The console browser must get the same header handling as LAN (tab reuse).
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("addons_v053_kiosk", ROOT / "overlay/usr/local/lib/stickllm_addons.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    ports = set()
+    for app_id in mod.ORDER:
+        app = mod.APPS[app_id]
+        assert app["kiosk_port"] not in (app["local_port"], app["tls_port"])
+        ports.add(app["kiosk_port"])
+    assert len(ports) == len(mod.ORDER)
+    src = (BIN / "stickllm-gateway").read_text()
+    assert '_ReuseHTTPServer(("127.0.0.1", port), Handler)' in src
+    assert "spec.get('kiosk_port') or spec['local_port']" in src
+    assert "    start_addon_kiosk_servers()\n" in src
