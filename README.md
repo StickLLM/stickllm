@@ -195,7 +195,7 @@ stickllm/
 StickLLM's own code is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE)
 (`PolyForm-Noncommercial-1.0.0`): free for personal and other noncommercial use.
 Commercial use, including selling devices that ship with StickLLM or offering paid
-services based on it, needs a separate commercial license from Nink. Contact via
+services based on it, needs a separate commercial license from Nink Inc. Contact via
 GitHub: [github.com/StickLLM](https://github.com/StickLLM).
 
 Bundled and downloaded third-party components (Debian/Linux, llama.cpp, Agent Zero,
