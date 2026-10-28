@@ -460,6 +460,152 @@ def create_document(name: str, kind: str, folder: str = "") -> str:
     return atomic_write(rel, data, overwrite=False)
 
 
+# ------------------------------------------------- agent-made documents
+# Agent Zero's create_spreadsheet / create_document tools (0.5.2). Plain
+# stdlib OOXML so the host needs no office libraries; ONLYOFFICE opens them.
+AGENT_MAX_CELLS = 20000
+AGENT_MAX_TEXT = 200_000
+
+
+def _xml_text(value: object) -> str:
+    text = str(value)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def _col_name(idx: int) -> str:
+    out = ""
+    idx += 1
+    while idx:
+        idx, rem = divmod(idx - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def _zip_bytes(files: dict[str, str]) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, text in files.items():
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, text.encode("utf-8"))
+    return buf.getvalue()
+
+
+def build_xlsx(rows: object, sheet: str = "Sheet1") -> bytes:
+    """rows: list of rows, each a list of numbers/strings/None. Numbers stay numbers."""
+    if not isinstance(rows, list):
+        raise DocsError("bad_rows", "rows must be a list of rows, for example [[1],[2],[3]].")
+    cells = 0
+    out_rows = []
+    for r_i, row in enumerate(rows):
+        if not isinstance(row, list):
+            row = [row]
+        parts = []
+        for c_i, val in enumerate(row):
+            cells += 1
+            if cells > AGENT_MAX_CELLS:
+                raise DocsError("too_large", f"At most {AGENT_MAX_CELLS} cells.", 413)
+            ref = f"{_col_name(c_i)}{r_i + 1}"
+            if val is None or val == "":
+                continue
+            if isinstance(val, bool):
+                parts.append(f'<c r="{ref}" t="b"><v>{int(val)}</v></c>')
+            elif isinstance(val, (int, float)) and val == val and val not in (float("inf"), float("-inf")):
+                parts.append(f'<c r="{ref}"><v>{val!r}</v></c>')
+            elif isinstance(val, str) and val.startswith("="):
+                parts.append(f'<c r="{ref}"><f>{_xml_text(val[1:])}</f></c>')
+            else:
+                parts.append(f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{_xml_text(val)}</t></is></c>')
+        out_rows.append(f'<row r="{r_i + 1}">' + "".join(parts) + "</row>")
+    name = _xml_text(re.sub(r"[\\/?*\[\]:]", " ", str(sheet or "Sheet1"))[:31] or "Sheet1")
+    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    rel_ns = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+    return _zip_bytes({
+        "[Content_Types].xml": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            "</Types>"
+        ),
+        "_rels/.rels": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/workbook.xml": (
+            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook {ns} {rel_ns}>'
+            f'<sheets><sheet name="{name}" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/worksheets/sheet1.xml": (
+            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet {ns}><sheetData>'
+            + "".join(out_rows)
+            + "</sheetData></worksheet>"
+        ),
+    })
+
+
+def build_docx(text: object, title: str = "") -> bytes:
+    """Plain paragraphs (blank line or newline separated). A title becomes a bold first line."""
+    body = str(text or "")
+    if len(body) > AGENT_MAX_TEXT:
+        raise DocsError("too_large", "That text is too long for one document.", 413)
+    paras = []
+    if title:
+        paras.append(f'<w:p><w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr><w:t xml:space="preserve">{_xml_text(title)}</w:t></w:r></w:p>')
+    for line in body.split("\n"):
+        paras.append(f'<w:p><w:r><w:t xml:space="preserve">{_xml_text(line)}</w:t></w:r></w:p>')
+    w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    return _zip_bytes({
+        "[Content_Types].xml": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            "</Types>"
+        ),
+        "_rels/.rels": (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            "</Relationships>"
+        ),
+        "word/document.xml": (
+            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {w}><w:body>'
+            + "".join(paras)
+            + "<w:sectPr/></w:body></w:document>"
+        ),
+    })
+
+
+def agent_create(kind: str, name: str, *, rows: object = None, text: object = None, title: str = "") -> str:
+    """Write an agent-made xlsx/docx into vault/Documents (never overwrites). Returns its path."""
+    require_vault()
+    if kind == "xlsx":
+        data = build_xlsx(rows if rows is not None else [])
+    elif kind == "docx":
+        data = build_docx(text, title=title)
+    else:
+        raise DocsError("bad_type", "The agent creates docx or xlsx files.")
+    docs_root()
+    base = re.sub(r"^[\s.]+", "", str(name or ""))
+    return atomic_write(clean_name(base or "Untitled", kind), data, overwrite=False)
+
+
 def upload_document(name: str, data: bytes, folder: str = "") -> str:
     if len(data) > MAX_UPLOAD:
         raise DocsError("too_large", "That file is over the 100 MB limit.", 413)

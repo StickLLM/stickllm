@@ -3,7 +3,7 @@ const fs = require("fs");
 const assert = require("assert");
 const src = fs.readFileSync(__dirname + "/../ui/app.js", "utf8");
 const grab = (start, end) => src.slice(src.indexOf(start), src.indexOf(end, src.indexOf(start)));
-const code = grab("const APP_ID_ALIASES", "function openAppTab(id)");
+const code = grab("const APP_ID_ALIASES", "function docsOpenHref(");
 const icons = { 'data-starter="files"': { href: "/apps/files/", target: "stickllm-files" } };
 const document = { querySelector: (s) => { for (const k of Object.keys(icons)) if (s.includes(k)) return { getAttribute: (a) => icons[k][a] }; return null; } };
 const CSS = { escape: (v) => v };

@@ -2015,7 +2015,7 @@ def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     app = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
     index = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
     assert '<a class="deskIcon" data-starter="solitaire" href="/apps/solitaire/" target="stickllm-solitaire">' in index
-    start = app.index("function openStickApp(id)")
+    start = app.index("function openStickApp(id")
     body = app[start:app.index("function startOpenAppEvents", start)]
     # Kiosk and LAN browser: the desktop icon's own href and target (a new
     # tab), then a toast with one click doing the same; never the panel.
@@ -2023,7 +2023,7 @@ def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     assert "window.open" not in body
     # No click: tab first; refused, the in-page panel so app_state works at
     # once (the user is usually on the Agent tab); then the toast.
-    assert body.index("openAppTab(id)") < body.index("showAppInPage(id)") < body.index("showOpenAppToast(id)")
+    assert body.index("openAppTab(id") < body.index("showAppInPage(id)") < body.index("showOpenAppToast(id)")
     assert 'reportOpenApp(id, "embedded")' in body
     assert 'reportOpenApp(id, "opened")' in body and "cueHiddenTab(id)" in body
     tab = app[app.index("function appTabLink(id)"):app.index("function openAppFromClick(id)")]
@@ -2031,7 +2031,7 @@ def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     assert 'icon.getAttribute("href")' in tab and 'icon.getAttribute("target")' in tab
     assert "window.open(link.href, link.target)" in tab
     click = app[app.index("function openAppFromClick(id)"):app.index("// In-page app panel")]
-    assert click.index("openAppTab(id)") < click.index("showAppInPage(id)")
+    assert click.index("openAppTab(id") < click.index("showAppInPage(id)")
     toast = app[app.index("function showOpenAppToast(id)"):app.index("function hideOpenAppToast()")]
     assert '"Open in new tab"' in toast and "openAppFromClick(id)" in toast
     cue = app[app.index("function cueHiddenTab(id)"):start]

@@ -282,14 +282,42 @@ class _UiOpenBus:
         with self._cond:
             return self._subscribers
 
-    def publish(self, app_id: str, target: str = "", conn: int | None = None, reason: str = "") -> dict:
+    def publish_install(self, app_id: str, name: str, target: str = "", conn: int | None = None) -> dict:
+        """Ask the screen driving Agent to confirm an install (never replayed)."""
+        event = {
+            "kind": "install_confirm",
+            "id": app_id,
+            "name": name,
+            "target": target,
+            "conn": conn,
+            "published_at": time.time(),
+        }
+        with self._cond:
+            self._seq += 1
+            event["seq"] = self._seq
+            self._events.append(dict(event))
+            del self._events[:-40]
+            self._cond.notify_all()
+        return event
+
+    def publish(
+        self,
+        app_id: str,
+        target: str = "",
+        conn: int | None = None,
+        reason: str = "",
+        path: str = "",
+        doc: str = "",
+    ) -> dict:
         event = {
             "id": app_id,
-            "path": f"/apps/{app_id}/",
+            "path": path or f"/apps/{app_id}/",
             "window": f"stickllm-{app_id}",
             "published_at": time.time(),
         }
         event["kind"] = "open_app"
+        if doc:
+            event["doc"] = doc
         # Only the screen that is driving Agent gets the event ("" = everyone).
         event["target"] = target
         event["conn"] = conn
@@ -2768,6 +2796,157 @@ class Handler(SimpleHTTPRequestHandler):
         doc["installed_count"] = sum(1 for row in rows if row.get("installed"))
         self._json(200, doc)
 
+    # ---------------------------------------------- Agent Zero install/docs
+    # Reached only from the open-app control (Bearer token, loopback). The
+    # install itself is never done here: the screen driving Agent gets an
+    # install_confirm event and the user clicks Install (POST /api/apps/install).
+
+    def _agent_catalog_status(self, app_id: str) -> dict:
+        names = {}
+        try:
+            names = dict(agent_lib().CATALOG_APP_NAMES)
+        except Exception:
+            pass
+        out = {"id": app_id, "name": names.get(app_id, app_id), "installed": False, "running": False, "state": ""}
+        try:
+            if app_id == "docs":
+                st = docs_lib().status_document()
+            elif app_id in addons_lib().APPS:
+                st = addons_lib().status_document(app_id)
+            else:
+                return out
+        except Exception:
+            return out
+        out["installed"] = bool(st.get("installed"))
+        out["running"] = bool(st.get("running"))
+        out["state"] = str(st.get("state") or "")
+        return out
+
+    def _agent_install_request(self, req: dict) -> None:
+        try:
+            lib = agent_lib()
+            app_id = lib.normalize_app_id(req.get("id"))
+            ok = lib.catalog_app_id_ok(app_id)
+        except Exception:
+            ok = False
+            app_id = ""
+        if not ok:
+            self._json(400, {"ok": False, "error": "bad_id"})
+            return
+        st = self._agent_catalog_status(app_id)
+        if st["installed"]:
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "id": app_id,
+                    "status": "already_installed",
+                    "message": f"{st['name']} is already installed. Open it with open_app id {app_id}.",
+                },
+            )
+            return
+        if st["state"] in ("installing", "pulling", "starting"):
+            self._json(200, {"ok": True, "id": app_id, "status": "installing", "message": f"{st['name']} is already installing."})
+            return
+        target, reason = ui_target()
+        conn = UI_OPEN.ui_conn_for(target)
+        if target != "kiosk" and conn is None:
+            self._json(
+                409,
+                {
+                    "ok": False,
+                    "error": "no_ui_tab",
+                    "message": "The user's StickLLM tab is not open, so they cannot confirm. Ask them to open StickLLM and try once more.",
+                },
+            )
+            return
+        UI_OPEN.publish_install(app_id, st["name"], target=target, conn=conn)
+        self._json(
+            200,
+            {
+                "ok": True,
+                "id": app_id,
+                "status": "awaiting_user",
+                "screen": "kiosk" if target == "kiosk" else "browser",
+                "message": f"Asked the user to confirm installing {st['name']} on their screen. "
+                "Tell them to click Install; do not call install_app again for it.",
+            },
+        )
+
+    def _agent_docs(self, req: dict) -> None:
+        try:
+            lib = docs_lib()
+        except Exception:
+            self._json(503, {"ok": False, "error": "docs_unavailable"})
+            return
+        op = req.get("op")
+        try:
+            if op == "create":
+                kind = req.get("kind")
+                if kind not in ("xlsx", "docx"):
+                    self._json(400, {"ok": False, "error": "bad_type", "message": "kind is xlsx or docx"})
+                    return
+                name = str(req.get("name") or ("Spreadsheet" if kind == "xlsx" else "Document"))
+                title = req.get("title")
+                rel = lib.agent_create(
+                    kind,
+                    name,
+                    rows=req.get("rows"),
+                    text=req.get("text"),
+                    title=str(title) if isinstance(title, str) else "",
+                )
+            elif op == "open":
+                raw = req.get("path")
+                if not isinstance(raw, str) or not raw.strip():
+                    self._json(400, {"ok": False, "error": "bad_path", "message": "path is relative to vault/Documents"})
+                    return
+                lib.require_vault()
+                target_path = lib.resolve_doc(raw.strip().lstrip("/").removeprefix("Documents/"))
+                if not target_path.is_file():
+                    self._json(404, {"ok": False, "error": "not_found", "message": "No such file in vault/Documents."})
+                    return
+                rel = lib.rel_of(target_path)
+            else:
+                self._json(400, {"ok": False, "error": "bad_op"})
+                return
+        except lib.DocsError as exc:
+            self._json(
+                int(getattr(exc, "status", 400) or 400),
+                {"ok": False, "error": getattr(exc, "code", "docs_error"), "message": str(exc)},
+            )
+            return
+        except Exception:
+            self._json(500, {"ok": False, "error": "docs_failed"})
+            return
+        out = {"ok": True, "path": rel, "folder": "vault/Documents"}
+        if req.get("open") is False:
+            out["opened"] = False
+            out["message"] = f"Saved {rel} in vault/Documents."
+            self._json(200, out)
+            return
+        st = self._agent_catalog_status("docs")
+        if not st["installed"]:
+            out["opened"] = False
+            out["message"] = (
+                f"Saved {rel} in vault/Documents, but ONLYOFFICE Docs is not installed so it cannot open yet. "
+                "Call install_app with id docs once and tell the user to click Install."
+            )
+            self._json(200, out)
+            return
+        target, reason = ui_target()
+        conn = UI_OPEN.ui_conn_for(target)
+        if target != "kiosk" and conn is None:
+            reason = "no_ui_tab"
+        UI_OPEN.publish("docs", target=target, conn=conn, reason=reason, path="/apps/docs/", doc=rel)
+        out["opened"] = reason != "no_ui_tab"
+        out["screen"] = "kiosk" if target == "kiosk" else "browser"
+        out["message"] = (
+            f"Saved {rel} in vault/Documents and opened it in ONLYOFFICE on the user's screen."
+            if out["opened"]
+            else f"Saved {rel} in vault/Documents. The user's StickLLM tab is not open, so it was not shown."
+        )
+        self._json(200, out)
+
     def _apps_mutate(self, action: str, req: dict) -> None:
         if not self._apps_allowed():
             return
@@ -3061,6 +3240,15 @@ class Handler(SimpleHTTPRequestHandler):
                         "window": event["window"],
                         "seq": event.get("seq"),
                     }
+                    if event.get("doc"):
+                        payload["doc"] = event["doc"]
+                elif kind == "install_confirm":
+                    if app:
+                        return
+                    want = event.get("conn")
+                    if want and want != conn and UI_OPEN.conn_alive(int(want)):
+                        return
+                    payload = {"id": event["id"], "name": event.get("name") or event["id"], "seq": event.get("seq")}
                 elif kind in ("app_state", "app_act"):
                     payload = {"id": event["id"], "req": event["req"], "seq": event.get("seq")}
                     if "action" in event:
@@ -4053,6 +4241,14 @@ class Handler(SimpleHTTPRequestHandler):
             self.close_connection = True
             self._json(413, {"ok": False, "error": "too_large"})
             return
+        if path == "/api/ui/install-request" and n > 2048:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        if path == "/api/ui/docs-agent" and n > 262144:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
         if path in ("/api/ui/app-state", "/api/ui/app-act") and n > 8192:
             self.close_connection = True
             self._json(413, {"ok": False, "error": "too_large"})
@@ -4092,22 +4288,39 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if not self._open_app_control_ok():
                 return
-            app_id = req.get("id")
             try:
                 lib = agent_lib()
-                if not lib.open_app_id_ok(app_id):
+                app_id = lib.normalize_app_id(req.get("id"))
+                if not lib.open_target_ok(app_id):
                     self._json(400, {"ok": False, "error": "bad_id"})
                     return
+                is_catalog = lib.catalog_app_id_ok(app_id)
             except Exception:
                 self._json(400, {"ok": False, "error": "bad_id"})
                 return
+            open_path = ""
+            if is_catalog:
+                st = self._agent_catalog_status(app_id)
+                if not st["installed"]:
+                    self._json(
+                        409,
+                        {
+                            "ok": False,
+                            "error": "not_installed",
+                            "id": app_id,
+                            "message": f"{st['name']} is not installed. Call install_app with id {app_id}; "
+                            "the user confirms the install on their screen.",
+                        },
+                    )
+                    return
+                open_path = lib.catalog_app_path(app_id)
             target, reason = ui_target()
             conn = UI_OPEN.ui_conn_for(target)
             if target != "kiosk" and conn is None:
                 # The browser driving Agent has no StickLLM tab open. Do not
                 # put the app on the kiosk instead; app_state explains why.
                 reason = "no_ui_tab"
-            event = UI_OPEN.publish(str(app_id), target=target, conn=conn, reason=reason)
+            event = UI_OPEN.publish(str(app_id), target=target, conn=conn, reason=reason, path=open_path)
             self._json(
                 200,
                 {
@@ -4119,6 +4332,24 @@ class Handler(SimpleHTTPRequestHandler):
                     "reason": reason,
                 },
             )
+            return
+
+        if path == "/api/ui/install-request":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._open_app_control_ok():
+                return
+            self._agent_install_request(req)
+            return
+
+        if path == "/api/ui/docs-agent":
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._open_app_control_ok():
+                return
+            self._agent_docs(req)
             return
 
         if path in ("/api/ui/app-state", "/api/ui/app-act"):
@@ -4216,9 +4447,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if not self._ui_stream_allowed():
                 return
-            app_id = req.get("id")
             try:
-                if not agent_lib().open_app_id_ok(app_id):
+                lib = agent_lib()
+                app_id = lib.normalize_app_id(req.get("id"))
+                if not lib.open_target_ok(app_id):
                     self._json(400, {"ok": False, "error": "bad_id"})
                     return
             except Exception:

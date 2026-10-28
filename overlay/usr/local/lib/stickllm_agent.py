@@ -69,6 +69,38 @@ APPS_URL_IDS = (
     "media",
     "monitor",
 )
+# Catalog apps (0.5.2): open_app can open them once installed, install_app
+# asks the user to install one (they confirm on their own screen). docs is
+# ONLYOFFICE Docs at /apps/docs/. Everything goes through the open-app
+# control on 172.30.0.1:8082 and the loopback gateway: the container's
+# firewall only reaches 8080-8082 on the bridge, never the add-on ports.
+CATALOG_APP_IDS = ("docs", "radicale", "vikunja", "actual", "trilium", "node-red")
+CATALOG_APP_NAMES = {
+    "docs": "ONLYOFFICE Docs",
+    "radicale": "Radicale (calendar and contacts)",
+    "vikunja": "Vikunja (tasks)",
+    "actual": "Actual Budget",
+    "trilium": "Trilium Notes",
+    "node-red": "Node-RED",
+}
+APP_ID_ALIASES = {
+    "onlyoffice": "docs",
+    "onlyoffice-docs": "docs",
+    "office": "docs",
+    "documents": "docs",
+    "actual-budget": "actual",
+    "actualbudget": "actual",
+    "nodered": "node-red",
+    "node_red": "node-red",
+    "trilium-notes": "trilium",
+    "calendar": "radicale",
+    "contacts": "radicale",
+    "tasks": "vikunja",
+    "todo": "vikunja",
+    "budget": "actual",
+}
+# Gateway catalog row id for each agent id (docs is the onlyoffice row).
+CATALOG_ROW_IDS = {"docs": "onlyoffice"}
 APPS_NOTE = (
     "StickLLM apps are at http://172.30.0.1:8081/apps/<id>/ "
     "(minesweeper, solitaire, tetris, notepad, calculator, files, media, monitor)."
@@ -682,6 +714,12 @@ def apps_prompt_text() -> str:
     lines.append(
         "Fetch only these static pages. Do not use other host ports or LAN addresses."
     )
+    lines.append(
+        "Installed catalog apps (docs = ONLYOFFICE, radicale, vikunja, actual, trilium, node-red) "
+        "open with open_app too; install_app asks the user to install one. "
+        "Make documents with create_spreadsheet / create_document, open them with open_document."
+    )
+    lines.append(NO_GUI_RULE)
     return "\n".join(lines) + "\n"
 
 
@@ -734,8 +772,145 @@ def apps_skill_text() -> str:
     )
 
 
+NO_GUI_RULE = (
+    "Your container has no screen. Never start GUI programs or office suites "
+    "(libreoffice, soffice, onlyoffice, xdg-open, firefox, chromium, gedit, "
+    "x11 or vnc tools) with code_execution or the terminal, and do not apt/pip "
+    "install them. To make or show a document use create_spreadsheet, "
+    "create_document and open_document; to open an app use open_app."
+)
+TOOL_RETRY_RULE = (
+    "If one of these StickLLM tools fails twice for the same request, stop "
+    "retrying: tell the user what failed and what they can do."
+)
+
+
+def _guarded_tool_source(class_name: str, tool_name: str, path: str, fields: tuple[str, ...], fixed: dict) -> str:
+    """Agent Zero tool that POSTs its args to the open-app control (8082).
+
+    Loop guard: the same failing call is refused after two tries, so a small
+    model cannot spin on it.
+    """
+    return f'''from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from helpers.tool import Response, Tool
+
+_TOKEN_FILE = Path("/stickllm-open-app.token")
+_URL = "http://172.30.0.1:8082{path}"
+_FIELDS = {fields!r}
+_FIXED = {fixed!r}
+_FAILS: dict = {{}}
+_MAX_TRIES = 2
+
+
+class {class_name}(Tool):
+    async def execute(self, **kwargs):
+        args = self.args if isinstance(self.args, dict) else {{}}
+        payload = dict(_FIXED)
+        for key in _FIELDS:
+            if key in args:
+                payload[key] = args[key]
+            elif key in kwargs:
+                payload[key] = kwargs[key]
+        sig = json.dumps(payload, sort_keys=True, default=str)[:2000]
+        if _FAILS.get(sig, 0) >= _MAX_TRIES:
+            return Response(
+                message="{tool_name} already failed twice for this request. Do not call it again; "
+                "tell the user what went wrong.",
+                break_loop=False,
+            )
+        try:
+            token = _TOKEN_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+        if not token:
+            return Response(message="{tool_name} failed: control token is missing", break_loop=False)
+        request = urllib.request.Request(
+            _URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={{"Authorization": "Bearer " + token, "Content-Type": "application/json"}},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+            ok = True
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")[:600]
+            ok = False
+        except Exception as exc:
+            raw = "{tool_name} failed: " + str(exc)
+            ok = False
+        if not ok:
+            _FAILS[sig] = _FAILS.get(sig, 0) + 1
+            left = _MAX_TRIES - _FAILS[sig]
+            raw = raw.strip() + (" (one retry left)" if left > 0 else " (do not retry; tell the user)")
+        else:
+            _FAILS.pop(sig, None)
+        return Response(message=raw.strip() or "ok", break_loop=False)
+'''
+
+
+def install_app_tool_source() -> str:
+    return _guarded_tool_source("InstallApp", "install_app", "/install", ("id",), {})
+
+
+def create_spreadsheet_tool_source() -> str:
+    return _guarded_tool_source("CreateSpreadsheet", "create_spreadsheet", "/docs", ("name", "rows", "open"), {"op": "create", "kind": "xlsx"})
+
+
+def create_document_tool_source() -> str:
+    return _guarded_tool_source("CreateDocument", "create_document", "/docs", ("name", "title", "text", "open"), {"op": "create", "kind": "docx"})
+
+
+def open_document_tool_source() -> str:
+    return _guarded_tool_source("OpenDocument", "open_document", "/docs", ("path",), {"op": "open"})
+
+
+def install_app_tool_prompt() -> str:
+    names = "; ".join(f"{k} = {v}" for k, v in CATALOG_APP_NAMES.items())
+    return (
+        "### install_app\n"
+        "Ask the user to install a StickLLM app. Ids: " + names + ".\n"
+        "Nothing installs until the user clicks Install on their own screen (the StickLLM "
+        "tab they chat from, else the stick's screen). The reply says whether it is already "
+        "installed or waiting for that click. When waiting, tell the user to click Install "
+        "and stop; do not call install_app again for the same app in this task.\n"
+        "Never install apps yourself with code_execution, apt, pip, docker or podman.\n"
+        + TOOL_RETRY_RULE + "\n\n"
+        'Example: {"tool_name":"install_app","tool_args":{"id":"docs"}}\n'
+    )
+
+
+def docs_tools_prompt() -> str:
+    return (
+        "### create_spreadsheet\n"
+        "Make an .xlsx in the user's vault (vault/Documents) and open it in ONLYOFFICE on the "
+        "user's screen. rows is a list of rows; each row is a list of cells (numbers stay "
+        "numbers, text, or formulas starting with =). Column A is the first cell of each row.\n"
+        'Example (numbers 1 to 10 in column A): {"tool_name":"create_spreadsheet","tool_args":'
+        '{"name":"Numbers","rows":[[1],[2],[3],[4],[5],[6],[7],[8],[9],[10]]}}\n\n'
+        "### create_document\n"
+        "Make a .docx in vault/Documents and open it in ONLYOFFICE. text is the body; each "
+        "line becomes a paragraph. title is optional.\n"
+        'Example: {"tool_name":"create_document","tool_args":{"name":"Letter","title":"Hello","text":"Line one\\nLine two"}}\n\n'
+        "### open_document\n"
+        "Open an existing file from vault/Documents in ONLYOFFICE on the user's screen. "
+        "path is relative to vault/Documents, as create_* returned it.\n"
+        'Example: {"tool_name":"open_document","tool_args":{"path":"Numbers.xlsx"}}\n\n'
+        "These tools need the vault unlocked. If ONLYOFFICE Docs is not installed the file is "
+        "still saved; call install_app with id docs once and tell the user to click Install.\n"
+        + NO_GUI_RULE + "\n" + TOOL_RETRY_RULE + "\n"
+    )
+
+
 def open_app_tool_prompt() -> str:
-    ids = ", ".join(APPS_URL_IDS)
+    ids = ", ".join(APPS_URL_IDS + CATALOG_APP_IDS)
     return (
         "### open_app\n"
         "Open or focus a StickLLM app in the user's browser tab.\n\n"
@@ -744,8 +919,11 @@ def open_app_tool_prompt() -> str:
         "The headless browser tool stays for your own page work. It does not "
         "show an app on the user's screen.\n"
         f"Allowed ids only: {ids}.\n"
-        "The desktop label minesweep is id minesweeper.\n"
-        "Pass the id and nothing else. Reject URLs and paths yourself by not sending them.\n\n"
+        "The desktop label minesweep is id minesweeper. docs is ONLYOFFICE Docs; radicale, "
+        "vikunja, actual, trilium and node-red are add-ons and open only once installed "
+        "(otherwise use install_app).\n"
+        "Pass the id and nothing else. Reject URLs and paths yourself by not sending them.\n"
+        + NO_GUI_RULE + "\n\n"
         'Example: {"tool_name":"open_app","tool_args":{"id":"minesweeper"}}\n'
     )
 
@@ -838,6 +1016,12 @@ def ensure_open_app_plugin(root: Path | None = None) -> None:
         root / "prompts" / "agent.system.tool.open_app.md": open_app_tool_prompt(),
         root / "prompts" / "agent.system.tool.app_state.md": app_state_tool_prompt(),
         root / "prompts" / "agent.system.tool.app_act.md": app_act_tool_prompt(),
+        root / "tools" / "install_app.py": install_app_tool_source(),
+        root / "tools" / "create_spreadsheet.py": create_spreadsheet_tool_source(),
+        root / "tools" / "create_document.py": create_document_tool_source(),
+        root / "tools" / "open_document.py": open_document_tool_source(),
+        root / "prompts" / "agent.system.tool.install_app.md": install_app_tool_prompt(),
+        root / "prompts" / "agent.system.tool.docs.md": docs_tools_prompt(),
         root / "skills" / "stickllm-apps" / "SKILL.md": apps_skill_text(),
     }
     for path, text in files.items():
@@ -1010,8 +1194,29 @@ def open_app_id_ok(app_id: object) -> bool:
     return True
 
 
+def normalize_app_id(app_id: object) -> str:
+    """Lower-case id with the known aliases folded in ("" when not a string)."""
+    if not isinstance(app_id, str):
+        return ""
+    text = app_id.strip().lower()
+    return APP_ID_ALIASES.get(text, text)
+
+
+def catalog_app_id_ok(app_id: object) -> bool:
+    return isinstance(app_id, str) and app_id in CATALOG_APP_IDS
+
+
+def open_target_ok(app_id: object) -> bool:
+    """open_app ids: the static apps plus the catalog apps (docs, add-ons)."""
+    return open_app_id_ok(app_id) or catalog_app_id_ok(app_id)
+
+
 def open_app_window(app_id: str) -> str:
     return "stickllm-" + app_id
+
+
+def catalog_app_path(app_id: str) -> str:
+    return "/apps/docs/" if app_id == "docs" else ""
 
 
 def open_app_path(app_id: str) -> str:
@@ -1120,6 +1325,40 @@ def app_act_tool_source() -> str:
     return _relay_tool_source("AppAct", "/act", True)
 
 
+class AppNotInstalled(OSError):
+    """open_app for a catalog app that is not installed (message for the agent)."""
+
+
+AGENT_DOCS_MAX_BODY = 262144
+
+
+def gateway_post(name: str, body: dict, token: str, url: str | None = None, timeout: float = 15.0) -> dict:
+    """POST to /api/ui/<name> on the loopback gateway; 4xx JSON reasons are returned, not raised."""
+    target = url or os.environ.get("STICKLLM_OPEN_APP_NOTIFY", "http://127.0.0.1/api/ui/open-app")
+    base = target[: -len("open-app")] if target.endswith("open-app") else target.rsplit("/", 1)[0] + "/"
+    request = urllib.request.Request(
+        base + name,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            data = json.loads(exc.read().decode("utf-8") or "{}")
+        except (UnicodeError, ValueError, OSError):
+            raise exc from None
+        if not isinstance(data, dict):
+            raise exc from None
+        data["ok"] = False
+        return data
+    if not isinstance(data, dict):
+        raise OSError("ui returned a bad reply")
+    return data
+
+
 def notify_gateway_open_app(app_id: str, token: str, url: str | None = None) -> dict:
     """Tell the UI gateway, on loopback, to push the open-tab event."""
     target = url or os.environ.get("STICKLLM_OPEN_APP_NOTIFY", "http://127.0.0.1/api/ui/open-app")
@@ -1133,8 +1372,18 @@ def notify_gateway_open_app(app_id: str, token: str, url: str | None = None) -> 
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=1.5) as resp:
-        raw = resp.read()
+    try:
+        with urllib.request.urlopen(request, timeout=1.5) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            try:
+                why = json.loads(exc.read().decode("utf-8") or "{}")
+            except (UnicodeError, ValueError, OSError):
+                why = {}
+            if isinstance(why, dict) and why.get("error") == "not_installed":
+                raise AppNotInstalled(str(why.get("message") or "not installed")) from None
+        raise
     data = json.loads(raw.decode("utf-8") or "{}")
     if not isinstance(data, dict) or not data.get("ok"):
         raise OSError("ui did not accept open_app")
@@ -1258,11 +1507,12 @@ def open_app_server(
         def do_POST(self) -> None:  # noqa: N802
             path = urllib.parse.urlsplit(self.path).path
             length = int(self.headers.get("Content-Length") or 0)
-            if length < 0 or length > 8192:
+            limit = AGENT_DOCS_MAX_BODY if path == "/docs" else 8192
+            if length < 0 or length > limit:
                 self._send(413, {"ok": False, "error": "too_large"})
                 return
             raw = self.rfile.read(length) if length else b""
-            if path not in ("/open", "/state", "/act"):
+            if path not in ("/open", "/state", "/act", "/install", "/docs"):
                 self._send(404, {"ok": False, "error": "not_found"})
                 return
             if not self._authorized():
@@ -1276,11 +1526,40 @@ def open_app_server(
             if not isinstance(req, dict):
                 self._send(400, {"ok": False, "error": "bad_json"})
                 return
-            app_id = req.get("id")
-            if not open_app_id_ok(app_id):
+            if path in ("/install", "/docs"):
+                if path == "/install":
+                    app_id = normalize_app_id(req.get("id"))
+                    if not catalog_app_id_ok(app_id):
+                        self._send(400, {
+                            "ok": False,
+                            "error": "bad_id",
+                            "message": "install_app ids: " + ", ".join(CATALOG_APP_IDS) + ".",
+                        })
+                        return
+                    body = {"id": app_id}
+                else:
+                    op = req.get("op")
+                    if op not in ("create", "open"):
+                        self._send(400, {"ok": False, "error": "bad_op"})
+                        return
+                    body = {k: req[k] for k in ("op", "kind", "name", "rows", "text", "title", "path", "open") if k in req}
+                try:
+                    if relay is None:
+                        result = gateway_post("install-request" if path == "/install" else "docs-agent", body, self._token())
+                    else:
+                        result = relay(path, body.get("id", ""), body)
+                except Exception:
+                    self._send(502, {"ok": False, "error": "ui_unavailable"})
+                    return
+                if not isinstance(result, dict):
+                    result = {"ok": False, "error": "bad_reply"}
+                self._send(200 if result.get("ok") else 409, result)
+                return
+            app_id = normalize_app_id(req.get("id"))
+            if not open_target_ok(app_id):
                 self._send(400, {"ok": False, "error": "bad_id"})
                 return
-            if not open_app_page_ready(apps, app_id):
+            if not catalog_app_id_ok(app_id) and not open_app_page_ready(apps, app_id):
                 self._send(404, {"ok": False, "error": "not_found"})
                 return
             if path in ("/state", "/act"):
@@ -1317,7 +1596,7 @@ def open_app_server(
             opened = {
                 "ok": True,
                 "id": app_id,
-                "path": open_app_path(app_id),
+                "path": catalog_app_path(app_id) if catalog_app_id_ok(app_id) else open_app_path(app_id),
                 "window": open_app_window(app_id),
                 "from": peer,
             }
@@ -1334,6 +1613,9 @@ def open_app_server(
                     notify_gateway_open_app(app_id, self._token())
                 else:
                     notify(app_id)
+            except AppNotInstalled as exc:
+                self._send(409, {"ok": False, "error": "not_installed", "id": app_id, "message": str(exc)})
+                return
             except Exception:
                 self._send(502, {"ok": False, "error": "ui_unavailable"})
                 return
