@@ -21,7 +21,7 @@
       const s = document.createElement("script");
       s.src = "/docs-server/web-apps/apps/api/documents/api.js";
       s.onload = () => resolve();
-      s.onerror = () => reject(new Error("ONLYOFFICE Docs is not reachable."));
+      s.onerror = () => reject(new Error("Office is not reachable."));
       document.head.appendChild(s);
     });
   }

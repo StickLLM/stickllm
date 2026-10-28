@@ -576,7 +576,7 @@ ensure_seatd() {
 pick_browser_bin() {
   local prefer_chromium=0
   # WPE/cog is flaky on virtio soft-GL and on hybrid NVIDIA GLVND (modeset=0).
-  # Chromium+ozone+--disable-gpu is the product-stable path for Local.
+  # Chromium+ozone+SwiftShader (software GL) is the product-stable path for Local.
   if [[ -e /dev/dri/card0 ]] && is_virtio_or_qemu_drm /dev/dri/card0; then
     prefer_chromium=1
   fi
@@ -628,10 +628,14 @@ ensure_browser_tabs() {
 # --no-sandbox, --ignore-certificate-errors, --disable-web-security, and
 # --test-type. Do not pass those, or --allow-insecure-localhost.
 # The console opens http://127.0.0.1/ and Agent Zero at http://127.0.0.1:5099/.
+# Graphics: --use-gl=angle --use-angle=swiftshader, not --disable-gpu.
+# With --disable-gpu on Wayland, native menus (right-click on Agent Zero and
+# other non-StickLLM pages) paint see-through: only the border shows.
+# SwiftShader keeps rendering in software and paints menus opaque. (v0.5.3)
 chromium_args() {
   local bin="$1"
   printf '%q' "$bin"
-  printf ' --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars'
+  printf ' --start-maximized --ozone-platform=wayland --use-gl=angle --use-angle=swiftshader --no-first-run --disable-infobars'
   printf ' --disable-session-crashed-bubble --hide-crash-restore-bubble'
   printf ' --check-for-update-interval=31536000'
   printf ' --user-data-dir=%q --disk-cache-dir=%q %q' "$PROFILE" "$PROFILE/cache" "$URL"
@@ -740,7 +744,7 @@ try_launch() {
   if [[ "$browser" == "cog" ]]; then
     app="cog -P --enable-mediasource $URL"
   else
-    app="$browser --start-maximized --ozone-platform=wayland --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
+    app="$browser --start-maximized --ozone-platform=wayland --use-gl=angle --use-angle=swiftshader --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
   fi
 
   # drop_root=1 → runuser as KIOSK_USER (required for cage).
@@ -802,7 +806,7 @@ try_launch() {
         _run 1 cage -s -- $browser \
           --start-maximized \
           --ozone-platform=wayland \
-          --disable-gpu \
+          --use-gl=angle --use-angle=swiftshader \
           --no-first-run \
           --disable-infobars \
           --disable-session-crashed-bubble \
@@ -826,7 +830,7 @@ try_launch() {
           _run 1 cage -s -- $browser \
           --start-maximized \
           --ozone-platform=wayland \
-          --disable-gpu \
+          --use-gl=angle --use-angle=swiftshader \
           --no-first-run \
           --disable-infobars \
           --disable-session-crashed-bubble \
@@ -848,7 +852,7 @@ try_launch() {
       else
         _br_bin="$(command -v "$browser" || true)"
         [[ -n "$_br_bin" ]] || _br_bin="$browser"
-        app="${_br_bin} --start-maximized --ozone-platform=wayland --disable-gpu --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
+        app="${_br_bin} --start-maximized --ozone-platform=wayland --use-gl=angle --use-angle=swiftshader --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
         # weston itself stays root for drm-backend. The browser must not.
         if [[ "$KIOSK_USER" != "root" ]]; then
           app="runuser -u ${KIOSK_USER} --preserve-environment -- env HOME=${KIOSK_HOME} USER=${KIOSK_USER} LOGNAME=${KIOSK_USER} ${app}"

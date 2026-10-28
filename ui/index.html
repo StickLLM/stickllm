@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v052f" />
+<link rel="stylesheet" href="style.css?v=v053a" />
 </head>
 <body>
 <div class="app" id="app">
@@ -34,7 +34,7 @@
       <button class="navBtn" data-open="general"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
       <nav class="sideApps" aria-label="Apps">
         <p class="sideAppsLabel">Apps</p>
-        <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="_blank" rel="noopener noreferrer" hidden><img class="agentMark" src="agent-zero.png?v=desk4" alt=""><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
+        <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="stickllm-agent-zero" hidden><img class="agentMark" src="agent-zero.png?v=desk4" alt=""><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
         <button class="navBtn" id="appsLink" type="button"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span class="appName"><span>Apps</span><small>Desktop</small></span></button>
       </nav>
     </div>
@@ -134,6 +134,7 @@
                     <small id="agentCatalogMsg">Unlock the vault, then install. The image stays on the host drive.</small>
                     <small class="appReq">Disk 4 GB (measured) · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
                     <small class="appNote">Uses llama-server for the model; Kokoro TTS on CPU ~0.5-1 GB RAM; needs a few GB free while unpacking</small>
+                    <small class="appReq" id="agentPlugins" hidden></small>
                     <pre id="agentCatalogPull" class="mono appsPull" hidden></pre>
                   </span>
                   <span class="appsState">
@@ -146,32 +147,14 @@
               <div class="appsRows">
                 <div class="appsRow appsRowLive" data-app="onlyoffice" data-license="AGPL" data-disk-min="3" data-ram-min="2" data-gpu="none">
                   <span class="appName">
-                    <span>ONLYOFFICE Docs</span>
-                    <small>Documents, spreadsheets, and slides. The bot can edit open files live.</small>
+                    <span>Office</span>
+                    <small>Documents, spreadsheets, and slides (ONLYOFFICE). The bot can edit open files live.</small>
                     <small class="appReq">Disk 3 GB · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
                     <small class="appNote">Heavy for an office suite; 4 GB RAM for smooth editing</small>
                     <small class="appsRowMsg" data-app-msg hidden></small>
                   </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="onlyoffice"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-onlyoffice" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="onlyoffice"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-onlyoffice" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
-                <button type="button" class="appsRow" data-app="paperless-ngx" data-license="GPL" data-disk-min="1.5" data-ram-min="1" data-gpu="none">
-                  <span class="appName">
-                    <span>Paperless-ngx</span>
-                    <small>Scans and files receipts and documents, with text recognition and tagging, through a REST API.</small>
-                    <small class="appReq">Disk 1.5 GB · RAM 1 GB (2 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">+ Redis; OCR spikes RAM/CPU; documents stored extra</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-                <button type="button" class="appsRow" data-app="snappymail" data-license="AGPL" data-disk-min="0.1" data-ram-min="0.1" data-gpu="none">
-                  <span class="appName">
-                    <span>SnappyMail</span>
-                    <small>Webmail over IMAP and SMTP, so the bot can triage and draft. Sending is the user’s click.</small>
-                    <small class="appReq">Disk 0.1 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">Very light</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
                 <div class="appsRow appsRowLive" data-app="radicale" data-license="GPL" data-disk-min="0.05" data-ram-min="0.05" data-gpu="none">
                   <span class="appName">
                     <span>Radicale</span>
@@ -180,7 +163,7 @@
                     <small class="appNote">Very light</small>
                     <small class="appsRowMsg" data-app-msg hidden></small>
                   </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="radicale"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-radicale" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="radicale"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-radicale" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
                 <div class="appsRow appsRowLive" data-app="trilium" data-license="AGPL" data-disk-min="0.5" data-ram-min="0.25" data-gpu="none">
                   <span class="appName">
@@ -189,7 +172,7 @@
                     <small class="appReq">Disk 0.5 GB · RAM 0.25 GB (0.5 GB recommended) · GPU: none · approx.</small>
                     <small class="appsRowMsg" data-app-msg hidden></small>
                   </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="trilium"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-trilium" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="trilium"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-trilium" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
               </div>
             </section>
@@ -202,7 +185,7 @@
                     <small class="appReq">Disk 0.15 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
                     <small class="appsRowMsg" data-app-msg hidden></small>
                   </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="vikunja"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-vikunja" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="vikunja"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-vikunja" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
                 <div class="appsRow appsRowLive" data-app="actual" data-license="MIT" data-disk-min="0.3" data-ram-min="0.15" data-gpu="none">
                   <span class="appName">
@@ -211,119 +194,12 @@
                     <small class="appReq">Disk 0.3 GB · RAM 0.15 GB (0.3 GB recommended) · GPU: none · approx.</small>
                     <small class="appsRowMsg" data-app-msg hidden></small>
                   </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="actual"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-actual" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="actual"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-actual" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
-                <button type="button" class="appsRow" data-app="immich" data-license="AGPL" data-disk-min="5" data-ram-min="6" data-gpu="optional">
-                  <span class="appName">
-                    <span>Immich</span>
-                    <small>Photos, with search that runs on your local GPU.</small>
-                    <small class="appReq">Disk 5 GB · RAM 6 GB (8 GB recommended) · GPU: optional 0 or 1-2 GB · approx. <span data-free-vram>VRAM is unavailable</span></small>
-                    <small class="appNote">Server + ML + Postgres + Redis; photo library stored extra; GPU ML search uses ~1-2 GB VRAM</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-                <button type="button" class="appsRow" data-app="searxng" data-license="AGPL" data-disk-min="0.2" data-ram-min="0.25" data-gpu="none">
-                  <span class="appName">
-                    <span>SearXNG</span>
-                    <small>Private web search for the agent, which can run over Tor.</small>
-                    <small class="appReq">Disk 0.2 GB · RAM 0.25 GB (0.5 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">+ Valkey/Redis; Tor adds ~0.1 GB</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-              </div>
-            </section>
-            <section class="appsGroup" data-group="Communications">
-              <div class="appsRows">
-                <button type="button" class="appsRow" data-app="matrix" data-license="Apache" data-disk-min="0.2" data-ram-min="0.25" data-gpu="none">
-                  <span class="appName">
-                    <span>Matrix (Conduit + Element)</span>
-                    <small>Encrypted chat and calls, with bridges to other messengers.</small>
-                    <small class="appReq">Disk 0.2 GB · RAM 0.25 GB (0.5 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">Conduit + Element web; bridges add more</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-                <button type="button" class="appsRow" data-app="simplex" data-license="AGPL" data-disk-min="0.1" data-ram-min="0.1" data-gpu="none">
-                  <span class="appName">
-                    <span>SimpleX Chat</span>
-                    <small>Anonymous messaging with no IDs, with self-hosted relays.</small>
-                    <small class="appReq">Disk 0.1 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">SMP/XFTP relay servers; clients are phone/desktop apps</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-                <button type="button" class="appsRow" data-app="jitsi" data-license="Apache" data-disk-min="2" data-ram-min="2" data-gpu="none">
-                  <span class="appName">
-                    <span>Jitsi Meet</span>
-                    <small>Browser video calls.</small>
-                    <small class="appReq">Disk 2 GB · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">4 containers incl. Java video bridge; CPU heavy with many callers</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-                <button type="button" class="appsRow" data-app="onionshare" data-license="GPL" data-disk-min="0.1" data-ram-min="0.1" data-gpu="none">
-                  <span class="appName">
-                    <span>OnionShare</span>
-                    <small>Anonymous file sharing and a drop box over Tor.</small>
-                    <small class="appReq">Disk 0.1 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">CLI + Tor</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-              </div>
-            </section>
-            <section class="appsGroup" data-group="Publishing">
-              <div class="appsRows">
-                <button type="button" class="appsRow" data-app="postiz" data-license="AGPL" data-disk-min="2.5" data-ram-min="2" data-gpu="none">
-                  <span class="appName">
-                    <span>Postiz</span>
-                    <small>Posts to many social networks at once, with an API.</small>
-                    <small class="appReq">Disk 2.5 GB · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">Node + Postgres + Redis</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-                <button type="button" class="appsRow" data-app="opentimestamps" data-license="LGPL or MIT" data-disk-min="0.05" data-ram-min="0.05" data-gpu="none">
-                  <span class="appName">
-                    <span>OpenTimestamps + a signing tool</span>
-                    <small>Proof that a published file hasn’t been changed.</small>
-                    <small class="appReq">Disk 0.05 GB · RAM 0.05 GB · GPU: none · approx.</small>
-                    <small class="appNote">Client + minisign; negligible</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
               </div>
             </section>
             <section class="appsGroup" data-group="Creative and technical">
               <div class="appsRows">
-                <button type="button" class="appsRow" data-app="comfyui" data-license="GPL" data-disk-min="8" data-ram-min="8" data-gpu="required">
-                  <span class="appName">
-                    <span>ComfyUI</span>
-                    <small>Image generation on the 3090.</small>
-                    <small class="appReq">Disk 8 GB · RAM 8 GB (16 GB recommended) · GPU: required 8 / 12-24 GB · approx. <span data-free-vram>VRAM is unavailable</span></small>
-                    <small class="appNote">PyTorch+CUDA install; models extra (SDXL ~7 GB, Flux 12-24 GB); unload or shrink the LLM to free VRAM</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-                <button type="button" class="appsRow" data-app="code-server-jupyter" data-license="MIT and BSD" data-disk-min="1.5" data-ram-min="1" data-gpu="optional">
-                  <span class="appName">
-                    <span>code-server and Jupyter</span>
-                    <small>Coding and data analysis.</small>
-                    <small class="appReq">Disk 1.5 GB · RAM 1 GB (2 GB recommended) · GPU: optional · approx. <span data-free-vram>VRAM is unavailable</span></small>
-                    <small class="appNote">GPU only if notebooks use it</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
-                <button type="button" class="appsRow" data-app="n8n" data-license="fair-code (not OSI open source)" data-disk-min="0.5" data-ram-min="0.5" data-gpu="none">
-                  <span class="appName">
-                    <span>n8n</span>
-                    <small>Automations. Prefer an OSI-friendly stack unless license posture is explicit.</small>
-                    <small class="appReq">Disk 0.5 GB · RAM 0.5 GB (1 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">Pick n8n or Node-RED, not both by default</small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small></span>
-                </button>
                 <div class="appsRow appsRowLive" data-app="node-red" data-license="Apache" data-disk-min="0.3" data-ram-min="0.2" data-gpu="none">
                   <span class="appName">
                     <span>Node-RED</span>
@@ -331,7 +207,7 @@
                     <small class="appReq">Disk 0.3 GB · RAM 0.2 GB (0.5 GB recommended) · GPU: none · approx.</small>
                     <small class="appsRowMsg" data-app-msg hidden></small>
                   </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="node-red"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-node-red" rel="noopener" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="node-red"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-node-red" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
               </div>
             </section>
@@ -421,11 +297,11 @@
         <label class="fSub">Context for fit check<select id="mfCtx"><option value="8192">8k tokens</option><option value="16384">16k tokens</option><option value="32768">32k tokens</option><option value="65536">64k tokens</option><option value="131072">128k tokens</option></select></label>
       </div>
       <div class="fBlock"><div class="fTitle">Trust</div><div class="vchecks" id="mfTrust">
-        <label title="StickLLM checked the hash and tested this model"><input type="checkbox" data-t="verified" checked><i class="tdot ok"></i>Verified</label>
-        <label title="Official publisher repo, hash matches"><input type="checkbox" data-t="community" checked><i class="tdot acc"></i>Community verified</label>
-        <label title="Known source, hash not checked"><input type="checkbox" data-t="unverified" checked><i class="tdot warn"></i>Unverified</label>
+        <label title="On StickLLM's verified list (sha256 pinned)"><input type="checkbox" data-t="verified" checked><i class="tdot ok"></i>Verified</label>
+        <label title="Official publisher, not verified by StickLLM"><input type="checkbox" data-t="community" checked><i class="tdot acc"></i>Known publisher</label>
+        <label title="Not on StickLLM's verified list"><input type="checkbox" data-t="unverified" checked><i class="tdot warn"></i>Not verified</label>
         <label title="Unknown source"><input type="checkbox" data-t="untrusted" checked><i class="tdot bad"></i>Untrusted</label>
-        <label title="Hash mismatch"><input type="checkbox" data-t="blocked" checked><i class="tdot blk"></i>Blocked</label></div></div>
+        <label title="Hash does not match the verified hash"><input type="checkbox" data-t="blocked" checked><i class="tdot blk"></i>Blocked</label></div></div>
       <div class="fBlock"><div class="fTitle">Abliterated / uncensored</div><div class="seg full" id="mfAbl"><button type="button" data-v="include" class="on">Include</button><button type="button" data-v="only">Only</button><button type="button" data-v="exclude">Exclude</button></div></div>
       <div class="fBlock"><div class="fTitle">Vision</div><div class="seg full" id="mfVis"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="only">Vision only</button></div></div>
       <div class="fBlock"><label class="fTitle" for="mfQuant">Quant</label><select id="mfQuant"><option value="any">Any</option><option>Q2_K</option><option>Q3_K_M</option><option>Q4_K_M</option><option>Q5_K_M</option><option>Q6_K</option><option>Q8_0</option><option>F16</option></select></div>
@@ -628,9 +504,8 @@
     <h3>StickLLM</h3>
     <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
     <div class="group">
-      <div class="row"><span>Version</span><span class="mono" id="aboutVer">hotfix</span></div>
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.5.3</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono">b4521</span></div>
-      <div class="row"><span>UI</span><span class="mono">v0.5.2</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
     </div>
@@ -757,6 +632,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v052f"></script>
+<script src="app.js?v=v053a"></script>
 </body>
 </html>

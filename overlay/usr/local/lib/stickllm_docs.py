@@ -83,9 +83,9 @@ EDITABLE = frozenset({"docx", "xlsx", "pptx", "odt", "ods", "odp", "txt", "csv",
 CREATE_KINDS = ("docx", "xlsx", "pptx")
 
 VAULT_LOCKED_MESSAGE = (
-    "Unlock the vault to use Docs. Documents are only ever saved in the vault."
+    "Unlock the vault to use Office. Documents are only ever saved in the vault."
 )
-SETTINGS_MISSING_MESSAGE = "USB settings partition is not mounted: Docs not started."
+SETTINGS_MISSING_MESSAGE = "USB settings partition is not mounted: Office not started."
 
 # Embedded copy of the pin file, so a hotfix of this module alone still has
 # the digest. Tests assert both agree.
@@ -273,7 +273,7 @@ def resolve_doc(rel: str, *, want_file: bool = True) -> Path:
     if real != root_real and not real.startswith(root_real + os.sep):
         raise DocsError("bad_path", "That path is outside Documents.")
     if want_file and extension(path.name) not in KINDS:
-        raise DocsError("bad_type", "Docs opens Word, Excel, PowerPoint, OpenDocument, text and PDF files.")
+        raise DocsError("bad_type", "Office opens Word, Excel, PowerPoint, OpenDocument, text and PDF files.")
     return path
 
 
@@ -449,7 +449,7 @@ def template_path(kind: str) -> Path:
         raise DocsError("bad_type", "New documents are docx, xlsx or pptx.")
     path = _no_symlink_walk(addon_dir(), ["templates", f"new.{kind}"])
     if not path.is_file():
-        raise DocsError("not_installed", "Install ONLYOFFICE Docs from Apps first.", 409)
+        raise DocsError("not_installed", "Install Office from Apps first.", 409)
     return path
 
 
@@ -611,7 +611,7 @@ def upload_document(name: str, data: bytes, folder: str = "") -> str:
         raise DocsError("too_large", "That file is over the 100 MB limit.", 413)
     fname = clean_name(name)
     if extension(fname) not in KINDS:
-        raise DocsError("bad_type", "Docs opens Word, Excel, PowerPoint, OpenDocument, text and PDF files.")
+        raise DocsError("bad_type", "Office opens Word, Excel, PowerPoint, OpenDocument, text and PDF files.")
     rel = "/".join(_clean_parts(folder) + [fname])
     return atomic_write(rel, data, overwrite=False)
 
@@ -681,7 +681,7 @@ def drop_runtime_secret() -> None:
 def runtime_secret() -> str:
     value = _read_secret(runtime_secret_path())
     if len(value) < 32:
-        raise DocsError("not_running", "ONLYOFFICE Docs is not running.", 503)
+        raise DocsError("not_running", "Office is not running.", 503)
     return value
 
 
@@ -1041,15 +1041,15 @@ def status_document(*, upstream_up: bool | None = None) -> dict:
     elif not settings:
         state, message = "settings_missing", SETTINGS_MISSING_MESSAGE
     elif state == "installing":
-        message = "Installing ONLYOFFICE Docs. The image is pulled onto the host drive."
+        message = "Installing Office. The image is pulled onto the host drive."
     elif not installed:
-        state, message = "not_installed", "ONLYOFFICE Docs is not installed yet."
+        state, message = "not_installed", "Office is not installed yet."
     elif up and state in ("running", "starting", "stopped"):
-        state, message = "running", "ONLYOFFICE Docs is running."
+        state, message = "running", "Office is running."
     elif state == "error":
-        message = str(saved.get("message") or "ONLYOFFICE Docs failed to start.")[:300]
+        message = str(saved.get("message") or "Office failed to start.")[:300]
     else:
-        message = "ONLYOFFICE Docs is starting."
+        message = "Office is starting."
     return {
         "ok": True,
         "state": state,

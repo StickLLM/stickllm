@@ -566,8 +566,8 @@ def test_agent_sidebar_opens_a_new_tab():
     tag_at = side.index('id="agentLink"')
     tag = side[side.rfind("<", 0, tag_at) : side.index(">", tag_at) + 1]
     assert tag.rstrip(">").split()[-1] == "hidden"
-    assert 'target="_blank"' in side
-    assert "noopener" in side
+    # v0.5.3: one reused named tab for Agent Zero, never _blank.
+    assert 'target="stickllm-agent-zero"' in side and 'target="_blank"' not in side
     assert ":5443" in side
     assert 'id="appsLink"' in side
     assert "comfyLink" not in side
@@ -580,8 +580,7 @@ def test_agent_sidebar_opens_a_new_tab():
     assert "target=" not in apps_tag
     assert ":5443" not in apps_tag
     js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
-    assert 'link.target = "_blank"' in js
-    assert "noopener" in js
+    assert "link.target = AGENT_TAB" in js and 'const AGENT_TAB = "stickllm-agent-zero"' in js
     assert 'label.textContent = "Agent"' in js
     assert "function agentIsInstalled" in js
     assert "link.hidden = !installed" in js
@@ -2024,31 +2023,28 @@ def test_open_app_on_a_lan_browser_is_the_same_as_clicking_the_desktop_icon():
     # tab), then a toast with one click doing the same; never the panel.
     assert "detectLocalHost" not in body
     assert "window.open" not in body
-    # No click: tab first; refused, the in-page panel so app_state works at
-    # once (the user is usually on the Agent tab); then the toast.
-    assert body.index("openAppTab(id") < body.index("showAppInPage(id)") < body.index("showOpenAppToast(id)")
-    assert 'reportOpenApp(id, "embedded")' in body
-    assert 'reportOpenApp(id, "opened")' in body and "cueHiddenTab(id)" in body
+    # v0.5.3: an app only ever opens in its own reused tab; refused, a toast
+    # with one "Open in new tab" click, never a panel inside StickLLM.
+    assert "showAppInPage" not in app and "stickllm-embed-" not in app
+    assert body.index("openAppTab(id") < body.index("cueHiddenTab(id)") < body.index("showOpenAppToast(id)")
+    assert 'reportOpenApp(id, "opened")' in body and 'reportOpenApp(id, "toast-shown")' in body
     tab = app[app.index("function appTabLink(id)"):app.index("function openAppFromClick(id)")]
     assert '#deskIcons a.deskIcon[' in tab and 'sel("data-starter", id)' in tab
     assert 'icon.getAttribute("href")' in tab and 'icon.getAttribute("target")' in tab
-    assert "window.open(link.href, link.target)" in tab
-    click = app[app.index("function openAppFromClick(id)"):app.index("// In-page app panel")]
-    assert click.index("openAppTab(id") < click.index("showAppInPage(id)")
+    assert "openNamedTab(link.target, link.href" in tab
+    named = app[app.index("function openNamedTab("):app.index("const AGENT_TAB")]
+    assert 'window.open("", target)' in named and "w.opener = null" in named
+    click = app[app.index("function openAppFromClick(id)"):]
+    click = click[:click.index("\n}\n") + 3]
+    assert "openAppTab(id" in click and "showAppInPage" not in click
     toast = app[app.index("function showOpenAppToast(id)"):app.index("function hideOpenAppToast()")]
     assert '"Open in new tab"' in toast and "openAppFromClick(id)" in toast
     cue = app[app.index("function cueHiddenTab(id)"):start]
     assert "document.title" in cue and "new Notification(" in cue and "window.focus()" in cue
     assert "openAppFromClick(id)" in cue
-    # Fallback panel: its iframe never shares the app tab's target name.
-    panel = app[app.index("function showAppInPage(id)"):app.index("function cueHiddenTab(id)")]
-    assert 'const name = "stickllm-embed-" + id;' in panel and "frame.name = name;" in panel
-    assert 'pop.textContent = "Open in new tab"' in app and "Open in window" not in app
-    assert 'window.open("", "stickllm-' not in app
-    assert 'window.name === "stickllm-" + id || window.name === "stickllm-embed-" + id' in bridge
-    # The app tab tells the StickLLM tab to drop the fallback panel.
-    assert '"tab-ready"' in bridge and "window.top !== window" in bridge
-    assert 'm.type !== "tab-ready"' in app
+    assert "Open in window" not in app
+    assert 'window.name === "stickllm-" + id' in bridge
+    assert '"tab-ready"' in bridge
     # App pages get the HttpOnly apps cookie from the paired tab, not a URL ticket.
     prime = app[app.index("function primeAppsSession("):app.index("function clearPairSession()")]
     assert '"/api/ui/apps-session"' in prime and "detectLocalHost()" in prime

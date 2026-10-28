@@ -778,6 +778,33 @@ def docs_lib():
 _ADDONS_LIB = None
 
 
+_VERIFY_LIB = None
+
+
+def verify_lib():
+    """Verified list: pinned hashes for apps, plugins and models (stickllm_verify.py)."""
+    global _VERIFY_LIB
+    if _VERIFY_LIB is not None:
+        return _VERIFY_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_verify.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_verify", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_verify helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _VERIFY_LIB = mod
+    return mod
+
+
+def app_verification(app_id: str, check_upstream: bool = False) -> dict | None:
+    """Verified / Changed upstream / Not verified for a catalog app, or None."""
+    try:
+        return verify_lib().app_status(app_id, check_upstream=check_upstream)
+    except Exception:
+        return None
+
+
 def addons_lib():
     """Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED)."""
     global _ADDONS_LIB
@@ -1175,8 +1202,16 @@ def addon_proxy_headers(headers: dict, host: str, client_ip: str, *, websocket: 
     return out
 
 
+# Tab reuse (v0.5.3): the UI reopens an app's named tab with window.open("", name).
+# A Cross-Origin-Opener-Policy header on the app page cuts that link and every
+# click opens a new tab, so proxied apps never pass COOP through.
+TAB_REUSE_DROP = ("cross-origin-opener-policy", "cross-origin-opener-policy-report-only")
+
+
 def addon_response_header_ok(key: str, value: str) -> bool:
     low = key.lower()
+    if low in TAB_REUSE_DROP:
+        return False
     if low in ("transfer-encoding", "connection", "keep-alive", "content-length"):
         return False
     if low == "set-cookie" and _stickllm_cookie_name(str(value).partition("=")[0]):
@@ -1642,12 +1677,38 @@ def vault_unlocked() -> bool:
     return False
 
 
+VAULT_META_DIRS = (
+    Path(os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data")) / "vault-meta",
+    Path("/var/lib/stickllm/vault-meta"),
+)
+
+
+def vault_configured() -> bool:
+    """True when a vault blob is known (created, attached, or found)."""
+    for meta in VAULT_META_DIRS:
+        try:
+            if (meta / "container").is_file():
+                return True
+        except OSError:
+            pass
+    try:
+        doc = json.loads((RUN_DIR / "vault.json").read_text(encoding="utf-8"))
+        if isinstance(doc, dict) and (doc.get("blob") or doc.get("status") in ("locked", "mapper-open", "unlocked")):
+            return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
 def vault_health() -> dict:
     """/api/health "vault" object. Same shape as stickllm-control vault_status
     (status + mounted), which ui/app.js reads; a bare string made the UI show
     "Vault locked" while the vault was open."""
     mounted = vault_unlocked()
-    return {"status": "unlocked" if mounted else "locked", "mounted": mounted}
+    if mounted:
+        return {"status": "unlocked", "mounted": True}
+    # No vault created or attached yet: say "absent", not "locked" (v0.5.3).
+    return {"status": "locked" if vault_configured() else "absent", "mounted": False}
 
 
 def chats_available() -> tuple[bool, str]:
@@ -2430,12 +2491,17 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _agent_install(self) -> None:
         n = int(self.headers.get("Content-Length") or 0)
-        if n:
-            self.rfile.read(min(n, 1024 * 1024))
+        raw = self.rfile.read(min(n, 1024 * 1024)) if n else b""
+        try:
+            req = json.loads(raw.decode("utf-8") or "{}") if raw else {}
+        except (UnicodeDecodeError, ValueError):
+            req = {}
         if self._agent_refused():
             return
         if not vault_unlocked():
             self._json(403, {"ok": False, "error": "Unlock vault to use Agent"})
+            return
+        if not self._install_verified_ok("agent-zero", req if isinstance(req, dict) else {}):
             return
         # Own unit, not this process: anything started here lives in the
         # stickllm-ui cgroup and dies when the UI restarts.
@@ -2531,7 +2597,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             mod = docs_lib()
         except Exception:
-            self._json(500, {"ok": False, "error": "Docs support is not installed."})
+            self._json(500, {"ok": False, "error": "Office support is not installed."})
             return
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
 
@@ -2646,7 +2712,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
                 return
         except Exception:
-            self._json(500, {"ok": False, "error": "Docs support is not installed."})
+            self._json(500, {"ok": False, "error": "Office support is not installed."})
             return
         parsed = urllib.parse.urlparse(self.path)
         upstream = parsed.path[len("/docs-server"):] or "/"
@@ -2674,7 +2740,7 @@ class Handler(SimpleHTTPRequestHandler):
             resp = conn.getresponse()
             data = resp.read()
         except Exception:
-            self._json(502, {"ok": False, "error": "ONLYOFFICE Docs is not running"})
+            self._json(502, {"ok": False, "error": "Office is not running"})
             return
         finally:
             conn.close()
@@ -2682,7 +2748,7 @@ class Handler(SimpleHTTPRequestHandler):
         self._skip_stick_headers = True
         self.send_response(resp.status)
         for key, value in resp.getheaders():
-            if key.lower() in ("transfer-encoding", "connection", "content-length", "keep-alive", "set-cookie"):
+            if key.lower() in ("transfer-encoding", "connection", "content-length", "keep-alive", "set-cookie") + TAB_REUSE_DROP:
                 continue
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(data)))
@@ -2694,7 +2760,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             sock = socket.create_connection(("127.0.0.1", docs_lib().DS_PORT), timeout=10)
         except OSError:
-            self._json(502, {"ok": False, "error": "ONLYOFFICE Docs is not running"})
+            self._json(502, {"ok": False, "error": "Office is not running"})
             return
         lines = [f"GET {target} HTTP/1.1"] + [f"{k}: {v}" for k, v in headers.items()]
         try:
@@ -2707,7 +2773,7 @@ class Handler(SimpleHTTPRequestHandler):
                 header += chunk
             if header.find(b"\r\n\r\n") < 0:
                 sock.close()
-                self._json(502, {"ok": False, "error": "ONLYOFFICE Docs did not accept the socket"})
+                self._json(502, {"ok": False, "error": "Office did not accept the socket"})
                 return
             self.connection.sendall(header)
         except OSError:
@@ -2791,6 +2857,16 @@ class Handler(SimpleHTTPRequestHandler):
         # ONLYOFFICE and the add-ons override "installed" above, so the count
         # from catalog_document() is stale. Recount from the final rows.
         rows = [row for row in doc.get("apps") or [] if isinstance(row, dict)]
+        # Verified badge from the pins; "changed" only from an earlier upstream
+        # check (this listing never goes online).
+        for row in rows:
+            ver = app_verification(str(row.get("id") or ""))
+            if ver:
+                row["verification"] = ver
+        try:
+            doc["unverified_warning"] = verify_lib().UNVERIFIED_WARNING
+        except Exception:
+            pass
         for row in rows:
             row["not_installed"] = not row.get("installed")
         doc["installed_count"] = sum(1 for row in rows if row.get("installed"))
@@ -2820,6 +2896,9 @@ class Handler(SimpleHTTPRequestHandler):
         out["installed"] = bool(st.get("installed"))
         out["running"] = bool(st.get("running"))
         out["state"] = str(st.get("state") or "")
+        ver = app_verification("onlyoffice" if app_id == "docs" else app_id)
+        if ver:
+            out["verification"] = ver.get("status")
         return out
 
     def _agent_install_request(self, req: dict) -> None:
@@ -2860,16 +2939,24 @@ class Handler(SimpleHTTPRequestHandler):
                 },
             )
             return
+        ver = app_verification("onlyoffice" if app_id == "docs" else app_id, check_upstream=True) or {}
         UI_OPEN.publish_install(app_id, st["name"], target=target, conn=conn)
+        note = ""
+        if ver.get("status") == "changed":
+            note = (" Its upstream image changed since StickLLM verified it, so only the last verified"
+                    " version can be installed; the screen offers that.")
+        elif ver.get("status") == "unverified":
+            note = " It is not verified by StickLLM; the screen shows a warning first."
         self._json(
             200,
             {
                 "ok": True,
                 "id": app_id,
                 "status": "awaiting_user",
+                "verification": {k: ver.get(k) for k in ("status", "label", "version", "message") if k in ver},
                 "screen": "kiosk" if target == "kiosk" else "browser",
                 "message": f"Asked the user to confirm installing {st['name']} on their screen. "
-                "Tell them to click Install; do not call install_app again for it.",
+                "Tell them to click Install; do not call install_app again for it." + note,
             },
         )
 
@@ -2928,7 +3015,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not st["installed"]:
             out["opened"] = False
             out["message"] = (
-                f"Saved {rel} in vault/Documents, but ONLYOFFICE Docs is not installed so it cannot open yet. "
+                f"Saved {rel} in vault/Documents, but Office is not installed so it cannot open yet. "
                 "Call install_app with id docs once and tell the user to click Install."
             )
             self._json(200, out)
@@ -2951,13 +3038,16 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._apps_allowed():
             return
         app_id = str((req or {}).get("id") or "")
-        if app_id == "onlyoffice":
-            self._docs_mutate(action)
-            return
         try:
             is_addon = app_id in addons_lib().APPS
         except Exception:
             is_addon = False
+        if action == "install" and (is_addon or app_id == "onlyoffice"):
+            if not self._install_verified_ok(app_id, req):
+                return
+        if app_id == "onlyoffice":
+            self._docs_mutate(action)
+            return
         if is_addon:
             self._addon_mutate(action, app_id)
             return
@@ -2981,6 +3071,36 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._json(200 if result.get("ok") else 409, result)
 
+    def _install_verified_ok(self, app_id: str, req: dict) -> bool:
+        """Hash pin gate. Installs always pull the pinned digest. When the
+        upstream tag moved, the new build is blocked and the user must accept
+        the last verified version on screen (verified_version: true)."""
+        # Locked vault: let the install below answer 423 vault_locked first,
+        # using the same check that install path makes.
+        try:
+            if app_id == "onlyoffice":
+                is_open = docs_lib().vault_open()
+            elif app_id == "agent-zero":
+                is_open = vault_unlocked()
+            else:
+                is_open = addons_lib().vault_open()
+            if not is_open:
+                return True
+        except Exception:
+            pass
+        ver = app_verification(app_id, check_upstream=True)
+        if not ver:
+            return True
+        if ver.get("status") == "changed" and req.get("verified_version") is not True:
+            self._json(409, {"ok": False, "installed": False, "error": "blocked", "verification": ver,
+                             "message": ver.get("message") or "Changed upstream. Not installed.", "deleted": []})
+            return False
+        if ver.get("status") == "unverified" and req.get("accept_unverified") is not True:
+            self._json(428, {"ok": False, "installed": False, "error": "unverified", "verification": ver,
+                             "message": ver.get("message") or "Not verified.", "deleted": []})
+            return False
+        return True
+
     def _docs_mutate(self, action: str) -> None:
         """Apps page Install/Uninstall for ONLYOFFICE Docs (vault required)."""
         try:
@@ -2994,21 +3114,21 @@ class Handler(SimpleHTTPRequestHandler):
                                  "message": mod.SETTINGS_MISSING_MESSAGE, "deleted": []})
                 return
         except Exception:
-            self._json(500, {"ok": False, "installed": False, "error": "Docs support is not installed.",
+            self._json(500, {"ok": False, "installed": False, "error": "Office support is not installed.",
                              "message": "Nothing was changed.", "deleted": []})
             return
         if action == "install":
             if mod.is_installed():
                 self._json(200, {"ok": True, "installed": True, "state": "installed",
-                                 "message": "ONLYOFFICE Docs is installed.", "deleted": []})
+                                 "message": "Office is installed.", "deleted": []})
                 return
             unit = ["systemctl", "start", "--no-block", "stickllm-docs-install.service"]
             fallback = ["/usr/local/bin/stickllm-docs", "install"]
-            message = "Installing ONLYOFFICE Docs. The image is pulled onto the host drive; documents stay in the vault."
+            message = "Installing Office. The image is pulled onto the host drive; documents stay in the vault."
         else:
             unit = None
             fallback = ["/usr/local/bin/stickllm-docs", "uninstall"]
-            message = "Removing ONLYOFFICE Docs. vault/Documents is kept."
+            message = "Removing Office. vault/Documents is kept."
         started = False
         if unit:
             try:
@@ -3303,7 +3423,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_response(resp.status)
             for key, value in resp.getheaders():
                 low = key.lower()
-                if low in ("transfer-encoding", "connection", "content-length"):
+                if low in ("transfer-encoding", "connection", "content-length") + TAB_REUSE_DROP:
                     continue
                 self.send_header(key, value)
             self.send_header("Cache-Control", "no-store")
@@ -3762,7 +3882,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(resp.status)
         for key, value in resp.getheaders():
             low = key.lower()
-            if low in ("transfer-encoding", "connection", "content-length"):
+            if low in ("transfer-encoding", "connection", "content-length") + TAB_REUSE_DROP:
                 continue
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(data)))
@@ -4188,6 +4308,14 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/apps":
             self._apps_catalog()
+            return
+        if path == "/api/verified":
+            if not self._apps_allowed():
+                return
+            try:
+                self._json(200, verify_lib().summary())
+            except Exception:
+                self._json(500, {"ok": False, "error": "verified list unavailable"})
             return
         if path == "/api/system":
             self._system_status()

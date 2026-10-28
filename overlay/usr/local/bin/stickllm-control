@@ -1513,6 +1513,10 @@ _QUANT_RE = re.compile(
 )
 
 
+# Same text as stickllm_verify.UNVERIFIED_WARNING and the UI confirm box.
+UNVERIFIED_WARNING = "Not verified by StickLLM: this hasn't been checked and may be unsafe"
+
+
 def _catalog_sha_index() -> dict[tuple[str, str], str]:
     idx: dict[tuple[str, str], str] = {}
     for m in parse_catalog():
@@ -1647,6 +1651,7 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
             continue
         files = []
         mmproj_files: list[tuple[str, int]] = []
+        lfs_sha: dict[str, str] = {}
         for sib in tree:
             if not isinstance(sib, dict) or sib.get("type") not in (None, "file"):
                 continue
@@ -1661,6 +1666,9 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
             if "mmproj" in low:
                 mmproj_files.append((name, size))
                 continue
+            oid = str((sib.get("lfs") or {}).get("oid") or "").lower() if isinstance(sib.get("lfs"), dict) else ""
+            if re.fullmatch(r"[0-9a-f]{64}", oid):
+                lfs_sha[name] = oid
             files.append((name, size))
         def rank(pair: tuple[str, int]) -> tuple[int, int, int]:
             qm = _QUANT_RE.search(pair[0])
@@ -1706,6 +1714,10 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
                     "hf_repo": repo,
                     "hf_file": name,
                     "sha256": sha,
+                    # Hugging Face's own LFS sha256: checks the download is the
+                    # file HF serves, not that StickLLM reviewed it.
+                    "lfs_sha256": lfs_sha.get(name, ""),
+                    "verified": bool(sha),
                     "trust": trust,
                     "quant": quant,
                     "bytes": size,
@@ -2513,8 +2525,18 @@ def _build_download_job(params: dict) -> dict:
             return {"ok": False, "error": "repo must look like org/name"}
         if nbytes <= 0:
             return {"ok": False, "error": "model size is unknown, so it cannot be queued safely"}
+        # Verified models list = catalog.toml sha256 (docs/VERIFIED.md).
+        pinned = _catalog_sha_index().get((repo, hf_file), "")
+        if pinned and re.fullmatch(r"[0-9a-f]{64}", sha) and sha != pinned:
+            return {"ok": False, "error": "blocked",
+                    "message": "This file's hash does not match StickLLM's verified hash. Not downloaded."}
+        if not pinned and params.get("accept_unverified") is not True:
+            return {"ok": False, "error": "unverified", "message": UNVERIFIED_WARNING + ". Confirm on screen to download."}
+        if pinned:
+            sha = pinned
         return {
             "ok": True,
+            "verified": bool(pinned),
             "id": mid or ("hf:" + repo.replace("/", "__") + ":" + Path(hf_file).name),
             "name": (name or Path(hf_file).name)[:160],
             "repo": repo,

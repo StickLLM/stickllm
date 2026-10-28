@@ -300,11 +300,12 @@ def test_ui_has_install_open_remove_in_named_tabs():
         row = html.split(f'data-app="{app_id}"', 1)[1].split("</div>", 1)[0]
         assert f'data-actions-for="{app_id}"' in row
         assert 'data-app-act="install"' in row and 'data-app-act="uninstall"' in row
-        assert f'target="stickllm-{app_id}" rel="noopener"' in row
+        # v0.5.3: no rel="noopener" so window.open("", name) finds and reuses the tab.
+        assert f'target="stickllm-{app_id}"' in row and "noopener" not in row
         assert 'target="_blank"' not in row
     js = _text(APP_JS)
     assert '"/api/apps/" + action' in js and "/api/apps/open-link" not in js.split("function paintAppActions", 1)[0]
-    assert 'window.open("", a.getAttribute("target")' in js
+    assert 'window.open("", target)' in js and "function openNamedTab" in js
     assert "w.opener = null" in js
     assert "confirm(" not in js.split("function appsActFor", 1)[1].split("async function appsAct(", 1)[0]
 
@@ -475,7 +476,7 @@ def test_gateway_addon_proxy_live(tmp_path):
         assert rows["vikunja"]["not_installed"] is False
         assert rows["vikunja"]["open_url"] == f"http://127.0.0.1:{up.server_address[1]}/"
         assert rows["radicale"]["installed"] is False and rows["radicale"]["state"] == "not_installed"
-        assert rows["immich"].get("installer") is None
+        assert "immich" not in rows  # hidden in v0.5.3 (needs four containers + GPU)
         # Locked vault: 423, the app is never contacted.
         ip["v"] = "192.168.1.20"
         _lock(tmp_path)

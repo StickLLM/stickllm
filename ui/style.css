@@ -145,6 +145,8 @@ button.pill.visionOff:hover{color:var(--ink);border-color:var(--muted)}
 .pill.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,transparent);background:color-mix(in srgb,var(--ok) 10%,transparent)}
 .pill.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent);background:color-mix(in srgb,var(--warn) 12%,transparent)}
 .pill.acc{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,transparent);background:var(--accent-soft)}
+.pill.bad{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,transparent);background:color-mix(in srgb,var(--danger) 12%,transparent)}
+.vbadge{margin-left:8px;font-size:10.5px;padding:1px 7px;vertical-align:middle;cursor:help}
 
 /* Main */
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -597,14 +599,6 @@ select:focus{border-color:var(--accent);outline:none}
 .hfToken small{font-size:12px}
 #ablTitle{display:flex;align-items:center;gap:10px}
 .vsel{max-width:250px}
-/* In-page app panel for open_app when the browser blocks pop-ups (above content, below toast z80) */
-.stick-app-panel{position:fixed;right:16px;bottom:16px;width:min(900px,calc(100vw - 32px));height:min(700px,calc(100vh - 32px));z-index:75;display:flex;flex-direction:column;background:var(--bg);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.4);overflow:hidden}
-.stick-app-panel[hidden]{display:none}
-.stick-app-bar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--ink);color:var(--bg);font-size:14px}
-.stick-app-title{flex:1;font-weight:600}
-.stick-app-bar button{background:transparent;color:inherit;border:1px solid currentColor;border-radius:6px;padding:2px 8px;font:inherit;cursor:pointer}
-.stick-app-bar button[hidden]{display:none}
-.stick-app-frame{flex:1;width:100%;border:0;background:#fff}
 /* Masked secret fields. type=text so Chrome never offers to save a password. */
 input.secret { -webkit-text-security: disc; }
 

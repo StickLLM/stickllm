@@ -58,7 +58,7 @@ def test_sidebar_drops_comfy_and_word_processor():
     assert "Word processor" not in side
     assert 'id="appsLink"' in side
     assert 'id="agentLink"' in side
-    assert 'target="_blank"' in side
+    assert 'target="stickllm-agent-zero"' in side
     assert 'id="appsView"' in html
 
 
@@ -84,7 +84,7 @@ def test_apps_page_lists_the_documented_catalog():
     names = {app["name"] for app in apps.CATALOG}
     assert "Agent Zero" not in names
     assert "ComfyUI" in names
-    assert "ONLYOFFICE Docs" in names
+    assert "Office" in names and "ONLYOFFICE Docs" not in names
     assert not any("whisper" in name.lower() or "kitten" in name.lower() for name in names)
 
     html = HTML.read_text(encoding="utf-8")
@@ -96,6 +96,9 @@ def test_apps_page_lists_the_documented_catalog():
     assert "Not available yet" not in agent_row
     assert "whisper" not in listing.lower()
     for app in apps.CATALOG:
+        if app.get("hidden"):
+            assert f'data-app="{app["id"]}"' not in listing  # hidden in v0.5.3
+            continue
         assert f'data-app="{app["id"]}"' in listing
         assert app["name"] in listing
         assert app["description"] in listing
@@ -277,9 +280,12 @@ def test_catalog_cards_show_requirements_and_low_disk_still_installs(tmp_path):
         line = apps.requirement_line(app)
         assert "Disk" in line and "RAM" in line and "GPU:" in line and "approx." in line
         assert "(measured)" not in line
-        assert line in listing
-        if app["note"]:
-            assert app["note"] in listing
+        if app.get("hidden"):
+            assert f'data-app="{app["id"]}"' not in listing  # hidden in v0.5.3
+        else:
+            assert line in listing
+            if app["note"]:
+                assert app["note"] in listing
         row = doc_rows[app["id"]]
         vram = app["vram_gb"]
         vram_cell = apps.fmt_gb(vram) if isinstance(vram, (int, float)) else str(vram)

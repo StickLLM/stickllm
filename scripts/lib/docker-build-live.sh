@@ -47,7 +47,7 @@ lb config \
   --memtest none \
   --iso-application "StickLLM" \
   --iso-volume "STICKLLM" \
-  --iso-publisher "nink" \
+  --iso-publisher "Nink Inc." \
   --linux-packages "linux-image linux-headers" \
   --chroot-squashfs-compression-type xz
 
@@ -79,7 +79,8 @@ done
 mkdir -p config/includes.chroot
 rsync -a /stickllm/overlay/ config/includes.chroot/
 # systemd rejects unit files marked executable (common on Windows mounts)
-find config/includes.chroot/etc/systemd -type f -name '*.service' -exec chmod 644 {} +
+# Drop-ins (*.conf), timers and sockets too: systemd warns "marked executable".
+find config/includes.chroot/etc/systemd -type f \( -name '*.service' -o -name '*.conf' -o -name '*.timer' -o -name '*.socket' -o -name '*.target' \) -exec chmod 644 {} +
 find config/includes.chroot/usr/local/bin -type f -exec chmod 755 {} +
 find config/includes.chroot/etc/sudoers.d -type f -exec chmod 440 {} +
 
@@ -149,6 +150,11 @@ test -f config/includes.chroot/usr/local/share/stickllm/addons/node-red-settings
 for pin in radicale vikunja actual trilium node-red; do
   grep -q '^amd64_digest=sha256:' "config/includes.chroot/usr/local/share/stickllm/addons/${pin}.pin"
 done
+# Verified list (apps, plugins, models): the shipped verified.json must match
+# the pins, the plugin allowlist and the model catalog, or the build stops.
+test -f config/includes.chroot/usr/local/share/stickllm/verified.json
+test -f config/includes.chroot/usr/local/lib/stickllm_verify.py
+python3 -B /stickllm/scripts/pins.py verify
 
 # Agent Zero plugins: banned unless allowlisted. Fetch each allowlisted plugin
 # once here at its pinned commit, hash-check it, bake it read-only. A pin or

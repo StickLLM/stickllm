@@ -11,53 +11,70 @@ if [ -f /exe/self_update_manager.py ]; then
     /exe/self_update_manager.py
 fi
 
+# Mute sshd and the tunnel API in supervisord. Upstream initialize.sh runs
+# "cp -r /per/* /" before supervisord starts, so /per's copy of the config
+# overwrote the /etc patch and run_tunnel_api still started and went FATAL.
+# Patch both copies. (v0.5.3)
 python3 - <<'PY'
 from pathlib import Path
 
-path = Path("/etc/supervisor/conf.d/supervisord.conf")
-if not path.is_file():
-    raise SystemExit(0)
-text = path.read_text(encoding="utf-8", errors="replace")
-lines = text.splitlines()
-out = []
-program = ""
-seen_autostart = False
-muted = {"run_sshd", "run_tunnel_api"}
 
-def flush_autostart(buf, prog, seen):
-    if prog in muted and not seen:
-        buf.append("autostart=false")
-        buf.append("autorestart=false")
-    return buf
+def patch(path):
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8", errors="replace")
+    path.write_text(mute(text), encoding="utf-8")
 
-buf_start = 0
-for line in lines:
-    if line.startswith("[program:"):
-        if program:
-            out = flush_autostart(out, program, seen_autostart)
-        program = line[len("[program:") :].rstrip("]")
-        seen_autostart = False
+
+def mute(text):
+    lines = text.splitlines()
+    out = []
+    program = ""
+    seen_autostart = False
+    muted = {"run_sshd", "run_tunnel_api"}
+
+    def flush_autostart(buf, prog, seen):
+        if prog in muted and not seen:
+            buf.append("autostart=false")
+            buf.append("autorestart=false")
+        return buf
+
+    for line in lines:
+        if line.startswith("["):
+            # Any section ends the previous program. [eventlistener:...] after
+            # run_tunnel_api used to inherit the mute and lose its command.
+            if program:
+                out = flush_autostart(out, program, seen_autostart)
+            program = line[len("[program:") :].rstrip("]") if line.startswith("[program:") else ""
+            seen_autostart = False
+            out.append(line)
+            continue
+        if program in muted and line.startswith("command="):
+            out.append("command=/bin/true")
+            continue
+        if program in muted and line.startswith("autorestart="):
+            out.append("autorestart=false")
+            continue
+        if program in muted and line.startswith("autostart="):
+            seen_autostart = True
+            out.append("autostart=false")
+            continue
         out.append(line)
-        continue
-    if program in muted and line.startswith("command="):
-        out.append("command=/bin/true")
-        continue
-    if program in muted and line.startswith("autorestart="):
-        out.append("autorestart=false")
-        continue
-    if program in muted and line.startswith("autostart="):
-        seen_autostart = True
-        out.append("autostart=false")
-        continue
-    out.append(line)
-if program:
-    out = flush_autostart(out, program, seen_autostart)
-path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    if program:
+        out = flush_autostart(out, program, seen_autostart)
+    return "\n".join(out) + "\n"
+
+
+for conf in ("/etc/supervisor/conf.d/supervisord.conf", "/per/etc/supervisor/conf.d/supervisord.conf"):
+    patch(Path(conf))
 PY
 
-if [ -f /etc/searxng/settings.yml ] && ! grep -q 'bind_address:' /etc/searxng/settings.yml; then
-  sed -i '/^server:/a\  bind_address: "127.0.0.1"' /etc/searxng/settings.yml
-fi
+# /per is copied over / by initialize.sh, so patch its copy as well.
+for searx in /etc/searxng/settings.yml /per/etc/searxng/settings.yml; do
+  if [ -f "$searx" ] && ! grep -q 'bind_address:' "$searx"; then
+    sed -i '/^server:/a\  bind_address: "127.0.0.1"' "$searx"
+  fi
+done
 
 # Plugins are locked (read-only /a0/usr/plugins). Drop the upstream skills that
 # teach installing, creating, or publishing plugins before /git/agent-zero is

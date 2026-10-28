@@ -29,10 +29,10 @@ RAM_INSTALL_ROOT = Path("/var/lib/stickllm/apps")
 CATALOG: tuple[dict, ...] = (
     {
         "id": "onlyoffice",
-        "name": "ONLYOFFICE Docs",
+        "name": "Office",
         "group": "Core (starter apps)",
         "license": "AGPL",
-        "description": "Documents, spreadsheets, and slides. The bot can edit open files live.",
+        "description": "Documents, spreadsheets, and slides (ONLYOFFICE). The bot can edit open files live.",
         "disk_gb": 3,
         "ram_gb": {"min": 2, "recommended": 4},
         "vram_gb": 0,
@@ -51,6 +51,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "+ Redis; OCR spikes RAM/CPU; documents stored extra",
+        "hidden": "Needs Redis plus OCR worker containers; StickLLM add-ons are one locked-down container each.",
         "installer": None,
     },
     {
@@ -64,6 +65,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Very light",
+        "hidden": "Webmail needs outbound IMAP/SMTP, and add-on containers have no network by design.",
         "installer": None,
     },
     {
@@ -129,6 +131,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": "0 or 1-2",
         "gpu": "optional",
         "note": "Server + ML + Postgres + Redis; photo library stored extra; GPU ML search uses ~1-2 GB VRAM",
+        "hidden": "Needs Postgres, Redis and a machine-learning container (four containers) plus a GPU for search.",
         "installer": None,
     },
     {
@@ -142,6 +145,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "+ Valkey/Redis; Tor adds ~0.1 GB",
+        "hidden": "Already built into Agent Zero (its own private search); a second copy adds nothing.",
         "installer": None,
     },
     {
@@ -155,6 +159,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Conduit + Element web; bridges add more",
+        "hidden": "Federation and bridges need internet and LAN access; add-on containers have no network.",
         "installer": None,
     },
     {
@@ -168,6 +173,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "SMP/XFTP relay servers; clients are phone/desktop apps",
+        "hidden": "Relay servers only, used from phone and desktop apps; nothing to open in a browser tab.",
         "installer": None,
     },
     {
@@ -181,6 +187,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "4 containers incl. Java video bridge; CPU heavy with many callers",
+        "hidden": "Four containers including the Java video bridge, and calls need LAN/internet UDP.",
         "installer": None,
     },
     {
@@ -194,6 +201,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "CLI + Tor",
+        "hidden": "Command line plus Tor, which needs internet; no web app to open.",
         "installer": None,
     },
     {
@@ -207,6 +215,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Node + Postgres + Redis",
+        "hidden": "Node, Postgres and Redis, and posting needs internet access to the social networks.",
         "installer": None,
     },
     {
@@ -220,6 +229,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Client + minisign; negligible",
+        "hidden": "Command-line tools with no web app; timestamping needs internet calendars.",
         "installer": None,
     },
     {
@@ -233,6 +243,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": "8 / 12-24",
         "gpu": "required",
         "note": "PyTorch+CUDA install; models extra (SDXL ~7 GB, Flux 12-24 GB); unload or shrink the LLM to free VRAM",
+        "hidden": "Needs CUDA, PyTorch and the GPU the model is using; not containerised for the stick yet.",
         "installer": None,
     },
     {
@@ -246,6 +257,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "optional",
         "note": "GPU only if notebooks use it",
+        "hidden": "Not packaged and security-reviewed for the stick yet (a full terminal and package installs).",
         "installer": None,
     },
     {
@@ -259,6 +271,7 @@ CATALOG: tuple[dict, ...] = (
         "vram_gb": 0,
         "gpu": "none",
         "note": "Pick n8n or Node-RED, not both by default",
+        "hidden": "Fair-code licence (not OSI open source) and it duplicates Node-RED, which ships.",
         "installer": None,
     },
     {
@@ -607,12 +620,16 @@ def catalog_document(record_path: Path | None = None, catalog: tuple | list | No
     path, _root = resolve_store(record_path, None)
     rows = CATALOG if catalog is None else catalog
     record = load_record(path)
-    apps = [_public_app(app, record) for app in rows]
+    # Rows with a "hidden" reason have no working installer on the stick and are
+    # left off the Apps page (v0.5.3). The reasons are listed for docs and agents.
+    apps = [_public_app(app, record) for app in rows if not app.get("hidden")]
+    hidden = [{"id": app["id"], "name": app["name"], "reason": app["hidden"]} for app in rows if app.get("hidden")]
     return {
         "ok": True,
         "note": "Install it first, then use it to install and configure these apps.",
         "installed_count": sum(1 for app in apps if app["installed"]),
         "apps": apps,
+        "hidden": hidden,
         "agent_zero": {
             "id": AGENT_ZERO["id"],
             "name": AGENT_ZERO["name"],

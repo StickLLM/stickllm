@@ -66,6 +66,7 @@ def test_health_live_version_and_vault(tmp_path):
     gw.llama_unit_state = lambda *a, **k: "inactive"
     state = {"open": False}
     gw.vault_unlocked = lambda: state["open"]
+    gw.vault_configured = lambda: state.get("configured", False)
 
     class H(gw.Handler):
         def _client_ip(self):
@@ -85,6 +86,11 @@ def test_health_live_version_and_vault(tmp_path):
             doc = json.loads(r.read())
         assert doc["version"] == "0.5.1"
         # Object shape, same as control vault_status: ui/app.js reads .status/.mounted.
+        # No vault created yet: "absent", not "locked" (v0.5.3).
+        assert doc["vault"] == {"status": "absent", "mounted": False}
+        state["configured"] = True
+        with urllib.request.urlopen(url, timeout=10) as r:
+            doc = json.loads(r.read())
         assert doc["vault"] == {"status": "locked", "mounted": False}
         state["open"] = True
         with urllib.request.urlopen(url, timeout=10) as r:
@@ -102,10 +108,14 @@ def test_apps_install_vault_gate_matches_health(tmp_path, monkeypatch):
     ui.mkdir()
     (ui / "index.html").write_text("<html></html>", encoding="utf-8")
     (ui / "stickllm.json").write_text(json.dumps({"version": "0.5.1"}), encoding="utf-8")
+    monkeypatch.setenv("STICKLLM_VERIFIED", str(ROOT / "overlay/usr/local/share/stickllm/verified.json"))
+    monkeypatch.setenv("STICKLLM_RUN", str(tmp_path / "run"))
     gw = _load("gw_health_apps", ui, tmp_path)
+    monkeypatch.setattr(gw.verify_lib(), "registry_digest", lambda *a, **k: None)  # offline
     gw.AUTH_PATH = tmp_path / "no-auth.json"
     state = {"open": False}
     gw.vault_unlocked = lambda: state["open"]
+    gw.vault_configured = lambda: True
     addons = gw.addons_lib()
     monkeypatch.setattr(addons, "vault_open", lambda: state["open"])
     monkeypatch.setattr(addons, "is_installed", lambda app_id: False)
@@ -175,7 +185,10 @@ def test_ui_reads_both_vault_shapes_and_ignores_key_repeat():
     js = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
     assert "function vaultIsOpen(v)" in js
     assert 'if (typeof v === "string") return v.toLowerCase() === "unlocked";' in js
-    assert "setVaultChrome(vaultIsOpen(j.vault))" in js
+    assert "setVaultChrome(vaultIsOpen(j.vault), vaultIsAbsent(j.vault))" in js
+    # No vault yet reads "No vault set up" / "Not set up", not "locked".
+    assert "function vaultIsAbsent(v)" in js
+    assert '"No vault set up"' in js and '"Not set up"' in js
     assert "const open = vaultIsOpen(v);" in js
     # Old inline check that broke on a string vault field is gone.
     assert 'String(j.vault.status || "")' not in js

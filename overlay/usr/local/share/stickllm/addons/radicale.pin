@@ -3,5 +3,7 @@
 # OCI index; amd64_digest is the linux/amd64 manifest that is pulled.
 image=tomsquest/docker-radicale
 version=3.9.0
+# Registry tag the upstream check compares (tomsquest tags are 4-part).
+tag=3.9.0.0
 manifest_digest=sha256:d10468453a61d2f74d2280e4438a19f207894f77454306f068a172f3ea809e2a
 amd64_digest=sha256:befe4ba4902dee167b4e1499ca6b7ee42a8840e8a231f992344f571632c0bc93

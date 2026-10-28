@@ -42,11 +42,11 @@ const messages = [{
   content: "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
 }];
 const TRUST = {
-  verified: { l: "Verified", c: "t-ok", d: "StickLLM hash + tested" },
-  community: { l: "Community verified", c: "t-acc", d: "Official publisher, hash matches" },
-  unverified: { l: "Unverified", c: "t-warn", d: "Known source, not hash-checked" },
-  untrusted: { l: "Untrusted", c: "t-bad", d: "Unknown source" },
-  blocked: { l: "Blocked", c: "t-blk", d: "Hash mismatch" },
+  verified: { l: "Verified", c: "t-ok", d: "On StickLLM's verified list (sha256 pinned)" },
+  community: { l: "Known publisher", c: "t-acc", d: "Official publisher, not verified by StickLLM" },
+  unverified: { l: "Not verified", c: "t-warn", d: "Not on StickLLM's verified list" },
+  untrusted: { l: "Untrusted", c: "t-bad", d: "Unknown source, not verified by StickLLM" },
+  blocked: { l: "Blocked", c: "t-blk", d: "Hash does not match the verified hash" },
 };
 const ALL_TRUST = () => new Set(Object.keys(TRUST));
 const state = {
@@ -212,6 +212,55 @@ async function requestKioskCode() {
     toast(msg);
   } catch (e) { if (out) out.textContent = e.message; }
 }
+// One tab per app (0.5.3). Every app (starter, catalog add-on, Office, Agent
+// Zero) opens in its own named browser tab: "stickllm-<id>". A second click
+// switches to that tab instead of opening another one. That only works when
+// the tab keeps its name and stays reachable from this page, so app links
+// never use noopener and the opener is never cleared. appTabs keeps the
+// handle; after a reload of this page window.open("", name) finds the tab
+// again by name. A cross-origin page in it (an add-on, Agent Zero) cannot be
+// read, which also tells "already open" apart from a fresh about:blank tab.
+const appTabs = new Map();
+function appTabHandle(target) {
+  const w = appTabs.get(target);
+  if (w && !w.closed) return w;
+  appTabs.delete(target);
+  return null;
+}
+function appTabIsBlank(w) {
+  try {
+    const h = String(w.location.href || "");
+    return h === "" || h === "about:blank";
+  } catch (e) {
+    return false;
+  }
+}
+function focusAppTab(w) {
+  try { w.focus(); } catch (e) { /* the browser decides */ }
+  return w;
+}
+// url: where a fresh tab goes. resolve(): optional promise of a better URL
+// (a paired LAN browser's one-time sign-in link). force: navigate even when
+// the tab is already open (Office opening a given document).
+function openNamedTab(target, url, resolve, force) {
+  let w = appTabHandle(target);
+  if (!w) {
+    try { w = window.open("", target); } catch (e) { w = null; }
+    if (!w) return null;
+    appTabs.set(target, w);
+    if (!appTabIsBlank(w) && !force) return focusAppTab(w);
+  } else if (!force) {
+    return focusAppTab(w);
+  }
+  // Cut the opener link before the app loads (no reverse tabnabbing); the
+  // tab keeps its name, so window.open("", target) still finds it later.
+  try { w.opener = null; } catch (e) {}
+  const go = (u) => { try { w.location.href = u || url; } catch (e) {} };
+  if (resolve) Promise.resolve().then(resolve).then(go, () => go(url));
+  else go(url);
+  return focusAppTab(w);
+}
+const AGENT_TAB = "stickllm-agent-zero";
 function agentPageUrl(status) {
   if (status && status.agent_url) return status.agent_url;
   const host = location.hostname || "127.0.0.1";
@@ -238,8 +287,7 @@ function syncAgentDesktop(installed, href) {
     icon = document.createElement("a");
     icon.id = "agentDeskIcon";
     icon.className = "deskIcon";
-    icon.target = "_blank";
-    icon.rel = "noopener noreferrer";
+    icon.target = AGENT_TAB;
     icon.innerHTML = '<span class="deskGlyph deskGlyphLogo" aria-hidden="true"><img src="agent-zero.png?v=desk4" alt=""></span><span class="deskLabel">Agent</span>';
     desk.appendChild(icon);
   }
@@ -258,8 +306,8 @@ async function refreshAgentLink() {
     const href = agentPageUrl(s);
     if (link) {
       link.href = href;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
+      link.target = AGENT_TAB;
+      link.removeAttribute("rel");
       link.hidden = !installed;
     }
     syncAgentDesktop(installed, href);
@@ -297,7 +345,7 @@ async function refreshAgentLink() {
     }
   } catch (e) { /* status is optional until the gateway is current */ }
 }
-async function installAgent() {
+async function installAgent(extra) {
   const row = $("#agentCatalogRow");
   try {
     const pre = await fetch("/api/apps", { cache: "no-store", headers: authHeaders() });
@@ -312,8 +360,16 @@ async function installAgent() {
     btn.textContent = "Installing…";
   }
   try {
-    const r = await fetch("/api/agent/install", { method: "POST", headers: authHeaders() });
+    const r = await fetch("/api/agent/install", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(extra || {}),
+    });
     const j = await r.json().catch(() => ({}));
+    if (!r.ok && verifyGate(j, (more) => installAgent(Object.assign({}, extra || {}, more)))) {
+      for (const btn of agentInstallButtons()) { btn.disabled = false; btn.textContent = "Install Agent Zero"; }
+      return;
+    }
     if (!r.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
     toast(j.message || "Installing Agent Zero");
   } catch (e) {
@@ -336,6 +392,31 @@ function showApps() {
   if (btn) { btn.classList.add("on"); btn.setAttribute("aria-current", "page"); }
   if (mobile()) toggleNav(false);
   refreshApps().catch(() => {});
+  refreshPluginBadges().catch(() => {});
+}
+// Agent Zero plugins come only from the reviewed list baked into the ISO
+// (commit + tree sha256). Show each one's status under the Agent Zero row.
+async function refreshPluginBadges() {
+  const el = $("#agentPlugins");
+  if (!el) return;
+  const r = await fetch("/api/verified", { cache: "no-store", headers: authHeaders() });
+  if (!r.ok) return;
+  const j = await r.json();
+  const plugins = Array.isArray(j.plugins) ? j.plugins : [];
+  el.textContent = "";
+  if (!plugins.length) { el.hidden = true; return; }
+  el.append("Plugins: ");
+  plugins.forEach((p, i) => {
+    const look = VERIFY_BADGE[p.status] || VERIFY_BADGE.unverified;
+    const b = document.createElement("span");
+    b.className = "pill vbadge " + look.cls;
+    b.dataset.verify = p.status;
+    b.textContent = (p.name || "plugin") + " · " + look.text;
+    b.title = (p.repo || "") + (p.commit ? " @ " + p.commit : "") + (p.tree_sha256 ? "\ntree sha256 " + p.tree_sha256 : "");
+    if (i) el.append(" ");
+    el.append(b);
+  });
+  el.hidden = false;
 }
 function appsMessage(text) {
   const el = $("#appsMsg");
@@ -449,6 +530,7 @@ async function refreshApps() {
     if (sub) sub.textContent = a.installed ? "Installed" : "Not installed";
     if (a.installed) installedCount += 1;
     paintAppActions(row, a);
+    paintVerifyBadge(row, a.verification);
   });
   paintResourceWarnings(j.resources);
   syncCatalogDesktop(apps);
@@ -469,7 +551,7 @@ async function refreshApps() {
 // URL on the right host); the kiosk and same-origin pages follow open_url.
 const catalogApps = new Map();
 const DESK_APP_GLYPHS = {
-  onlyoffice: { label: "Docs", color: "#1d4ed8", svg: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 12h6M10 16h6"/>' },
+  onlyoffice: { label: "Office", color: "#1d4ed8", svg: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 12h6M10 16h6"/>' },
   radicale: { label: "Calendar", color: "#0f766e", svg: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>' },
   vikunja: { label: "Tasks", color: "#4f46e5", svg: '<path d="M5 7l2 2 3-3M5 13l2 2 3-3M13 8h6M13 14h6M5 19h14"/>' },
   actual: { label: "Budget", color: "#9333ea", svg: '<path d="M12 3v18M16 7.5c-.8-1-2.2-1.5-4-1.5-2.2 0-3.5 1-3.5 2.6 0 3.8 7.5 2 7.5 6 0 1.7-1.5 2.9-4 2.9-1.9 0-3.4-.6-4.2-1.7"/>' },
@@ -494,7 +576,6 @@ function syncCatalogDesktop(apps) {
       icon = document.createElement("a");
       icon.className = "deskIcon";
       icon.dataset.catalogApp = a.id;
-      icon.rel = "noopener";
       const glyph = document.createElement("span");
       glyph.className = "deskGlyph";
       glyph.setAttribute("aria-hidden", "true");
@@ -518,13 +599,69 @@ function syncCatalogDesktop(apps) {
   });
 }
 if ($("#deskIcons")) $("#deskIcons").addEventListener("click", (e) => {
-  const icon = e.target.closest("a.deskIcon[data-catalog-app]");
-  if (!icon) return;
-  if (icon.dataset.openLink && !detectLocalHost() && token) {
-    e.preventDefault();
-    openAppPaired(icon);
-  }
+  const icon = e.target.closest('a.deskIcon[target^="stickllm-"]');
+  if (!icon || icon.id === "agentDeskIcon") return;
+  if (e.button || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  e.preventDefault();
+  if (!openAppPaired(icon)) location.href = icon.href;
 });
+// Hash pins (docs/VERIFIED.md). Each catalog row shows Verified, Changed
+// upstream or Not verified. The gateway refuses a changed upstream build
+// ("blocked") and anything off the list ("unverified"); the user decides here
+// with a typed confirm. Agent Zero can never skip this screen.
+const UNVERIFIED_WARNING = "Not verified by StickLLM: this hasn't been checked and may be unsafe";
+const VERIFY_BADGE = {
+  verified: { cls: "ok", text: "Verified" },
+  changed: { cls: "bad", text: "Changed upstream" },
+  blocked: { cls: "bad", text: "Blocked" },
+  unverified: { cls: "warn", text: "Not verified" },
+};
+function verifyBadgeTitle(v) {
+  if (!v) return "";
+  if (v.status === "verified") return (v.image ? v.image + ":" + (v.version || "") + "\n" : "") + "Pinned " + (v.manifest_digest || "");
+  return v.message || "";
+}
+function paintVerifyBadge(row, v) {
+  const host = row && row.querySelector(".appName > span");
+  if (!host) return;
+  let b = host.querySelector(".vbadge");
+  const look = v && VERIFY_BADGE[v.status];
+  if (!look) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement("span"); host.appendChild(b); }
+  b.className = "pill vbadge " + look.cls;
+  b.dataset.verify = v.status;
+  b.textContent = look.text;
+  b.title = verifyBadgeTitle(v);
+}
+// j is the gateway's refusal. Returns true when a confirm box took over;
+// retry(extra) re-sends the same install with the user's answer.
+function verifyGate(j, retry) {
+  if (!j) return false;
+  const v = j.verification || {};
+  if (j.error === "blocked") {
+    confirmBox({
+      title: "Changed upstream",
+      text: j.message || "This app changed upstream since StickLLM verified it.",
+      extra: "The new build stays blocked until StickLLM verifies it." + (v.version ? " Last verified: " + v.version + " (" + String(v.manifest_digest || "").slice(0, 19) + "…)." : ""),
+      word: "VERIFIED",
+      ok: "Install verified version",
+      cb: () => retry({ verified_version: true }),
+    });
+    return true;
+  }
+  if (j.error === "unverified") {
+    confirmBox({
+      title: "Not verified by StickLLM",
+      text: UNVERIFIED_WARNING + ".",
+      extra: "Install only if you trust where it comes from.",
+      word: "INSTALL",
+      ok: "Install anyway",
+      cb: () => retry({ accept_unverified: true }),
+    });
+    return true;
+  }
+  return false;
+}
 // Rows with an installer (ONLYOFFICE and the starter add-ons) carry their
 // own Install / Open / Remove controls. Open goes to a named tab, never a popup.
 const APP_BUSY_STATES = new Set(["installing", "removing", "starting"]);
@@ -559,34 +696,34 @@ function appRowMessage(id, text) {
   msg.dataset.sticky = text ? "1" : "";
   if (text) setTimeout(() => { msg.dataset.sticky = ""; }, 20000);
 }
-async function openAppPaired(a) {
+// Desktop icon or Apps-page Open: the app's own tab, reused. A paired LAN
+// browser signs in to an add-on through its one-time open link; the kiosk
+// and same-origin pages (Office at /apps/docs/) follow the plain link.
+function openAppPaired(a) {
   const box = a.closest("[data-actions-for]");
-  const id = box ? box.dataset.actionsFor : (a.dataset.appId || "");
+  const id = box ? box.dataset.actionsFor : (a.dataset.appId || a.dataset.catalogApp || a.dataset.starter || "");
   const link = a.dataset.openLink || "";
-  // Same-origin pages (ONLYOFFICE at /apps/docs/), the console, and unpaired
-  // sticks follow the link as is.
-  if (!id || !link || detectLocalHost() || !token) return false;
-  const w = window.open("", a.getAttribute("target") || "_blank");
-  let url = a.href;
-  try {
-    const r = await fetch(link, {
-      method: "POST", cache: "no-store",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ id }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok && j.url) url = j.url;
-    else appRowMessage(id, j.message || "Could not sign this browser in to the app. Try Open again.");
-  } catch (err) { /* follow the plain link; the app page explains pairing */ }
-  if (w) {
-    try { w.opener = null; } catch (err) { /* ignore */ }
-    w.location.href = url;
-  } else {
-    location.href = url;
+  const target = a.getAttribute("target") || ("stickllm-" + id);
+  const href = a.href;
+  let resolve = null;
+  if (id && link && !detectLocalHost() && token) {
+    resolve = async () => {
+      try {
+        const r = await fetch(link, {
+          method: "POST", cache: "no-store",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ id }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j.url) return j.url;
+        appRowMessage(id, j.message || "Could not sign this browser in to the app. Try Open again.");
+      } catch (err) { /* follow the plain link; the app page explains pairing */ }
+      return href;
+    };
   }
-  return true;
+  return !!openNamedTab(target, href, resolve);
 }
-async function appsActFor(id, action, btn) {
+async function appsActFor(id, action, btn, extra) {
   if (!id) return;
   if (action === "uninstall" && btn && btn.dataset.confirm !== "1") {
     btn.dataset.confirm = "1";
@@ -600,10 +737,11 @@ async function appsActFor(id, action, btn) {
       method: "POST",
       cache: "no-store",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ id }),
+      body: JSON.stringify(Object.assign({ id }, extra || {})),
     });
     const j = await r.json().catch(() => ({}));
     appRowMessage(id, j.message || (r.ok ? "" : "Nothing was changed."));
+    if (!r.ok && verifyGate(j, (more) => appsActFor(id, action, btn, Object.assign({}, extra || {}, more)))) return;
     if (r.ok && j.started === true) {
       [3, 10, 20, 40, 60, 120, 240, 480].forEach((sec) => setTimeout(() => refreshApps().catch(() => {}), sec * 1000));
     }
@@ -614,7 +752,7 @@ async function appsActFor(id, action, btn) {
     refreshApps().catch(() => {});
   }
 }
-async function appsAct(action) {
+async function appsAct(action, extra) {
   if (!selectedAppId) return;
   const installBtn = $("#appsInstall");
   const removeBtn = $("#appsUninstall");
@@ -625,9 +763,13 @@ async function appsAct(action) {
       method: "POST",
       cache: "no-store",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ id: selectedAppId }),
+      body: JSON.stringify(Object.assign({ id: selectedAppId }, extra || {})),
     });
     const j = await r.json().catch(() => ({}));
+    if (!r.ok && verifyGate(j, (more) => appsAct(action, Object.assign({}, extra || {}, more)))) {
+      appsMessage(j.message || "");
+      return;
+    }
     // ONLYOFFICE installs in the background: started, not installed yet.
     const succeeded = r.ok && j.ok === true && (action !== "install" || j.installed === true || j.started === true);
     if (!succeeded) {
@@ -690,10 +832,9 @@ if ($("#appsList")) $("#appsList").addEventListener("click", (e) => {
   }
   const open = e.target.closest("[data-app-open]");
   if (open) {
-    if (open.dataset.openLink && !detectLocalHost() && token) {
-      e.preventDefault();
-      openAppPaired(open);
-    }
+    if (e.button || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    e.preventDefault();
+    if (!openAppPaired(open)) location.href = open.href;
     return;
   }
   const row = e.target.closest(".appsRow");
@@ -822,14 +963,22 @@ function vaultIsOpen(v) {
   return String(v.status || "").toLowerCase() === "unlocked" || !!v.mounted;
 }
 
-function setVaultChrome(open) {
+// "absent" = no vault created or attached yet. Say so instead of "locked".
+function vaultIsAbsent(v) {
+  if (typeof v === "string") return v.toLowerCase() === "absent";
+  if (!v || typeof v !== "object") return false;
+  return !v.mounted && String(v.status || "").toLowerCase() === "absent";
+}
+
+function setVaultChrome(open, absent = false) {
   state.vaultOpen = open;
+  const none = !open && !!absent;
   $("#vaultCard")?.classList.toggle("open", open);
-  if ($("#vcState")) $("#vcState").textContent = open ? "Vault unlocked" : "Vault locked";
+  if ($("#vcState")) $("#vcState").textContent = open ? "Vault unlocked" : (none ? "No vault set up" : "Vault locked");
   if ($("#unlockForm")) $("#unlockForm").hidden = open;
   if ($("#lockBtn2")) $("#lockBtn2").hidden = !open;
   if ($("#lockBtn")) $("#lockBtn").hidden = !open;
-  if ($("#popVault")) $("#popVault").textContent = open ? "Unlocked" : "Locked";
+  if ($("#popVault")) $("#popVault").textContent = open ? "Unlocked" : (none ? "Not set up" : "Locked");
 }
 
 async function lockVault() {
@@ -1684,8 +1833,10 @@ function modelTrust(m) {
   if (TRUST[t]) return t;
   if (m.hash_ok === false || m.blocked) return "blocked";
   if (m.source === "host_ssd" || m.source === "local") return "unverified";
-  if (m.sha256 || m.pinned) return "verified";
-  return "community";
+  // Verified = sha256 on StickLLM's list (catalog.toml). A Hugging Face LFS
+  // hash alone (lfs_sha256) is integrity, not review.
+  if (m.verified === true || (m.sha256 && m.pinned !== false)) return "verified";
+  return "unverified";
 }
 function modelGb(m) {
   const gbRaw = m.approx_size_gb ?? m.size_gb ?? (m.bytes != null ? m.bytes / 1e9 : null);
@@ -2642,12 +2793,18 @@ $("#dlModel").onclick = async () => {
     askAblAck(() => $("#dlModel").click());
     return;
   }
-  if (modelTrust(m) === "untrusted") {
+  const trust = modelTrust(m);
+  if (trust === "blocked") {
+    toast("Blocked: this file does not match StickLLM's verified hash.");
+    return;
+  }
+  if (trust !== "verified") {
     confirmBox({
-      title: "Download an untrusted model?",
-      text: "This model comes from an unknown source and its hash may not be checkable.",
-      word: "DOWNLOAD", ok: "Download",
-      cb: () => doModelDownload(m),
+      title: "Download a model that is not verified?",
+      text: UNVERIFIED_WARNING + ".",
+      extra: (TRUST[trust] ? TRUST[trust].l + ": " + TRUST[trust].d + ". " : "") + "StickLLM still checks the download against Hugging Face's own hash when it has one.",
+      word: "DOWNLOAD", ok: "Download anyway",
+      cb: () => doModelDownload(m, { accept_unverified: true }),
     });
     return;
   }
@@ -2671,18 +2828,19 @@ async function downloadMmproj(id) {
     toast(res.note || (res.already ? "This model's mmproj is already next to it" : "Downloading this model's mmproj"));
   } catch (e) { toast(e.message); }
 }
-async function doModelDownload(m) {
+async function doModelDownload(m, extra) {
   try {
     const dest = ($("#modelDir")?.textContent || "").trim();
     const params = { id: m.id };
     if (m.repo && m.file) {
       params.repo = m.repo;
       params.file = m.file;
-      if (m.sha256) params.sha256 = m.sha256;
+      if (m.sha256 || m.lfs_sha256) params.sha256 = m.sha256 || m.lfs_sha256;
       if (m.bytes) params.bytes = m.bytes;
       if (m.name) params.name = m.name;
     }
     if (dest && dest !== "…" && dest.startsWith("/")) params.dest = dest;
+    Object.assign(params, extra || {});
     const res = await control("model_download", params);
     if (res.download_dir && $("#modelDir")) $("#modelDir").textContent = res.download_dir;
     applyDownloadView(res);
@@ -2736,7 +2894,7 @@ async function refreshStorage() {
   const st = await control("status");
   const v = st.vault || {};
   const open = vaultIsOpen(v);
-  setVaultChrome(open);
+  setVaultChrome(open, vaultIsAbsent(v));
   if ($("#vcSub")) {
     $("#vcSub").textContent = v.blob || v.root || v.path || (v.status || "absent");
   }
@@ -3577,28 +3735,27 @@ function applyPairKioskUi() {
 applyPairKioskUi();
 /** One pairing for StickLLM and Agent: a paired LAN tab gets a one-time
  *  link that signs this browser in to the Agent port (its own cookie). */
-async function openAgentPaired(e) {
+function openAgentPaired(e) {
   const a = e.target && e.target.closest ? e.target.closest("#agentLink, #agentDeskIcon") : null;
-  if (!a || detectLocalHost() || !token) return;
+  if (!a || e.button || e.ctrlKey || e.metaKey || e.shiftKey) return;
   e.preventDefault();
   e.stopPropagation();
   const fallback = a.href;
-  const w = window.open("", "_blank");
-  let url = fallback;
-  try {
-    const r = await fetch("/api/agent/handoff", {
-      method: "POST", cache: "no-store",
-      headers: authHeaders({ "Content-Type": "application/json" }), body: "{}",
-    });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok && j.url) url = j.url;
-  } catch (_) {}
-  if (w) {
-    try { w.opener = null; } catch (_) {}
-    w.location.href = url;
-  } else {
-    window.location.href = url;
+  let resolve = null;
+  if (!detectLocalHost() && token) {
+    resolve = async () => {
+      try {
+        const r = await fetch("/api/agent/handoff", {
+          method: "POST", cache: "no-store",
+          headers: authHeaders({ "Content-Type": "application/json" }), body: "{}",
+        });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j.url) return j.url;
+      } catch (_) {}
+      return fallback;
+    };
   }
+  if (!openNamedTab(AGENT_TAB, fallback, resolve)) window.location.href = fallback;
 }
 document.addEventListener("click", (e) => { openAgentPaired(e); }, true);
 if ($("#showSsh")) $("#showSsh").onclick = () => { issueSshHotkey(); };
@@ -3789,13 +3946,13 @@ async function refreshStatus() {
       const m = await fetch("/stickllm.json", { cache: "no-store" });
       if (m.ok) {
         const meta = await m.json();
-        if (meta.version && $("#aboutVer")) $("#aboutVer").textContent = meta.version + (meta.agentzero ? " \u00b7 Agent Zero v" + meta.agentzero : "") + " ";
+        if (meta.version && $("#aboutVer")) $("#aboutVer").textContent = "StickLLM v" + String(meta.version).replace(/^v/, "");
         const boot = String(meta.mode || "").toLowerCase();
         if (boot === "local" || boot === "chat") isLocalMode = true;
       }
     } catch (_) {}
     // vault chrome from health if present
-    if (j.vault) setVaultChrome(vaultIsOpen(j.vault));
+    if (j.vault) setVaultChrome(vaultIsOpen(j.vault), vaultIsAbsent(j.vault));
     healthFails = 0;
   } catch (e) {
     healthFails += 1;
@@ -5384,7 +5541,7 @@ function hideOpenAppToast() {
 // Where an app id opens: its desktop icon (starter or catalog), then the
 // catalog's open_url (docs is ONLYOFFICE at /apps/docs/), and /apps/<id>/
 // only for the built-in starter apps. Unknown ids get null, not a 404 tab.
-const APP_ID_ALIASES = { docs: "onlyoffice", "onlyoffice-docs": "onlyoffice" };
+const APP_ID_ALIASES = { docs: "onlyoffice", office: "onlyoffice", "onlyoffice-docs": "onlyoffice" };
 function appTabLink(id) {
   const cid = APP_ID_ALIASES[id] || id;
   const sel = (k, v) => document.querySelector("#deskIcons a.deskIcon[" + k + '="' + CSS.escape(v) + '"]');
@@ -5406,24 +5563,19 @@ function openAppTab(id, doc) {
   const link = appTabLink(id);
   if (!link) return null;
   const cid = APP_ID_ALIASES[id] || id;
-  if (doc && cid === "onlyoffice") link.href = docsOpenHref(doc);
+  const force = !!(doc && cid === "onlyoffice");
+  if (force) link.href = docsOpenHref(doc);
   // Add-ons on a paired LAN browser: same signed handoff as the desktop icon.
   const icon = document.querySelector('#deskIcons a.deskIcon[data-catalog-app="' + CSS.escape(cid) + '"]');
+  let resolve = null;
   if (icon && icon.dataset.openLink && !detectLocalHost() && token) {
-    let w = null;
-    try { w = window.open("", link.target); } catch (e) { w = null; }
-    if (!w) return null;
-    try { w.opener = null; } catch (e) {}
-    fetch(icon.dataset.openLink, {
+    resolve = () => fetch(icon.dataset.openLink, {
       method: "POST", cache: "no-store",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ id: cid }),
-    }).then((r) => r.json().catch(() => ({})).then((j) => {
-      w.location.href = (r.ok && j.url) ? j.url : link.href;
-    })).catch(() => { w.location.href = link.href; });
-    return w;
+    }).then((r) => r.json().catch(() => ({})).then((j) => ((r.ok && j.url) ? j.url : link.href)));
   }
-  try { return window.open(link.href, link.target); } catch (e) { return null; }
+  return openNamedTab(link.target, link.href, resolve, force);
 }
 // A click (toast button, notification, panel button): open the app tab.
 function openAppFromClick(id) {
@@ -5433,111 +5585,12 @@ function openAppFromClick(id) {
     reportOpenApp(id, "opened");
     return true;
   }
-  // Last resort: the browser refused a new tab even on a click (pop-ups and
-  // new tabs disabled by policy). Show the app inside this StickLLM tab.
-  if (showAppInPage(id)) {
-    reportOpenApp(id, "embedded");
-    return true;
-  }
+  // The browser refused a new tab even on a click (new tabs disabled by
+  // policy). Apps only ever open in their own tab, never inside this page.
   reportOpenApp(id, "blocked");
   return false;
 }
-// In-page app panel: a same-origin iframe inside this StickLLM tab. Last
-// resort only, when the browser will not open a new tab even on a click. The
-// iframe is named "stickllm-embed-<id>" (never "stickllm-<id>", the app tab's
-// target name, or a click on the desktop icon would load into the iframe);
-// stickllm-bridge.js answers app_state / app_act for both names while hidden.
-// It closes as soon as the app's own tab is up, so app_act is not applied twice.
-function closeAppPanel() {
-  const p = document.getElementById("stickAppPanel");
-  if (!p) return;
-  const frame = p.querySelector("iframe");
-  if (frame) frame.remove();
-  p.dataset.app = "";
-  p.hidden = true;
-}
-function appPanel() {
-  let p = document.getElementById("stickAppPanel");
-  if (p) return p;
-  p = document.createElement("section");
-  p.id = "stickAppPanel";
-  p.className = "stick-app-panel";
-  p.hidden = true;
-  p.setAttribute("aria-label", "App opened by Agent Zero");
-  const bar = document.createElement("div");
-  bar.className = "stick-app-bar";
-  const title = document.createElement("span");
-  title.className = "stick-app-title";
-  const alerts = document.createElement("button");
-  alerts.type = "button";
-  alerts.className = "stick-app-alerts";
-  alerts.textContent = "Notify me";
-  alerts.title = "Show a desktop notification when Agent Zero opens an app while this tab is in the background";
-  alerts.hidden = !("Notification" in window) || Notification.permission !== "default";
-  alerts.onclick = () => {
-    try {
-      Notification.requestPermission().then(() => { alerts.hidden = Notification.permission !== "default"; });
-    } catch (e) { alerts.hidden = true; }
-  };
-  const pop = document.createElement("button");
-  pop.type = "button";
-  pop.textContent = "Open in new tab";
-  pop.onclick = () => {
-    const id = p.dataset.app;
-    if (!id) return;
-    // Same as the desktop icon. The panel stays until the tab's app page
-    // subscribes (stickllm-bridge.js says "tab-ready"), then it closes.
-    if (openAppTab(id)) reportOpenApp(id, "opened");
-  };
-  const close = document.createElement("button");
-  close.type = "button";
-  close.textContent = "Close";
-  close.onclick = closeAppPanel;
-  bar.append(title, alerts, pop, close);
-  p.append(bar);
-  document.body.append(p);
-  return p;
-}
 const pendingDoc = Object.create(null);
-function showAppInPage(id) {
-  if (!document.body) return false;
-  // Static apps embed at /apps/<id>/; ONLYOFFICE at /apps/docs/. Add-ons
-  // are on their own origins (no iframe fallback): the toast offers a click.
-  const cid = APP_ID_ALIASES[id] || id;
-  let src = "/apps/" + id + "/?stickllm_embed=1";
-  if (cid === "onlyoffice") src = pendingDoc[id] ? docsOpenHref(pendingDoc[id]) : "/apps/docs/";
-  else if (!Object.prototype.hasOwnProperty.call(APP_LABELS, id)) return false;
-  const p = appPanel();
-  const name = "stickllm-embed-" + id;
-  let frame = p.querySelector("iframe");
-  if (!frame || frame.name !== name) {
-    if (frame) frame.remove();
-    frame = document.createElement("iframe");
-    frame.className = "stick-app-frame";
-    frame.name = name;
-    frame.title = appLabel(id);
-    p.append(frame);
-    primeAppsSession().then(() => {
-      if (frame.isConnected) frame.src = src;
-    });
-  }
-  p.dataset.app = id;
-  p.querySelector(".stick-app-title").textContent = "Agent Zero: " + appLabel(id);
-  p.hidden = false;
-  return true;
-}
-// The app's own tab is up (stickllm-bridge.js subscribed in a top-level
-// page): close the fallback panel for that app.
-if (typeof BroadcastChannel === "function") {
-  try {
-    new BroadcastChannel("stickllm-apps").onmessage = (ev) => {
-      const m = ev.data || {};
-      if (m.type !== "tab-ready") return;
-      const p = document.getElementById("stickAppPanel");
-      if (p && !p.hidden && p.dataset.app === m.id) closeAppPanel();
-    };
-  } catch (e) {}
-}
 // Visible cue when Agent Zero opens an app while this tab is in the
 // background: flash the tab title and, if allowed, show a notification whose
 // click brings this tab forward.
@@ -5604,16 +5657,10 @@ function openStickApp(id, doc) {
     return true;
   }
   // No click, so the browser refused the tab (pop-ups not allowed for this
-  // site). The user is usually looking at the Agent tab, not this one, so a
-  // toast here alone leaves the agent with no app page (app_state fails with
-  // app_not_open) and the user sees nothing. Fall back to the in-page panel
-  // so the agent can play right away; its "Open in new tab" button (or the
-  // notification) moves it to a tab on one click, and the title flashes.
+  // site, iPhone/iPad Safari). Apps open only in their own tab, never in a
+  // panel inside this page: the toast (and, for a background tab, the title
+  // flash and notification) offers one "Open in new tab" click.
   cueHiddenTab(id);
-  if (showAppInPage(id)) {
-    reportOpenApp(id, "embedded");
-    return true;
-  }
   if (showOpenAppToast(id)) reportOpenApp(id, "toast-shown");
   else reportOpenApp(id, "blocked");
   return false;
@@ -5633,7 +5680,7 @@ function showAgentInstall(id, name) {
   box.hidden = false;
   try { $("#aiYes").focus(); } catch (e) {}
 }
-async function agentInstallYes() {
+async function agentInstallYes(extra) {
   const id = agentInstallId;
   if (!id) return;
   const cid = APP_ID_ALIASES[id] || id;
@@ -5643,9 +5690,13 @@ async function agentInstallYes() {
       method: "POST",
       cache: "no-store",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ id: cid }),
+      body: JSON.stringify(Object.assign({ id: cid }, extra || {})),
     });
     const j = await r.json().catch(() => ({}));
+    if (!r.ok && verifyGate(j, (more) => agentInstallYes(Object.assign({}, extra || {}, more)))) {
+      $("#agentInstall").hidden = true;
+      return;
+    }
     if (!r.ok || j.ok === false) {
       const err = $("#aiErr");
       if (err) { err.textContent = j.message || "Not installed."; err.hidden = false; }

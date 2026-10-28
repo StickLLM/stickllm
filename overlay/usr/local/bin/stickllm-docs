@@ -95,13 +95,13 @@ status() {
 # partition (JWT secret).
 gate() {
   if ! lib vault-open; then
-    status locked "Unlock the vault to use Docs. Documents are only ever saved in the vault."
-    echo "vault locked: Docs not started" >&2
+    status locked "Unlock the vault to use Office. Documents are only ever saved in the vault."
+    echo "vault locked: Office not started" >&2
     return 2
   fi
   if ! lib settings-open; then
-    status settings_missing "USB settings partition is not mounted: Docs not started."
-    echo "settings partition not mounted: Docs not started" >&2
+    status settings_missing "USB settings partition is not mounted: Office not started."
+    echo "settings partition not mounted: Office not started" >&2
     return 2
   fi
   return 0
@@ -254,18 +254,18 @@ cmd_run() {
   gate || exit 0
   if ! lib installed; then
     status not_installed
-    echo "ONLYOFFICE Docs is not installed" >&2
+    echo "Office (ONLYOFFICE) is not installed" >&2
     exit 0
   fi
   lib prepare-vault
   "$DOCKERD" ensure docs 9>&- || { status error "Docker did not start."; exit 1; }
   if ! docker_cli image inspect "$(lib prepared-ref)" >/dev/null 2>&1; then
-    status error "The Docs image is missing from the host drive. Install Docs again from Apps."
+    status error "The Office image is missing from the host drive. Install Office again from Apps."
     exit 1
   fi
   seed_vault
   ensure_network
-  lib nft-apply || { status error "Firewall rules failed. Docs not started."; exit 1; }
+  lib nft-apply || { status error "Firewall rules failed. Office not started."; exit 1; }
   lib runtime-secret
   docker_cli rm -f -v "$CONTAINER" >/dev/null 2>&1 || true
   rm -f "$STOPPING"
@@ -288,7 +288,7 @@ cmd_run() {
     exit 0
   fi
   # Exited on its own: let Restart=on-failure try again (vault still gated).
-  status error "ONLYOFFICE Docs stopped unexpectedly."
+  status error "Office stopped unexpectedly."
   exit 1
 }
 
@@ -338,7 +338,7 @@ cmd_install() {
     fi
   fi
   if ! prepare_image; then
-    status error "Preparing the Docs image failed."
+    status error "Preparing the Office image failed."
     exit 1
   fi
   gate || exit 0

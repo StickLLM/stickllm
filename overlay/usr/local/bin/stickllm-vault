@@ -2147,10 +2147,14 @@ sync_usb_settings() {
 
 maybe_bind_from_settings() {
   [[ -f "$META_DIR/container" ]] && return 0
-  local helper="" blob=""
+  local helper="" blob="" rc=0
   helper="$(settings_helper)" || return 0
-  blob="$("$helper" print-blob 2>/dev/null)" \
-    || echo "stickllm-vault: warning: usb settings print-blob failed (rc=$?)" >&2
+  # rc=1 means "settings closed or no computer recorded yet": normal on a
+  # fresh stick, so stay quiet. Only other codes are real failures.
+  blob="$("$helper" print-blob 2>/dev/null)" || rc=$?
+  if [[ "$rc" -gt 1 ]]; then
+    echo "stickllm-vault: warning: usb settings print-blob failed (rc=$rc)" >&2
+  fi
   [[ -n "$blob" ]] || return 0
   if [[ ! -f "$blob" ]]; then
     ensure_host_mount_for_blob "$blob" >/dev/null || true

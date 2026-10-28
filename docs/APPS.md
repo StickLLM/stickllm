@@ -59,9 +59,32 @@ pairing is the login). Do not import flows you have not read.
 **Radicale.** 0.5.0 serves the web UI through the paired gateway. Phone or desktop
 CalDAV/CardDAV sync is not offered: those clients cannot do the pairing handoff.
 
-Skipped for now (fiddly): Paperless-ngx (needs Redis plus OCR workers), SnappyMail
-(needs outbound IMAP/SMTP, which the no-network rule forbids), Immich, Matrix, Jitsi
-and the rest need several containers, a GPU, or LAN/internet access.
+### Hidden in v0.5.3
+
+v0.5.3 lists only apps that install, open in their own reused tab, survive a
+reboot with the vault, and can be installed by Agent Zero (after the user's
+click): Agent Zero, Office (ONLYOFFICE), Radicale, Trilium, Vikunja, Actual
+Budget and Node-RED. Each one is hash pinned; see [VERIFIED.md](VERIFIED.md).
+
+These planned apps are hidden from the Apps page and the `/api/apps` catalog
+(`"hidden"` in `stickllm_apps.py`; `catalog_document()` lists them under
+`hidden` with the reason). The planning tables below still describe them.
+
+| App | id | Why it is hidden |
+| --- | --- | --- |
+| Paperless-ngx | `paperless-ngx` | Needs Redis plus OCR worker containers; StickLLM add-ons are one locked-down container each. |
+| SnappyMail | `snappymail` | Webmail needs outbound IMAP/SMTP, and add-on containers have no network by design. |
+| Immich | `immich` | Needs Postgres, Redis and a machine-learning container (four containers) plus a GPU for search. |
+| SearXNG | `searxng` | Already built into Agent Zero (its own private search); a second copy adds nothing. |
+| Matrix (Conduit + Element) | `matrix` | Federation and bridges need internet and LAN access; add-on containers have no network. |
+| SimpleX Chat | `simplex` | Relay servers only, used from phone and desktop apps; nothing to open in a browser tab. |
+| Jitsi Meet | `jitsi` | Four containers including the Java video bridge, and calls need LAN/internet UDP. |
+| OnionShare | `onionshare` | Command line plus Tor, which needs internet; no web app to open. |
+| Postiz | `postiz` | Node, Postgres and Redis, and posting needs internet access to the social networks. |
+| OpenTimestamps + a signing tool | `opentimestamps` | Command-line tools with no web app; timestamping needs internet calendars. |
+| ComfyUI | `comfyui` | Needs CUDA, PyTorch and the GPU the model is using; not containerised for the stick yet. |
+| code-server and Jupyter | `code-server-jupyter` | Not packaged and security-reviewed for the stick yet (a full terminal and package installs). |
+| n8n | `n8n` | Fair-code licence (not OSI open source) and it duplicates Node-RED, which ships. |
 
 ---
 
@@ -69,7 +92,7 @@ and the rest need several containers, a GPU, or LAN/internet access.
 
 | App | License | Role |
 |---|---|---|
-| **ONLYOFFICE Docs** | AGPL | Documents, spreadsheets, and slides. The bot can edit open files live. |
+| **Office** | AGPL | Documents, spreadsheets, and slides (ONLYOFFICE). The bot can edit open files live. |
 | **Paperless-ngx** | GPL | Scans and files receipts and documents, with text recognition and tagging, through a REST API. |
 | **SnappyMail** | AGPL | Webmail over IMAP and SMTP, so the bot can triage and draft. Sending is the user’s click. |
 | **Radicale** | GPL | Calendar and contacts (CalDAV and CardDAV), very light. |

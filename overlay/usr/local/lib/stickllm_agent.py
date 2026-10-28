@@ -76,7 +76,7 @@ APPS_URL_IDS = (
 # firewall only reaches 8080-8082 on the bridge, never the add-on ports.
 CATALOG_APP_IDS = ("docs", "radicale", "vikunja", "actual", "trilium", "node-red")
 CATALOG_APP_NAMES = {
-    "docs": "ONLYOFFICE Docs",
+    "docs": "Office (ONLYOFFICE documents, spreadsheets, slides)",
     "radicale": "Radicale (calendar and contacts)",
     "vikunja": "Vikunja (tasks)",
     "actual": "Actual Budget",
@@ -951,6 +951,10 @@ def install_app_tool_prompt() -> str:
         "tab they chat from, else the stick's screen). The reply says whether it is already "
         "installed or waiting for that click. When waiting, tell the user to click Install "
         "and stop; do not call install_app again for the same app in this task.\n"
+        "Every app is hash pinned. The reply's verification is verified, changed (upstream "
+        "changed: only the last verified version can be installed, the screen offers it) or "
+        "unverified (the screen warns first). Tell the user which one it is; never try to "
+        "get around the warning or the confirm.\n"
         "Never install apps yourself with code_execution, apt, pip, docker or podman.\n"
         + TOOL_RETRY_RULE + "\n\n"
         'Example: {"tool_name":"install_app","tool_args":{"id":"docs"}}\n'
@@ -973,8 +977,8 @@ def docs_tools_prompt() -> str:
         "Open an existing file from vault/Documents in ONLYOFFICE on the user's screen. "
         "path is relative to vault/Documents, as create_* returned it.\n"
         'Example: {"tool_name":"open_document","tool_args":{"path":"Numbers.xlsx"}}\n\n'
-        "These tools need the vault unlocked. If ONLYOFFICE Docs is not installed the file is "
-        "still saved; call install_app with id docs once and tell the user to click Install.\n"
+        "These tools need the vault unlocked. If the Office app is not installed the file is "
+        "still saved; call install_app with id docs (the Office app) once and tell the user to click Install.\n"
         + NO_GUI_RULE + "\n" + TOOL_RETRY_RULE + "\n"
     )
 
@@ -989,7 +993,7 @@ def open_app_tool_prompt() -> str:
         "The headless browser tool stays for your own page work. It does not "
         "show an app on the user's screen.\n"
         f"Allowed ids only: {ids}.\n"
-        "The desktop label minesweep is id minesweeper. docs is ONLYOFFICE Docs; radicale, "
+        "The desktop label minesweep is id minesweeper. docs is the Office app (ONLYOFFICE); radicale, "
         "vikunja, actual, trilium and node-red are add-ons and open only once installed "
         "(otherwise use install_app).\n"
         "Pass the id and nothing else. Reject URLs and paths yourself by not sending them.\n"
@@ -1402,6 +1406,38 @@ class AppNotInstalled(OSError):
 AGENT_DOCS_MAX_BODY = 262144
 
 
+# Bridge replies used to be 409 for every failed install/docs call. Use the
+# gateway's own status when it sent one, else a code that fits the error. (v0.5.3)
+_BRIDGE_ERROR_STATUS = {
+    "bad_id": 400,
+    "bad_op": 400,
+    "bad_json": 400,
+    "bad_action": 400,
+    "bad_kind": 400,
+    "bad_name": 400,
+    "bad_rows": 400,
+    "bad_path": 400,
+    "unauthorized": 401,
+    "apps_locked": 403,
+    "not_found": 404,
+    "vault_locked": 423,
+    "unverified": 428,
+    "blocked": 451,
+    "bad_reply": 502,
+    "ui_unavailable": 502,
+}
+
+
+def bridge_status(result: dict) -> int:
+    """HTTP status for a gateway reply relayed by the bridge. Drops the private _http_status key."""
+    upstream = result.pop("_http_status", None)
+    if result.get("ok"):
+        return 200
+    if isinstance(upstream, int) and 400 <= upstream <= 599:
+        return upstream
+    return _BRIDGE_ERROR_STATUS.get(str(result.get("error") or ""), 409)
+
+
 def gateway_post(name: str, body: dict, token: str, url: str | None = None, timeout: float = 15.0) -> dict:
     """POST to /api/ui/<name> on the loopback gateway; 4xx JSON reasons are returned, not raised."""
     target = url or os.environ.get("STICKLLM_OPEN_APP_NOTIFY", "http://127.0.0.1/api/ui/open-app")
@@ -1423,6 +1459,7 @@ def gateway_post(name: str, body: dict, token: str, url: str | None = None, time
         if not isinstance(data, dict):
             raise exc from None
         data["ok"] = False
+        data["_http_status"] = exc.code
         return data
     if not isinstance(data, dict):
         raise OSError("ui returned a bad reply")
@@ -1623,7 +1660,7 @@ def open_app_server(
                     return
                 if not isinstance(result, dict):
                     result = {"ok": False, "error": "bad_reply"}
-                self._send(200 if result.get("ok") else 409, result)
+                self._send(bridge_status(result), result)
                 return
             app_id = normalize_app_id(req.get("id"))
             if not open_target_ok(app_id):
