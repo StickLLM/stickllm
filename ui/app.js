@@ -893,7 +893,9 @@ async function setSessionMode(m) {
       let vault = {};
       try { vault = await control("vault_status"); } catch (_) {}
       const st = String(vault.status || "").toLowerCase();
-      if (st === "absent" || !st) {
+      // A locked vault reads "absent" before its first unlock after boot
+      // (usb_settings "present-locked"); vaultIsAbsent() knows that.
+      if (vaultIsAbsent(vault) || (!st && !vault.usb_settings)) {
         applyModeUi(prev);
         toast("No vault yet — create or attach one in Storage");
         openSettings("storage");

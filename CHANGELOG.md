@@ -35,7 +35,8 @@ Agent Zero
 System
 - Missing AVX and low VRAM are warnings (Monitor card plus a one-time notice), not failures.
 - Vault unlock: no brief "no vault set up" flash before the status loads; if the unlock
-  form cannot be shown, an inline error says why.
+  form cannot be shown, an inline error says why. Switching to Vault mode on a locked
+  vault asks for the passcode instead of saying "No vault yet".
 - Text to speech falls back to a one-shot load when the resident voice cannot start.
 - Build: `STICKLLM_OUT_DIR` may be an absolute path (for example `/e/stickllm-build/out`)
   so the ISO can be written to another local drive when C: is short on space.

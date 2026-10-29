@@ -189,3 +189,14 @@ def test_unlock_no_flash_and_hidden_form_error():
     html = _text(ROOT / "ui" / "index.html")
     assert '<small class="unlockMsg" id="unlockMsg" role="alert" hidden></small>' in html
     assert "No vault set up" not in html
+
+
+def test_vault_mode_switch_treats_present_locked_as_locked():
+    """Switching to Vault mode before the first unlock must ask for the passcode,
+    not say "No vault yet" (status reads "absent" with usb_settings present-locked)."""
+    js = _text(ROOT / "ui" / "app.js")
+    body = js[js.index("async function setSessionMode(m)"):]
+    body = body[: body.index("\n}\n")]
+    assert "vaultIsAbsent(vault)" in body
+    assert 'st === "absent" || !st' not in body
+    assert body.index("vaultIsAbsent(vault)") < body.index("await focusVaultUnlock();")
