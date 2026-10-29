@@ -61,6 +61,9 @@ svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke
 .sideAppsLabel{margin:8px 10px 2px;font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .appName{display:flex;flex-direction:column;min-width:0;gap:1px}
 .appName small{font-size:11px;font-weight:450;color:var(--muted)}
+/* v0.5.4: short tile name next to the real app name, in a bright standout colour. */
+.appName .appTile{font-weight:700;color:#38bdf8;letter-spacing:.01em}
+:root[data-theme="light"] .appName .appTile{color:#0369a1}
 .navBtn.appSoon{cursor:default;opacity:.72}
 .navBtn.appSoon:hover{background:none;color:var(--ink2)}
 .navBtn.on{background:var(--accent-soft);color:var(--accent)}
@@ -629,3 +632,7 @@ input.secret { -webkit-text-security: disc; }
 .ctxMenu button:disabled{color:var(--muted);cursor:default;background:transparent}
 .ctxMenu kbd{font:12px var(--font);color:var(--muted)}
 .ctxMenu hr{border:0;border-top:1px solid var(--line);margin:4px 2px}
+
+/* v0.5.4: AVX / VRAM warning under the hardware line */
+.hwWarn{display:block;margin-top:4px;color:#f5b041;font-weight:600}
+.unlockMsg{flex-basis:100%;color:var(--danger,#e5484d);font-weight:600}

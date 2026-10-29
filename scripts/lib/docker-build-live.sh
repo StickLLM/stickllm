@@ -140,14 +140,13 @@ test -f config/includes.chroot/etc/systemd/system/stickllm-docs-install.service
 test -f config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
 grep -q 'amd64_digest=sha256:bff1a9fd46f2b79ada776fd0447c3fccf66cbf44c1996ec9316efa8ac4ee3fd5' \
   config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
-# Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED).
+# Starter add-ons (Tasks.md, Paisa, Trilium, Node-RED, ComfyUI).
 test -f config/includes.chroot/usr/local/bin/stickllm-addon
 test -f config/includes.chroot/usr/local/lib/stickllm_addons.py
 test -f config/includes.chroot/etc/systemd/system/stickllm-addon@.service
 test -f config/includes.chroot/etc/systemd/system/stickllm-addon-install@.service
-test -f config/includes.chroot/usr/local/share/stickllm/addons/radicale/config
 test -f config/includes.chroot/usr/local/share/stickllm/addons/node-red-settings.js
-for pin in radicale vikunja actual trilium node-red; do
+for pin in tasks-md paisa trilium node-red comfyui; do
   grep -q '^amd64_digest=sha256:' "config/includes.chroot/usr/local/share/stickllm/addons/${pin}.pin"
 done
 # Verified list (apps, plugins, models): the shipped verified.json must match
@@ -156,16 +155,21 @@ test -f config/includes.chroot/usr/local/share/stickllm/verified.json
 test -f config/includes.chroot/usr/local/lib/stickllm_verify.py
 python3 -B /stickllm/scripts/pins.py verify
 
-# Agent Zero plugins: banned unless allowlisted. Fetch each allowlisted plugin
-# once here at its pinned commit, hash-check it, bake it read-only. A pin or
-# hash mismatch stops the build. The stick never fetches plugins at runtime.
+# Agent Zero plugins: none at all since v0.5.4. The allowlist must stay empty
+# (any entry stops the build); bake still runs so the image gets an empty
+# MANIFEST and the runtime has nothing to load. Never fetched at runtime.
 A0_PLUGINS_OUT=config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins
 test -f config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow
+if [ -n "$(python3 /stickllm/scripts/lib/a0_plugins.py check config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow)" ]; then
+  echo "Agent Zero plugins are not allowed (v0.5.4): agent-zero-plugins.allow must be empty" >&2
+  exit 1
+fi
 python3 /stickllm/scripts/lib/a0_plugins.py bake \
   config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow \
   "$A0_PLUGINS_OUT"
 chown -R root:root "$A0_PLUGINS_OUT"
 test -f "$A0_PLUGINS_OUT/MANIFEST"
+test ! -s "$A0_PLUGINS_OUT/MANIFEST"
 
 mkdir -p config/bootloaders/grub-pc config/bootloaders/grub-efi
 # Prefer tracked boot/grub.cfg (LF). Fall back to inline copy if missing.

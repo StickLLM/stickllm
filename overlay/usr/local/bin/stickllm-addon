@@ -1,12 +1,13 @@
 #!/bin/bash
-# StickLLM starter add-ons (Radicale, Vikunja, Actual Budget, Trilium,
-# Node-RED). Same pattern as stickllm-docs:
+# StickLLM add-ons (Tasks.md, Paisa, Trilium, Node-RED, ComfyUI). Same
+# pattern as stickllm-docs:
 #
 #   host SSD (shared dockerd data-root): the public image, pulled by digest
 #   vault/addons/<id>/...:  everything the app writes (bind mounts)
 #   /usr/local/share/stickllm/addons: read-only config from the ISO
 #   container: --read-only, --log-driver none, non-root, --cap-drop ALL,
-#              no GPU, tmpfs /tmp, port published on 127.0.0.1 only
+#              no GPU (ComfyUI: NVIDIA device nodes when present), tmpfs
+#              /tmp, port published on 127.0.0.1 only
 #   network:   one bridge per app; nft table stickllm_addons drops every
 #              packet a container starts (no internet, LAN, host or app-to-app)
 #
@@ -156,8 +157,12 @@ cmd_run() {
   lib prepare-vault "$ID"
   mapfile -t args < <(lib docker-args "$ID")
   [[ ${#args[@]} -gt 5 ]] || { status error "Could not build the container arguments."; exit 1; }
+  local hw
+  hw="$(lib gpu-check "$ID" 2>/dev/null | "$PYBIN" -c 'import json,sys; print(json.load(sys.stdin).get("warning",""))' 2>/dev/null || true)"
   docker_cli run "${args[@]}" >/dev/null
-  status running
+  if [[ -n "$hw" ]]; then status running "$hw"; else status running; fi
+  # First-start setup some apps need (runs against 127.0.0.1 only).
+  lib post-start "$ID" >>"${RUN}/addon-${ID}-post-start.log" 2>&1 &
   trap 'stop_container; status stopped' TERM INT
   # stdout of the container goes nowhere (--log-driver none).
   docker_cli wait "$CONTAINER" >/dev/null 2>&1 &
@@ -201,6 +206,31 @@ cmd_stop() {
   fi
 }
 
+# Apps whose upstream entrypoint builds or chowns as root at every start
+# (Tasks.md) get that step once, here: the pinned base image runs the build
+# as root with no network and no mounts, and the result is committed to a
+# local tag that runs as uid 1000 on a read-only root. Nothing from the
+# vault is ever inside the build container.
+build_local() {
+  local base="$1" ref="$2" bname="${CONTAINER}-build" changes=() c
+  docker_cli rm -f -v "$bname" >/dev/null 2>&1 || true
+  echo "stickllm-addon: building ${NAME} web UI (offline)" >>"$INSTALL_LOG"
+  if ! docker_cli run --name "$bname" --network none --log-driver none \
+      --user 0:0 --entrypoint /bin/sh "$base" -c "$(lib build-script "$ID")" >>"$INSTALL_LOG" 2>&1; then
+    docker_cli rm -f -v "$bname" >/dev/null 2>&1 || true
+    return 1
+  fi
+  while IFS= read -r c; do
+    [[ -n "$c" ]] && changes+=(--change "$c")
+  done < <(lib build-changes "$ID")
+  if ! docker_cli commit "${changes[@]}" "$bname" "$ref" >>"$INSTALL_LOG" 2>&1; then
+    docker_cli rm -f -v "$bname" >/dev/null 2>&1 || true
+    return 1
+  fi
+  docker_cli rm -f -v "$bname" >/dev/null 2>&1 || true
+  return 0
+}
+
 cmd_install() {
   mkdir -p "$RUN"
   exec 9>"$LOCK"
@@ -211,12 +241,19 @@ cmd_install() {
   lib prepare-vault "$ID" || { status install_failed "Vault folders could not be prepared."; exit 1; }
   "$DOCKERD" ensure "addon-${ID}" 9>&- || {
     status install_failed "Docker did not start. Mount the host drive used for Agent Zero."; exit 1; }
-  local ref
+  local ref base
   ref="$(lib image-ref "$ID")"
+  base="$(lib base-ref "$ID")"
   if ! docker_cli image inspect "$ref" >/dev/null 2>&1; then
     # By digest only: a moved tag cannot change what runs.
-    if ! docker_cli pull "$ref" >>"$INSTALL_LOG" 2>&1; then
+    if ! docker_cli image inspect "$base" >/dev/null 2>&1 \
+        && ! docker_cli pull "$base" >>"$INSTALL_LOG" 2>&1; then
       status install_failed "Image pull failed. Check the network and try again."
+      "$DOCKERD" release "addon-${ID}" 9>&- >/dev/null 2>&1 || true
+      exit 1
+    fi
+    if [[ "$ref" != "$base" ]] && ! build_local "$base" "$ref"; then
+      status install_failed "Preparing ${NAME} failed. Try installing again."
       "$DOCKERD" release "addon-${ID}" 9>&- >/dev/null 2>&1 || true
       exit 1
     fi
@@ -236,6 +273,7 @@ cmd_uninstall() {
   cmd_stop
   if "$DOCKERD" ensure "addon-${ID}" 9>&- >/dev/null 2>&1; then
     docker_cli rmi -f "$(lib image-ref "$ID")" >/dev/null 2>&1 || true
+    docker_cli rmi -f "$(lib base-ref "$ID")" >/dev/null 2>&1 || true
     docker_cli network rm "$NETWORK" >/dev/null 2>&1 || true
     "$DOCKERD" release "addon-${ID}" 9>&- >/dev/null 2>&1 || true
   fi

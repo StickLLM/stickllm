@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""StickLLM starter add-ons: Radicale, Vikunja, Actual Budget, Trilium, Node-RED.
+"""StickLLM add-ons: Tasks.md, Paisa, Trilium, Node-RED, ComfyUI.
 
 Same rules as ONLYOFFICE Docs (stickllm_docs.py):
 
 * the image is pinned by digest and pulled onto the host SSD docker data-root;
 * everything the app writes lives in vault/addons/<id> only, so a locked
   vault means no app data on any disk;
-* the container runs non-root, read-only, with no capabilities, no GPU,
+* the container runs non-root, read-only, with no capabilities, no GPU
+  (ComfyUI alone may get the NVIDIA device nodes, read-only driver libs),
   ``--log-driver none`` and tmpfs for scratch;
 * the app port is published on 127.0.0.1 only; LAN browsers reach it through
   the StickLLM gateway (paired, its own TLS port per app);
@@ -41,87 +42,70 @@ _ID_RE = re.compile(r"[a-z][a-z0-9-]{1,23}")
 # the ISO). ``volumes`` lists the image's own VOLUME entries: each one must be
 # covered by a bind so docker never creates an anonymous volume on the host.
 APPS: dict[str, dict] = {
-    "radicale": {
-        "name": "Radicale",
-        "octet": 11,
-        "user": (2999, 2999),
-        "port": 5232,
-        "local_port": 8101,
-        # Console (kiosk) browser: gateway relay on 127.0.0.1, plain HTTP (v0.5.3).
-        "kiosk_port": 8111,
-        "tls_port": 5451,
-        "dirs": ("data",),
-        "binds": (("data", "/data"),),
-        "share": (("radicale", "/config"),),
-        "volumes": ("/config", "/data"),
-        "env": (),
-        "command": (),
-        "tmpfs": (("/tmp", "16m"),),
-        "pids": 128,
-        "websocket": False,
-        "webdav": True,
-        "pin": {
-            "image": "tomsquest/docker-radicale",
-            "version": "3.9.0",
-            "tag": "3.9.0.0",
-            "manifest_digest": "sha256:2f215d0e6a78ff68c280975af6ce580b05976f70c62b51640397e3eb5a7aa0e9",
-            "amd64_digest": "sha256:18a9ab6dc2ce458f2863a19f646fdc6934e6408f0d97d68275117a80ceef122e",
-        },
-    },
-    "vikunja": {
-        "name": "Vikunja",
+    # Tasks.md (MIT): kanban board stored as Markdown files. The stock
+    # entrypoint runs "npm run build" as root on every start, so StickLLM
+    # builds the web UI once at install (root, --network none, no mounts)
+    # and commits a local wrapper image that runs node as uid 1000 on a
+    # read-only root. The pin below is the upstream base image.
+    "tasks-md": {
+        "name": "Tasks.md",
+        "tile": "Tasks",
         "octet": 12,
         "user": (1000, 1000),
-        "port": 3456,
+        "port": 8080,
         "local_port": 8102,
-        # Console (kiosk) browser: gateway relay on 127.0.0.1, plain HTTP (v0.5.3).
         "kiosk_port": 8112,
         "tls_port": 5452,
-        "dirs": ("config", "db", "files"),
-        "binds": (("config", "/etc/vikunja:ro"), ("db", "/db"), ("files", "/app/vikunja/files")),
+        "dirs": ("config", "tasks"),
+        "binds": (("config", "/config"), ("tasks", "/tasks")),
         "share": (),
-        "volumes": (),
-        "env": (),
+        "volumes": ("/config", "/tasks"),
+        "env": (("CONFIG_DIR", "/config"), ("TASKS_DIR", "/tasks"), ("TITLE", "Tasks"), ("HOME", "/tmp")),
         "command": (),
         "tmpfs": (("/tmp", "64m"),),
         "pids": 256,
         "websocket": False,
         "webdav": False,
+        "build": "tasks-md",
         "pin": {
-            "image": "vikunja/vikunja",
-            "version": "2.7.1",
-            "manifest_digest": "sha256:f7dc8428d10aef17f3075886d3c1c022f566ec456f88985f02c137f4fc534576",
-            "amd64_digest": "sha256:3a848c83404d59ba9df4d91b92af4c400c8876ccdbbf3b563d41019cee29df39",
+            "image": "baldissaramatheus/tasks.md",
+            "version": "3.3.0",
+            "manifest_digest": "sha256:fd3e212fd5619794598418c049feda17810dae4438a84c00a0fb06fe3621b97a",
+            "amd64_digest": "sha256:72939fac5d0d111dcc8a134e9e0c923e5da18ed0af67f9761d5eeaa0d732f6b8",
         },
     },
-    "actual": {
-        "name": "Actual Budget",
+    # Paisa (AGPL): ledger-based personal finance. user_accounts: [] in the
+    # seeded paisa.yaml means no app login; config, journal and database
+    # live in vault/addons/paisa/data.
+    "paisa": {
+        "name": "Paisa",
+        "tile": "Budget",
         "octet": 13,
         "user": (1000, 1000),
-        "port": 5006,
+        "port": 7500,
         "local_port": 8103,
-        # Console (kiosk) browser: gateway relay on 127.0.0.1, plain HTTP (v0.5.3).
         "kiosk_port": 8113,
         "tls_port": 5453,
         "dirs": ("data",),
         "binds": (("data", "/data"),),
         "share": (),
         "volumes": (),
-        "env": (),
-        "command": (),
-        "tmpfs": (("/tmp", "128m"),),
+        "env": (("PAISA_CONFIG", "/data/paisa.yaml"), ("PAISA_DISABLE_LOG_FILE", "true"), ("HOME", "/tmp")),
+        "command": ("paisa", "serve", "--port", "7500"),
+        "tmpfs": (("/tmp", "64m"),),
         "pids": 256,
         "websocket": False,
         "webdav": False,
         "pin": {
-            "image": "actualbudget/actual-server",
-            "version": "26.10.0",
-            "manifest_digest": "sha256:24645e971da6bb1a1f953d6859e307a0b29be1e8b4130a35b3220c209b5b860c",
-            "amd64_digest": "sha256:bdfbb624d5fe9df05481d8eb6791a00a4a78ab8152bce31e79c6f18917e6933e",
+            "image": "ananthakumaran/paisa",
+            "version": "v0.7.8",
+            "manifest_digest": "sha256:67842be2d055a1d79a37ee161f39987977037c4d8741c72434e582edd6d08a5d",
+            "amd64_digest": "sha256:e05a0af58c7bfd953a9ca4b781827e8fee4e4aae50a285844a3c13ab79958345",
         },
     },
     "trilium": {
-        "name": "Trilium Notes",
+        "name": "Trilium",
+        "tile": "Notes",
         "octet": 14,
         "user": (1000, 1000),
         "port": 8080,
@@ -133,7 +117,11 @@ APPS: dict[str, dict] = {
         "binds": (("data", "/home/node/trilium-data"),),
         "share": (),
         "volumes": (),
-        "env": (),
+        # No Trilium password: the vault unlock and the paired gateway are
+        # the login. post_start creates the empty document on first start so
+        # the setup wizard never shows.
+        "env": (("TRILIUM_GENERAL_NOAUTHENTICATION", "true"),),
+        "post_start": "trilium-setup",
         # start-docker.sh chowns and drops to "node" with su; we already run
         # as uid 1000, so start the server directly (no capabilities needed).
         "command": ("node", "./main.mjs"),
@@ -150,6 +138,7 @@ APPS: dict[str, dict] = {
     },
     "node-red": {
         "name": "Node-RED",
+        "tile": "",
         "octet": 15,
         "user": (1000, 1000),
         "port": 1880,
@@ -176,8 +165,51 @@ APPS: dict[str, dict] = {
             "amd64_digest": "sha256:051b217b585013c692006e238faa1067adc52f7ded972cbca3d944f5f9563d80",
         },
     },
+    # ComfyUI (GPL): node-based image generation. Uses the NVIDIA GPU when
+    # the host driver is loaded (device nodes and driver libraries bound
+    # read-only, see gpu_args), CPU otherwise. Models, inputs, outputs and the
+    # user folder live in the vault. Custom nodes, and ComfyUI-Manager which
+    # would install them, are never loaded.
+    "comfyui": {
+        "name": "ComfyUI",
+        "tile": "",
+        "octet": 16,
+        "user": (1000, 1000),
+        "port": 8188,
+        "local_port": 8106,
+        "kiosk_port": 8116,
+        "tls_port": 5456,
+        "dirs": ("home", "data", "data/models", "data/input", "data/output", "data/user",
+                 "data/temp", "data/custom_nodes"),
+        "binds": (("home", "/root"), ("data", "/data")),
+        "share": (),
+        "volumes": ("/root",),
+        "env": (("HOME", "/root"), ("PYTHONDONTWRITEBYTECODE", "1"), ("HF_HUB_OFFLINE", "1"),
+                ("TRANSFORMERS_OFFLINE", "1"), ("DO_NOT_TRACK", "1"), ("CLI_ARGS", "")),
+        "workdir": "/default-comfyui-bundle/ComfyUI",
+        # The host driver libraries (gpu_args) go first on the library path;
+        # with no GPU passed in, ComfyUI runs on the CPU.
+        "command": ("/bin/sh", "-c",
+                    'export LD_LIBRARY_PATH="/usr/local/nvidia/lib64:$LD_LIBRARY_PATH"; '
+                    '[ "$STICKLLM_GPU" = nvidia ] || set -- --cpu; '
+                    'exec python3 main.py --listen 0.0.0.0 --port 8188 --base-directory /data '
+                    '--disable-all-custom-nodes --disable-auto-launch "$@"', "comfyui"),
+        "tmpfs": (("/tmp", "1g"),),
+        "shm": "1g",
+        "pids": 1024,
+        "websocket": True,
+        "webdav": False,
+        "gpu": "optional",
+        "vram_gb": 6,
+        "pin": {
+            "image": "yanwk/comfyui-boot",
+            "version": "cu126-slim-20261026",
+            "manifest_digest": "sha256:0a355cd7fe20af79c67f01b3d9bb31c12d2c09617e0847e53dd88af4f7da8106",
+            "amd64_digest": "sha256:0b4ff81b9d6159debf9ec430d7de5ed10486d407efc998181566e6d4324de1a4",
+        },
+    },
 }
-ORDER = ("radicale", "vikunja", "actual", "trilium", "node-red")
+ORDER = ("tasks-md", "paisa", "trilium", "node-red", "comfyui")
 
 
 class AddonError(Exception):
@@ -265,11 +297,17 @@ def load_pin(app_id: str) -> dict:
 
 
 def image_ref(app_id: str) -> str:
+    """What docker runs: the pinned image, or for apps with a local build
+    step the wrapper image committed from it at install."""
     pin = load_pin(app_id)
+    if app(app_id).get("build"):
+        short = pin["amd64_digest"].split(":", 1)[1][:12]
+        return f"stickllm-local/{app_id}:{pin['version']}-{short}"
     return f"{pin['image']}@{pin['amd64_digest']}"
 
 
 # ---------------------------------------------------------------- mounts
+
 
 
 def _read_mounts() -> str:
@@ -341,50 +379,94 @@ def _chown(path: Path, uid: int, gid: int) -> None:
     os.lchown(path, uid, gid)
 
 
-def _vikunja_config(base: Path, uid: int, gid: int) -> None:
-    """Vikunja needs a config.yml under read-only root. The JWT secret is
-    generated once and kept in the vault, never printed."""
-    path = base / "config" / "config.yml"
+def _write_new(path: Path, body: str, uid: int, gid: int, mode: int = 0o640) -> None:
+    """Write a file once (O_EXCL, no symlinks); an existing file is kept."""
     if os.path.islink(path):
         raise AddonError("bad_path", f"{path} is a symlink.", 500)
     if path.exists():
         _chown(path, uid, gid)
         return
-    body = (
-        "# Written by StickLLM on first start. Lives in the vault only.\n"
-        "service:\n"
-        f'  secret: "{secrets.token_hex(32)}"\n'
-        "  enableregistration: true\n"
-        "  enabletaskattachments: true\n"
-        "  timezone: UTC\n"
-        "cors:\n"
-        "  enable: false\n"
-        "mailer:\n"
-        "  enabled: false\n"
-        "log:\n"
-        "  level: WARNING\n"
-        "  http: \"off\"\n"
-        "  database: \"off\"\n"
-        "  events: \"off\"\n"
-        "  mail: \"off\"\n"
-        "backgrounds:\n"
-        "  providers:\n"
-        "    unsplash:\n"
-        "      enabled: false\n"
-        "migration:\n"
-        "  todoist:\n"
-        "    enable: false\n"
-        "  trello:\n"
-        "    enable: false\n"
-        "  microsofttodo:\n"
-        "    enable: false\n"
-        "avatar:\n"
-        "  gravatarexpiration: 0\n"
-    )
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), mode)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(body)
     _chown(path, uid, gid)
+
+
+PAISA_CONFIG = (
+    "# Written by StickLLM on first install. Lives in the vault only.\n"
+    "# Single user: the vault unlock is the only login, so user_accounts is empty.\n"
+    "journal_path: /data/main.ledger\n"
+    "db_path: /data/paisa.db\n"
+    "ledger_cli: ledger\n"
+    "default_currency: CAD\n"
+    "locale: en-CA\n"
+    "financial_year_starting_month: 1\n"
+    "week_starting_day: 1\n"
+    "strict: \"no\"\n"
+    "user_accounts: []\n"
+)
+PAISA_JOURNAL = (
+    "; Paisa journal (ledger format). Lives in the vault only.\n"
+    "; Add transactions in Paisa (Ledger > Editor) or import a bank CSV.\n"
+)
+
+
+def _seed_files(app_id: str, base: Path, uid: int, gid: int) -> None:
+    if app_id == "paisa":
+        _write_new(base / "data" / "paisa.yaml", PAISA_CONFIG, uid, gid)
+        _write_new(base / "data" / "main.ledger", PAISA_JOURNAL, uid, gid)
+
+
+# Tasks.md wrapper: built once at install inside the pinned base image, as
+# root, with --network none and no mounts, then committed to a local tag.
+TASKS_MD_BUILD = (
+    "set -e\n"
+    "cd /app\n"
+    "npm run build -- --base=/ >/dev/null\n"
+    "rm -f dist/stylesheets/custom.css\n"
+    "rm -rf /api/static\n"
+    "mv dist /api/static\n"
+    "cat > /stickllm-start.sh <<'STICKLLM_EOF'\n"
+    "#!/bin/sh\n"
+    "set -e\n"
+    "mkdir -p /config/stylesheets /config/images /config/sort /tasks\n"
+    "[ -f /config/stylesheets/custom.css ] || "
+    "echo '@import url(/stylesheets/color-themes/adwaita.css);' > /config/stylesheets/custom.css\n"
+    "cp -r /api/static/stylesheets/. /config/stylesheets/\n"
+    "cd /api\n"
+    "exec node /api/server.js\n"
+    "STICKLLM_EOF\n"
+    "chmod 755 /stickllm-start.sh\n"
+    "rm -rf /root/.npm /tmp/* 2>/dev/null || true\n"
+)
+BUILDS = {
+    "tasks-md": {
+        "script": TASKS_MD_BUILD,
+        "changes": (
+            "USER 1000:1000",
+            "WORKDIR /api",
+            'ENTRYPOINT ["/bin/sh", "/stickllm-start.sh"]',
+            "CMD []",
+        ),
+    },
+}
+
+
+def has_build(app_id: str) -> bool:
+    return bool(app(app_id).get("build"))
+
+
+def base_ref(app_id: str) -> str:
+    """The pinned upstream image (pulled by digest)."""
+    pin = load_pin(app_id)
+    return f"{pin['image']}@{pin['amd64_digest']}"
+
+
+def build_spec(app_id: str) -> dict:
+    spec = app(app_id)
+    if not spec.get("build"):
+        raise AddonError("no_build", "This app has no local build step.", 400)
+    return BUILDS[spec["build"]]
 
 
 def prepare_vault(app_id: str) -> dict:
@@ -401,8 +483,7 @@ def prepare_vault(app_id: str) -> dict:
         path = base / name
         _mkdir_safe(path)
         _chown(path, uid, gid)
-    if app_id == "vikunja":
-        _vikunja_config(base, uid, gid)
+    _seed_files(app_id, base, uid, gid)
     return {"ok": True, "addon": str(base)}
 
 
@@ -415,7 +496,11 @@ def container_name(app_id: str) -> str:
 
 
 def network(app_id: str) -> dict:
-    spec = app(app_id)
+    # Plain data: a blocked app still gets its bridge named in the nft drop
+    # rules (stricter, never looser). Unknown ids still raise.
+    spec = APPS.get(app_id) if isinstance(app_id, str) else None
+    if spec is None:
+        spec = app(app_id)
     n = spec["octet"]
     return {
         "name": f"stickllm-{app_id}",
@@ -460,11 +545,117 @@ def docker_args(app_id: str) -> list[str]:
         args += ["-v", f"{base / sub}:{target}"]
     for rel, target in spec["share"]:
         args += ["-v", f"{SHARE_DIR / rel}:{target}:ro"]
+    if spec.get("workdir"):
+        args += ["-w", spec["workdir"]]
+    if spec.get("shm"):
+        args += ["--shm-size", spec["shm"]]
+    args += gpu_args(app_id)
     args.append(image_ref(app_id))
     args += list(spec["command"])
     return args
 
 
+
+# ---------------------------------------------------------------- gpu
+
+DEV_DIR = Path(os.environ.get("STICKLLM_DEV_DIR", "/dev"))
+NVIDIA_LIB_DIRS = tuple(
+    Path(p) for p in os.environ.get(
+        "STICKLLM_NVIDIA_LIB_DIRS",
+        "/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/nvidia/current:/usr/lib64:/usr/lib",
+    ).split(":") if p
+)
+# User-space driver pieces CUDA needs inside the container (what
+# nvidia-container-toolkit would inject). The CUDA runtime itself ships in
+# the image; these must match the host kernel module, so they come from the host.
+NVIDIA_LIBS = (
+    "libcuda.so.1",
+    "libnvidia-ml.so.1",
+    "libnvidia-ptxjitcompiler.so.1",
+    "libnvidia-nvvm.so.4",
+    "libnvidia-gpucomp.so",
+)
+NVIDIA_CONTAINER_LIB = "/usr/local/nvidia/lib64"
+
+
+def nvidia_devices() -> list[str]:
+    out = []
+    for name in ("nvidiactl", "nvidia-uvm", "nvidia-uvm-tools", "nvidia-modeset"):
+        p = DEV_DIR / name
+        if p.exists():
+            out.append(str(p))
+    for p in sorted(DEV_DIR.glob("nvidia[0-9]*")):
+        out.append(str(p))
+    return out
+
+
+def _find_lib(name: str) -> Path | None:
+    for d in NVIDIA_LIB_DIRS:
+        p = d / name
+        if p.exists():
+            return p.resolve()
+        if name.endswith(".so"):
+            hits = sorted(d.glob(name + ".*"))
+            if hits:
+                return hits[-1].resolve()
+    return None
+
+
+def gpu_args(app_id: str) -> list[str]:
+    """NVIDIA device nodes and driver libraries, read-only. Empty without a GPU."""
+    spec = app(app_id)
+    if not spec.get("gpu"):
+        return []
+    devs = nvidia_devices()
+    if not any(Path(d).name[6:].isdigit() for d in devs):
+        return []
+    libcuda = _find_lib("libcuda.so.1")
+    if libcuda is None:
+        return []
+    args: list[str] = []
+    for d in devs:
+        args += ["--device", d]
+    for name in NVIDIA_LIBS:
+        p = _find_lib(name)
+        if p is None:
+            continue
+        target_name = name if not name.endswith(".so") else p.name
+        args += ["-v", f"{p}:{NVIDIA_CONTAINER_LIB}/{target_name}:ro"]
+    args += ["-e", "STICKLLM_GPU=nvidia"]
+    return args
+
+
+def vram_free_mib() -> int | None:
+    """Free VRAM on the emptiest NVIDIA GPU, or None when unknown."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=8, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    vals = [int(x.strip()) for x in out.splitlines() if x.strip().isdigit()]
+    return max(vals) if vals else None
+
+
+def gpu_check(app_id: str) -> dict:
+    """Pre-start hardware check. Warns, never refuses."""
+    spec = app(app_id)
+    if not spec.get("gpu"):
+        return {"ok": True, "gpu": "none", "warning": ""}
+    want = int(spec.get("vram_gb") or 0) * 1024
+    if not gpu_args(app_id):
+        return {"ok": True, "gpu": "cpu",
+                "warning": f"{spec['name']}: no NVIDIA GPU found, running on CPU (very slow)."}
+    free = vram_free_mib()
+    if free is None:
+        return {"ok": True, "gpu": "nvidia", "warning": f"{spec['name']}: could not read free GPU memory."}
+    if want and free < want:
+        return {"ok": True, "gpu": "nvidia", "vram_free_mib": free,
+                "warning": (f"{spec['name']}: only {free / 1024:.1f} GB GPU memory free; about "
+                            f"{want // 1024} GB is recommended. The local AI model may be using it. "
+                            "Starting anyway; large models may fail or fall back to slow modes.")}
+    return {"ok": True, "gpu": "nvidia", "vram_free_mib": free, "warning": ""}
 # ---------------------------------------------------------------- nft
 
 
@@ -615,6 +806,69 @@ def status_document(app_id: str, *, upstream_up: bool | None = None) -> dict:
     }
 
 
+# ---------------------------------------------------------------- post-start
+
+
+def _http(method: str, port: int, path: str, timeout: float = 10.0) -> tuple[int, bytes]:
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request(method, path, body=b"" if method == "POST" else None,
+                     headers={"Content-Type": "application/json"} if method == "POST" else {})
+        resp = conn.getresponse()
+        return resp.status, resp.read()
+    finally:
+        conn.close()
+
+
+def _trilium_setup(app_id: str, wait: float) -> dict:
+    """First start: create an empty document so Trilium opens straight to
+    the notes (no setup wizard, no demo notes). A no-op once initialised."""
+    spec = app(app_id)
+    port = spec["local_port"]
+    deadline = time.time() + wait
+    status = None
+    while time.time() < deadline:
+        try:
+            code, body = _http("GET", port, "/api/setup/status")
+            if code == 200:
+                status = json.loads(body.decode("utf-8") or "{}")
+                break
+        except (OSError, ValueError):
+            pass
+        time.sleep(2)
+    if status is None:
+        return {"ok": False, "error": "not_ready"}
+    if status.get("isInitialized"):
+        return {"ok": True, "initialized": True, "created": False}
+    code, body = _http("POST", port, "/api/setup/new-document?skipDemoDb=true", timeout=120)
+    if code >= 300:
+        return {"ok": False, "error": f"http_{code}", "body": body[:200].decode("utf-8", "replace")}
+    for _ in range(60):
+        try:
+            c2, b2 = _http("GET", port, "/api/setup/status")
+            if c2 == 200 and json.loads(b2.decode("utf-8") or "{}").get("isInitialized"):
+                return {"ok": True, "initialized": True, "created": True}
+        except (OSError, ValueError):
+            pass
+        time.sleep(1)
+    return {"ok": False, "error": "not_initialized"}
+
+
+POST_START = {"trilium-setup": _trilium_setup}
+
+
+def post_start(app_id: str, wait: float = 180.0) -> dict:
+    spec = app(app_id)
+    hook = spec.get("post_start")
+    if not hook:
+        return {"ok": True, "hook": ""}
+    out = POST_START[hook](app_id, wait)
+    out["hook"] = hook
+    return out
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -636,6 +890,25 @@ def main(argv: list[str]) -> int:
         if cmd == "image-ref":
             print(image_ref(app_id))
             return 0
+        if cmd == "base-ref":
+            print(base_ref(app_id))
+            return 0
+        if cmd == "has-build":
+            return 0 if has_build(app_id) else 1
+        if cmd == "build-script":
+            print(build_spec(app_id)["script"], end="")
+            return 0
+        if cmd == "build-changes":
+            print("\n".join(build_spec(app_id)["changes"]))
+            return 0
+        if cmd == "gpu-check":
+            doc = gpu_check(app_id)
+            print(json.dumps(doc))
+            return 0
+        if cmd == "post-start":
+            doc = post_start(app_id)
+            print(json.dumps(doc))
+            return 0 if doc.get("ok") else 1
         if cmd == "name":
             print(APPS[app_id]["name"])
             return 0

@@ -234,6 +234,43 @@ def model_block(run_dir: Path | None = None) -> dict:
     }
 
 
+# Hardware warnings (v0.5.4): warn, never refuse. The production llama-server
+# is built for AVX2 CPUs; without AVX it dies with SIGILL, so say so up front.
+LOW_VRAM_GB = 6.0
+
+
+def cpu_flags(cpuinfo: str | None = None) -> set[str]:
+    if cpuinfo is None:
+        cpuinfo = _read(Path("/proc/cpuinfo"))
+    for line in cpuinfo.splitlines():
+        if line.startswith("flags") and ":" in line:
+            return set(line.split(":", 1)[1].split())
+    return set()
+
+
+def hardware_warnings(cpuinfo: str | None = None, vram_gb: float | None = None,
+                      gpu_count: int | None = None) -> list[str]:
+    """Plain-language warnings about this machine. Empty when all is well.
+
+    cpuinfo None reads /proc/cpuinfo; an unreadable file gives no CPU warning.
+    vram_gb None means unknown (no VRAM warning).
+    """
+    out: list[str] = []
+    flags = cpu_flags(cpuinfo)
+    if flags:
+        if "avx" not in flags:
+            out.append("This CPU has no AVX, so the local AI model cannot run here (chat will not answer). "
+                       "Apps, files and the vault still work.")
+        elif "avx2" not in flags:
+            out.append("This CPU has AVX but not AVX2, so the local AI model may fail to start or run slowly.")
+    if gpu_count is not None and gpu_count <= 0:
+        out.append("No NVIDIA GPU found: models run on the CPU and will be slow. Pick a small model.")
+    elif vram_gb is not None and 0 < vram_gb < LOW_VRAM_GB:
+        out.append(f"Only {vram_gb:.1f} GB of GPU memory: pick a small model; larger ones run partly on the CPU "
+                   "and are slow.")
+    return out
+
+
 def snapshot(
     *,
     stat_text: str | None = None,
@@ -244,11 +281,20 @@ def snapshot(
     run_dir: Path | None = None,
     include_gpu: bool = True,
     include_model: bool = True,
+    cpuinfo: str | None = None,
 ) -> dict:
     gpu = gpu_block(gpu_runner) if include_gpu else {"available": False, "message": "GPU stats are unavailable"}
     model = model_block(run_dir) if include_model else {"available": False, "message": "No model is loaded"}
+    gpu_count = None
+    vram_gb = None
+    if include_gpu:
+        gpus = gpu.get("gpus") or [] if gpu.get("available") else []
+        gpu_count = len(gpus)
+        if gpus:
+            vram_gb = sum(int(g.get("memory_total_mib") or 0) for g in gpus) / 1024
     return {
         "ok": True,
+        "warnings": hardware_warnings(cpuinfo, vram_gb, gpu_count),
         "cpu": cpu_block(stat_text, load_text),
         "memory": memory_block(meminfo),
         "gpu": gpu,

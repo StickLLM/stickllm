@@ -1,4 +1,4 @@
-# StickLLM hard blocklist (v0.5.3). One app id per line, then the reason.
+# StickLLM hard blocklist (v0.5.3; ComfyUI unblocked in v0.5.4). One app id per line, then the reason.
 # These apps are never listed (kiosk, LAN UI, /api/apps, Agent Zero) and every
 # install path refuses them server-side. scripts/pins.py copies this list into
 # verified.json ("blocked_apps"); stickllm_verify.BLOCKED_APPS must match it.
@@ -14,6 +14,5 @@ jitsi                Four containers including the Java video bridge, and calls 
 onionshare           Command line plus Tor, which needs internet; no web app to open.
 postiz               Node, Postgres and Redis, and posting needs internet access to the social networks.
 opentimestamps       Command-line tools with no web app; timestamping needs internet calendars.
-comfyui              Needs CUDA, PyTorch and the GPU the model is using; not containerised for the stick yet.
 code-server-jupyter  Not packaged and security-reviewed for the stick yet (a full terminal and package installs).
 n8n                  Fair-code licence (not OSI open source) and it duplicates Node-RED, which ships.

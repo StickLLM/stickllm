@@ -169,14 +169,14 @@ def test_apps_install_vault_gate_matches_health(tmp_path, monkeypatch):
     gw.llama_unit_state = lambda *a, **k: "inactive"
     try:
         assert health()["status"] == "locked"
-        status, doc = install("radicale")
+        status, doc = install("tasks-md")
         assert status == 423 and doc["error"] == "vault_locked" and not started
         state["open"] = True
         assert health() == {"status": "unlocked", "mounted": True}
-        status, doc = install("radicale")
+        status, doc = install("tasks-md")
         assert status == 200 and doc.get("error") != "vault_locked"
         assert doc["started"] is True and doc["state"] == "installing"
-        assert started and "stickllm-addon-install@radicale.service" in started[0]
+        assert started and "stickllm-addon-install@tasks-md.service" in started[0]
     finally:
         srv.shutdown()
 

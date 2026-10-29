@@ -1,7 +1,0 @@
-# Vikunja tasks (AGPL). Pulled by digest onto the host SSD docker data-root only.
-# Verified against registry-1.docker.io on 2026-10-27. manifest_digest is the
-# OCI index; amd64_digest is the linux/amd64 manifest that is pulled.
-image=vikunja/vikunja
-version=2.7.1
-manifest_digest=sha256:f7dc8428d10aef17f3075886d3c1c022f566ec456f88985f02c137f4fc534576
-amd64_digest=sha256:3a848c83404d59ba9df4d91b92af4c400c8876ccdbbf3b563d41019cee29df39

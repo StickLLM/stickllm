@@ -97,7 +97,10 @@ def test_repo_allowlist_is_pinned_and_licensed():
     a0p = _load(A0P, "a0_plugins_t1")
     entries = a0p.parse_allowlist(ALLOW.read_text(encoding="utf-8"))
     names = [e["name"] for e in entries]
-    assert names == ["clock_24h", "chat_status_marklet"]
+    # v0.5.4: third-party Agent Zero plugins are removed; the allowlist is empty.
+    assert names == []
+    reviews = REVIEWS.read_text(encoding="utf-8")
+    assert "0.5.4" in reviews and "no third-party plugins" in reviews.lower()
     for e in entries:
         assert re.fullmatch(r"[0-9a-f]{40}", e["commit"])
         assert re.fullmatch(r"[0-9a-f]{64}", e["tree_sha256"])
@@ -229,6 +232,8 @@ def test_unlisted_plugins_are_quarantined_not_loaded(tmp_path, monkeypatch):
     # A plugin baked into the ISO dir but NOT on the allowlist is ignored too.
     _write_plugin(baked / "sneaky_baked", "sneaky_baked")
     agent = _load_agent(monkeypatch, "stickllm_agent_assemble", env)
+    # The quarantine machinery is kept but switched off in v0.5.4; exercise it here.
+    monkeypatch.setattr(agent, "THIRD_PARTY_PLUGINS", True)
     addon = vault / "addons" / "agent-zero"
     old = addon / "state" / "plugins"
     _write_plugin(old / "evil_plugin", "evil_plugin")
@@ -384,3 +389,15 @@ def test_gateway_calls_deny_before_relay():
     assert '"plugins_locked"' in relay
     serve = text[text.index("def _serve_agent_gateway"):text.index("def _agent_html")]
     assert serve.index("agent_request_denied") < serve.index("self._relay_websocket(")
+
+
+def test_v054_third_party_plugins_off_even_if_baked(tmp_path, monkeypatch):
+    a0p = _load(A0P, "a0_plugins_t054")
+    allow, baked = _bake_fixture(tmp_path, a0p)
+    vault, settings, env = _agent_env(tmp_path, allow, baked)
+    agent = _load_agent(monkeypatch, "stickllm_agent_off054", env)
+    assert agent.THIRD_PARTY_PLUGINS is False
+    assert agent.baked_plugins() == {}
+    agent.assemble_plugins()
+    assert agent.assembled_plugin_names() == ["stickllm_apps"]
+    assert not (vault / "addons" / "agent-zero" / "plugins" / "good_plugin").exists()

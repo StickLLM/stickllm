@@ -97,30 +97,31 @@ APPS_URL_IDS = (
 # ONLYOFFICE Docs at /apps/docs/. Everything goes through the open-app
 # control on 172.30.0.1:8082 and the loopback gateway: the container's
 # firewall only reaches 8080-8082 on the bridge, never the add-on ports.
-CATALOG_APP_IDS = ("docs", "radicale", "vikunja", "actual", "trilium", "node-red")
+CATALOG_APP_IDS = ("docs", "tasks-md", "paisa", "trilium", "node-red", "comfyui")
 CATALOG_APP_NAMES = {
-    "docs": "Office (ONLYOFFICE documents, spreadsheets, slides)",
-    "radicale": "Radicale (calendar and contacts)",
-    "vikunja": "Vikunja (tasks)",
-    "actual": "Actual Budget",
+    "docs": "ONLYOFFICE Office (documents, spreadsheets, slides)",
+    "tasks-md": "Tasks.md Tasks (task boards)",
+    "paisa": "Paisa Budget (personal finance)",
     "trilium": "Trilium Notes",
     "node-red": "Node-RED",
+    "comfyui": "ComfyUI (image generation)",
 }
 APP_ID_ALIASES = {
     "onlyoffice": "docs",
     "onlyoffice-docs": "docs",
     "office": "docs",
     "documents": "docs",
-    "actual-budget": "actual",
-    "actualbudget": "actual",
     "nodered": "node-red",
     "node_red": "node-red",
     "trilium-notes": "trilium",
-    "calendar": "radicale",
-    "contacts": "radicale",
-    "tasks": "vikunja",
-    "todo": "vikunja",
-    "budget": "actual",
+    "notes": "trilium",
+    "tasks.md": "tasks-md",
+    "tasksmd": "tasks-md",
+    "tasks": "tasks-md",
+    "todo": "tasks-md",
+    "budget": "paisa",
+    "comfy": "comfyui",
+    "comfy-ui": "comfyui",
 }
 # Gateway catalog row id for each agent id (docs is the onlyoffice row).
 CATALOG_ROW_IDS = {"docs": "onlyoffice"}
@@ -949,6 +950,93 @@ def block_add_hosts() -> list[str]:
     return out
 
 
+NO_MODEL_MESSAGE = (
+    "No AI model is loaded on StickLLM right now, so I can't answer yet. "
+    "Open Models on the StickLLM home screen, load a model, wait until it shows Running, "
+    "then send your message again."
+)
+
+
+def no_model_reply(request: bytes) -> bytes:
+    """HTTP reply the llama relay sends when llama-server is not listening.
+
+    Chat completions get a normal answer in Agent Zero's tool format (the
+    response tool), so the chat shows a plain sentence instead of a
+    "connection refused" traceback. Streaming requests get server-sent events.
+    Anything else gets 503 with an OpenAI-style error.
+    """
+    head, _, body = request.partition(b"\r\n\r\n")
+    line = head.split(b"\r\n", 1)[0].decode("latin-1", "replace")
+    parts = line.split()
+    path = parts[1] if len(parts) > 1 else "/"
+    try:
+        doc = json.loads(body.decode("utf-8", "replace") or "{}")
+    except ValueError:
+        doc = {}
+    if not isinstance(doc, dict):
+        doc = {}
+    model = str(doc.get("model") or "stickllm")[:120]
+    if not path.split("?", 1)[0].rstrip("/").endswith("/chat/completions"):
+        payload = json.dumps({"error": {"message": NO_MODEL_MESSAGE, "type": "no_model_loaded",
+                                        "code": 503}}).encode("utf-8")
+        return (b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+                b"Content-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+    text = json.dumps({
+        "thoughts": ["No model is loaded on StickLLM."],
+        "headline": "No model loaded",
+        "tool_name": "response",
+        "tool_args": {"text": NO_MODEL_MESSAGE},
+    })
+    created = int(time.time())
+    if doc.get("stream"):
+        chunks = [
+            {"id": "stickllm-no-model", "object": "chat.completion.chunk", "created": created, "model": model,
+             "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}]},
+            {"id": "stickllm-no-model", "object": "chat.completion.chunk", "created": created, "model": model,
+             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        ]
+        payload = b"".join(b"data: " + json.dumps(c).encode("utf-8") + b"\n\n" for c in chunks) + b"data: [DONE]\n\n"
+        ctype = b"text/event-stream"
+    else:
+        payload = json.dumps({
+            "id": "stickllm-no-model", "object": "chat.completion", "created": created, "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }).encode("utf-8")
+        ctype = b"application/json"
+    return (b"HTTP/1.1 200 OK\r\nContent-Type: " + ctype + b"\r\nContent-Length: " + str(len(payload)).encode()
+            + b"\r\nConnection: close\r\n\r\n" + payload)
+
+
+def _read_request(client: socket.socket, limit: int = 4 * 1024 * 1024) -> bytes:
+    """Read one HTTP request (headers + Content-Length body) or what arrives in 5 s."""
+    client.settimeout(5)
+    data = b""
+    try:
+        while b"\r\n\r\n" not in data and len(data) < limit:
+            got = client.recv(65536)
+            if not got:
+                return data
+            data += got
+        head, _, body = data.partition(b"\r\n\r\n")
+        length = 0
+        for raw in head.split(b"\r\n")[1:]:
+            name, _, value = raw.partition(b":")
+            if name.strip().lower() == b"content-length":
+                try:
+                    length = int(value.strip())
+                except ValueError:
+                    length = 0
+        while len(body) < min(length, limit):
+            got = client.recv(65536)
+            if not got:
+                break
+            body += got
+        return head + b"\r\n\r\n" + body
+    except OSError:
+        return data
+
+
 def run_tcp_relay(listen_host: str, listen_port: int, target_host: str, target_port: int) -> None:
     """Copy bytes between a bridge listener and llama-server. Does not bind 0.0.0.0."""
     if listen_host in ("0.0.0.0", "::", ""):
@@ -976,8 +1064,17 @@ def run_tcp_relay(listen_host: str, listen_port: int, target_host: str, target_p
         try:
             upstream = socket.create_connection((target_host, target_port), timeout=10)
         except OSError:
+            # llama-server is not listening: no model loaded (or still
+            # starting). Answer in plain words instead of dropping the call.
+            try:
+                req = _read_request(client)
+                if req:
+                    client.sendall(no_model_reply(req))
+            except OSError:
+                pass
             client.close()
             return
+        upstream.settimeout(None)
         left = threading.Thread(target=pump, args=(client, upstream), daemon=True)
         right = threading.Thread(target=pump, args=(upstream, client), daemon=True)
         left.start()
@@ -1076,7 +1173,7 @@ def apps_prompt_text() -> str:
         "Fetch only these static pages. Do not use other host ports or LAN addresses."
     )
     lines.append(
-        "Installed catalog apps (docs = ONLYOFFICE, radicale, vikunja, actual, trilium, node-red) "
+        "Installed catalog apps (docs = ONLYOFFICE, tasks-md, paisa, trilium, node-red, comfyui) "
         "open with open_app too; install_app asks the user to install one. "
         "Make documents with create_spreadsheet / create_document, open them with open_document."
     )
@@ -1284,8 +1381,8 @@ def open_app_tool_prompt() -> str:
         "The headless browser tool stays for your own page work. It does not "
         "show an app on the user's screen.\n"
         f"Allowed ids only: {ids}.\n"
-        "The desktop label minesweep is id minesweeper. docs is the Office app (ONLYOFFICE); radicale, "
-        "vikunja, actual, trilium and node-red are add-ons and open only once installed "
+        "The desktop label minesweep is id minesweeper. docs is the Office app (ONLYOFFICE); tasks-md, "
+        "paisa, trilium, node-red and comfyui are add-ons and open only once installed "
         "(otherwise use install_app).\n"
         "Pass the id and nothing else. Reject URLs and paths yourself by not sending them.\n"
         + NO_GUI_RULE + "\n\n"
@@ -2702,10 +2799,10 @@ def prepare_vault_dirs() -> None:
 
 # --- Agent Zero plugin lockdown -------------------------------------------
 # /a0/usr/plugins is assembled on the host on every start and mounted
-# read-only. It holds only: our own stickllm_apps plugin, plugins listed in the
-# allowlist that were fetched at a pinned commit and hash-checked when the ISO
-# was built, data-only files for Agent Zero's built-in plugins, and empty
-# mountpoints. Anything else found in the old writable plugins dir is moved to
+# read-only. It holds only: our own stickllm_apps plugin, data-only files for
+# Agent Zero's built-in plugins, and empty mountpoints. Third-party plugins
+# are gone since v0.5.4 (THIRD_PARTY_PLUGINS, empty allowlist), and the
+# container entrypoint deletes the built-in plugin installer/scan/validator. Anything else found in the old writable plugins dir is moved to
 # the vault quarantine folder (never deleted) and logged by name.
 PLUGINS_RO = ADDON / "plugins"
 PLUGIN_DATA = ADDON / "plugin-data"
@@ -2902,8 +2999,16 @@ def _copy_plugin_tree(src: Path, dest: Path) -> None:
             os.chmod(target, 0o644)
 
 
+# v0.5.4 (Nink): no third-party Agent Zero plugins on any path. Even if a
+# baked copy or an allowlist line shows up, nothing but stickllm_apps loads.
+THIRD_PARTY_PLUGINS = False
+
+
 def baked_plugins() -> dict[str, Path]:
-    """Allowlisted plugins baked into the ISO whose pin and hash still match."""
+    """Allowlisted plugins baked into the ISO whose pin and hash still match.
+    Always empty while THIRD_PARTY_PLUGINS is False."""
+    if not THIRD_PARTY_PLUGINS:
+        return {}
     allow = read_plugin_allowlist()
     manifest: dict[str, tuple[str, str]] = {}
     try:

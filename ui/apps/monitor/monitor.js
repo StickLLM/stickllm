@@ -73,14 +73,16 @@
     if (doc.ok === false && doc.cpu == null && doc.memory == null && doc.disk == null && doc.gpu == null && doc.model == null) {
       return { error: doc.message || doc.error || "Status request failed." };
     }
+    const warn = Array.isArray(doc.warnings) ? doc.warnings.filter((w) => typeof w === "string" && w) : [];
+    const cards = warn.length ? [{ title: "Warning", lines: warn.map((text) => ({ text })) }] : [];
     return {
-      cards: [
+      cards: cards.concat([
         { title: "CPU", lines: cpuLines(doc.cpu) },
         { title: "Memory", lines: memLines(doc.memory) },
         { title: "GPU", lines: gpuLines(doc.gpu) },
         { title: "Disk", lines: diskLines(doc.disk) },
         { title: "Model", lines: modelLines(doc.model) },
-      ],
+      ]),
     };
   }
 

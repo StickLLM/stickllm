@@ -689,3 +689,114 @@ def test_docs_page_uses_gateway_api_and_external_script():
     for route in ("/api/docs/status", "/api/docs/list", "/api/docs/config", "/api/docs/create", "/api/docs/upload"):
         assert route in js
     assert "http://" not in js and "https://" not in js
+
+
+# ------------------------------------------- 0.5.4: rename, copy, save as, downloads
+
+
+@POSIX
+def test_rename_keeps_extension_refuses_clobber_and_follows_open_editor(tmp_path):
+    docs = _docs(tmp_path, "stickllm_docs_rename")
+    docs.prepare_vault()
+    (tmp_path / "run" / "docs-jwt").write_text(SECRET, encoding="utf-8")
+    root = tmp_path / "vault" / "Documents"
+    (root / "a.docx").write_bytes(b"old")
+    (root / "taken.docx").write_bytes(b"t")
+    link = docs.link_token("a.docx", SECRET)  # editor opened before the rename
+    assert docs.rename_document("a.docx", "Report") == "Report.docx"
+    assert docs.rename_document("Report.docx", "Report.docx") == "Report.docx"
+    assert (root / "Report.docx").read_bytes() == b"old" and not (root / "a.docx").exists()
+    with pytest.raises(docs.DocsError) as exc:
+        docs.rename_document("Report.docx", "taken")
+    assert exc.value.status == 409 and (root / "taken.docx").read_bytes() == b"t"
+    # Path tricks are cleaned into a plain name in the same folder.
+    assert docs.rename_document("Report.docx", "../x") == "x.docx"
+    assert docs.rename_document("x.docx", ".hidden") == "hidden.docx"
+    assert docs.rename_document("hidden.docx", "Report") == "Report.docx"
+    assert not (tmp_path / "vault" / "x.docx").exists()
+    assert docs.rename_document("Report.docx", "Final.xlsx") == "Final.xlsx.docx"
+    # The old editor's save lands in the renamed file, not a resurrected a.docx.
+    url = "http://172.30.1.2/cache/files/data/k/output.docx/output.docx"
+    body = json.dumps({"token": docs.jwt_sign({"status": 2, "url": url, "filetype": "docx"}, SECRET)}).encode()
+    assert docs.handle_callback(link, body, "", fetch=lambda u: b"new") == {"error": 0}
+    assert not (root / "a.docx").exists()
+    assert (root / "Final.xlsx.docx").read_bytes() == b"new"
+    assert docs.follow_renames("a.docx") == "Final.xlsx.docx"
+    assert all(d["name"] != ".stickllm-renames.json" for d in docs.list_documents()["documents"])
+
+
+@POSIX
+def test_copy_and_editor_save_as_never_overwrite(tmp_path):
+    docs = _docs(tmp_path, "stickllm_docs_copy")
+    docs.prepare_vault()
+    root = tmp_path / "vault" / "Documents"
+    (root / "sub").mkdir()
+    (root / "sub" / "a.xlsx").write_bytes(b"orig")
+    assert docs.copy_document("sub/a.xlsx") == "sub/a copy.xlsx"
+    assert docs.copy_document("sub/a.xlsx") == "sub/a copy (2).xlsx"
+    assert docs.copy_document("sub/a.xlsx", "Budget") == "sub/Budget.xlsx"
+    assert (root / "sub" / "Budget.xlsx").read_bytes() == b"orig"
+    seen = []
+    url = "http://172.30.1.2/cache/files/data/k/output.pdf/output.pdf"
+    rel = docs.save_as_from_editor("sub/a.xlsx", "Export", "pdf", url, fetch=lambda u: seen.append(u) or b"%PDF")
+    assert rel == "sub/Export.pdf" and (root / "sub" / "Export.pdf").read_bytes() == b"%PDF"
+    assert seen == ["http://127.0.0.1:8083/cache/files/data/k/output.pdf/output.pdf"]
+    with pytest.raises(docs.DocsError):
+        docs.save_as_from_editor("sub/a.xlsx", "x", "exe", url, fetch=lambda u: b"x")
+    with pytest.raises(docs.DocsError):
+        docs.save_as_from_editor("sub/a.xlsx", "x", "pdf", "http://evil.example/a.pdf", fetch=lambda u: b"x")
+    assert (root / "sub" / "a.xlsx").read_bytes() == b"orig"
+
+
+@POSIX
+def test_downloads_list_and_import_copy_only(tmp_path):
+    docs = _docs(tmp_path, "stickllm_docs_downloads")
+    docs.prepare_vault()
+    assert docs.list_downloads()["downloads"] == []
+    dl = tmp_path / "vault" / "Downloads"
+    dl.mkdir()
+    (dl / "notes.docx").write_bytes(b"d")
+    (dl / "movie.mp4").write_bytes(b"m")
+    (dl / "half.pdf.crdownload").write_bytes(b"h")
+    (dl / ".hidden.docx").write_bytes(b"h")
+    os.symlink("/etc/passwd", dl / "link.txt")
+    names = {d["name"]: d["office"] for d in docs.list_downloads()["downloads"]}
+    assert names == {"notes.docx": True, "movie.mp4": False}
+    assert docs.import_download("notes.docx") == "notes.docx"
+    assert (dl / "notes.docx").exists()  # copied, never moved
+    assert (tmp_path / "vault" / "Documents" / "notes.docx").read_bytes() == b"d"
+    for bad in ("movie.mp4", "../Documents/notes.docx", "link.txt", ".hidden.docx", "gone.docx"):
+        with pytest.raises(docs.DocsError):
+            docs.import_download(bad)
+
+
+def test_office_ui_has_name_dialog_rename_copy_and_downloads():
+    html = _text(ROOT / "ui" / "apps" / "docs" / "index.html")
+    js = _text(ROOT / "ui" / "apps" / "docs" / "docs.js")
+    assert '<dialog id="nameDlg">' in html and 'id="downloads"' in html
+    assert "onRequestSaveAs" in js and "onRequestRename" in js
+    assert '"/api/docs/rename"' in js and '"/api/docs/copy"' in js and '"/api/docs/save-as"' in js
+    assert '"/api/docs/downloads"' in js and '"/api/docs/import-download"' in js
+    assert 'KIND_LABEL = { docx: "Document", xlsx: "Spreadsheet", pptx: "Presentation" }' in js
+    gw = _text(GATEWAY)
+    for route in ("/api/docs/rename", "/api/docs/copy", "/api/docs/save-as", "/api/docs/downloads",
+                  "/api/docs/import-download"):
+        assert route in gw
+
+
+def test_office_default_new_names_are_dated():
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    js = ROOT / "ui" / "apps" / "docs" / "docs.js"
+    script = (
+        "const fs=require('fs');const el={addEventListener(){},querySelectorAll(){return[]},textContent:''};"
+        "global.document={querySelector(){return el},querySelectorAll(){return[]},body:{classList:{add(){},remove(){}}}};"
+        "global.window={};global.location={search:''};global.fetch=()=>new Promise(()=>{});"
+        f"eval(fs.readFileSync({json.dumps(str(js))},'utf8'));"
+        "const d=window.__stickDocs;const t=d.today();"
+        "console.log(JSON.stringify([t,d.defaultName('docx'),d.defaultName('xlsx'),d.defaultName('pptx')]));"
+    )
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=True).stdout
+    t, doc, xls, ppt = json.loads(out)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", t)
+    assert doc == f"Document {t}.docx" and xls == f"Spreadsheet {t}.xlsx" and ppt == f"Presentation {t}.pptx"

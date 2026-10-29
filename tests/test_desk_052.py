@@ -8,7 +8,7 @@ def test_catalog_icons_rendered_from_api_apps():
     js = (UI / "app.js").read_text()
     assert "function syncCatalogDesktop(apps)" in js
     assert "syncCatalogDesktop(apps);" in js
-    for app_id in ("onlyoffice", "radicale", "vikunja", "actual", "trilium", "node-red"):
+    for app_id in ("onlyoffice", "tasks-md", "paisa", "trilium", "node-red", "comfyui"):
         assert f'{app_id}: {{ label' in js or f'"{app_id}": {{ label' in js
     # Removed apps lose their icon.
     assert 'querySelectorAll("a.deskIcon[data-catalog-app]")' in js

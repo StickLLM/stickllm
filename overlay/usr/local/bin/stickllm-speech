@@ -1302,8 +1302,12 @@ def _spawn_kitten(script: str) -> None:
         return
 
 
-def _start_kitten(script: str) -> None:
-    prepare_kitten_dir()
+def _start_kitten(script: str) -> bool:
+    """False when the socket directory cannot be made (the resident cannot run)."""
+    try:
+        prepare_kitten_dir()
+    except OSError:
+        return False
     systemctl = "/usr/bin/systemctl"
     if os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0 and Path(systemctl).is_file():
         try:
@@ -1316,8 +1320,9 @@ def _start_kitten(script: str) -> None:
         except Exception:
             proc = None
         if proc is not None and proc.returncode == 0:
-            return
+            return True
     _spawn_kitten(script)
+    return True
 
 
 def ensure_kitten(script: str, *, wait: float = 60.0) -> str | None:
@@ -1325,7 +1330,8 @@ def ensure_kitten(script: str, *, wait: float = 60.0) -> str | None:
     if kitten_ready():
         return None
     started = time.time()
-    _start_kitten(script)
+    if not _start_kitten(script):
+        return "Text to speech is not ready."
     deadline = started + wait
     while time.time() < deadline:
         if kitten_ready():
@@ -1521,7 +1527,8 @@ def _wait_kitten(script: str) -> bool:
         return False
     if kitten_ready():
         return True
-    _start_kitten(script)
+    if not _start_kitten(script):
+        return False
     begin = time.time()
     absolute = begin + 180
     deadline = begin + 8

@@ -1883,7 +1883,7 @@ start_agent_addon() {
   if [[ -x /usr/local/bin/stickllm-docs ]]; then
     /usr/local/bin/stickllm-docs start >/run/stickllm/docs-start.log 2>&1 &
   fi
-  # Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED): only the
+  # Starter add-ons (Tasks.md, Paisa, Trilium, Node-RED, ComfyUI): only the
   # installed ones start; each gate re-checks the vault.
   if [[ -x /usr/local/bin/stickllm-addon ]]; then
     /usr/local/bin/stickllm-addon start-all >/run/stickllm/addons-start.log 2>&1 &

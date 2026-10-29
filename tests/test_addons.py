@@ -1,8 +1,9 @@
-"""Starter add-ons (Radicale, Vikunja, Actual Budget, Trilium, Node-RED).
+"""Starter add-ons (Tasks.md, Paisa, Trilium, Node-RED, ComfyUI).
 
 Same rules as ONLYOFFICE Docs: pinned by digest, data only in
 vault/addons/<id>, read-only non-root containers with no logs, no GPU, no
 network, reached only through the paired gateway on the app's own TLS port.
+ComfyUI is the one add-on that may get NVIDIA device nodes.
 """
 from __future__ import annotations
 
@@ -35,7 +36,9 @@ HOOK = ROOT / "live-build" / "hooks" / "normal" / "0100-stickllm-setup.hook.chro
 HTML = ROOT / "ui" / "index.html"
 APP_JS = ROOT / "ui" / "app.js"
 
-IDS = ("radicale", "vikunja", "actual", "trilium", "node-red")
+IDS = ("tasks-md", "paisa", "trilium", "node-red", "comfyui")
+# Apps lib.app() accepts today (ComfyUI stays refused while it is on the blocklist).
+OPEN_IDS = ("tasks-md", "paisa", "trilium", "node-red")
 POSIX = pytest.mark.skipif(sys.platform == "win32", reason="Linux-only file APIs (symlinks, modes)")
 
 
@@ -64,6 +67,7 @@ def _env(tmp_path: Path, *, vault: bool = True) -> dict:
         "STICKLLM_RUN": str(run),
         "STICKLLM_MOUNTS_FILE": str(tmp_path / "mounts"),
         "STICKLLM_ADDONS_SHARE": str(SHARE),
+        "STICKLLM_DEV_DIR": str(tmp_path / "dev"),
     }
 
 
@@ -87,7 +91,12 @@ def _check_common(lib, app_id: str, tmp_path: Path) -> list[str]:
     pin = lib.parse_pin(_text(SHARE / f"{app_id}.pin"))
     assert pin == lib.load_pin(app_id) == spec["pin"]
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", pin["amd64_digest"])
-    assert lib.image_ref(app_id) == f"{pin['image']}@{pin['amd64_digest']}"
+    assert lib.base_ref(app_id) == f"{pin['image']}@{pin['amd64_digest']}"
+    if lib.has_build(app_id):
+        assert lib.image_ref(app_id).startswith("stickllm-local/")
+        assert pin["amd64_digest"][7:19] in lib.image_ref(app_id)
+    else:
+        assert lib.image_ref(app_id) == lib.base_ref(app_id)
     lib.prepare_vault(app_id)
     args = lib.docker_args(app_id)
     assert args[args.index("--log-driver") + 1] == "none"
@@ -97,9 +106,10 @@ def _check_common(lib, app_id: str, tmp_path: Path) -> list[str]:
     assert "no-new-privileges=true" in _opt(args, "--security-opt")
     user = args[args.index("--user") + 1]
     assert not user.startswith("0") and user.split(":")[0] != "root"
-    for bad in ("--gpus", "--privileged", "--cap-add", "--device", "--network=host", "--pid", "--ipc"):
+    for bad in ("--gpus", "--privileged", "--cap-add", "--network=host", "--pid", "--ipc"):
         assert bad not in args, bad
-    assert not any("docker.sock" in a or "nvidia" in a.lower() for a in args)
+    assert "--device" not in args          # no GPU in the test env (STICKLLM_DEV_DIR is empty)
+    assert not any("docker.sock" in a for a in args)
     publish = _opt(args, "-p")
     assert publish == [f"127.0.0.1:{spec['local_port']}:{spec['port']}"]
     net = lib.network(app_id)
@@ -130,42 +140,65 @@ def _check_common(lib, app_id: str, tmp_path: Path) -> list[str]:
 
 
 @POSIX
-def test_radicale(tmp_path):
-    lib = _lib(tmp_path, "addons_radicale")
-    args = _check_common(lib, "radicale", tmp_path)
-    assert f"{SHARE}/radicale:/config:ro" in _opt(args, "-v")
-    cfg = _text(SHARE / "radicale" / "config")
-    assert "hosts = 0.0.0.0:5232" in cfg
-    assert re.search(r"^type = none$", cfg, re.M)          # the gateway is the login
-    assert "owner_only" in cfg and "/data/collections" in cfg
-    assert lib.app("radicale")["webdav"] is True
-    gw = _text(GATEWAY)
-    for verb in ("PROPFIND", "REPORT", "MKCALENDAR", "MKCOL", "PROPPATCH", "MOVE", "COPY"):
-        assert f"def do_{verb}(self)" in gw
+def test_tasks_md(tmp_path):
+    lib = _lib(tmp_path, "addons_tasks_md")
+    args = _check_common(lib, "tasks-md", tmp_path)
+    vols = _opt(args, "-v")
+    assert any(v.endswith(":/config") for v in vols) and any(v.endswith(":/tasks") for v in vols)
+    assert lib.load_pin("tasks-md")["image"] == "baldissaramatheus/tasks.md"
+    # The upstream entrypoint chowns and builds as root at every start; the
+    # wrapper does that once at install, offline, and runs as uid 1000.
+    build = lib.build_spec("tasks-md")
+    assert "npm run build" in build["script"] and "exec node /api/server.js" in build["script"]
+    assert "USER 1000:1000" in build["changes"]
+    assert not any(c.startswith("USER 0") or "root" in c for c in build["changes"])
+    script = _text(SCRIPT)
+    inst = script.split("build_local() {", 1)[1].split("\n}\n", 1)[0]
+    assert "--network none" in inst and "--log-driver none" in inst and "commit" in inst
+    run_line = inst.split("docker_cli run", 1)[1].split("\n", 2)
+    run_line = " ".join(run_line[:2])
+    assert " -v " not in run_line and "--volume" not in run_line and "--mount" not in run_line  # no vault data
 
 
 @POSIX
-def test_vikunja(tmp_path):
-    lib = _lib(tmp_path, "addons_vikunja")
-    args = _check_common(lib, "vikunja", tmp_path)
-    cfg = tmp_path / "vault" / "addons" / "vikunja" / "config" / "config.yml"
-    assert cfg.stat().st_mode & 0o777 == 0o600
-    first = cfg.read_text(encoding="utf-8")
-    assert "secret:" in first and "enableregistration" in first
-    # Written once: the JWT secret survives restarts.
-    (tmp_path / "mounts").write_text(f"/dev/mapper/v {tmp_path / 'vault'} ext4 rw 0 0\n")
-    lib.prepare_vault("vikunja")
-    assert cfg.read_text(encoding="utf-8") == first
-    assert any(v.endswith(":/etc/vikunja:ro") for v in _opt(args, "-v"))
-    assert not any("secret" in a.lower() for a in args)
-
-
-@POSIX
-def test_actual(tmp_path):
-    lib = _lib(tmp_path, "addons_actual")
-    args = _check_common(lib, "actual", tmp_path)
+def test_paisa(tmp_path):
+    lib = _lib(tmp_path, "addons_paisa")
+    args = _check_common(lib, "paisa", tmp_path)
     assert any(v.endswith(":/data") for v in _opt(args, "-v"))
-    assert lib.load_pin("actual")["image"] == "actualbudget/actual-server"
+    assert args[-3:] == ["serve", "--port", "7500"]
+    cfg = tmp_path / "vault" / "addons" / "paisa" / "data" / "paisa.yaml"
+    first = cfg.read_text(encoding="utf-8")
+    assert "journal_path: /data/main.ledger" in first and "db_path: /data/paisa.db" in first
+    assert "user_accounts: []" in first        # the vault unlock is the only login
+    # Written once: the user's edits survive restarts.
+    cfg.write_text(first + "# edited\n", encoding="utf-8")
+    (tmp_path / "mounts").write_text(f"/dev/mapper/v {tmp_path / 'vault'} ext4 rw 0 0\n")
+    lib.prepare_vault("paisa")
+    assert cfg.read_text(encoding="utf-8").endswith("# edited\n")
+    assert (tmp_path / "vault" / "addons" / "paisa" / "data" / "main.ledger").is_file()
+
+
+def test_old_addons_are_gone():
+    lib = _load(LIB, "addons_gone")
+    for old in ("radicale", "vikunja", "actual"):
+        assert old not in lib.APPS
+        assert not (SHARE / f"{old}.pin").exists()
+        with pytest.raises(lib.AddonError):
+            lib.app(old)
+    assert not (SHARE / "radicale").exists()
+    html = _text(HTML)
+    for old in ("radicale", "vikunja", "actual"):
+        assert f'data-app="{old}"' not in html
+
+
+def test_comfyui_spec(tmp_path):
+    lib = _load(LIB, "addons_comfy_spec")
+    spec = lib.APPS["comfyui"]
+    assert spec["gpu"] and spec["vram_gb"] > 0
+    assert "--disable-all-custom-nodes" in " ".join(spec["command"])
+    assert "--listen" in " ".join(spec["command"])
+    pin = lib.parse_pin(_text(SHARE / "comfyui.pin"))
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", pin["amd64_digest"])
 
 
 @POSIX
@@ -232,11 +265,11 @@ def test_vault_dirs_refuse_symlinks(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (tmp_path / "vault" / "addons").mkdir()
-    (tmp_path / "vault" / "addons" / "actual").symlink_to(outside)
+    (tmp_path / "vault" / "addons" / "paisa").symlink_to(outside)
     with pytest.raises(lib.AddonError):
-        lib.prepare_vault("actual")
+        lib.prepare_vault("paisa")
     with pytest.raises(lib.AddonError):
-        lib.docker_args("actual")
+        lib.docker_args("paisa")
     assert list(outside.iterdir()) == []
 
 
@@ -253,7 +286,7 @@ def test_units_build_and_lock_order():
     assert "/usr/local/bin/stickllm-addon" in hook and "/usr/local/share/stickllm/addons" in hook
     assert "enable stickllm-addon" not in hook
     build = _text(BUILD)
-    for name in ("stickllm-addon", "stickllm_addons.py", "radicale/config", "node-red-settings.js"):
+    for name in ("stickllm-addon", "stickllm_addons.py", "tasks-md paisa trilium node-red comfyui", "node-red-settings.js"):
         assert name in build
     vault = _text(VAULT_SCRIPT)
     stop = vault.split("stop_vault_addons() {", 1)[1].split("\n}\n", 1)[0]
@@ -286,11 +319,11 @@ def test_script_never_touches_docker_with_vault_locked(tmp_path):
         "STICKLLM_AGENT_NO_SYSTEMD": "1",
     })
     for cmd in ("run", "start", "install", "docker-args"):
-        proc = subprocess.run(["bash", str(SCRIPT), "vikunja", cmd], env=full, capture_output=True,
+        proc = subprocess.run(["bash", str(SCRIPT), "tasks-md", cmd], env=full, capture_output=True,
                               text=True, timeout=60)
         assert proc.returncode in (0, 2), (cmd, proc.stderr)
     assert not (tmp_path / "calls").exists()
-    st = json.loads((tmp_path / "run" / "addon-vikunja-status.json").read_text())
+    st = json.loads((tmp_path / "run" / "addon-tasks-md-status.json").read_text())
     assert st["state"] == "locked"
 
 
@@ -316,7 +349,7 @@ def test_ui_has_install_open_remove_in_named_tabs():
 def test_gateway_headers_strip_stickllm_cookies_and_set_cookie():
     gw = _load(GATEWAY, "gw_addon_headers")
     out = gw.addon_proxy_headers(
-        {"Cookie": "stickllm_pair=p; stickllm_addon_actual=s; StickLLM_apps=a; app=1; other=2",
+        {"Cookie": "stickllm_pair=p; stickllm_addon_paisa=s; StickLLM_apps=a; app=1; other=2",
          "Authorization": "Basic dTpw", "Host": "192.168.1.9:5453", "X-Forwarded-For": "evil",
          "X-Real-IP": "evil", "Forwarded": "evil", "Proxy-Authorization": "x", "Connection": "keep-alive"},
         "192.168.1.9:5453", "192.168.1.20",
@@ -338,17 +371,17 @@ def test_gateway_headers_strip_stickllm_cookies_and_set_cookie():
 def test_gateway_handoff_is_one_time_and_per_app():
     gw = _load(GATEWAY, "gw_addon_handoff")
     doc = {"paired": True, "require_pair": True, "token_hash": "b" * 64}
-    t = gw.mint_addon_handoff(doc, "vikunja", now=1000)
-    assert t and not gw.addon_handoff_redeem(t, doc, "actual", now=1001)   # bound to one app
-    assert gw.addon_handoff_redeem(t, doc, "vikunja", now=1001)
-    assert not gw.addon_handoff_redeem(t, doc, "vikunja", now=1002)        # one time
-    late = gw.mint_addon_handoff(doc, "vikunja", now=1000)
-    assert not gw.addon_handoff_redeem(late, doc, "vikunja", now=1000 + 3600)
-    a = gw.addon_session_value(doc, "vikunja")
-    assert len(a) == 64 and a != gw.addon_session_value(doc, "actual")
+    t = gw.mint_addon_handoff(doc, "tasks-md", now=1000)
+    assert t and not gw.addon_handoff_redeem(t, doc, "paisa", now=1001)   # bound to one app
+    assert gw.addon_handoff_redeem(t, doc, "tasks-md", now=1001)
+    assert not gw.addon_handoff_redeem(t, doc, "tasks-md", now=1002)        # one time
+    late = gw.mint_addon_handoff(doc, "tasks-md", now=1000)
+    assert not gw.addon_handoff_redeem(late, doc, "tasks-md", now=1000 + 3600)
+    a = gw.addon_session_value(doc, "tasks-md")
+    assert len(a) == 64 and a != gw.addon_session_value(doc, "paisa")
     assert a != gw.agent_session_value(doc)
-    assert gw.addon_session_ok(a, doc, "vikunja") and not gw.addon_session_ok(a, doc, "actual")
-    assert gw.mint_addon_handoff({"paired": False}, "vikunja") == ""
+    assert gw.addon_session_ok(a, doc, "tasks-md") and not gw.addon_session_ok(a, doc, "paisa")
+    assert gw.mint_addon_handoff({"paired": False}, "tasks-md") == ""
 
 
 @POSIX
@@ -393,9 +426,9 @@ def test_gateway_addon_proxy_live(tmp_path):
 
     up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Up)
     threading.Thread(target=up.serve_forever, daemon=True).start()
-    mod.APPS["vikunja"]["local_port"] = up.server_address[1]
-    mod.prepare_vault("vikunja")
-    mod.mark_installed("vikunja")
+    mod.APPS["tasks-md"]["local_port"] = up.server_address[1]
+    mod.prepare_vault("tasks-md")
+    mod.mark_installed("tasks-md")
     ip = {"v": "192.168.1.20"}
 
     class H(gw.Handler):
@@ -409,7 +442,7 @@ def test_gateway_addon_proxy_live(tmp_path):
             pass
 
     httpd = gw.ThreadingHTTPServer(("127.0.0.1", 0), H)
-    httpd.stickllm_addon = "vikunja"
+    httpd.stickllm_addon = "tasks-md"
     main = gw.ThreadingHTTPServer(("127.0.0.1", 0), H)
     for srv in (httpd, main):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -428,19 +461,19 @@ def test_gateway_addon_proxy_live(tmp_path):
         status, body, _ = call(httpd, "GET", "/", headers={"Accept": "text/html"})
         assert status == 401 and b"hello" not in body and "path" not in seen
         # The StickLLM tab asks for a link (UI marker + pair token).
-        status, body, _ = call(main, "POST", "/api/apps/open-link", json.dumps({"id": "vikunja"}).encode(),
+        status, body, _ = call(main, "POST", "/api/apps/open-link", json.dumps({"id": "tasks-md"}).encode(),
                                {"X-StickLLM-Client": "ui", "Authorization": "Bearer " + pair,
                                 "Host": "192.168.1.9", "Content-Type": "application/json"})
         link = json.loads(body)
         assert status == 200 and link["url"].startswith("https://192.168.1.9:5452/__stickllm/handoff?t=")
-        assert call(main, "POST", "/api/apps/open-link", json.dumps({"id": "vikunja"}).encode(),
+        assert call(main, "POST", "/api/apps/open-link", json.dumps({"id": "tasks-md"}).encode(),
                     {"X-StickLLM-Client": "ui"})[0] == 401
         assert call(main, "POST", "/api/apps/open-link", json.dumps({"id": "immich"}).encode(),
                     {"X-StickLLM-Client": "ui", "Authorization": "Bearer " + pair})[0] == 404
         path = "/" + link["url"].split("/", 3)[3]
         status, body, headers = call(httpd, "GET", path)
         cookie = headers.get("Set-Cookie")
-        assert status == 200 and cookie.startswith("stickllm_addon_vikunja=")
+        assert status == 200 and cookie.startswith("stickllm_addon_tasks_md=")
         assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=Strict" in cookie
         assert call(httpd, "GET", path)[0] == 401                     # one time
         jar = cookie.split(";", 1)[0]
@@ -452,9 +485,9 @@ def test_gateway_addon_proxy_live(tmp_path):
         assert headers.get_all("Set-Cookie") == ["app=1; Path=/"]
         status, body, _ = call(httpd, "PROPFIND", "/", b"<x/>", {"Cookie": jar, "Depth": "0"})
         assert status == 207 and seen["method"] == "PROPFIND"
-        # The vikunja cookie does not open another app's port.
+        # The tasks-md cookie does not open another app's port.
         other = gw.ThreadingHTTPServer(("127.0.0.1", 0), H)
-        other.stickllm_addon = "actual"
+        other.stickllm_addon = "paisa"
         threading.Thread(target=other.serve_forever, daemon=True).start()
         assert call(other, "GET", "/", headers={"Cookie": jar})[0] == 401
         other.shutdown()
@@ -470,13 +503,13 @@ def test_gateway_addon_proxy_live(tmp_path):
         status, body, _ = call(main, "GET", "/api/apps")
         catalog = json.loads(body)
         rows = {r["id"]: r for r in catalog["apps"]}
-        assert rows["vikunja"]["installer"] == "stickllm-addon" and rows["vikunja"]["installed"] is True
+        assert rows["tasks-md"]["installer"] == "stickllm-addon" and rows["tasks-md"]["installed"] is True
         # installed_count is recounted after the add-on rows are overridden.
         assert catalog["installed_count"] == sum(1 for r in catalog["apps"] if r["installed"]) >= 1
-        assert rows["vikunja"]["not_installed"] is False
+        assert rows["tasks-md"]["not_installed"] is False
         # v0.5.3: the console opens the gateway loopback relay, not the container publish.
-        assert rows["vikunja"]["open_url"] == f"http://127.0.0.1:{mod.APPS['vikunja']['kiosk_port']}/"
-        assert rows["radicale"]["installed"] is False and rows["radicale"]["state"] == "not_installed"
+        assert rows["tasks-md"]["open_url"] == f"http://127.0.0.1:{mod.APPS['tasks-md']['kiosk_port']}/"
+        assert rows["node-red"]["installed"] is False and rows["node-red"]["state"] == "not_installed"
         assert "immich" not in rows  # hidden in v0.5.3 (needs four containers + GPU)
         # Locked vault: 423, the app is never contacted.
         ip["v"] = "192.168.1.20"
@@ -487,17 +520,17 @@ def test_gateway_addon_proxy_live(tmp_path):
         ip["v"] = "127.0.0.1"
         assert call(httpd, "GET", "/")[0] == 423 and "path" not in seen
         # Open link refuses while locked (loopback and paired LAN tab alike).
-        status, body, _ = call(main, "POST", "/api/apps/open-link", json.dumps({"id": "vikunja"}).encode(),
+        status, body, _ = call(main, "POST", "/api/apps/open-link", json.dumps({"id": "tasks-md"}).encode(),
                                {"X-StickLLM-Client": "ui"})
         assert status == 423 and json.loads(body)["error"] == "vault_locked" and "url" not in json.loads(body)
         ip["v"] = "192.168.1.20"
-        status, body, _ = call(main, "POST", "/api/apps/open-link", json.dumps({"id": "vikunja"}).encode(),
+        status, body, _ = call(main, "POST", "/api/apps/open-link", json.dumps({"id": "tasks-md"}).encode(),
                                {"X-StickLLM-Client": "ui", "Authorization": "Bearer " + pair})
         assert status == 423 and "url" not in json.loads(body)
-        assert call(main, "POST", "/api/apps/open-link", json.dumps({"id": "vikunja"}).encode(),
+        assert call(main, "POST", "/api/apps/open-link", json.dumps({"id": "tasks-md"}).encode(),
                     {"X-StickLLM-Client": "ui"})[0] == 401
         ip["v"] = "127.0.0.1"
-        status, body, _ = call(main, "POST", "/api/apps/install", json.dumps({"id": "radicale"}).encode(),
+        status, body, _ = call(main, "POST", "/api/apps/install", json.dumps({"id": "node-red"}).encode(),
                                {"X-StickLLM-Client": "ui", "Content-Type": "application/json"})
         assert status == 423
     finally:

@@ -84,7 +84,8 @@ def test_apps_page_lists_the_documented_catalog():
     names = {app["name"] for app in apps.CATALOG}
     assert "Agent Zero" not in names
     assert "ComfyUI" in names
-    assert "Office" in names and "ONLYOFFICE Docs" not in names
+    assert "ONLYOFFICE" in names and "ONLYOFFICE Docs" not in names
+    assert next(a for a in apps.CATALOG if a["id"] == "onlyoffice")["tile"] == "Office"
     assert not any("whisper" in name.lower() or "kitten" in name.lower() for name in names)
 
     html = HTML.read_text(encoding="utf-8")
@@ -305,7 +306,7 @@ def test_catalog_cards_show_requirements_and_low_disk_still_installs(tmp_path):
     assert ">Install Agent Zero</button>" in listing
     assert doc_rows["agent-zero"][1] == "4 (measured)"
     assert "0 or 1-2" in apps.requirement_line(apps.find_app("immich"))
-    assert "8 / 12-24" in apps.requirement_line(apps.find_app("comfyui"))
+    assert "6 / 12-24" in apps.requirement_line(apps.find_app("comfyui"))
     text = DOC.read_text(encoding="utf-8")
     assert apps.STARTER_FOOTPRINT in text
     assert "After the next test boot" in text

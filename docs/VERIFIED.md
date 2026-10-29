@@ -1,4 +1,4 @@
-# Verified list (hash pinning) — v0.5.3
+# Verified list (hash pinning) — v0.5.4
 
 StickLLM pins a hash for every app, Agent Zero plugin and catalog model it
 ships. When upstream changes something, StickLLM notices and blocks the new
@@ -36,12 +36,12 @@ Where the checks run:
   - Not on the list → `428 {"error":"unverified"}` unless it has `accept_unverified: true`.
   - Offline → treated as verified: the pinned digest is what gets pulled anyway.
 - **Apps list** (`GET /api/apps`). Each row has `verification` (status, label, version, digests). It never goes online itself; it only reuses an earlier upstream answer.
-- **`GET /api/verified`** returns the whole list with offline statuses. The Apps page uses it for the plugin badges under Agent Zero.
+- **`GET /api/verified`** returns the whole list with offline statuses. (The Agent Zero plugin badges were removed in 0.5.4 with the plugins.)
 - **Models**
   - The Models page marks a model Verified only when its sha256 is in the catalog. Any other download (known publisher, unknown, local) shows the warning and needs DOWNLOAD typed in.
   - `stickllm-control model_download` also refuses a non-catalog file without `accept_unverified: true`, and refuses a catalog file whose sha256 differs from the pin.
   - For non-catalog files StickLLM still passes Hugging Face's own LFS sha256, so the download is checked against what HF serves. That check proves the file arrived intact, not that StickLLM reviewed it.
-- **Plugins.** Only allowlisted plugins are baked into the ISO, at the pinned commit with the tree hash checked. Agent Zero start re-hashes them and skips any mismatch. Other plugins are quarantined; there is no runtime plugin install (see Open questions).
+- **Plugins.** Since 0.5.4 there are none: the allowlist is empty, the build fails if it is not, and `verified.json` has an empty `plugins` map (see [PLUGIN-REVIEWS.md](PLUGIN-REVIEWS.md)). Before 0.5.4: only allowlisted plugins were baked into the ISO, at the pinned commit with the tree hash checked. Agent Zero start re-hashes them and skips any mismatch. Other plugins are quarantined; there is no runtime plugin install (see Open questions).
 - **Agent Zero**
   - `install_app` replies carry the verification status.
   - The tool prompt tells the agent to report it and never get around it.
@@ -62,7 +62,8 @@ Where the checks run:
 - **Radicale.** The old pin `sha256:d1046845…` (amd64 `befe4ba4…`, built 2026-10-27 03:38 UTC) was a nightly `push_latest` rebuild that had been pushed under the `3.9.0.0` tag. The tag now points at `sha256:2f215d0e…` (amd64 `18a9ab6d…`). That is the official release-workflow build for GitHub release 3.9.0.0 ("Update to Radicale 3.9.0", published 2026-10-26 12:39 UTC; image built 12:40 UTC).
   - Both builds have the same Dockerfile history, alpine-minirootfs 3.24.3 base layer, labels, UID 2999, healthcheck, volumes and port 5232.
   - The pin is now the release build.
-- Both plugins VERIFIED (their pinned commits are still published).
+- Both plugins VERIFIED (their pinned commits are still published). Both removed in 0.5.4.
+- 0.5.4 pins: Tasks.md 3.3.0, Paisa v0.7.8 and ComfyUI `yanwk/comfyui-boot` cu126-slim-20261026, checked against registry-1.docker.io on 2026-10-28; Radicale, Vikunja and Actual pins removed.
 - All four model files VERIFIED (the HF LFS sha256 matches).
 
 ## Agent Zero egress

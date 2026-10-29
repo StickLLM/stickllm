@@ -47,11 +47,14 @@ def _docs(tmp_path):
 
 def test_ids_and_aliases():
     a = _agent()
-    for cid in ("docs", "radicale", "vikunja", "actual", "trilium", "node-red"):
+    for cid in ("docs", "tasks-md", "paisa", "trilium", "node-red", "comfyui"):
         assert a.catalog_app_id_ok(cid) and a.open_target_ok(cid)
+    for gone in ("radicale", "vikunja", "actual"):
+        assert not a.catalog_app_id_ok(gone)
     assert a.normalize_app_id("OnlyOffice") == "docs"
     assert a.normalize_app_id("nodered") == "node-red"
-    assert a.normalize_app_id("actual-budget") == "actual"
+    assert a.normalize_app_id("budget") == "paisa"
+    assert a.normalize_app_id("tasks.md") == "tasks-md"
     for bad in ("../docs", "http://x/", "node red", "", None, 3, "agent-zero"):
         assert not a.open_target_ok(a.normalize_app_id(bad))
     assert a.open_app_id_ok("minesweeper") and not a.catalog_app_id_ok("minesweeper")

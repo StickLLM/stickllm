@@ -823,7 +823,7 @@ def app_verification(app_id: str, check_upstream: bool = False) -> dict | None:
 
 
 def addons_lib():
-    """Starter add-ons (Radicale, Vikunja, Actual, Trilium, Node-RED)."""
+    """Starter add-ons (Tasks.md, Paisa, Trilium, Node-RED, ComfyUI)."""
     global _ADDONS_LIB
     if _ADDONS_LIB is not None:
         return _ADDONS_LIB
@@ -1197,7 +1197,7 @@ def addon_proxy_headers(headers: dict, host: str, client_ip: str, *, websocket: 
     """Headers for a request relayed to an add-on on 127.0.0.1.
 
     Host is kept, so the app builds links for the origin the browser sees.
-    The app's own Authorization (Vikunja's JWT) and cookies pass; StickLLM's
+    The app's own Authorization header and cookies pass; StickLLM's
     cookies do not."""
     out: dict = {}
     for key, value in headers.items():
@@ -1247,7 +1247,7 @@ def _chromium_major(user_agent: str) -> int:
 def addon_response_headers(pairs, user_agent: str = ""):
     """Headers to send for one add-on response.
 
-    Apps that need cross-origin isolation (Actual Budget needs SharedArrayBuffer)
+    Apps that need cross-origin isolation (any that use SharedArrayBuffer)
     send COOP same-origin plus COEP. Dropping COOP for tab reuse (A3) broke them.
     Desktop Chromium 137+ gets Document-Isolation-Policy instead: isolated, and
     the named tab still reuses. Other browsers keep the app's COOP/COEP: the app
@@ -2405,8 +2405,8 @@ def friendly_llama_error(exc: BaseException) -> str:
     low = msg.lower()
     if "connection refused" in low or "errno 111" in low:
         return (
-            "Model is not ready yet (llama not answering on 127.0.0.1:8080). "
-            "Wait for load to finish, or check Models — on CPU-only hosts the first load can take longer."
+            "No AI model is loaded yet (or it is still loading). Open Models, load a model and wait "
+            "until it shows Running, then send again. On CPU-only hosts the first load can take longer."
         )
     if "timed out" in low or "timeout" in low:
         return "Model timed out answering. Try a shorter prompt, or wait and retry."
@@ -2674,6 +2674,9 @@ class Handler(SimpleHTTPRequestHandler):
                 try:
                     mod.require_vault()
                     rel = mod.link_verify(token, mod.runtime_secret())
+                    follow = getattr(mod, "follow_renames", None)
+                    if follow:
+                        rel = follow(rel)
                     target, data = mod.read_doc(rel)
                 except Exception as exc:
                     self._docs_error(exc)
@@ -2742,6 +2745,35 @@ class Handler(SimpleHTTPRequestHandler):
                     str(req.get("kind") or "docx"),
                     str(req.get("folder") or ""),
                 )
+                self._json(200, {"ok": True, "path": rel})
+                return
+            if path == "/api/docs/downloads" and method == "GET":
+                self._json(200, mod.list_downloads())
+                return
+            if path in ("/api/docs/rename", "/api/docs/copy", "/api/docs/save-as",
+                        "/api/docs/import-download") and method == "POST":
+                body = self._docs_read_body(16384)
+                if body is None:
+                    return
+                req = json.loads(body.decode("utf-8") or "{}") if body else {}
+                if not isinstance(req, dict):
+                    req = {}
+                if path == "/api/docs/rename":
+                    rel = mod.rename_document(str(req.get("path") or ""), str(req.get("name") or ""))
+                    titled = False
+                    if req.get("key"):
+                        titled = mod.ds_set_title(str(req.get("key")), rel.rsplit("/", 1)[-1])
+                    self._json(200, {"ok": True, "path": rel, "title_sent": titled})
+                    return
+                if path == "/api/docs/copy":
+                    rel = mod.copy_document(str(req.get("path") or ""), str(req.get("name") or ""))
+                elif path == "/api/docs/save-as":
+                    rel = mod.save_as_from_editor(
+                        str(req.get("path") or ""), str(req.get("title") or ""),
+                        str(req.get("fileType") or ""), str(req.get("url") or ""),
+                    )
+                else:
+                    rel = mod.import_download(str(req.get("name") or ""))
                 self._json(200, {"ok": True, "path": rel})
                 return
             if path == "/api/docs/upload" and method == "POST":
@@ -4085,63 +4117,63 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(405, {"error": "method not allowed"})
 
     def do_PROPFIND(self) -> None:  # noqa: N802
-        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        # WebDAV verbs (from the Radicale era) exist on the add-on ports only.
         if self._addon_id():
             self._serve_addon("PROPFIND")
             return
         self._json(405, {"error": "method not allowed"})
 
     def do_PROPPATCH(self) -> None:  # noqa: N802
-        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        # WebDAV verbs (from the Radicale era) exist on the add-on ports only.
         if self._addon_id():
             self._serve_addon("PROPPATCH")
             return
         self._json(405, {"error": "method not allowed"})
 
     def do_MKCOL(self) -> None:  # noqa: N802
-        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        # WebDAV verbs (from the Radicale era) exist on the add-on ports only.
         if self._addon_id():
             self._serve_addon("MKCOL")
             return
         self._json(405, {"error": "method not allowed"})
 
     def do_MKCALENDAR(self) -> None:  # noqa: N802
-        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        # WebDAV verbs (from the Radicale era) exist on the add-on ports only.
         if self._addon_id():
             self._serve_addon("MKCALENDAR")
             return
         self._json(405, {"error": "method not allowed"})
 
     def do_REPORT(self) -> None:  # noqa: N802
-        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        # WebDAV verbs (from the Radicale era) exist on the add-on ports only.
         if self._addon_id():
             self._serve_addon("REPORT")
             return
         self._json(405, {"error": "method not allowed"})
 
     def do_MOVE(self) -> None:  # noqa: N802
-        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        # WebDAV verbs (from the Radicale era) exist on the add-on ports only.
         if self._addon_id():
             self._serve_addon("MOVE")
             return
         self._json(405, {"error": "method not allowed"})
 
     def do_COPY(self) -> None:  # noqa: N802
-        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        # WebDAV verbs (from the Radicale era) exist on the add-on ports only.
         if self._addon_id():
             self._serve_addon("COPY")
             return
         self._json(405, {"error": "method not allowed"})
 
     def do_LOCK(self) -> None:  # noqa: N802
-        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        # WebDAV verbs (from the Radicale era) exist on the add-on ports only.
         if self._addon_id():
             self._serve_addon("LOCK")
             return
         self._json(405, {"error": "method not allowed"})
 
     def do_UNLOCK(self) -> None:  # noqa: N802
-        # WebDAV verbs (Radicale) exist on the add-on ports only.
+        # WebDAV verbs (from the Radicale era) exist on the add-on ports only.
         if self._addon_id():
             self._serve_addon("UNLOCK")
             return

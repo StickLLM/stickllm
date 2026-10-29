@@ -44,7 +44,7 @@ def test_a1_kiosk_uses_swiftshader_not_disable_gpu():
 def test_a2_office_rename_keeps_internal_ids():
     apps = _load(LIB / "stickllm_apps.py", "apps_t")
     office = next(a for a in apps.CATALOG if a["id"] == "onlyoffice")
-    assert office["name"] == "Office"
+    assert office["name"] == "ONLYOFFICE" and office["tile"] == "Office"  # v0.5.4 naming
     html = (ROOT / "ui/index.html").read_text()
     assert 'data-app="onlyoffice"' in html and "Office" in html
 
@@ -64,9 +64,9 @@ def test_a3_one_reused_named_tab_per_app():
 
 
 def test_a4_version_name_and_iso():
-    assert json.loads((ROOT / "overlay/opt/stickllm/ui/stickllm.json").read_text())["version"] == "0.5.3"
+    assert json.loads((ROOT / "overlay/opt/stickllm/ui/stickllm.json").read_text())["version"] == "0.5.4"
     html = (ROOT / "ui/index.html").read_text()
-    assert 'id="aboutVer">StickLLM v0.5.3<' in html
+    assert 'id="aboutVer">StickLLM v0.5.4<' in html
     about = html.split('id="aboutVer"', 1)[0][-2000:]
     assert "Agent Zero v" not in about
 
@@ -101,7 +101,7 @@ def test_b_unworkable_apps_are_blocked_with_reasons():
     apps = _load(LIB / "stickllm_apps.py", "apps_t2")
     blocked = json.loads(MANIFEST.read_text(encoding="utf-8"))["blocked_apps"]
     for app_id in ("paperless-ngx", "snappymail", "immich", "searxng", "matrix", "simplex", "jitsi",
-                   "onionshare", "postiz", "opentimestamps", "comfyui", "code-server-jupyter", "n8n"):
+                   "onionshare", "postiz", "opentimestamps", "code-server-jupyter", "n8n"):
         assert len(blocked.get(app_id, "")) > 20, app_id
         assert apps.is_blocked(app_id)
     doc = apps.catalog_document()
@@ -113,6 +113,7 @@ def test_b_unworkable_apps_are_blocked_with_reasons():
         assert f'data-app="{app_id}"' not in html
     text = (ROOT / "docs/APPS.md").read_text()
     assert "Blocked in v0.5.3" in text and all(f"`{i}`" in text for i in blocked)
+    assert "comfyui" not in blocked and not apps.is_blocked("comfyui")  # v0.5.4 ships ComfyUI
 
 
 # ------------------------------------------------------------------ C: pins
@@ -124,28 +125,27 @@ def test_c_pins_verify_passes():
 
 def test_c_manifest_covers_apps_plugins_models():
     doc = json.loads(MANIFEST.read_text())
-    for key in ("onlyoffice", "radicale", "vikunja", "actual", "trilium", "node-red", "agent-zero"):
+    for key in ("onlyoffice", "tasks-md", "paisa", "trilium", "node-red", "comfyui", "agent-zero"):
         pin = doc["apps"][key]
         assert pin["manifest_digest"].startswith("sha256:") and pin["amd64_digest"].startswith("sha256:")
-    assert doc["plugins"] and all(len(p["commit"]) == 40 and len(p["tree_sha256"]) == 64
-                                  for p in doc["plugins"].values())
+    assert doc["plugins"] == {}  # v0.5.4: no third-party Agent Zero plugins
     assert doc["models"] and all(len(s) == 64 for s in doc["models"].values())
 
 
 def test_c_app_status_verified_changed_unverified(tmp_path, monkeypatch):
     v = _verify(tmp_path, monkeypatch)
-    pin = v.load_manifest()["apps"]["vikunja"]
-    same = v.app_status("vikunja", check_upstream=True, fetch=lambda i, t: pin["manifest_digest"])
+    pin = v.load_manifest()["apps"]["trilium"]
+    same = v.app_status("trilium", check_upstream=True, fetch=lambda i, t: pin["manifest_digest"])
     assert same["status"] == "verified" and same["confirm_required"] is False
     (tmp_path / "run" / "upstream-digests.json").unlink()
-    moved = v.app_status("vikunja", check_upstream=True, fetch=lambda i, t: "sha256:" + "1" * 64)
+    moved = v.app_status("trilium", check_upstream=True, fetch=lambda i, t: "sha256:" + "1" * 64)
     assert moved["status"] == "changed" and moved["offer"] == "verified_version"
     assert "blocked" in moved["message"]
     # Cached: the Apps page (no upstream call) shows the same answer.
-    assert v.app_status("vikunja")["status"] == "changed"
+    assert v.app_status("trilium")["status"] == "changed"
     # Offline: the pinned digest is still what gets pulled, so verified.
     (tmp_path / "run" / "upstream-digests.json").unlink()
-    assert v.app_status("vikunja", check_upstream=True, fetch=lambda i, t: None)["status"] == "verified"
+    assert v.app_status("trilium", check_upstream=True, fetch=lambda i, t: None)["status"] == "verified"
     un = v.app_status("not-on-the-list")
     assert un["status"] == "unverified" and un["confirm_required"] and WARNING in un["message"]
     assert v.UNVERIFIED_WARNING == WARNING
@@ -155,9 +155,8 @@ def test_c_app_status_verified_changed_unverified(tmp_path, monkeypatch):
 def test_c_plugin_and_model_status(tmp_path, monkeypatch):
     v = _verify(tmp_path, monkeypatch)
     doc = v.load_manifest()
-    name, p = next(iter(doc["plugins"].items()))
-    assert v.plugin_status(name, commit=p["commit"], tree=p["tree_sha256"])["status"] == "verified"
-    assert v.plugin_status(name, commit="0" * 40, tree=p["tree_sha256"])["status"] == "blocked"
+    assert doc["plugins"] == {}
+    assert v.plugin_status("clock_24h")["status"] != "verified"  # removed in v0.5.4
     assert v.plugin_status("someone-elses-plugin")["status"] == "unverified"
     key, sha = next(iter(doc["models"].items()))
     repo, file = "/".join(key.split("/")[:2]), "/".join(key.split("/")[2:])
@@ -165,7 +164,7 @@ def test_c_plugin_and_model_status(tmp_path, monkeypatch):
     assert v.model_status(repo, file, "f" * 64)["status"] == "blocked"
     assert v.model_status("x/y", "z.gguf", "a" * 64)["status"] == "unverified"
     s = v.summary()
-    assert s["apps"] and s["plugins"] and s["warning"] == WARNING
+    assert s["apps"] and not s["plugins"] and s["warning"] == WARNING
 
 
 def _gateway_server(tmp_path, monkeypatch, upstream):
@@ -231,37 +230,37 @@ def _get(srv, path):
 def test_c_gateway_blocks_changed_upstream_until_verified_version(tmp_path, monkeypatch):
     gw, srv, started = _gateway_server(tmp_path, monkeypatch, "sha256:" + "2" * 64)
     try:
-        status, doc = _post(srv, "/api/apps/install", {"id": "radicale"})
+        status, doc = _post(srv, "/api/apps/install", {"id": "trilium"})
         assert status == 409 and doc["error"] == "blocked" and doc["verification"]["status"] == "changed"
         assert not started
-        status, doc = _post(srv, "/api/apps/install", {"id": "radicale", "verified_version": True})
+        status, doc = _post(srv, "/api/apps/install", {"id": "trilium", "verified_version": True})
         assert status == 200 and started
         cat = _get(srv, "/api/apps")
-        row = next(r for r in cat["apps"] if r["id"] == "radicale")
+        row = next(r for r in cat["apps"] if r["id"] == "trilium")
         assert row["verification"]["status"] == "changed"
         assert cat["unverified_warning"] == WARNING
         ver = _get(srv, "/api/verified")
-        assert ver["warning"] == WARNING and ver["plugins"]
+        assert ver["warning"] == WARNING and not ver["plugins"]
     finally:
         srv.shutdown()
 
 
 def test_c_gateway_unverified_needs_confirm(tmp_path, monkeypatch):
     doc = json.loads(MANIFEST.read_text())
-    del doc["apps"]["vikunja"]
+    del doc["apps"]["paisa"]
     alt = tmp_path / "verified.json"
     alt.write_text(json.dumps(doc))
     gw, srv, started = _gateway_server(tmp_path, monkeypatch, None)
     monkeypatch.setattr(gw.verify_lib(), "MANIFEST", alt)
     try:
-        status, body = _post(srv, "/api/apps/install", {"id": "vikunja"})
+        status, body = _post(srv, "/api/apps/install", {"id": "paisa"})
         assert status == 428 and body["error"] == "unverified" and WARNING in body["message"]
         assert not started
-        status, body = _post(srv, "/api/apps/install", {"id": "vikunja", "accept_unverified": True})
+        status, body = _post(srv, "/api/apps/install", {"id": "paisa", "accept_unverified": True})
         assert status == 200 and started
         # Pinned and offline: installs at once (the pinned digest is pulled).
         started.clear()
-        status, body = _post(srv, "/api/apps/install", {"id": "trilium"})
+        status, body = _post(srv, "/api/apps/install", {"id": "node-red"})
         assert status == 200 and started
     finally:
         srv.shutdown()
@@ -289,8 +288,8 @@ def test_c_ui_badges_and_confirms():
     js = (ROOT / "ui/app.js").read_text()
     assert f'"{WARNING}"' in js
     for needle in ("function paintVerifyBadge", "function verifyGate", "Install verified version",
-                   "accept_unverified: true", "verified_version: true", "function refreshPluginBadges",
-                   '"/api/verified"', "Download anyway"):
+                   "accept_unverified: true", "verified_version: true",
+                   "Download anyway"):
         assert needle in js, needle
     gate = js[js.index("function verifyGate"):]
     gate = gate[:gate.index("\n}\n")]

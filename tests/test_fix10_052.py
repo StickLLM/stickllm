@@ -101,7 +101,7 @@ def test_sync_usb_settings_runtime(tmp_path):
 
 def test_version_is_053_everywhere():
     import json as _json
-    assert _json.loads((ROOT / "overlay/opt/stickllm/ui/stickllm.json").read_text())["version"] == "0.5.3"
-    assert '<span class="mono" id="aboutVer">StickLLM v0.5.3</span>' in (ROOT / "ui/index.html").read_text()
+    assert _json.loads((ROOT / "overlay/opt/stickllm/ui/stickllm.json").read_text())["version"] == "0.5.4"
+    assert '<span class="mono" id="aboutVer">StickLLM v0.5.4</span>' in (ROOT / "ui/index.html").read_text()
     b = (ROOT / "scripts/build.sh").read_text()
-    assert 'VERSION="${STICKLLM_VERSION:-0.5.3}"' in b and "|v0.5.2)" in b
+    assert 'VERSION="${STICKLLM_VERSION:-0.5.4}"' in b and "|v0.5.2)" in b

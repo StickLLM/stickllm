@@ -288,7 +288,7 @@ def rel_of(path: Path) -> str:
 
 def clean_name(name: str, ext: str | None = None) -> str:
     text = str(name or "").strip()
-    text = re.sub(r"[\x00-\x1f/\\:*?\"<>|]+", " ", text).strip().strip(".")
+    text = re.sub(r"[\x00-\x1f/\\:*?\"<>|]+", " ", text).strip().strip(".").strip()
     text = re.sub(r"\s+", " ", text)[:120] or "Untitled"
     if ext:
         if extension(text) != ext:
@@ -881,7 +881,7 @@ def handle_callback(token: str, body: bytes, auth_header: str, *, fetch=None) ->
     secret = runtime_secret()
     # The link may be older than LINK_TTL when an editor stayed open for a
     # day; the body is still verified with the JWT secret below.
-    rel = link_verify(token, secret, check_expiry=False)
+    rel = follow_renames(link_verify(token, secret, check_expiry=False))
     claims = callback_claims(body, auth_header, secret)
     status = int(claims.get("status") or 0)
     if status not in (2, 6):
@@ -894,6 +894,234 @@ def handle_callback(token: str, body: bytes, auth_header: str, *, fetch=None) ->
     data = (fetch or _fetch)(ds_fetch_url(str(claims.get("url") or "")))
     atomic_write(rel, data, overwrite=True)
     return {"error": 0}
+
+
+# ------------------------------------------- rename / copy / save as (0.5.4)
+RENAMES_NAME = ".stickllm-renames.json"
+RENAMES_MAX = 200
+DOWNLOADS_DIR_NAME = "Downloads"
+DOWNLOADS_LIMIT = 500
+COPY_KINDS = frozenset(KINDS)
+
+
+def _renames_path() -> Path:
+    return docs_root() / RENAMES_NAME
+
+
+def _load_renames() -> dict:
+    path = _renames_path()
+    try:
+        if os.path.islink(path):
+            return {}
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in doc.items()} if isinstance(doc, dict) else {}
+
+
+def _record_rename(old: str, new: str) -> None:
+    """Remember old->new so an editor still open on the old name saves to the
+    new file (its callback link is signed with the old path)."""
+    renames = {k: v for k, v in _load_renames().items() if k != new}
+    renames[old] = new
+    while len(renames) > RENAMES_MAX:
+        renames.pop(next(iter(renames)))
+    data = json.dumps(renames, indent=1).encode("utf-8")
+    path = _renames_path()
+    if os.path.islink(path):
+        raise DocsError("bad_path", "Symlinks are not followed in Documents.")
+    tmp = path.with_name(f".~stickllm-{secrets.token_hex(6)}.part")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o640)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+
+
+def follow_renames(rel: str) -> str:
+    """Current path of a document that may have been renamed while open."""
+    renames = _load_renames()
+    seen = set()
+    current = rel
+    while current in renames and current not in seen:
+        seen.add(current)
+        current = renames[current]
+    return current
+
+
+def rename_document(rel: str, new_name: str) -> str:
+    """Rename a document inside its folder. The extension never changes and an
+    existing file is never replaced. Returns the new relative path."""
+    src = resolve_doc(rel)
+    try:
+        st = os.lstat(src)
+    except FileNotFoundError as exc:
+        raise DocsError("not_found", "That document does not exist.", 404) from exc
+    if not stat.S_ISREG(st.st_mode):
+        raise DocsError("bad_path", "Only files can be renamed.")
+    ext = extension(src.name)
+    base = str(new_name or "").strip()
+    if extension(base) == ext:
+        base = base[: -(len(ext) + 1)]
+    name = clean_name(base, ext)
+    if name.startswith("."):
+        raise DocsError("bad_name", "Names cannot start with a dot.")
+    if name == src.name:
+        return rel_of(src)
+    parent = src.parent
+    dst = parent / name
+    if os.path.lexists(dst):
+        raise DocsError("exists", f"{name} already exists.", 409)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    dfd = os.open(parent, flags)
+    try:
+        if os.fstat(dfd).st_dev != _vault_dev():
+            raise DocsError("bad_root", "Refusing to write outside the vault filesystem.", 500)
+        require_vault()
+        if os.path.lexists(dst):
+            raise DocsError("exists", f"{name} already exists.", 409)
+        os.rename(src.name, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+    old_rel = rel_of(src)
+    new_rel = rel_of(dst)
+    try:
+        _record_rename(old_rel, new_rel)
+    except OSError:
+        pass
+    return new_rel
+
+
+def copy_document(rel: str, new_name: str = "") -> str:
+    """Save a copy next to the original ("Save Copy As" from the file list)."""
+    src, data = read_doc(rel)
+    ext = extension(src.name)
+    base = str(new_name or "").strip()
+    if not base:
+        stem = src.name[: -(len(ext) + 1)] if ext else src.name
+        base = f"{stem} copy"
+    if extension(base) == ext:
+        base = base[: -(len(ext) + 1)]
+    folder = rel_of(src.parent)
+    parts = [] if folder == "." else _clean_parts(folder)
+    return atomic_write("/".join(parts + [clean_name(base, ext)]), data, overwrite=False)
+
+
+def save_as_from_editor(rel: str, title: str, file_type: str, url: str, *, fetch=None) -> str:
+    """ONLYOFFICE "Save Copy As": fetch the converted file from the local Docs
+    cache and write it next to the open document under a new name."""
+    src = resolve_doc(rel)
+    ext = str(file_type or "").lower().lstrip(".")
+    if ext not in COPY_KINDS:
+        raise DocsError("bad_type", "That file type cannot be saved here.")
+    base = str(title or "").strip()
+    if extension(base) == ext:
+        base = base[: -(len(ext) + 1)]
+    if not base:
+        base = src.name.rsplit(".", 1)[0] + " copy"
+    data = (fetch or _fetch)(ds_fetch_url(url))
+    folder = rel_of(src.parent)
+    parts = [] if folder == "." else _clean_parts(folder)
+    return atomic_write("/".join(parts + [clean_name(base, ext)]), data, overwrite=False)
+
+
+def ds_set_title(key: str, title: str) -> bool:
+    """Tell the Docs server an open document has a new title (command "meta").
+    Best effort: the file on disk is already renamed."""
+    if not re.fullmatch(r"[0-9A-Za-z._=-]{1,128}", str(key or "")):
+        return False
+    try:
+        secret = runtime_secret()
+        body = {"c": "meta", "key": key, "meta": {"title": str(title)[:200]}}
+        body["token"] = jwt_sign(dict(body), secret)
+        req = urllib.request.Request(
+            DS_BASE + "/coauthoring/CommandService.ashx",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer " + body["token"]},
+            method="POST",
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=10) as resp:
+            doc = json.loads(resp.read(65536).decode("utf-8") or "{}")
+        return int(doc.get("error", 1)) == 0
+    except Exception:
+        return False
+
+
+def downloads_root() -> Path | None:
+    """``<vault>/Downloads`` (the kiosk browser's download folder), or None."""
+    require_vault()
+    root = VAULT_MNT / DOWNLOADS_DIR_NAME
+    if os.path.islink(root) or not root.is_dir():
+        return None
+    if os.stat(root).st_dev != _vault_dev():
+        return None
+    return root
+
+
+def list_downloads() -> dict:
+    """Files the browser saved to vault/Downloads, newest first (top level)."""
+    root = downloads_root()
+    out: list[dict] = []
+    if root is not None:
+        try:
+            entries = list(os.scandir(root))
+        except OSError:
+            entries = []
+        for entry in entries:
+            if entry.name.startswith(".") or entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                continue
+            if entry.name.endswith((".crdownload", ".part", ".tmp")):
+                continue
+            st = entry.stat(follow_symlinks=False)
+            ext = extension(entry.name)
+            out.append({
+                "name": entry.name,
+                "type": ext,
+                "size": st.st_size,
+                "mtime": int(st.st_mtime),
+                "office": ext in KINDS,
+            })
+    out.sort(key=lambda d: -d["mtime"])
+    return {"ok": True, "root": "vault/Downloads", "downloads": out[:DOWNLOADS_LIMIT]}
+
+
+def import_download(name: str) -> str:
+    """Copy an Office file from vault/Downloads into Documents (never moves)."""
+    root = downloads_root()
+    fname = str(name or "")
+    if root is None:
+        raise DocsError("not_found", "There is no Downloads folder in the vault yet.", 404)
+    if not fname or "/" in fname or "\\" in fname or fname.startswith(".") or "\x00" in fname:
+        raise DocsError("bad_path", "Pick a file from Downloads.")
+    if extension(fname) not in KINDS:
+        raise DocsError("bad_type", "Office opens Word, Excel, PowerPoint, OpenDocument, text and PDF files.")
+    path = root / fname
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_dev != _vault_dev():
+            raise DocsError("bad_path", "That is not a file in the vault.")
+        if st.st_size > MAX_UPLOAD:
+            raise DocsError("too_large", "That file is over the 100 MB limit.", 413)
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except FileNotFoundError as exc:
+        raise DocsError("not_found", "That download is gone.", 404) from exc
+    except OSError as exc:
+        raise DocsError("bad_path", "That download cannot be read.") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return atomic_write(clean_name(fname), b"".join(chunks), overwrite=False)
 
 
 # ---------------------------------------------------------------- vault dirs

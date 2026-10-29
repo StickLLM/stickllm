@@ -29,7 +29,8 @@ RAM_INSTALL_ROOT = Path("/var/lib/stickllm/apps")
 CATALOG: tuple[dict, ...] = (
     {
         "id": "onlyoffice",
-        "name": "Office",
+        "name": "ONLYOFFICE",
+        "tile": "Office",
         "group": "Core (starter apps)",
         "license": "AGPL",
         "description": "Documents, spreadsheets, and slides (ONLYOFFICE). The bot can edit open files live.",
@@ -43,6 +44,7 @@ CATALOG: tuple[dict, ...] = (
     {
         "id": "paperless-ngx",
         "name": "Paperless-ngx",
+        "tile": "Scans",
         "group": "Core (starter apps)",
         "license": "GPL",
         "description": "Scans and files receipts and documents, with text recognition and tagging, through a REST API.",
@@ -56,6 +58,7 @@ CATALOG: tuple[dict, ...] = (
     {
         "id": "snappymail",
         "name": "SnappyMail",
+        "tile": "Mail",
         "group": "Core (starter apps)",
         "license": "AGPL",
         "description": "Webmail over IMAP and SMTP, so the bot can triage and draft. Sending is the user\u2019s click.",
@@ -67,21 +70,9 @@ CATALOG: tuple[dict, ...] = (
         "installer": None,
     },
     {
-        "id": "radicale",
-        "name": "Radicale",
-        "group": "Core (starter apps)",
-        "license": "GPL",
-        "description": "Calendar and contacts (CalDAV and CardDAV), very light.",
-        "disk_gb": 0.05,
-        "ram_gb": {"min": 0.05, "recommended": 0.1},
-        "vram_gb": 0,
-        "gpu": "none",
-        "note": "Very light",
-        "installer": None,
-    },
-    {
         "id": "trilium",
-        "name": "Trilium Notes",
+        "name": "Trilium",
+        "tile": "Notes",
         "group": "Core (starter apps)",
         "license": "AGPL",
         "description": "Notes and a knowledge base with an API.",
@@ -93,34 +84,37 @@ CATALOG: tuple[dict, ...] = (
         "installer": None,
     },
     {
-        "id": "vikunja",
-        "name": "Vikunja",
+        "id": "tasks-md",
+        "name": "Tasks.md",
+        "tile": "Tasks",
         "group": "Productivity",
-        "license": "AGPL",
-        "description": "Tasks and projects.",
-        "disk_gb": 0.15,
+        "license": "MIT",
+        "description": "Task boards (kanban) saved as plain Markdown files in the vault.",
+        "disk_gb": 0.3,
         "ram_gb": {"min": 0.1, "recommended": 0.25},
         "vram_gb": 0,
         "gpu": "none",
-        "note": "",
+        "note": "Web UI is built once, offline, at install",
         "installer": None,
     },
     {
-        "id": "actual",
-        "name": "Actual Budget",
+        "id": "paisa",
+        "name": "Paisa",
+        "tile": "Budget",
         "group": "Productivity",
-        "license": "MIT",
-        "description": "Budgeting and bank CSV import.",
-        "disk_gb": 0.3,
-        "ram_gb": {"min": 0.15, "recommended": 0.3},
+        "license": "AGPL",
+        "description": "Personal finance and budgets on a plain-text ledger, with bank CSV import.",
+        "disk_gb": 0.1,
+        "ram_gb": {"min": 0.1, "recommended": 0.25},
         "vram_gb": 0,
         "gpu": "none",
-        "note": "",
+        "note": "Very light",
         "installer": None,
     },
     {
         "id": "immich",
         "name": "Immich",
+        "tile": "Photos",
         "group": "Productivity",
         "license": "AGPL",
         "description": "Photos, with search that runs on your local GPU.",
@@ -134,6 +128,7 @@ CATALOG: tuple[dict, ...] = (
     {
         "id": "searxng",
         "name": "SearXNG",
+        "tile": "Search",
         "group": "Productivity",
         "license": "AGPL",
         "description": "Private web search for the agent, which can run over Tor.",
@@ -146,7 +141,8 @@ CATALOG: tuple[dict, ...] = (
     },
     {
         "id": "matrix",
-        "name": "Matrix (Conduit + Element)",
+        "name": "Matrix",
+        "tile": "Chat",
         "group": "Communications",
         "license": "Apache",
         "description": "Encrypted chat and calls, with bridges to other messengers.",
@@ -159,7 +155,8 @@ CATALOG: tuple[dict, ...] = (
     },
     {
         "id": "simplex",
-        "name": "SimpleX Chat",
+        "name": "SimpleX",
+        "tile": "Chat",
         "group": "Communications",
         "license": "AGPL",
         "description": "Anonymous messaging with no IDs, with self-hosted relays.",
@@ -172,7 +169,8 @@ CATALOG: tuple[dict, ...] = (
     },
     {
         "id": "jitsi",
-        "name": "Jitsi Meet",
+        "name": "Jitsi",
+        "tile": "Meet",
         "group": "Communications",
         "license": "Apache",
         "description": "Browser video calls.",
@@ -186,6 +184,7 @@ CATALOG: tuple[dict, ...] = (
     {
         "id": "onionshare",
         "name": "OnionShare",
+        "tile": "Share",
         "group": "Communications",
         "license": "GPL",
         "description": "Anonymous file sharing and a drop box over Tor.",
@@ -199,6 +198,7 @@ CATALOG: tuple[dict, ...] = (
     {
         "id": "postiz",
         "name": "Postiz",
+        "tile": "Social",
         "group": "Publishing",
         "license": "AGPL",
         "description": "Posts to many social networks at once, with an API.",
@@ -211,7 +211,8 @@ CATALOG: tuple[dict, ...] = (
     },
     {
         "id": "opentimestamps",
-        "name": "OpenTimestamps + a signing tool",
+        "name": "OpenTimestamps",
+        "tile": "Proof",
         "group": "Publishing",
         "license": "LGPL or MIT",
         "description": "Proof that a published file hasn\u2019t been changed.",
@@ -225,19 +226,21 @@ CATALOG: tuple[dict, ...] = (
     {
         "id": "comfyui",
         "name": "ComfyUI",
+        "tile": "",
         "group": "Creative and technical",
         "license": "GPL",
-        "description": "Image generation on the 3090.",
-        "disk_gb": 8,
+        "description": "Node-based image generation. Uses the NVIDIA GPU when free VRAM allows, else the CPU (slow).",
+        "disk_gb": 15,
         "ram_gb": {"min": 8, "recommended": 16},
-        "vram_gb": "8 / 12-24",
-        "gpu": "required",
-        "note": "PyTorch+CUDA install; models extra (SDXL ~7 GB, Flux 12-24 GB); unload or shrink the LLM to free VRAM",
+        "vram_gb": "6 / 12-24",
+        "gpu": "optional",
+        "note": "~7 GB download (PyTorch + CUDA); models extra, put them in the vault (SDXL ~7 GB, Flux 12-24 GB); the local AI model shares the GPU",
         "installer": None,
     },
     {
         "id": "code-server-jupyter",
         "name": "code-server and Jupyter",
+        "tile": "Code",
         "group": "Creative and technical",
         "license": "MIT and BSD",
         "description": "Coding and data analysis.",
@@ -251,6 +254,7 @@ CATALOG: tuple[dict, ...] = (
     {
         "id": "n8n",
         "name": "n8n",
+        "tile": "Automation",
         "group": "Creative and technical",
         "license": "fair-code (not OSI open source)",
         "description": "Automations. Prefer an OSI-friendly stack unless license posture is explicit.",
@@ -264,6 +268,7 @@ CATALOG: tuple[dict, ...] = (
     {
         "id": "node-red",
         "name": "Node-RED",
+        "tile": "",
         "group": "Creative and technical",
         "license": "Apache",
         "description": "Flow-based automation. Flows can run code; no palette installs, no internet.",
@@ -282,6 +287,7 @@ CATALOG: tuple[dict, ...] = (
 AGENT_ZERO = {
     "id": "agent-zero",
     "name": "Agent Zero",
+    "tile": "",
     "group": "Agent",
     "license": "MIT",
     "description": "The operator that drives the above through each app's tool layer.",
@@ -322,6 +328,18 @@ def is_blocked(app_id: object) -> bool:
         return bool(_verify_lib().app_blocked(app_id))
     except Exception:
         return True
+
+
+def display_name(app: dict) -> str:
+    """'Trilium Notes', 'Tasks.md Tasks'; apps with no tile keep their own name."""
+    name = str(app.get("name") or app.get("id") or "")
+    tile = str(app.get("tile") or "")
+    return f"{name} {tile}" if tile else name
+
+
+def tile_name(app: dict) -> str:
+    """Short desktop name ('Notes', 'Tasks', 'Budget'); the app name when it has none."""
+    return str(app.get("tile") or app.get("name") or app.get("id") or "")
 
 
 def find_app(app_id: str, catalog: tuple | list | None = None) -> dict | None:
@@ -612,6 +630,8 @@ def _public_app(app: dict, record: dict) -> dict:
     public = {
         "id": app["id"],
         "name": app["name"],
+        "tile": str(app.get("tile") or ""),
+        "display_name": display_name(app),
         "group": app["group"],
         "license": app["license"],
         "description": app["description"],

@@ -19,22 +19,34 @@ specific app.
 
 ## Installable from the Apps page (0.5.0)
 
-ONLYOFFICE Docs (0.4) plus five starter add-ons have a working **Install / Open / Remove**
+ONLYOFFICE Docs (0.4) plus five add-ons (list as of 0.5.4) have a working **Install / Open / Remove**
 on the Apps page. Each needs the vault unlocked and the host drive used for Agent Zero
 (the image is stored there, pulled by digest). Pins: `overlay/usr/local/share/stickllm/addons/<id>.pin`.
 
-- Radicale 3.9.0 (`tomsquest/docker-radicale`), port 5451. Calendar and contacts web UI.
-- Vikunja 2.7.1 (`vikunja/vikunja`), port 5452. Tasks; create the first account in the app.
-- Actual Budget 26.10.0 (`actualbudget/actual-server`), port 5453. Set a server password on first open.
-- Trilium Notes v0.106.1 (`triliumnext/trilium`), port 5454. Set a password on first open.
+- Tasks.md 3.3.0 (`baldissaramatheus/tasks.md`), port 5452. Kanban boards stored as
+  Markdown files in `vault/addons/tasks-md`. The web UI is built once, offline, at install.
+- Paisa v0.7.8 (`ananthakumaran/paisa`), port 5453. Budgets on a plain-text ledger.
+- Trilium Notes v0.106.1 (`triliumnext/trilium`), port 5454. No Trilium login (the
+  gateway pairing and the vault are the lock); the first start sets up the database
+  automatically, so it opens straight into notes.
 - Node-RED 5.0.9 (`nodered/node-red`), port 5455. See the risk note below.
+- ComfyUI (`yanwk/comfyui-boot`, CUDA 12.6 slim), port 5456. Uses the NVIDIA GPU when
+  one is present and has free VRAM, otherwise runs on the CPU (slow). The card warns
+  when free VRAM is under 6 GB instead of refusing the install.
 
-The same rules hold for all five (`overlay/usr/local/lib/stickllm_addons.py`, `stickllm-addon`):
+0.5.4 removed Radicale, Vikunja and Actual Budget (replaced by Tasks.md and Paisa).
+Their old data folders under `vault/addons/` are left alone; nothing migrates them.
+
+Each app card shows the real app name with its short tile name (for example
+**ONLYOFFICE** · Office, **Trilium** · Notes) in a bright colour, in the Apps list,
+the hidden-apps list and on the desktop. ComfyUI and Node-RED keep their own names.
+
+The same rules hold for all of them (`overlay/usr/local/lib/stickllm_addons.py`, `stickllm-addon`):
 
 - Data lives only in `vault/addons/<id>`. A locked vault means the app is stopped and its
   data is unreadable; locking stops the apps after Docs and before Agent Zero.
 - Container: non-root, `--read-only` with small tmpfs, `--cap-drop ALL`, `no-new-privileges`,
-  `--log-driver none`, no GPU, no docker socket. Not started at boot (units are not enabled);
+  `--log-driver none`, no GPU (except ComfyUI, which gets the NVIDIA GPU when present), no docker socket. Not started at boot (units are not enabled);
   installed apps start when the vault unlocks.
 - Network: the app listens on `127.0.0.1` only. Its bridge drops every packet the container
   starts (no internet, no LAN, no host, no other app). A LAN browser reaches it only through
@@ -56,15 +68,13 @@ limits that to the container: no network at all, read-only image, non-root, pale
 npm installs disabled (`node-red-settings.js`), no editor login of its own (the gateway
 pairing is the login). Do not import flows you have not read.
 
-**Radicale.** 0.5.0 serves the web UI through the paired gateway. Phone or desktop
-CalDAV/CardDAV sync is not offered: those clients cannot do the pairing handoff.
 
 ### Blocked in v0.5.3
 
 v0.5.3 lists only apps that install, open in their own reused tab, survive a
 reboot with the vault, and can be installed by Agent Zero (after the user's
-click): Agent Zero, Office (ONLYOFFICE), Radicale, Trilium, Vikunja, Actual
-Budget and Node-RED. Each one is hash pinned; see [VERIFIED.md](VERIFIED.md).
+click). As of 0.5.4: Agent Zero, ONLYOFFICE (Office), Tasks.md, Paisa, Trilium,
+Node-RED and ComfyUI. Each one is hash pinned; see [VERIFIED.md](VERIFIED.md).
 
 The planned apps below are **hard blocked** on the server, not just hidden:
 
@@ -105,7 +115,6 @@ The planning tables below still describe these apps.
 | OnionShare | `onionshare` | Command line plus Tor, which needs internet; no web app to open. |
 | Postiz | `postiz` | Node, Postgres and Redis, and posting needs internet access to the social networks. |
 | OpenTimestamps + a signing tool | `opentimestamps` | Command-line tools with no web app; timestamping needs internet calendars. |
-| ComfyUI | `comfyui` | Needs CUDA, PyTorch and the GPU the model is using; not containerised for the stick yet. |
 | code-server and Jupyter | `code-server-jupyter` | Not packaged and security-reviewed for the stick yet (a full terminal and package installs). |
 | n8n | `n8n` | Fair-code licence (not OSI open source) and it duplicates Node-RED, which ships. |
 
@@ -115,18 +124,17 @@ The planning tables below still describe these apps.
 
 | App | License | Role |
 |---|---|---|
-| **Office** | AGPL | Documents, spreadsheets, and slides (ONLYOFFICE). The bot can edit open files live. |
+| **ONLYOFFICE** | AGPL | Documents, spreadsheets, and slides (ONLYOFFICE). The bot can edit open files live. |
 | **Paperless-ngx** | GPL | Scans and files receipts and documents, with text recognition and tagging, through a REST API. |
 | **SnappyMail** | AGPL | Webmail over IMAP and SMTP, so the bot can triage and draft. Sending is the user’s click. |
-| **Radicale** | GPL | Calendar and contacts (CalDAV and CardDAV), very light. |
-| **Trilium Notes** | AGPL | Notes and a knowledge base with an API. |
+| **Trilium** | AGPL | Notes and a knowledge base with an API. |
 
 ## Productivity
 
 | App | License | Role |
 |---|---|---|
-| **Vikunja** | AGPL | Tasks and projects. |
-| **Actual Budget** | MIT | Budgeting and bank CSV import. |
+| **Tasks.md** | MIT | Task boards (kanban) saved as plain Markdown files in the vault. |
+| **Paisa** | AGPL | Personal finance and budgets on a plain-text ledger, with bank CSV import. |
 | **Immich** | AGPL | Photos, with search that runs on your local GPU. |
 | **SearXNG** | AGPL | Private web search for the agent, which can run over Tor. |
 
@@ -134,9 +142,9 @@ The planning tables below still describe these apps.
 
 | App | License | Role |
 |---|---|---|
-| **Matrix** (Conduit + Element) | Apache | Encrypted chat and calls, with bridges to other messengers. |
-| **SimpleX Chat** | AGPL | Anonymous messaging with no IDs, with self-hosted relays. |
-| **Jitsi Meet** | Apache | Browser video calls. |
+| **Matrix** | Apache | Encrypted chat and calls, with bridges to other messengers. |
+| **SimpleX** | AGPL | Anonymous messaging with no IDs, with self-hosted relays. |
+| **Jitsi** | Apache | Browser video calls. |
 | **OnionShare** | GPL | Anonymous file sharing and a drop box over Tor. |
 
 ## Publishing
@@ -144,13 +152,13 @@ The planning tables below still describe these apps.
 | App | License | Role |
 |---|---|---|
 | **Postiz** | AGPL | Posts to many social networks at once, with an API. |
-| **OpenTimestamps** + a signing tool | LGPL or MIT | Proof that a published file hasn’t been changed. |
+| **OpenTimestamps** | LGPL or MIT | Proof that a published file hasn’t been changed. |
 
 ## Creative and technical
 
 | App | License | Role |
 |---|---|---|
-| **ComfyUI** | GPL | Image generation on the 3090. |
+| **ComfyUI** | GPL | Node-based image generation. Uses the NVIDIA GPU when free VRAM allows, else the CPU (slow). |
 | **whisper.cpp** and **KittenTTS mini 0.8** | MIT and Apache-2.0 | Chat mic and read-aloud. Baked with the image (see `stickllm-speech.pin`), not a companion app. Not Piper. Not Kitten TTS 2. |
 | **code-server** and **Jupyter** | MIT and BSD | Coding and data analysis. |
 | **n8n** | fair-code (not OSI open source) | Automations. Prefer an OSI-friendly stack unless license posture is explicit. |
@@ -197,10 +205,9 @@ Estimates until the next test boot. The card line is `Disk X GB · RAM X GB · G
 | onlyoffice | 3 | 2 / 4 | 0 | none | Heavy for an office suite; 4 GB RAM for smooth editing |
 | paperless-ngx | 1.5 | 1 / 2 | 0 | none | + Redis; OCR spikes RAM/CPU; documents stored extra |
 | snappymail | 0.1 | 0.1 / 0.25 | 0 | none | Very light |
-| radicale | 0.05 | 0.05 / 0.1 | 0 | none | Very light |
 | trilium | 0.5 | 0.25 / 0.5 | 0 | none | |
-| vikunja | 0.15 | 0.1 / 0.25 | 0 | none | |
-| actual | 0.3 | 0.15 / 0.3 | 0 | none | |
+| tasks-md | 0.3 | 0.1 / 0.25 | 0 | none | Web UI is built once, offline, at install |
+| paisa | 0.1 | 0.1 / 0.25 | 0 | none | Very light |
 | immich | 5 | 6 / 8 | 0 or 1-2 | optional | Server + ML + Postgres + Redis; photo library stored extra; GPU ML search uses ~1-2 GB VRAM |
 | searxng | 0.2 | 0.25 / 0.5 | 0 | none | + Valkey/Redis; Tor adds ~0.1 GB |
 | matrix | 0.2 | 0.25 / 0.5 | 0 | none | Conduit + Element web; bridges add more |
@@ -209,7 +216,7 @@ Estimates until the next test boot. The card line is `Disk X GB · RAM X GB · G
 | onionshare | 0.1 | 0.1 / 0.25 | 0 | none | CLI + Tor |
 | postiz | 2.5 | 2 / 4 | 0 | none | Node + Postgres + Redis |
 | opentimestamps | 0.05 | 0.05 / 0.05 | 0 | none | Client + minisign; negligible |
-| comfyui | 8 | 8 / 16 | 8 / 12-24 | required | PyTorch+CUDA install; models extra (SDXL ~7 GB, Flux 12-24 GB); unload or shrink the LLM to free VRAM |
+| comfyui | 15 | 8 / 16 | 6 / 12-24 | optional | ~7 GB download (PyTorch + CUDA); models extra, put them in the vault (SDXL ~7 GB, Flux 12-24 GB); the local AI model shares the GPU |
 | code-server-jupyter | 1.5 | 1 / 2 | 0 | optional | GPU only if notebooks use it |
 | n8n | 0.5 | 0.5 / 1 | 0 | none | Pick n8n or Node-RED, not both by default |
 | node-red | 0.3 | 0.2 / 0.5 | 0 | none | |

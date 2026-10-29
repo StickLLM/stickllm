@@ -1885,6 +1885,27 @@ def _settings_api():
     return mod
 
 
+def hardware_warnings(vram_gb: float, gpu_count: int) -> list[str]:
+    """AVX / VRAM warnings from stickllm_system (warn, never refuse)."""
+    lib = Path(os.environ.get("STICKLLM_SYSTEM_LIB", "/usr/local/lib/stickllm_system.py"))
+    if not lib.is_file():
+        return []
+    try:
+        import importlib.util
+
+        mod = getattr(hardware_warnings, "_mod", None)
+        if mod is None:
+            spec = importlib.util.spec_from_file_location("stickllm_system", lib)
+            if spec is None or spec.loader is None:
+                return []
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            hardware_warnings._mod = mod
+        return list(mod.hardware_warnings(None, vram_gb, gpu_count))
+    except Exception:
+        return []
+
+
 def portable_secrets_dir() -> Path | None:
     """Encrypted USB settings secrets dir. Never the speech tree or an unmounted path."""
     if SETTINGS_MNT == SPEECH_DIR or SETTINGS_MNT == VAULT_MNT:
@@ -3449,6 +3470,7 @@ def handle(action: str, params: dict) -> dict:
             "gpu_count": int(inv.get("count") or 0),
             "gpu": inv.get("name") or "",
             "gpus": inv.get("gpus") or [],
+            "hw_warnings": hardware_warnings(round(vram, 1), int(inv.get("count") or 0)),
             "hf_token": read_hf_token(),
             "hf_token_saved": bool(read_hf_token()),
             "settings_mounted": portable_secrets_dir() is not None,

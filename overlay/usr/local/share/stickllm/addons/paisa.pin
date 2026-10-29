@@ -1,0 +1,7 @@
+# Paisa (AGPL) personal finance on ledger. Pulled by digest onto the host SSD
+# docker data-root only. Checked against registry-1.docker.io on 2026-10-28.
+# manifest_digest is the OCI index; amd64_digest is the linux/amd64 manifest.
+image=ananthakumaran/paisa
+version=v0.7.8
+manifest_digest=sha256:67842be2d055a1d79a37ee161f39987977037c4d8741c72434e582edd6d08a5d
+amd64_digest=sha256:e05a0af58c7bfd953a9ca4b781827e8fee4e4aae50a285844a3c13ab79958345

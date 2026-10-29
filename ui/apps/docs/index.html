@@ -22,6 +22,15 @@
   body.editing main{display:none}
   body.editing #editorWrap{display:block}
   #editor{width:100%;height:100%}
+  dialog{background:#141b1e;color:#e4ecee;border:1px solid #2bb5a8;border-radius:12px;padding:18px 20px;min-width:360px}
+  dialog::backdrop{background:rgba(0,0,0,.55)}
+  dialog h3{margin:0 0 10px}
+  dialog input{width:100%;box-sizing:border-box;margin:6px 0}
+  .row.end{justify-content:flex-end}
+  button.primary{background:#2bb5a8;color:#06201d;border-color:#2bb5a8;font-weight:600}
+  .err{color:#ff8a80;min-height:1.2em;margin:4px 0}
+  li .when{color:#7d8c91;font-size:13px}
+  #dlSec{display:grid;gap:8px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -30,16 +39,29 @@
 <main>
   <p id="state" class="muted">Checking Office…</p>
   <div class="row">
-    <input type="text" id="name" placeholder="Name" maxlength="120" />
     <button type="button" data-new="docx">New document</button>
     <button type="button" data-new="xlsx">New spreadsheet</button>
     <button type="button" data-new="pptx">New presentation</button>
     <label class="row">Upload <input type="file" id="upload" accept=".docx,.doc,.odt,.rtf,.txt,.xlsx,.xls,.ods,.csv,.pptx,.ppt,.odp,.pdf" /></label>
   </div>
   <ul id="list"></ul>
-  <p id="msg" class="muted"></p>
+  <p id="msg" class="muted" role="status"></p>
+  <section id="dlSec">
+    <div class="row"><strong>Downloads</strong><span class="muted">vault/Downloads: files the browser saved, newest first</span>
+      <button type="button" id="dlRefresh">Refresh</button></div>
+    <ul id="downloads"></ul>
+  </section>
 </main>
+<dialog id="nameDlg">
+  <form method="dialog" id="nameForm">
+    <h3 id="nameTitle">New document</h3>
+    <label for="nameInput" class="muted" id="nameLabel">File name</label>
+    <input type="text" id="nameInput" maxlength="120" autocomplete="off" spellcheck="false" />
+    <p id="nameErr" class="err" role="alert"></p>
+    <div class="row end"><button value="cancel" type="button" id="nameCancel">Cancel</button><button value="ok" id="nameOk" class="primary">Create</button></div>
+  </form>
+</dialog>
 <div id="editorWrap"><div id="editor"></div></div>
-<script src="docs.js?v=docs1"></script>
+<script src="docs.js?v=docs2"></script>
 </body>
 </html>

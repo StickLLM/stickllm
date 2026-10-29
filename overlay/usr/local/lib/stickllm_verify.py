@@ -68,7 +68,6 @@ BLOCKED_APPS = frozenset(
         "onionshare",
         "postiz",
         "opentimestamps",
-        "comfyui",
         "code-server-jupyter",
         "n8n",
     }
@@ -83,8 +82,6 @@ BLOCKED_ALIASES = {
     "synapse": "matrix",
     "simplex-chat": "simplex",
     "jitsi-meet": "jitsi",
-    "comfy": "comfyui",
-    "comfy-ui": "comfyui",
     "code-server": "code-server-jupyter",
     "codeserver": "code-server-jupyter",
     "jupyter": "code-server-jupyter",

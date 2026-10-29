@@ -134,7 +134,6 @@
                     <small id="agentCatalogMsg">Unlock the vault, then install. The image stays on the host drive.</small>
                     <small class="appReq">Disk 4 GB (measured) · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
                     <small class="appNote">Uses llama-server for the model; Kokoro TTS on CPU ~0.5-1 GB RAM; needs a few GB free while unpacking</small>
-                    <small class="appReq" id="agentPlugins" hidden></small>
                     <pre id="agentCatalogPull" class="mono appsPull" hidden></pre>
                   </span>
                   <span class="appsState">
@@ -147,7 +146,7 @@
               <div class="appsRows">
                 <div class="appsRow appsRowLive" data-app="onlyoffice" data-license="AGPL" data-disk-min="3" data-ram-min="2" data-gpu="none">
                   <span class="appName">
-                    <span>Office</span>
+                    <span>ONLYOFFICE <b class="appTile">Office</b></span>
                     <small>Documents, spreadsheets, and slides (ONLYOFFICE). The bot can edit open files live.</small>
                     <small class="appReq">Disk 3 GB · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
                     <small class="appNote">Heavy for an office suite; 4 GB RAM for smooth editing</small>
@@ -155,19 +154,9 @@
                   </span>
                   <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="onlyoffice"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-onlyoffice" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
-                <div class="appsRow appsRowLive" data-app="radicale" data-license="GPL" data-disk-min="0.05" data-ram-min="0.05" data-gpu="none">
-                  <span class="appName">
-                    <span>Radicale</span>
-                    <small>Calendar and contacts (CalDAV and CardDAV), very light.</small>
-                    <small class="appReq">Disk 0.05 GB · RAM 0.05 GB (0.1 GB recommended) · GPU: none · approx.</small>
-                    <small class="appNote">Very light</small>
-                    <small class="appsRowMsg" data-app-msg hidden></small>
-                  </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="radicale"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-radicale" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
-                </div>
                 <div class="appsRow appsRowLive" data-app="trilium" data-license="AGPL" data-disk-min="0.5" data-ram-min="0.25" data-gpu="none">
                   <span class="appName">
-                    <span>Trilium Notes</span>
+                    <span>Trilium <b class="appTile">Notes</b></span>
                     <small>Notes and a knowledge base with an API.</small>
                     <small class="appReq">Disk 0.5 GB · RAM 0.25 GB (0.5 GB recommended) · GPU: none · approx.</small>
                     <small class="appsRowMsg" data-app-msg hidden></small>
@@ -178,23 +167,25 @@
             </section>
             <section class="appsGroup" data-group="Productivity">
               <div class="appsRows">
-                <div class="appsRow appsRowLive" data-app="vikunja" data-license="AGPL" data-disk-min="0.15" data-ram-min="0.1" data-gpu="none">
+                <div class="appsRow appsRowLive" data-app="tasks-md" data-license="MIT" data-disk-min="0.3" data-ram-min="0.1" data-gpu="none">
                   <span class="appName">
-                    <span>Vikunja</span>
-                    <small>Tasks and projects.</small>
-                    <small class="appReq">Disk 0.15 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
+                    <span>Tasks.md <b class="appTile">Tasks</b></span>
+                    <small>Task boards (kanban) saved as plain Markdown files in the vault.</small>
+                    <small class="appReq">Disk 0.3 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Web UI is built once, offline, at install</small>
                     <small class="appsRowMsg" data-app-msg hidden></small>
                   </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="vikunja"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-vikunja" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="tasks-md"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-tasks-md" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
-                <div class="appsRow appsRowLive" data-app="actual" data-license="MIT" data-disk-min="0.3" data-ram-min="0.15" data-gpu="none">
+                <div class="appsRow appsRowLive" data-app="paisa" data-license="AGPL" data-disk-min="0.1" data-ram-min="0.1" data-gpu="none">
                   <span class="appName">
-                    <span>Actual Budget</span>
-                    <small>Budgeting and bank CSV import.</small>
-                    <small class="appReq">Disk 0.3 GB · RAM 0.15 GB (0.3 GB recommended) · GPU: none · approx.</small>
+                    <span>Paisa <b class="appTile">Budget</b></span>
+                    <small>Personal finance and budgets on a plain-text ledger, with bank CSV import.</small>
+                    <small class="appReq">Disk 0.1 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Very light</small>
                     <small class="appsRowMsg" data-app-msg hidden></small>
                   </span>
-                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="actual"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-actual" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="paisa"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-paisa" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
               </div>
             </section>
@@ -208,6 +199,16 @@
                     <small class="appsRowMsg" data-app-msg hidden></small>
                   </span>
                   <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="node-red"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-node-red" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+                <div class="appsRow appsRowLive" data-app="comfyui" data-license="GPL" data-disk-min="15" data-ram-min="8" data-gpu="optional">
+                  <span class="appName">
+                    <span>ComfyUI</span>
+                    <small>Node-based image generation. Uses the NVIDIA GPU when free VRAM allows, else the CPU (slow).</small>
+                    <small class="appReq">Disk 15 GB · RAM 8 GB (16 GB recommended) · GPU: optional 6 / 12-24 GB · approx.</small>
+                    <small class="appNote">~7 GB download (PyTorch + CUDA); models extra, put them in the vault (SDXL ~7 GB, Flux 12-24 GB); the local AI model shares the GPU</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="comfyui"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-comfyui" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
                 </div>
               </div>
             </section>
@@ -292,6 +293,7 @@
         <label class="fTitle" for="mfTarget">Target hardware</label>
         <select id="mfTarget"><option value="this">This machine</option><option value="custom">Custom…</option></select>
         <small class="hwLine" id="hwLine"></small>
+        <small class="hwWarn" id="hwWarn" role="status" hidden></small>
         <div class="customHw" id="customHw" hidden><label>VRAM <input type="number" id="cVram" value="16" min="0" max="512"> GB</label><label>RAM <input type="number" id="cRam" value="32" min="0" max="2048"> GB</label></div>
         <label class="check1"><input type="checkbox" id="mfFits"> Fits this hardware</label>
         <label class="fSub">Context for fit check<select id="mfCtx"><option value="8192">8k tokens</option><option value="16384">16k tokens</option><option value="32768">32k tokens</option><option value="65536">64k tokens</option><option value="131072">128k tokens</option></select></label>
@@ -382,9 +384,10 @@
 <section class="sec" id="sec-storage" data-title="Storage &amp; Vault" hidden>
   <div class="vaultCard" id="vaultCard">
     <div class="vcIcon"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg></div>
-    <div class="vcText"><b id="vcState">Vault locked</b><small id="vcSub">No vault attached yet</small></div>
+    <div class="vcText"><b id="vcState">Checking vault…</b><small id="vcSub"></small></div>
     <form class="vcUnlock" id="unlockForm" autocomplete="off"><input type="text" id="vaultPass" class="secret" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
     <button class="btn" id="lockBtn2" hidden>Lock</button>
+    <small class="unlockMsg" id="unlockMsg" role="alert" hidden></small>
   </div>
 
   <div class="secTools"><h3>Drives</h3><span class="grow"></span>
@@ -504,7 +507,7 @@
     <h3>StickLLM</h3>
     <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
     <div class="group">
-      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.5.3</span></div>
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.5.4</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono">b4521</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>

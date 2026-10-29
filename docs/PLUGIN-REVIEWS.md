@@ -1,11 +1,26 @@
-# Agent Zero plugin reviews (StickLLM 0.5.0)
+# Agent Zero plugins (StickLLM 0.5.4: none)
 
 Agent Zero plugins are Python and JavaScript that run inside the agent with
-the agent's rights. Since 0.5.0 StickLLM does not let anyone install plugins at
-runtime: no installer, no Plugin Hub, no ZIP/Git install, no delete. The only
-third-party plugins that load are listed in
-`overlay/usr/local/share/stickllm/agent-zero-plugins.allow`. Each entry is
-pinned to one full commit SHA and a SHA256 over every file in the plugin.
+the agent's rights. **Since 0.5.4 StickLLM ships no third-party plugins at
+all**, on every path (Agent Zero through the gateway, the LAN, and the kiosk
+console that opens the agent directly on `127.0.0.1:5099`):
+
+- `overlay/usr/local/share/stickllm/agent-zero-plugins.allow` is empty. The ISO
+  build (`scripts/lib/docker-build-live.sh`) fails if any entry is added, and
+  checks that the baked plugin `MANIFEST` is empty.
+- `stickllm_agent.py` has `THIRD_PARTY_PLUGINS = False`: `baked_plugins()`
+  returns nothing, so the read-only plugin folder holds only StickLLM's own
+  `stickllm_apps` plugin (the install/open-app tools, part of StickLLM itself).
+- The container entrypoint deletes Agent Zero's plugin installer, scanner and
+  validator plugins (`_plugin_installer`, `_plugin_scan`, `_plugin_validator`)
+  and the `a0-manage-plugin` / `a0-create-plugin` skills before Agent Zero
+  starts. That covers the kiosk console, which does not go through the
+  gateway's deny list.
+- The StickLLM UI no longer shows plugin badges; `verified.json` has no
+  plugin entries.
+
+The 0.5.0 to 0.5.3 machinery below is kept (so it is still tested) but has
+nothing to load. The two reviews at the end are history.
 
 ## How it is enforced
 
@@ -16,11 +31,12 @@ pinned to one full commit SHA and a SHA256 over every file in the plugin.
 | Old plugins | Anything else in the old writable `state/plugins`, `state/api` and `state/extensions` (all three are code paths Agent Zero loads) is moved to `vault/addons/agent-zero/quarantine/<time>/...` and logged by name in `quarantine/quarantine.log`. Nothing is deleted. |
 | Code paths | `/a0/usr/api` and `/a0/usr/extensions` are empty read-only mounts. |
 | Gateway (:5443) | 403 `plugins_locked` for `/api/plugins/_plugin_installer/*` (install_zip, install_git, update_plugin, fetch_index), `_plugin_scan`, `_plugin_validator`, the a0 connector plugin list, `/api/plugins` actions `delete_plugin` and `run_execute_script`, and the Plugin Hub / install UI pages. Paths are URL-decoded and `..`/`//` normalised first. |
+| Plugin installer (0.5.4) | The entrypoint removes `_plugin_installer`, `_plugin_scan` and `_plugin_validator` from `/git/agent-zero/plugins` and `/a0/plugins`, so the install API does not exist even on the loopback port the kiosk console uses. |
 | Skills | `a0-manage-plugin` and `a0-create-plugin` are removed inside the container before Agent Zero is copied into `/a0`. Upstream has no separate "contribute" skill; publishing is `a0-create-plugin/references/contribute.md`, so it goes with it. `_plugin_scan` is toggled off. |
 
-To add a plugin: review it, add one line to the allowlist (name, repo, full SHA,
-license, tree SHA256 from `python3 scripts/lib/a0_plugins.py tree-hash DIR`),
-add a review below, rebuild the ISO.
+Adding a plugin is no longer supported: it would need `THIRD_PARTY_PLUGINS`
+switched on, the build gate removed and a new review, which is a release
+decision, not a config change.
 
 ### Known limits (residual)
 
@@ -43,7 +59,10 @@ add a review below, rebuild the ISO.
 - Next step (not done in 0.5.0): egress only while the Web toggle is on.
 - **Done in 0.5.3:** Agent Zero container is default-deny; SearXNG goes through the host egress proxy when `egress.json` has `web_fetch: true` (see APPS.md).
 
-## Allowed
+## Removed in 0.5.4 (allowed from 0.5.0 to 0.5.3)
+
+These two UI-only plugins were baked into 0.5.0 to 0.5.3 and are gone in 0.5.4.
+The reviews are kept for the record.
 
 ### clock_24h
 

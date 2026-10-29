@@ -1,0 +1,9 @@
+# Tasks.md (MIT). Base image for the local wrapper StickLLM builds at install
+# (web UI built once, then run as uid 1000 on a read-only root). Pulled by
+# digest onto the host SSD docker data-root only. Checked against
+# registry-1.docker.io on 2026-10-28. manifest_digest is the OCI index;
+# amd64_digest is the linux/amd64 manifest that is pulled.
+image=baldissaramatheus/tasks.md
+version=3.3.0
+manifest_digest=sha256:fd3e212fd5619794598418c049feda17810dae4438a84c00a0fb06fe3621b97a
+amd64_digest=sha256:72939fac5d0d111dcc8a134e9e0c923e5da18ed0af67f9761d5eeaa0d732f6b8

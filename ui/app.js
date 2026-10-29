@@ -37,6 +37,9 @@ let vaultPickerMount = "";
 let vaultBrowseBlobPath = "";
 let pickerPurpose = "vault"; // vault | models_dir | folder
 let hwInfo = { vram: 24, vramEach: 24, gpuCount: 1, ram: 64, gpu: "", name: "This machine" };
+// AVX / VRAM warnings from control status (v0.5.4): shown, never blocking.
+let hwWarnings = [];
+let hwWarnToasted = false;
 const messages = [{
   role: "system",
   content: "You are StickLLM, a local assistant on a Privacy AI USB. Be concise and helpful.",
@@ -392,31 +395,6 @@ function showApps() {
   if (btn) { btn.classList.add("on"); btn.setAttribute("aria-current", "page"); }
   if (mobile()) toggleNav(false);
   refreshApps().catch(() => {});
-  refreshPluginBadges().catch(() => {});
-}
-// Agent Zero plugins come only from the reviewed list baked into the ISO
-// (commit + tree sha256). Show each one's status under the Agent Zero row.
-async function refreshPluginBadges() {
-  const el = $("#agentPlugins");
-  if (!el) return;
-  const r = await fetch("/api/verified", { cache: "no-store", headers: authHeaders() });
-  if (!r.ok) return;
-  const j = await r.json();
-  const plugins = Array.isArray(j.plugins) ? j.plugins : [];
-  el.textContent = "";
-  if (!plugins.length) { el.hidden = true; return; }
-  el.append("Plugins: ");
-  plugins.forEach((p, i) => {
-    const look = VERIFY_BADGE[p.status] || VERIFY_BADGE.unverified;
-    const b = document.createElement("span");
-    b.className = "pill vbadge " + look.cls;
-    b.dataset.verify = p.status;
-    b.textContent = (p.name || "plugin") + " · " + look.text;
-    b.title = (p.repo || "") + (p.commit ? " @ " + p.commit : "") + (p.tree_sha256 ? "\ntree sha256 " + p.tree_sha256 : "");
-    if (i) el.append(" ");
-    el.append(b);
-  });
-  el.hidden = false;
 }
 function appsMessage(text) {
   const el = $("#appsMsg");
@@ -552,11 +530,11 @@ async function refreshApps() {
 const catalogApps = new Map();
 const DESK_APP_GLYPHS = {
   onlyoffice: { label: "Office", color: "#1d4ed8", svg: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 12h6M10 16h6"/>' },
-  radicale: { label: "Calendar", color: "#0f766e", svg: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>' },
-  vikunja: { label: "Tasks", color: "#4f46e5", svg: '<path d="M5 7l2 2 3-3M5 13l2 2 3-3M13 8h6M13 14h6M5 19h14"/>' },
-  actual: { label: "Budget", color: "#9333ea", svg: '<path d="M12 3v18M16 7.5c-.8-1-2.2-1.5-4-1.5-2.2 0-3.5 1-3.5 2.6 0 3.8 7.5 2 7.5 6 0 1.7-1.5 2.9-4 2.9-1.9 0-3.4-.6-4.2-1.7"/>' },
-  trilium: { label: "Trilium", color: "#b45309", svg: '<path d="M5 4h10l4 4v12H5z"/><path d="M9 10h6M9 14h6M9 18h3"/>' },
+  "tasks-md": { label: "Tasks", color: "#4f46e5", svg: '<path d="M5 7l2 2 3-3M5 13l2 2 3-3M13 8h6M13 14h6M5 19h14"/>' },
+  paisa: { label: "Budget", color: "#9333ea", svg: '<path d="M12 3v18M16 7.5c-.8-1-2.2-1.5-4-1.5-2.2 0-3.5 1-3.5 2.6 0 3.8 7.5 2 7.5 6 0 1.7-1.5 2.9-4 2.9-1.9 0-3.4-.6-4.2-1.7"/>' },
+  trilium: { label: "Notes", color: "#b45309", svg: '<path d="M5 4h10l4 4v12H5z"/><path d="M9 10h6M9 14h6M9 18h3"/>' },
   "node-red": { label: "Node-RED", color: "#b91c1c", svg: '<rect x="3" y="9" width="6" height="6" rx="1"/><rect x="15" y="4" width="6" height="6" rx="1"/><rect x="15" y="14" width="6" height="6" rx="1"/><path d="M9 12c3 0 3-5 6-5M9 12c3 0 3 5 6 5"/>' },
+  comfyui: { label: "ComfyUI", color: "#0e7490", svg: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 12h3l4-5M11.5 12l4 5"/>' },
 };
 function deskAppOpenable(a) {
   return !!(a && a.installed && a.open_url && a.installer);
@@ -571,7 +549,7 @@ function syncCatalogDesktop(apps) {
     if (!deskAppOpenable(a)) continue;
     want.add(a.id);
     let icon = desk.querySelector('a.deskIcon[data-catalog-app="' + CSS.escape(a.id) + '"]');
-    const g = DESK_APP_GLYPHS[a.id] || { label: a.name || a.id, color: "#475569", svg: '<rect x="4" y="4" width="16" height="16" rx="3"/>' };
+    const g = DESK_APP_GLYPHS[a.id] || { label: a.tile || a.name || a.id, color: "#475569", svg: '<rect x="4" y="4" width="16" height="16" rx="3"/>' };
     if (!icon) {
       icon = document.createElement("a");
       icon.className = "deskIcon";
@@ -588,7 +566,7 @@ function syncCatalogDesktop(apps) {
       const agent = $("#agentDeskIcon");
       if (agent) desk.insertBefore(icon, agent); else desk.appendChild(icon);
     }
-    icon.title = a.name || g.label;
+    icon.title = a.display_name || a.name || g.label;
     icon.setAttribute("href", a.open_url);
     icon.setAttribute("target", "stickllm-" + a.id);
     icon.dataset.openLink = a.open_link || "";
@@ -924,8 +902,7 @@ async function setSessionMode(m) {
       if (!(st === "unlocked" || vault.mounted)) {
         applyModeUi(prev);
         toast("Unlock the vault first");
-        openSettings("storage");
-        $("#vaultPass")?.focus();
+        await focusVaultUnlock();
         return;
       }
       state.vaultOpen = true;
@@ -964,10 +941,47 @@ function vaultIsOpen(v) {
 }
 
 // "absent" = no vault created or attached yet. Say so instead of "locked".
+// Before the first unlock after boot the big vault is not bound yet, so the
+// status reads "absent" even though the stick's settings vault knows where it
+// is (usb_settings "present-locked"). That is a locked vault, not a missing
+// one; treating it as missing made "No vault set up" flash during unlock.
+// While an unlock is running we never say "No vault set up" either.
+let vaultUnlocking = false;
 function vaultIsAbsent(v) {
+  if (vaultUnlocking) return false;
   if (typeof v === "string") return v.toLowerCase() === "absent";
   if (!v || typeof v !== "object") return false;
+  const usb = String(v.usb_settings || "").toLowerCase();
+  if (usb === "present-locked" || usb === "unlocked") return false;
   return !v.mounted && String(v.status || "").toLowerCase() === "absent";
+}
+
+// Inline message under the unlock form (errors must not vanish with a toast).
+function unlockMessage(text) {
+  const el = $("#unlockMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.hidden = !text;
+}
+
+// Take the user to the passcode box. If the form is hidden (the page thinks
+// the vault is open, or there is none) say why instead of failing silently.
+async function focusVaultUnlock() {
+  openSettings("storage");
+  const form = $("#unlockForm");
+  if (form && form.hidden) {
+    try { await refreshStorage(); } catch (_) {}
+  }
+  if (!form || form.hidden) {
+    const msg = state.vaultOpen
+      ? "The vault is already unlocked."
+      : "The unlock form is not available. Choose or create a vault below first.";
+    toast(msg);
+    unlockMessage(state.vaultOpen ? "" : msg);
+    return false;
+  }
+  setTimeout(() => $("#vaultPass")?.focus(), 50);
+  return true;
 }
 
 function setVaultChrome(open, absent = false) {
@@ -976,6 +990,7 @@ function setVaultChrome(open, absent = false) {
   $("#vaultCard")?.classList.toggle("open", open);
   if ($("#vcState")) $("#vcState").textContent = open ? "Vault unlocked" : (none ? "No vault set up" : "Vault locked");
   if ($("#unlockForm")) $("#unlockForm").hidden = open;
+  if (open) unlockMessage("");
   if ($("#lockBtn2")) $("#lockBtn2").hidden = !open;
   if ($("#lockBtn")) $("#lockBtn").hidden = !open;
   if ($("#popVault")) $("#popVault").textContent = open ? "Unlocked" : (none ? "Not set up" : "Locked");
@@ -1095,7 +1110,7 @@ function renderConvs() {
     e.stopPropagation();
     deleteVaultChat(b.dataset.del).catch((err) => toast(err.message));
   }));
-  const ul = $("#unlockLink"); if (ul) ul.onclick = () => { openSettings("storage"); setTimeout(() => $("#vaultPass").focus(), 50); };
+  const ul = $("#unlockLink"); if (ul) ul.onclick = () => { focusVaultUnlock().catch(() => {}); };
 }
 function leaveApps() {
   if (mainView !== "apps") return;
@@ -1959,6 +1974,10 @@ function renderModelsList() {
       ? "Enter VRAM and RAM"
       : hardwareDetectedLine();
   }
+  if ($("#hwWarn")) {
+    $("#hwWarn").textContent = hwWarnings.join(" ");
+    $("#hwWarn").hidden = !hwWarnings.length;
+  }
   if ($("#mfFits")) $("#mfFits").checked = state.mf.fits;
   if ($("#mfCtx")) $("#mfCtx").value = String(state.mf.ctx);
   if ($("#mfQuant")) $("#mfQuant").value = state.mf.quant;
@@ -2160,6 +2179,11 @@ async function refreshModelsNow() {
     gpu: String(st.gpu || probe.gpu || hwInfo.gpu || ""),
     name: "This machine",
   };
+  hwWarnings = Array.isArray(st.hw_warnings) ? st.hw_warnings.filter((w) => typeof w === "string" && w) : [];
+  if (hwWarnings.length && !hwWarnToasted) {
+    hwWarnToasted = true;
+    toast(hwWarnings[0]);
+  }
   if ($("#recGpuLabel")) {
     $("#recGpuLabel").textContent = gpuCount > 1 ? `Recommended for these ${gpuCount} GPUs` : "Recommended for this GPU";
   }
@@ -2896,7 +2920,7 @@ async function refreshStorage() {
   const open = vaultIsOpen(v);
   setVaultChrome(open, vaultIsAbsent(v));
   if ($("#vcSub")) {
-    $("#vcSub").textContent = v.blob || v.root || v.path || (v.status || "absent");
+    $("#vcSub").textContent = v.blob || v.root || v.path || (vaultIsAbsent(v) ? "No vault attached yet" : (open ? "" : "Enter the passcode to unlock"));
   }
   const wipe = Number(v.wipe_after_failed_unlocks || 0);
   if ($("#wipeN") && document.activeElement !== $("#wipeN")) $("#wipeN").value = String(wipe);
@@ -3377,7 +3401,11 @@ if ($("#pickModelDir")) {
 $("#unlockForm").onsubmit = async (e) => {
   e.preventDefault();
   const pass = $("#vaultPass").value || "";
-  if (!pass) return toast("Enter the vault passcode");
+  if (!pass) { unlockMessage("Enter the vault passcode."); return toast("Enter the vault passcode"); }
+  if (vaultUnlocking) return;
+  unlockMessage("");
+  vaultUnlocking = true;
+  if ($("#vcState")) $("#vcState").textContent = "Unlocking…";
   try {
     const payload = { passcode: pass };
     const bind = ($("#vaultPath").value || "").trim();
@@ -3385,11 +3413,19 @@ $("#unlockForm").onsubmit = async (e) => {
     $("#vaultPass").value = "";
     const res = await control("vault_unlock", payload);
     if (!res.ok) throw new Error(res.error || res.stderr || "unlock failed");
+    vaultUnlocking = false;
     setVaultChrome(true);
     toast("Vault unlocked");
     await setSessionMode("vault");
     await refreshStorage();
-  } catch (err) { toast("Unlock failed: " + err.message); }
+  } catch (err) {
+    vaultUnlocking = false;
+    setVaultChrome(false);
+    unlockMessage("Unlock failed: " + err.message);
+    toast("Unlock failed: " + err.message);
+  } finally {
+    vaultUnlocking = false;
+  }
 };
 
 $("#createVault").onclick = () => {
