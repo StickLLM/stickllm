@@ -4294,12 +4294,17 @@ class Handler(SimpleHTTPRequestHandler):
             online = uplink_ok()
             backend = detect_backend()
             session_mode = get_session_mode()
+            vault_doc = vault_health()
+            # The header shows Vault only while the vault is unlocked (0.5.4):
+            # a lock outside the UI leaves a stale "vault" in session-mode.json.
+            if session_mode == "vault" and not vault_doc.get("mounted"):
+                session_mode = "ephemeral"
             data = {
                 "gateway": "ok",
                 "web": online,
                 "online": online,
                 "version": stickllm_version(),
-                "vault": vault_health(),
+                "vault": vault_doc,
                 "bind": f"{HOST}:{PORT}",
                 "llama": llama,
                 "llama_ok": llama_ok,

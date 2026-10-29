@@ -200,3 +200,51 @@ def test_vault_mode_switch_treats_present_locked_as_locked():
     assert "vaultIsAbsent(vault)" in body
     assert 'st === "absent" || !st' not in body
     assert body.index("vaultIsAbsent(vault)") < body.index("await focusVaultUnlock();")
+
+
+# --- rc2: mode tabs follow the vault; lock clears the screen -----------------
+
+def test_lock_clear_node_unit():
+    import shutil, subprocess
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    out = subprocess.run(["node", str(Path(__file__).with_name("lock_clear.test.js"))],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "lock clear ok" in out.stdout
+
+
+def test_health_mode_needs_open_vault():
+    """refreshStatus highlights Vault only when health says the vault is open."""
+    js = _text(ROOT / "ui" / "app.js")
+    assert 'applyModeUi(j.session_mode === "vault" ? "vault" : "ephemeral")' not in js
+    assert 'applyModeUi(j.session_mode === "vault" && vOpen ? "vault" : "ephemeral")' in js
+
+
+def test_gateway_health_reports_ephemeral_when_locked():
+    gw = _text(ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-gateway")
+    i = gw.index("session_mode = get_session_mode()\n            vault_doc = vault_health()")
+    block = gw[i:i + 600]
+    assert 'if session_mode == "vault" and not vault_doc.get("mounted"):' in block
+    assert '"vault": vault_doc,' in gw
+
+
+def test_every_lock_path_clears_screen():
+    js = _text(ROOT / "ui" / "app.js")
+    lock = js[js.index("async function lockVault("):]
+    lock = lock[: lock.index("\n}\n")]
+    assert lock.index("clearOnLock();") < lock.index('control("vault_lock")')
+    # Ctrl+Shift+L and both lock buttons go through lockVault.
+    assert '$("#lockBtn").onclick = () => lockVault();' in js
+    assert '$("#lockBtn2").onclick = () => lockVault();' in js
+    assert 'if (e.ctrlKey && e.shiftKey && k === "l") { e.preventDefault(); lockVault(); }' in js
+    # Any open->locked change (kiosk combo, other browser) clears via setVaultChrome.
+    chrome = js[js.index("function setVaultChrome("):]
+    chrome = chrome[: chrome.index("\n}\n")]
+    assert "clearOnLock()" in chrome
+    assert 'applyModeUi("ephemeral")' in chrome
+
+
+def test_ui_cache_bust_v054b():
+    html = _text(ROOT / "ui" / "index.html")
+    assert "app.js?v=v054b" in html and "v054a" not in html

@@ -13,6 +13,7 @@ let selectedAppId = "";
 let loadedCtx = 0;
 let lastPerf = null;
 let sessionModeBusy = false;
+let clearingOnLock = false; // clearOnLock() re-entry guard (0.5.4)
 let activeChatId = null;
 let lastRemintId = null;
 let lastCatalog = [];
@@ -919,6 +920,8 @@ async function setSessionMode(m) {
     if (!r.ok || j.ok === false) throw new Error(j.error || j.message || `HTTP ${r.status}`);
     applyModeUi(next);
     if (next === "ephemeral") {
+      // Leaving Vault mode locks the vault server-side: same clear as a lock.
+      if (prev === "vault" || state.vaultOpen) clearOnLock();
       state.vaultOpen = false;
       setVaultChrome(false);
     }
@@ -987,7 +990,13 @@ async function focusVaultUnlock() {
 }
 
 function setVaultChrome(open, absent = false) {
+  // Open -> locked from anywhere (another browser, the kiosk lock combo, a
+  // lock in Settings): clear the screen too, not only the chrome (0.5.4).
+  if (!open && state.vaultOpen && !vaultUnlocking && !clearingOnLock) clearOnLock();
   state.vaultOpen = open;
+  // The mode tabs follow the vault: Vault is highlighted only while it is
+  // unlocked, Ephemeral whenever it is locked (first load included).
+  if (!open && sessionMode === "vault") applyModeUi("ephemeral");
   const none = !open && !!absent;
   $("#vaultCard")?.classList.toggle("open", open);
   if ($("#vcState")) $("#vcState").textContent = open ? "Vault unlocked" : (none ? "No vault set up" : "Vault locked");
@@ -998,13 +1007,49 @@ function setVaultChrome(open, absent = false) {
   if ($("#popVault")) $("#popVault").textContent = open ? "Unlocked" : (none ? "Not set up" : "Locked");
 }
 
+// Lock means nothing from any chat stays readable on this screen: the
+// transcript, the chat list, drafts, attachments, the in-memory history, saved
+// chat titles and open app tabs (vault data) all go. Ephemeral chats too.
+function clearOnLock() {
+  if (clearingOnLock) return;
+  clearingOnLock = true;
+  try {
+    try { if (sendAbort) sendAbort.abort(); } catch (_) {}
+    try { if (typeof stopSpeak === "function") stopSpeak(); } catch (_) {}
+    state.vaultOpen = false;
+    state.chats = [];
+    state.ephemeral = [];
+    state.current = null;
+    state.attach = [];
+    activeChatId = null;
+    for (const w of appTabs.values()) { try { if (w && !w.closed) w.close(); } catch (_) {} }
+    appTabs.clear();
+    $$("textarea").forEach((t) => { t.value = ""; });
+    try { if (typeof renderAttach === "function") renderAttach(); } catch (_) {}
+    applyModeUi("ephemeral");
+    setVaultChrome(false);
+    newChat();
+    try { renderSaved(); } catch (_) {}
+  } finally {
+    clearingOnLock = false;
+  }
+}
+
 async function lockVault() {
+  // Screen first, so nothing stays readable while the lock call runs.
+  clearOnLock();
   try {
     const res = await control("vault_lock");
     toast(res.ok !== false ? "Vault locked" : ("Lock failed: " + (res.error || "unknown")));
     setVaultChrome(false);
-    if (sessionMode === "vault") await setSessionMode("ephemeral");
   } catch (e) { toast("Lock failed: " + e.message); }
+  try {
+    await fetch("/api/session-mode", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ mode: "ephemeral" }),
+    });
+  } catch (_) {}
 }
 $("#lockBtn").onclick = () => lockVault();
 $("#lockBtn2").onclick = () => lockVault();
@@ -3864,7 +3909,12 @@ async function refreshStatus() {
     if (j.pair?.local || detectLocalHost()) isLocalMode = true;
     // Before anything else that can throw — F9 must follow a browser New code.
     announceRemintFromConnect(j.connect);
-    if (j.session_mode) applyModeUi(j.session_mode === "vault" ? "vault" : "ephemeral");
+    // Vault is highlighted only while the vault is unlocked (a locked vault
+    // with a stale "vault" session mode shows Ephemeral).
+    if (j.session_mode) {
+      const vOpen = j.vault ? vaultIsOpen(j.vault) : state.vaultOpen;
+      applyModeUi(j.session_mode === "vault" && vOpen ? "vault" : "ephemeral");
+    }
     const modelPath = String(j.connect?.model_path || "").trim();
     const named = friendlyModelLabel(j.connect?.model, modelPath);
     const visionNow = !!j.connect?.vision;

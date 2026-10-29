@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.4 (rc2, 2026-10-28)
+
+Chat and vault (rc2)
+- The Ephemeral/Vault tabs follow the vault: Ephemeral is highlighted whenever the
+  vault is locked (first load included), Vault only after a successful unlock, and
+  Ephemeral again on lock. /api/health reports "ephemeral" while the vault is locked.
+- Lock (Ctrl+Shift+L, the lock buttons, switching to Ephemeral, or a lock from
+  anywhere else seen by the status poll) clears the screen: transcript, chat list,
+  saved-chat titles, drafts, attachments, in-memory history and the app tabs this
+  page opened. Ephemeral chats are cleared too. Any reply in progress is stopped.
+
 ## 0.5.4 (rc1, 2026-10-28)
 
 Apps
