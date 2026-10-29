@@ -537,3 +537,42 @@ def test_gateway_addon_proxy_live(tmp_path):
         httpd.shutdown()
         main.shutdown()
         up.shutdown()
+
+
+def _bash_func(name: str) -> str:
+    text = _text(SCRIPT)
+    start = text.index(f"{name}() {{")
+    end = text.index("\n}\n", start) + 3
+    return text[start:end]
+
+
+@POSIX
+def test_free_stale_subnet_only_drops_empty_stickllm_networks(tmp_path):
+    """0.5.4: a leftover stickllm-vikunja bridge on 172.30.12.0/24 blocked tasks-md
+    ("Pool overlaps"). Only empty stickllm-* networks on that subnet are removed."""
+    import subprocess
+
+    log = tmp_path / "rm.log"
+    stub = f"""
+docker_cli() {{
+  case "$1 $2" in
+    "network ls") printf '%s\\n' bridge stickllm-vikunja stickllm-busy stickllm-tasks-md other-12 stickllm-paisa ;;
+    "network inspect")
+      case "$4" in
+        *Subnet*) case "$5" in stickllm-paisa) echo 172.30.13.0/24 ;; *) echo 172.30.12.0/24 ;; esac ;;
+        *Containers*) case "$5" in stickllm-busy) echo 2 ;; *) echo 0 ;; esac ;;
+      esac ;;
+    "network rm") echo "$3" >> {log} ;;
+  esac
+}}
+"""
+    script = stub + _bash_func("free_stale_subnet") + "free_stale_subnet stickllm-tasks-md 172.30.12.0/24\n"
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
+    assert r.returncode == 0, r.stderr
+    assert log.read_text().split() == ["stickllm-vikunja"]
+    assert "removed unused network stickllm-vikunja" in r.stderr
+
+
+def test_ensure_network_retries_after_freeing_stale_subnet():
+    body = _bash_func("ensure_network")
+    assert body.index("create_network") < body.index("free_stale_subnet") < body.rindex("create_network")

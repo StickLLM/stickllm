@@ -119,12 +119,37 @@ ensure_network() {
     [[ "$sub" == "${net[2]}" ]] && return 0
     docker_cli network rm "${net[0]}" >/dev/null 2>&1 || true
   fi
+  if create_network "${net[@]}" 2>/dev/null; then
+    return 0
+  fi
+  # v0.5.4: retired apps (vikunja, actual, radicale) can leave their bridge
+  # behind on the shared dockerd with the subnet a new app now uses. Drop only
+  # stickllm-* networks on the same subnet that have no containers, then retry.
+  free_stale_subnet "${net[0]}" "${net[2]}"
+  create_network "${net[@]}"
+}
+
+create_network() {
+  # args: name bridge subnet gateway
   docker_cli network create \
     --driver bridge \
-    --subnet "${net[2]}" \
-    --gateway "${net[3]}" \
-    -o "com.docker.network.bridge.name=${net[1]}" \
-    "${net[0]}" >/dev/null
+    --subnet "$3" \
+    --gateway "$4" \
+    -o "com.docker.network.bridge.name=$2" \
+    "$1" >/dev/null
+}
+
+free_stale_subnet() {
+  local want="$1" subnet="$2" n sub users
+  while IFS= read -r n; do
+    [[ "$n" == stickllm-* && "$n" != "$want" ]] || continue
+    sub="$(docker_cli network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$n" 2>/dev/null || true)"
+    [[ "$sub" == "$subnet" ]] || continue
+    users="$(docker_cli network inspect -f '{{len .Containers}}' "$n" 2>/dev/null || echo 1)"
+    if [[ "$users" == "0" ]]; then
+      docker_cli network rm "$n" >/dev/null 2>&1 && echo "removed unused network $n ($subnet)" >&2
+    fi
+  done < <(docker_cli network ls --format '{{.Name}}' 2>/dev/null)
 }
 
 stop_container() {

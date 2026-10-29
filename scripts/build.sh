@@ -19,6 +19,12 @@ VERSION="${STICKLLM_VERSION:-0.5.4}"
 VERSION_DIR="v${VERSION}"
 ISO_NAME="${STICKLLM_ISO_NAME:-StickLLM-v${VERSION}.iso}"
 OUT_DIR="${STICKLLM_OUT_DIR:-out}"
+# STICKLLM_OUT_DIR may be absolute (e.g. /e/stickllm-build/out on another local
+# drive when C: is short on space); otherwise it is relative to the repo root.
+case "$OUT_DIR" in
+  /*) OUT_HOST="$OUT_DIR" ;;
+  *) OUT_HOST="${ROOT}/${OUT_DIR}" ;;
+esac
 CHECKSUM_FILE="checksums/v${VERSION}.sha256"
 MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
 VOL_WORK="stickllm-lb-work"
@@ -63,7 +69,7 @@ docker run --rm --privileged --network host \
   -e "STICKLLM_DEBIAN_MIRROR=${STICKLLM_DEBIAN_MIRROR:-}" \
   -e "STICKLLM_DEBIAN_SECURITY_MIRROR=${STICKLLM_DEBIAN_SECURITY_MIRROR:-}" \
   -v "${ROOT}:/stickllm:ro" \
-  -v "${ROOT}/${OUT_DIR}:/stickllm-out" \
+  -v "${OUT_HOST}:/stickllm-out" \
   -v "${VOL_WORK}:/work" \
   -w //work \
   debian:bookworm \
