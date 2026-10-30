@@ -3,6 +3,28 @@
   "use strict";
   if (typeof document === "undefined") return;
   const $ = (s) => document.querySelector(s);
+  // Follow the StickLLM theme. In a desktop window or the fallback panel the
+  // parent page is same-origin and carries html[data-theme]; standalone tabs
+  // fall back to the system colour scheme.
+  function parentTheme() {
+    try {
+      if (window.parent !== window) return window.parent.document.documentElement.dataset.theme || "";
+    } catch (e) { /* cross-origin parent: ignore */ }
+    return "";
+  }
+  function syncTheme() {
+    let t = parentTheme();
+    if (t !== "light" && t !== "dark") {
+      t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    }
+    document.documentElement.dataset.theme = t;
+  }
+  syncTheme();
+  try {
+    if (window.parent !== window && typeof MutationObserver === "function") {
+      new MutationObserver(syncTheme).observe(window.parent.document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    }
+  } catch (e) { /* ignore */ }
   let root = "";
   let rel = "";
   function say(text) { $("#msg").textContent = text || ""; }

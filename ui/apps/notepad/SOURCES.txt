@@ -3,4 +3,4 @@ upstream: https://github.com/GoogleChromeLabs/text-editor
 commit: e3a33c2c0b1832ecdb7221f17d7f8a1b23e1ad19
 license: Apache-2.0
 pinned: 2020-11-12
-note: analytics.js, rum.js, and the service worker registration were removed. inline-scripts/ga-stub.js is a StickLLM no-op so the editor's existing gaEvent and gaTiming calls do not throw and do not leave the stick. Script and style URLs are relative so they load from /apps/notepad/. appName is Notepad — StickLLM so the tab title stays branded.
+note: analytics.js, rum.js, and the service worker registration were removed. inline-scripts/ga-stub.js is a StickLLM no-op so the editor's existing gaEvent and gaTiming calls do not throw and do not leave the stick. Script and style URLs are relative so they load from /apps/notepad/. appName is Notepad — StickLLM so the tab title stays branded. styles/stickllm.css (StickLLM) places the header's Back to Apps link at the top right so it no longer collides with the title.
