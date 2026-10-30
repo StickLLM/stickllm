@@ -126,7 +126,7 @@ body.deskMode #settings{display:none!important}
 body.deskMode #deskHold{display:none!important}
 
 /* System app colours. */
-body.deskMode [data-app="browser"] .deskGlyph{background:#0ea5e9}
+body.deskMode [data-app="browser"] .deskGlyph,body.deskMode .taskExt .deskGlyph{background:#0ea5e9}
 body.deskMode [data-app="agent"] .deskGlyph{background:#0f172a}
 body.deskMode [data-app="store"] .deskGlyph{background:#db2777}
 body.deskMode [data-app="models"] .deskGlyph{background:#4f46e5}
