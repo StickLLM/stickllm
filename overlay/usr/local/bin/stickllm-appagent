@@ -1,0 +1,12 @@
+#!/bin/sh
+# StickLLM app agent: turns a chat request into app actions (ONLYOFFICE slides, Node-RED) with the local
+# model on stickllm-llama. Loopback only; browsers reach it through the gateway at /appagent/.
+set -eu
+exec /usr/bin/python3 /usr/local/lib/stickllm_appagent/service.py \
+  --host 127.0.0.1 \
+  --port "${STICKLLM_APPAGENT_PORT:-8795}" \
+  --llm-url "http://127.0.0.1:${STICKLLM_LLAMA_PORT:-8080}" \
+  --nodered-url "${STICKLLM_APPAGENT_NODERED:-http://127.0.0.1:8105}" \
+  --docs-url "/docs-server" \
+  --self-url "/appagent" \
+  --apps "${STICKLLM_APPAGENT_APPS:-onlyoffice,nodered}"

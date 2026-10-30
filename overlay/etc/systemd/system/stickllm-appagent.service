@@ -1,0 +1,16 @@
+[Unit]
+Description=StickLLM app agent (chat -> app actions, 127.0.0.1:8795 only)
+After=network.target stickllm-llama.service
+Wants=stickllm-llama.service
+
+[Service]
+Type=simple
+# Keeps no files: sessions, history and the ONLYOFFICE job queue live in memory.
+DynamicUser=yes
+ExecStart=/usr/local/bin/stickllm-appagent
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

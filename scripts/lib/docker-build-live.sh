@@ -138,6 +138,11 @@ test -f config/includes.chroot/usr/local/lib/stickllm_docs.py
 test -f config/includes.chroot/etc/systemd/system/stickllm-docs.service
 test -f config/includes.chroot/etc/systemd/system/stickllm-docs-install.service
 test -f config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
+# App agent (chat -> ONLYOFFICE slides / Node-RED actions).
+test -f config/includes.chroot/usr/local/bin/stickllm-appagent
+test -f config/includes.chroot/usr/local/lib/stickllm_appagent/service.py
+test -f config/includes.chroot/usr/local/lib/stickllm_appagent/plugin/plugin.js
+test -f config/includes.chroot/etc/systemd/system/stickllm-appagent.service
 grep -q 'amd64_digest=sha256:bff1a9fd46f2b79ada776fd0447c3fccf66cbf44c1996ec9316efa8ac4ee3fd5' \
   config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
 # Starter add-ons (Tasks.md, Paisa, Trilium, Node-RED, ComfyUI).

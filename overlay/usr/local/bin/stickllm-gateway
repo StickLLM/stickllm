@@ -713,6 +713,18 @@ def save_auth(doc: dict) -> None:
 _AGENT_LIB = None
 
 
+APPAGENT_PORT = 8795
+
+
+def _appagent_port_open(port: int = APPAGENT_PORT) -> bool:
+    """True when stickllm-appagent listens on loopback."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
 def _agent_port_open(port: int = 5099) -> bool:
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.3):
@@ -2718,7 +2730,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(200, mod.list_documents())
                 return
             if path == "/api/docs/config" and method == "GET":
-                doc = mod.editor_config(q("path"), mod.runtime_secret(), lang=q("lang") or "en")
+                plugin_url = ""
+                if _appagent_port_open():
+                    # Absolute URL the editor frame can load: same origin as this page.
+                    plugin_url = f"{self._docs_proto()}://{self.headers.get('Host') or ''}/appagent/oo/plugin/config.json"
+                doc = mod.editor_config(q("path"), mod.runtime_secret(), lang=q("lang") or "en",
+                                        agent_plugin_url=plugin_url)
                 doc["server"] = "/docs-server/"
                 self._json(200, doc)
                 return
@@ -2843,6 +2860,47 @@ class Handler(SimpleHTTPRequestHandler):
             if key.lower() in ("transfer-encoding", "connection", "content-length", "keep-alive", "set-cookie") + TAB_REUSE_DROP:
                 continue
             self.send_header(key, value)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if method != "HEAD" and data:
+            self.wfile.write(data)
+
+    def _appagent_proxy(self, method: str) -> None:
+        """/appagent/* -> stickllm-appagent on 127.0.0.1:8795 (paired browsers only).
+
+        The chat UI calls /appagent/act, /appagent/undo, /appagent/apps; the
+        ONLYOFFICE editor frame loads the agent plugin from /appagent/oo/plugin/
+        and long-polls /appagent/oo/poll.
+        """
+        if not self._desktop_allowed():
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        upstream = parsed.path[len("/appagent"):] or "/"
+        if not upstream.startswith("/") or ".." in upstream.split("/"):
+            self._json(400, {"ok": False, "error": "bad path"})
+            return
+        target = upstream + (("?" + parsed.query) if parsed.query else "")
+        body = None
+        if method == "POST":
+            body = self._docs_read_body(1 << 20)
+            if body is None:
+                return
+        conn = http.client.HTTPConnection("127.0.0.1", APPAGENT_PORT, timeout=600)
+        try:
+            headers = {"Content-Type": self.headers.get("Content-Type") or "application/json"}
+            conn.request(method, target, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+        except Exception:
+            self._json(502, {"ok": False, "error": "The app agent is not running"})
+            return
+        finally:
+            conn.close()
+        # The plugin page runs inside the ONLYOFFICE frame, like /docs-server.
+        self._skip_stick_headers = True
+        self.send_response(resp.status)
+        self.send_header("Content-Type", resp.getheader("Content-Type") or "application/json")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         if method != "HEAD" and data:
@@ -4268,6 +4326,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/docs-server" or path.startswith("/docs-server/"):
             self._docs_proxy("GET")
             return
+        if path == "/appagent" or path.startswith("/appagent/"):
+            self._appagent_proxy("GET")
+            return
         if path in ("/health", "/api/health"):
             auth = load_auth()
             # Pair skip is loopback-only; Chat serves LAN with pair.
@@ -4460,6 +4521,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/docs-server" or path.startswith("/docs-server/"):
             self._docs_proxy("POST")
+            return
+        if path == "/appagent" or path.startswith("/appagent/"):
+            self._appagent_proxy("POST")
             return
         if path.startswith("/api/files"):
             self._proxy_files("POST")

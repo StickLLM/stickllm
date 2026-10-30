@@ -781,7 +781,14 @@ def document_key(path: Path, rel: str) -> str:
     return hashlib.sha256(raw).hexdigest()[:32]
 
 
-def editor_config(rel: str, secret: str, *, user_name: str = "StickLLM", lang: str = "en") -> dict:
+# System plugin served by the app agent (stickllm-appagent, /appagent/oo/plugin/). It lets the
+# agent read and edit the open presentation with the editor's own Api.* calls.
+APPAGENT_PLUGIN_GUID = "asc.{5A1C0E2B-7D4F-4E8A-9B6C-511C4A11A0E1}"
+APPAGENT_KINDS = ("slide",)
+
+
+def editor_config(rel: str, secret: str, *, user_name: str = "StickLLM", lang: str = "en",
+                  agent_plugin_url: str = "") -> dict:
     path = resolve_doc(rel)
     if not path.is_file():
         raise DocsError("not_found", "That document does not exist.", 404)
@@ -812,6 +819,11 @@ def editor_config(rel: str, secret: str, *, user_name: str = "StickLLM", lang: s
             },
         },
     }
+    if agent_plugin_url and editable and KINDS[ext] in APPAGENT_KINDS:
+        # ONLYOFFICE does not start any plugin, system ones included, while
+        # customization.plugins is false, so it is on only when the agent plugin is attached.
+        config["editorConfig"]["customization"]["plugins"] = True
+        config["editorConfig"]["plugins"] = {"autostart": [APPAGENT_PLUGIN_GUID], "pluginsData": [agent_plugin_url]}
     config["token"] = jwt_sign(config, secret)
     return {"ok": True, "path": rel, "config": config}
 
