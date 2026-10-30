@@ -170,3 +170,23 @@ def test_api_apps_rows_carry_frame_flag():
 def test_version_056():
     meta = json.loads(_text(ROOT / "overlay" / "opt" / "stickllm" / "ui" / "stickllm.json"))
     assert meta["version"] == "0.5.6"
+
+
+def test_chat_has_no_example_prompts():
+    app = _text(UI / "app.js")
+    assert 'class="sugg"' not in app and "Summarize a long article" not in app
+    css = _text(UI / "desktop.css")
+    assert "body.deskMode #app #thread > .empty" in css
+
+
+def test_desktop_chat_sidebar_collapsible_and_remembered():
+    js = _text(UI / "desktop.js")
+    assert 'const SIDE_KEY = "stickllm.desk.chatSidebar"' in js
+    assert 'store.get(SIDE_KEY) === "collapsed"' in js
+    assert 'store.set(SIDE_KEY, appEl.classList.contains("collapsed") ? "collapsed" : "open")' in js
+    # Leaving the desktop puts Classic's sidebar state back.
+    assert 'appEl.classList.toggle("collapsed", !!ui.sidePrev)' in js
+    css = _text(UI / "desktop.css")
+    assert "body.deskMode #app.collapsed #menuBtn{display:inline-grid}" in css
+    assert "body.deskMode #app .sideFoot" in css  # footer nav stays hidden; the list stays
+    assert "body.deskMode #app .convList" not in css

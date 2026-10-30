@@ -847,6 +847,38 @@
     ui.agentPanel = ag;
   }
   // ---------- enter / leave ----------
+  // 0.5.6: the chat list stays a collapsible sidebar inside the Chat window.
+  // The sidebar's own button collapses it, the header button brings it back
+  // (Ctrl+B toggles); the state is remembered for this browser.
+  const SIDE_KEY = "stickllm.desk.chatSidebar";
+  function syncSideButtons(desk) {
+    const appEl = $("#app");
+    const collapsed = !!(appEl && appEl.classList.contains("collapsed"));
+    const menu = $("#menuBtn"), col = $("#collapseBtn");
+    if (menu) {
+      menu.setAttribute("aria-expanded", String(!collapsed));
+      menu.title = desk ? "Show chats (Ctrl+B)" : "Conversations (Ctrl+B)";
+      menu.setAttribute("aria-label", desk ? "Show chats" : "Open conversations");
+    }
+    if (col) {
+      col.setAttribute("aria-expanded", String(!collapsed));
+      col.title = desk ? "Hide chats (Ctrl+B)" : "Collapse sidebar (Ctrl+B)";
+      col.setAttribute("aria-label", desk ? "Hide chats" : "Collapse sidebar");
+    }
+  }
+  function chatSidebar() {
+    const appEl = $("#app");
+    if (!appEl) return;
+    ui.sidePrev = appEl.classList.contains("collapsed");
+    appEl.classList.toggle("collapsed", store.get(SIDE_KEY) === "collapsed");
+    syncSideButtons(true);
+    ui.sideObs = new MutationObserver(() => {
+      if (!on) return;
+      store.set(SIDE_KEY, appEl.classList.contains("collapsed") ? "collapsed" : "open");
+      syncSideButtons(true);
+    });
+    ui.sideObs.observe(appEl, { attributes: true, attributeFilter: ["class"] });
+  }
   async function enter() {
     if (on || starting) return starting;
     starting = (async () => {
@@ -876,6 +908,7 @@
       if (al) ui.catObs.observe(al, { attributes: true });
       if (appApi().refreshApps) appApi().refreshApps().then(scheduleCatalog, () => {});
       ui.catT = setInterval(() => { if (appApi().refreshApps) appApi().refreshApps().then(scheduleCatalog, () => {}); }, 60000);
+      chatSidebar();
       openApp(CHAT);
       pollBrowser();
       window.addEventListener("resize", onResize);
@@ -896,6 +929,10 @@
       if (ui.obs) ui.obs.disconnect();
       if (ui.catObs) ui.catObs.disconnect();
       if (ui.pairObs) ui.pairObs.disconnect();
+      if (ui.sideObs) ui.sideObs.disconnect();
+      const appEl = $("#app");
+      if (appEl) appEl.classList.toggle("collapsed", !!ui.sidePrev);
+      syncSideButtons(false);
       clearInterval(ui.clockT);
       clearInterval(ui.catT);
       clearTimeout(browserT);

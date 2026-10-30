@@ -121,7 +121,11 @@ body.deskMode #app .topPair,
 body.deskMode #app #lockBtn,
 body.deskMode #app #themeBtn,
 body.deskMode #app .top [data-open],
-body.deskMode #app #appsView{display:none!important}
+body.deskMode #app #appsView,
+body.deskMode #app #thread > .empty{display:none!important}
+/* Chat list: collapsible sidebar inside the Chat window (desktop.js). */
+body.deskMode #app.collapsed #menuBtn{display:inline-grid}
+body.deskMode #app .sidebar{overflow:hidden}
 body.deskMode #settings{display:none!important}
 body.deskMode #deskHold{display:none!important}
 

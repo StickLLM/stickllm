@@ -1113,11 +1113,10 @@ function renderThread(opts) {
   const th = $("#thread"), c = state.current;
   if (mainView !== "apps") $("#chatTitle").textContent = c ? c.title : "New chat";
   if (!c || !c.msgs.length) {
+    // 0.5.6: no example prompts. The desktop Chat window hides this block
+    // too (just the input); Classic keeps the heading and storage line.
     th.innerHTML = `<div class="empty"><span class="logo lg"></span><h2>What can I help with?</h2>
-      <p>${esc(heroModeLine(state.mode))}</p>
-      <div class="sugg"><button>Summarize a long article I paste in</button><button>Write a bash script to rename photos by date</button>
-      <button>Explain how LUKS encryption works</button><button>Draft a polite follow-up email</button></div></div>`;
-    $$(".sugg button", th).forEach((b) => (b.onclick = () => { $("#input").value = b.textContent; send(); }));
+      <p>${esc(heroModeLine(state.mode))}</p></div>`;
     return;
   }
   th.innerHTML = `<div class="msgs">${c.msgs.map((m, i) => msgHtml(m, i)).join("")}</div>`;
