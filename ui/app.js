@@ -1642,6 +1642,19 @@ async function loadAppAgentApps() {
   pick.hidden = !appAgentApps.length;
   setAppTarget(appAgentApps.includes(cur) ? cur : "", appAgentAuto);
 }
+// 0.5.5: after the app agent deploys or undoes, reload that app's open tab
+// (the kiosk's Node-RED editor does not show flows changed over the Admin
+// API until it reloads). Only a tab this page opened (appTabs) can be
+// reloaded, and it is not focused. The event is for in-page app views.
+const APPAGENT_TAB_IDS = { nodered: "node-red" };
+function reloadAgentAppTab(app) {
+  const id = APPAGENT_TAB_IDS[app] || app;
+  try { window.dispatchEvent(new CustomEvent("stickllm-app-changed", { detail: { app, id } })); } catch (e) {}
+  const link = appTabLink(id);
+  const w = appTabHandle(link ? link.target : "stickllm-" + id);
+  if (!w || !link || appTabIsBlank(w)) return false;
+  try { w.location.href = new URL(link.href, location.href).href; return true; } catch (e) { return false; }
+}
 async function sendToApp(app, text) {
   if (appAgentBusy) return;
   if (!(await ensurePaired())) return;
@@ -1667,7 +1680,7 @@ async function sendToApp(app, text) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || j.message || `The app agent answered ${r.status}`);
     pend.t = appAgentReply(app, j);
-    if ((j.results || []).some((x) => x.ok)) pend.appUndo = app;
+    if ((j.results || []).some((x) => x.ok)) { pend.appUndo = app; reloadAgentAppTab(app); }
   } catch (e) {
     pend.t = `**${APPAGENT_NAMES[app] || app}:** ${e.message || e}`;
     pend.warn = "Nothing was sent to the chat model.";
@@ -1693,7 +1706,7 @@ async function appAgentUndo(i) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || `The app agent answered ${r.status}`);
     line = `**${APPAGENT_NAMES[app] || app}:** ${j.ok ? "Undone." : "Nothing to undo."} ${String(j.message || "").slice(0, 200)}`;
-    if (j.ok) m.appUndo = "";
+    if (j.ok) { m.appUndo = ""; reloadAgentAppTab(app); }
   } catch (e) {
     line = `**${APPAGENT_NAMES[app] || app}:** undo failed: ${e.message || e}`;
   } finally {

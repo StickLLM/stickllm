@@ -1,7 +1,7 @@
 """Node-RED adapter over the Admin HTTP API (port of intent/nr_app.py). Every successful edit is deployed
 immediately; undo restores the flows from before the previous user request."""
-import copy, json, os, shlex, urllib.request
-from .nr_tool import NodeRed
+import copy, json, os, shlex, urllib.error, urllib.request
+from .nr_tool import NodeRed, editor_html
 from . import manual
 
 ACTIONS = """actions (one per line, key=value; quote values with spaces):
@@ -19,7 +19,7 @@ types and keys:
   inject  every=SECONDS once=true payload=timestamp|NUMBER|"text" topic=T
   debug   (none)          function code="JS ending with return msg;"
   change  set=payload to=VALUE      switch rule=gt|lt|eq|neq|gte|lte value=V
-  http-in method=get|post url=/path    http-response (none)    template text="reply text"
+  http-in method=get|post url=/path (never /: that is the editor)    http-response (none)    template text="reply text"
 Every successful edit is deployed automatically."""
 
 def normalize_cmd(cmd):
@@ -47,6 +47,7 @@ class NodeRedAdapter:
         self.url = url.rstrip("/"); self.manual = manual("MANUAL_nodered.md")
         if start is not None: self._post(start)
         self.nr = NodeRed(self.url); self.turn_stack = []; self.history = []; self._log = []; self._text = ""; self._snapf = None
+        self._checked = {}
 
     def _post(self, flows):
         req = urllib.request.Request(self.url + "/flows", data=json.dumps(flows).encode(), method="POST",
@@ -93,6 +94,36 @@ class NodeRedAdapter:
             ok2, out2 = self.nr.run("deploy")
             if not ok2: return False, out2
             if c != "test": self._log.append(cmd.strip())
+            ok, out = self.post_deploy_check(ok, out)
+        return ok, out
+
+    def endpoints(self):
+        """deployed GET http-in nodes whose wires reach an http-response: {url: chain signature}"""
+        by = {n["id"]: n for n in self.nr.flows if n["type"] != "tab"}; out = {}
+        for n in by.values():
+            if n["type"] != "http in" or n.get("method", "get") != "get" or not n.get("url"): continue
+            seen, todo, done = set(), [n["id"]], False
+            while todo:
+                x = by.get(todo.pop())
+                if not x or x["id"] in seen: continue
+                seen.add(x["id"]); done = done or x["type"] == "http response"
+                todo += [d for ws in x.get("wires", []) for d in ws]
+            if done: out[n["url"]] = json.dumps(sorted((by[i]["id"], json.dumps(by[i], sort_keys=True)) for i in seen))
+        return out
+
+    def post_deploy_check(self, ok, out):
+        """after a deploy, call each finished GET endpoint once (per change) and make sure the answer is the flow's
+        output, not the Node-RED editor page that a missing or shadowing endpoint returns"""
+        for url, sig in self.endpoints().items():
+            if self._checked.get(url) == sig: continue
+            self._checked[url] = sig
+            try:
+                with urllib.request.urlopen(self.url + url, timeout=4) as r: st, body = r.status, r.read(4000).decode(errors="replace")
+            except urllib.error.HTTPError as e: st, body = e.code, e.read(4000).decode(errors="replace")
+            except Exception as e: out += "; check GET %s: no answer (%s)" % (url, e.__class__.__name__); continue
+            if editor_html(body):
+                return False, out + "; ERROR: check GET %s returned the Node-RED editor page, not the flow's output" % url
+            out += "; check GET %s: HTTP %s %s" % (url, st, json.dumps(body.strip()[:80]))
         return ok, out
 
 class _NRSim:
