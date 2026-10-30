@@ -1,0 +1,11 @@
+/* StickLLM: the "Back to Apps" link added to the header. Without this it is
+   an unstyled block above the title and collides with it. */
+header { position: relative; }
+header > a.stickBack {
+  position: absolute; top: 8px; right: 14px;
+  color: var(--app-header-color); opacity: 0.85;
+  font-size: 0.9rem; line-height: 1.6; text-decoration: none;
+  padding: 2px 10px; border: 1px solid currentColor; border-radius: 6px;
+}
+header > a.stickBack:hover, header > a.stickBack:focus-visible { opacity: 1; background: var(--app-header-bg-highlight); }
+header h1 { padding-right: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

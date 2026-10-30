@@ -681,6 +681,8 @@ function appRowMessage(id, text) {
 function openAppPaired(a) {
   const box = a.closest("[data-actions-for]");
   const id = box ? box.dataset.actionsFor : (a.dataset.appId || a.dataset.catalogApp || a.dataset.starter || "");
+  // Desktop layout (desktop.js): bundled starter apps open in a window.
+  if (window.stickDesk && window.stickDesk.handles(id)) return !!window.stickDesk.openApp(id);
   const link = a.dataset.openLink || "";
   const target = a.getAttribute("target") || ("stickllm-" + id);
   const href = a.href;
@@ -1024,6 +1026,8 @@ function clearOnLock() {
     activeChatId = null;
     for (const w of appTabs.values()) { try { if (w && !w.closed) w.close(); } catch (_) {} }
     appTabs.clear();
+    // Desktop layout: app windows can show vault data too; close them all.
+    try { if (window.stickDesk) window.stickDesk.closeAll(); } catch (_) {}
     $$("textarea").forEach((t) => { t.value = ""; });
     try { if (typeof renderAttach === "function") renderAttach(); } catch (_) {}
     applyModeUi("ephemeral");
@@ -5841,6 +5845,9 @@ function docsOpenHref(doc) {
   return "/apps/docs/?open=" + encodeURIComponent(String(doc || ""));
 }
 function openAppTab(id, doc) {
+  // Desktop layout: starter apps (and Agent Zero's open_app for them) open in
+  // a window on this page, so no pop-up permission is needed.
+  if (window.stickDesk && window.stickDesk.handles(id)) return window.stickDesk.openApp(id);
   const link = appTabLink(id);
   if (!link) return null;
   const cid = APP_ID_ALIASES[id] || id;
@@ -6073,6 +6080,9 @@ function startOpenAppEvents() {
   connect();
 }
 
+// Desktop layout (desktop.js): the few page actions its launcher and tray
+// call. app.js is an IIFE, so they are published here explicitly.
+window.stickApp = Object.freeze({ openSettings, lockVault, showApps, toast });
 })();
 
 // 0.5.2: StickLLM's own right-click menu. On the kiosk (cage, software

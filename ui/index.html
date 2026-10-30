@@ -6,6 +6,7 @@
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
 <link rel="stylesheet" href="style.css?v=v054b" />
+<link rel="stylesheet" href="desktop.css?v=desk1" />
 </head>
 <body>
 <div class="app" id="app">
@@ -50,7 +51,7 @@
       <h1 class="chatTitle" id="chatTitle">New chat</h1>
       <div class="topRight">
         <button class="chip" id="statusChip" aria-haspopup="true" aria-expanded="false" title="Model and connection status">
-          <span class="dot"></span><span id="chipModel">none</span><span class="chipSep">�</span><span class="chipMeta" id="chipMeta">?</span>
+          <span class="dot"></span><span id="chipModel">none</span><span class="chipSep">·</span><span class="chipMeta" id="chipMeta">?</span>
           <span class="chipLoad" id="chipLoad" hidden><span class="chipLoadFill" id="chipLoadFill"></span></span>
         </button>
         <div class="popover" id="statusPop" hidden>
@@ -253,6 +254,8 @@
       <div class="seg" id="modeSeg2"><button data-mode="ephemeral" class="on">Ephemeral</button><button data-mode="vault">Vault</button></div></div>
     <div class="row"><div><b>Web lookup by default</b><small>Same as the Web toggle in the composer. Sources are listed only when used.</small></div>
       <label class="switch"><input type="checkbox" checked id="webDefault"><span></span></label></div>
+    <div class="row" id="layoutRow"><div><b>Layout</b><small>Desktop puts apps in movable windows with a taskbar. Auto uses it on a computer with a mouse and a window at least 1024&times;600; phones and tablets keep the classic layout. Saved for this browser only. <span id="layoutNow"></span></small></div>
+      <div class="seg" id="layoutSeg"><button data-layout="auto" class="on">Auto</button><button data-layout="desktop">Desktop</button><button data-layout="classic">Classic</button></div></div>
   </div>
   <h3>Keyboard shortcuts</h3>
   <div class="group kbd">
@@ -265,6 +268,12 @@
     <div class="row"><span>New PAIR CODE (stick screen)</span><span><kbd>F9</kbd></span></div>
     <div class="row"><span>Show SSH password (stick screen)</span><span><kbd>F10</kbd></span></div>
     <div class="row"><span>Close dialog</span><span><kbd>Esc</kbd></span></div>
+    <div class="row"><span>Desktop: launcher</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Space</kbd></span></div>
+    <div class="row"><span>Desktop: chat window</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>C</kbd></span></div>
+    <div class="row"><span>Desktop: next window</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>N</kbd></span></div>
+    <div class="row"><span>Desktop: maximise / restore</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>&uarr;</kbd></span></div>
+    <div class="row"><span>Desktop: minimise</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>M</kbd></span></div>
+    <div class="row"><span>Desktop: close window</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>W</kbd></span></div>
   </div>
 </section>
 
@@ -637,5 +646,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
 <script src="app.js?v=v054b"></script>
+<script src="desktop-core.js?v=desk1"></script>
+<script src="desktop.js?v=desk1"></script>
 </body>
 </html>

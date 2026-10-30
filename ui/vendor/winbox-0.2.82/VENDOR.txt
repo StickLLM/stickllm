@@ -1,0 +1,36 @@
+WinBox.js — vendored, pinned copy for the StickLLM desktop layout
+=================================================================
+
+name:      winbox
+version:   0.2.82 (pinned; do not auto-update)
+author:    Thomas Wilkerling (Nextapps GmbH)
+licence:   Apache License 2.0 (see LICENSE in this folder, unmodified)
+homepage:  https://github.com/nextapps-de/winbox
+source:    https://registry.npmjs.org/winbox/-/winbox-0.2.82.tgz
+fetched:   2026-10-29
+
+Tarball integrity (matches the npm registry "dist" record):
+  sha512:  fMHaLnnuhyw1mLvzmCTWMpRKDfXUK/Z08VdbyBqDaITFFAd3Fx2BGDCF6rzGSkWrQgo8fHTFpFICofyM36FTnA==
+  sha1:    915e0a4591cefcb3df6aab83ea2006e8da0804f9
+  sha256:  c96ccd6810689eda04be0129b12acb5296fff93279838a053db1388a3a9f8bc6
+
+Files copied byte-for-byte from the tarball (package/...):
+  8cd0a133fc5108b392e20faca94b6a093de78c16524f25200da1d8b43b86c06a  winbox.bundle.min.js
+  1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6  LICENSE
+  5e1e4cb6cf80ae86c98b847f6e58f3f9ec11800e61dc7105e79636f224219f8e  package.json
+  7cfdbf98004dcd057079b4c0094f066ac8e2b65c876eca4ccdbb8dee0f54d7c3  README.md
+  e7a8da59a82c8115ea1ebe9d9bd98c17092f27be32687d0fc2b84d01c830cefe  CHANGELOG.md
+  (winbox.bundle.min.js = package/dist/winbox.bundle.min.js; it inlines the
+   CSS and the control icons as data: URIs, so no other assets are needed.)
+
+Cross-check: the same file at the GitHub tag 0.2.82 (dist/winbox.bundle.min.js)
+differs from the npm copy only in line endings (npm CRLF, GitHub LF); with
+CR stripped the two are identical.
+
+Modifications: none. The file keeps its upstream copyright/licence header:
+  "WinBox.js v0.2.82 (Bundle) Author and Copyright: Thomas Wilkerling
+   Licence: Apache-2.0 Hosted by Nextapps GmbH"
+Upstream ships no NOTICE file for this release.
+
+Loaded only by ui/desktop.js when the desktop layout is active (never from a CDN).
+.gitattributes marks ui/vendor/** -text so git keeps these bytes as-is.

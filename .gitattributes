@@ -9,3 +9,6 @@ overlay/usr/local/bin/** text eol=lf
 live-build/hooks/** text eol=lf
 overlay/etc/sudoers.d/** text eol=lf
 *.gguf filter=lfs diff=lfs merge=lfs -text
+# Vendored third-party files keep upstream bytes (npm ships CRLF) so the
+# sha256 values in ui/vendor/*/VENDOR.txt stay checkable.
+ui/vendor/** -text

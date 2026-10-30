@@ -87,6 +87,8 @@ if [[ -f "$STICKLLM/overlay/etc/stickllm/default-model.env" ]]; then
   rsync -a "$STICKLLM/overlay/etc/stickllm/default-model.env" "$work/sq/etc/stickllm/default-model.env"
 fi
 rsync -a "$STICKLLM/ui/" "$work/sq/opt/stickllm/ui/"
+# Third-party licence index (WinBox.js, bundled apps); each licence file ships in ui/.
+install -m 644 "$STICKLLM/THIRD_PARTY_NOTICES.md" "$work/sq/opt/stickllm/ui/THIRD_PARTY_NOTICES.md"
 if [[ -f "$STICKLLM/overlay/opt/stickllm/ui/stickllm.json" ]]; then
   rsync -a "$STICKLLM/overlay/opt/stickllm/ui/stickllm.json" "$work/sq/opt/stickllm/ui/stickllm.json"
 else

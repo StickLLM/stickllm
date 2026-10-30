@@ -117,8 +117,8 @@
 
         <div style="margin-top: 1em;" class="checkboxes" id="play1">
             <label><input type="checkbox" class="checkbox" id="reduction" onclick="renderTiles(board.tiles)" /> <span>Reduction</span></label>
-            <label><input type="checkbox" class="checkbox" id="showhints" onclick="updateHints(true)" checked /> <span>Show hints</span></label>
-            <label><input type="checkbox" class="checkbox" id="autoplay" onclick="if (this.checked) startSolver()" checked /> <span>Auto play</span></label>
+            <label><input type="checkbox" class="checkbox" id="showhints" onclick="updateHints(true)" /> <span>Show hints</span></label>
+            <label><input type="checkbox" class="checkbox" id="autoplay" onclick="if (this.checked) startSolver()" /> <span>Auto play</span></label>
             <label><input type="checkbox" class="checkbox" id="acceptguesses" onclick="if (document.getElementById('autoplay').checked && this.checked) startSolver()" /> <span>Accept guesses</span></label>
 
         </div>
@@ -126,9 +126,9 @@
         <div style="margin-top: 10px;">
             <label>Overlay:</label>
             <select id="overlay" onchange="updateHints(true)">
-                <option value="none">None</option>
+                <option value="none" selected>None</option>
                 <option value="safety">Safety %</option>
-                <option value="mine" selected>Mine %</option>
+                <option value="mine">Mine %</option>
                 <option value="zero">Zero %</option>
             </select>
         </div>

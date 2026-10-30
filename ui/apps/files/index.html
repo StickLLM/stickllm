@@ -5,19 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Files — StickLLM</title>
 <style>
-  body{margin:0;background:#0e1214;color:#e4ecee;font:15px/1.45 "Segoe UI",sans-serif}
-  header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #263136}
-  header a{color:#2bb5a8;text-decoration:none}
+  :root{--bg:#0e1214;--fg:#e4ecee;--line:#263136;--line2:#1f292d;--ctl:#1e272c;--accent:#2bb5a8;--muted:#7d8c91;color-scheme:dark}
+  :root[data-theme="light"]{--bg:#f6f8f9;--fg:#14202a;--line:#d5dde1;--line2:#e3e9ec;--ctl:#ffffff;--accent:#0f8a7e;--muted:#5d6b72;color-scheme:light}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 "Segoe UI",sans-serif}
+  header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+  header a{color:var(--accent);text-decoration:none}
   main{padding:16px;display:grid;gap:12px}
-  button,input{font:inherit;background:#1e272c;color:#e4ecee;border:1px solid #263136;border-radius:8px;padding:7px 12px}
+  button,input{font:inherit;background:var(--ctl);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 12px}
   button{cursor:pointer}
   .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-  .roots button.on{border-color:#2bb5a8;color:#2bb5a8}
-  ul{list-style:none;margin:0;padding:0;border:1px solid #263136;border-radius:12px;overflow:hidden}
-  li{display:flex;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid #1f292d}
+  .roots button.on{border-color:var(--accent);color:var(--accent)}
+  ul{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  li{display:flex;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid var(--line2)}
   li:first-child{border-top:0}
   li button{background:none;border:0;color:inherit;padding:0;text-align:left}
-  .muted{color:#7d8c91}
+  .muted{color:var(--muted)}
   #msg{min-height:1.2em}
 </style>
 </head>
@@ -34,6 +36,6 @@
   <ul id="list"></ul>
   <p id="msg" class="muted"></p>
 </main>
-<script src="files.js?v=desk2"></script>
+<script src="files.js?v=desk3"></script>
 </body>
 </html>
