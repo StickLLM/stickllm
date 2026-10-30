@@ -3081,7 +3081,55 @@ def maybe_resume_stalled_download() -> dict:
     return {"resumed": True, "id": mid}
 
 
-def enrich_models(vram_gb: float | None = None) -> list[dict]:
+def _hf_local_row(model_id: str) -> dict | None:
+    """Map a Hugging Face search id (hf:<repo>:<file>) to the GGUF already on disk.
+
+    hf_search marks a hit "installed" when its filename exists in any model_dirs()
+    root, including baked /opt/stickllm/models/** (e.g. appagent/Qwen3.5-4B). Those
+    files are not in parse_catalog()/discover_local_ggufs(), so Load used to fail
+    with "unknown model". Build a one-off row for the matching file instead.
+    """
+    if not model_id.startswith("hf:"):
+        return None
+    base = os.path.basename(model_id.rsplit(":", 1)[-1])
+    if not base.lower().endswith(".gguf"):
+        return None
+    path = find_file(base)
+    if path is None:
+        return None
+    stem = base[: -len(".gguf")]
+    try:
+        size_gb = round(gguf_weight_bytes(path) / (1024**3), 2)
+    except OSError:
+        size_gb = 0.0
+    return {
+        "id": model_id,
+        "name": stem,
+        "tier": "local",
+        "approx_size_gb": size_gb,
+        "min_vram_gb": 0,
+        "quality_rank": 10,
+        "vision": False,
+        "pinned": False,
+        "hf_repo": "",
+        "hf_files": [path.name],
+        "notes": f"On disk: {path}",
+        "local_path": str(path),
+        "source": "host_ssd",
+    }
+
+
+def _missing_model_error(model_id: str) -> str:
+    if model_id.startswith("local-") or model_id.startswith("hf:"):
+        return (
+            "this model's file is not available right now - it was on a drive or "
+            "vault that is not mounted/unlocked. Unlock the vault or reconnect the "
+            "drive, then Refresh the Models page."
+        )
+    return f"unknown model: {model_id} (refresh the Models page)"
+
+
+def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None) -> list[dict]:
     if vram_gb is None:
         vram_gb = detect_vram_gb()
     ram_gb = detect_ram_gb()
@@ -3089,7 +3137,7 @@ def enrich_models(vram_gb: float | None = None) -> list[dict]:
     active = active_model_path()
     healthy, _ = llama_health_ok()
     loaded_ctx = active_ctx_size()
-    models = parse_catalog() + discover_local_ggufs()
+    models = parse_catalog() + discover_local_ggufs() + list(extra or [])
     gpu_rows = nvidia_gpu_rows() if gpu else []
     for m in models:
         files = m.get("hf_files") or []
@@ -3220,7 +3268,17 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     models = enrich_models()
     m = next((x for x in models if x["id"] == model_id), None)
     if not m:
-        return {"ok": False, "error": f"unknown model: {model_id}"}
+        row = _hf_local_row(model_id)
+        if row is not None:
+            want = row["local_path"]
+            # Reuse an existing catalog/local row for the same file (its meta); the
+            # response keeps the requested hf: id so the UI does not flag a mismatch.
+            m = next((x for x in models if x.get("installed") and x.get("path") == want), None)
+            if m is None:
+                models = enrich_models(extra=[row])
+                m = next((x for x in models if x["id"] == model_id), None)
+    if not m:
+        return {"ok": False, "error": _missing_model_error(model_id), "stale": True}
     if not m.get("installed"):
         return {"ok": False, "error": "model not downloaded yet"}
     if not m.get("fits") and m.get("source") != "host_ssd":

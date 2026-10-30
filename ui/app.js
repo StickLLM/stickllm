@@ -3006,6 +3006,8 @@ $("#activate").onclick = async () => {
     if ($("#popModel")) $("#popModel").textContent = loadMismatchText;
     renderModelsList();
     toast(e.message || loadMismatchText);
+    // The list may be stale (vault locked / drive unmounted since it was drawn).
+    refreshModels().then(() => renderModelsList()).catch(() => {});
   }
 };
 
