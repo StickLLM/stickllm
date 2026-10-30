@@ -1780,7 +1780,15 @@ def vault_health() -> dict:
     if mounted:
         return {"status": "unlocked", "mounted": True}
     # No vault created or attached yet: say "absent", not "locked" (v0.5.3).
-    return {"status": "locked" if vault_configured() else "absent", "mounted": False}
+    if vault_configured():
+        return {"status": "locked", "mounted": False}
+    doc = {"status": "absent", "mounted": False}
+    # Before the first unlock after boot the vault is not bound yet, but the
+    # stick's settings vault knows it (same test as stickllm-vault json_state):
+    # a locked vault, so the UI must not say "No vault set up" (0.5.5).
+    if (VAULT_META_DIRS[0].parent / "stickllm-settings-part.json").is_file():
+        doc["usb_settings"] = "present-locked"
+    return doc
 
 
 def chats_available() -> tuple[bool, str]:

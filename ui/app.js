@@ -989,7 +989,13 @@ async function focusVaultUnlock() {
   return true;
 }
 
+// Bumped on every vault open/locked change and when an unlock starts. A
+// health/status answer requested before that is stale: applying it repainted
+// "No vault set up" (and the Ephemeral tab, and a clear) just after unlock.
+let vaultEpoch = 0, vaultLocking = false;
+const vaultBusy = () => vaultUnlocking || vaultLocking;
 function setVaultChrome(open, absent = false) {
+  if (!!open !== !!state.vaultOpen) vaultEpoch += 1;
   // Open -> locked from anywhere (another browser, the kiosk lock combo, a
   // lock in Settings): clear the screen too, not only the chrome (0.5.4).
   if (!open && state.vaultOpen && !vaultUnlocking && !clearingOnLock) clearOnLock();
@@ -1013,6 +1019,7 @@ function setVaultChrome(open, absent = false) {
 function clearOnLock() {
   if (clearingOnLock) return;
   clearingOnLock = true;
+  vaultEpoch += 1;
   try {
     try { if (sendAbort) sendAbort.abort(); } catch (_) {}
     try { if (typeof stopSpeak === "function") stopSpeak(); } catch (_) {}
@@ -1038,11 +1045,13 @@ function clearOnLock() {
 async function lockVault() {
   // Screen first, so nothing stays readable while the lock call runs.
   clearOnLock();
+  vaultLocking = true;
   try {
     const res = await control("vault_lock");
     toast(res.ok !== false ? "Vault locked" : ("Lock failed: " + (res.error || "unknown")));
     setVaultChrome(false);
   } catch (e) { toast("Lock failed: " + e.message); }
+  finally { vaultLocking = false; vaultEpoch += 1; }
   try {
     await fetch("/api/session-mode", {
       method: "POST",
@@ -3173,7 +3182,9 @@ $("#delModel").onclick = () => {
 
 async function refreshStorage() {
   if (!(await ensurePaired())) return;
+  const ep = vaultEpoch;
   const st = await control("status");
+  if (ep !== vaultEpoch || vaultBusy()) return; // stale: the vault changed meanwhile
   const v = st.vault || {};
   const open = vaultIsOpen(v);
   setVaultChrome(open, vaultIsAbsent(v));
@@ -3663,6 +3674,7 @@ $("#unlockForm").onsubmit = async (e) => {
   if (vaultUnlocking) return;
   unlockMessage("");
   vaultUnlocking = true;
+  vaultEpoch += 1;
   if ($("#vcState")) $("#vcState").textContent = "Unlocking…";
   try {
     const payload = { passcode: pass };
@@ -4113,6 +4125,8 @@ $("#wifiBtn").onclick = async () => {
 async function refreshStatus() {
   // A refresh must not paint Loading until this browser is paired.
   if (!browserPaired) return;
+  const ep = vaultEpoch;
+  const vaultFresh = () => ep === vaultEpoch && !vaultBusy();
   try {
     const r = await fetch("/api/health", { cache: "no-store" });
     if (!r.ok && r.status !== 503) throw new Error("health " + r.status);
@@ -4122,7 +4136,7 @@ async function refreshStatus() {
     announceRemintFromConnect(j.connect);
     // Vault is highlighted only while the vault is unlocked (a locked vault
     // with a stale "vault" session mode shows Ephemeral).
-    if (j.session_mode) {
+    if (j.session_mode && vaultFresh()) {
       const vOpen = j.vault ? vaultIsOpen(j.vault) : state.vaultOpen;
       applyModeUi(j.session_mode === "vault" && vOpen ? "vault" : "ephemeral");
     }
@@ -4251,7 +4265,7 @@ async function refreshStatus() {
       }
     } catch (_) {}
     // vault chrome from health if present
-    if (j.vault) setVaultChrome(vaultIsOpen(j.vault), vaultIsAbsent(j.vault));
+    if (j.vault && vaultFresh()) setVaultChrome(vaultIsOpen(j.vault), vaultIsAbsent(j.vault));
     healthFails = 0;
   } catch (e) {
     healthFails += 1;

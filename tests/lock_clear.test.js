@@ -43,6 +43,7 @@ const env = {
 const factory = new Function("env", `
   let { $, $$, appTabs, state, calls } = env;
   let sessionMode = env.sessionMode, vaultUnlocking = env.vaultUnlocking, clearingOnLock = false, activeChatId = env.activeChatId, sendAbort = env.sendAbort;
+  let vaultEpoch = 0, vaultLocking = false; // 0.5.5 stale-answer guard
   const messages = [{ role: "system", content: "s" }, { role: "user", content: "hello secret" }];
   function stopSpeak() { calls.push("stopSpeak"); }
   function renderAttach() { calls.push("renderAttach"); }
