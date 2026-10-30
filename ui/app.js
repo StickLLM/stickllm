@@ -383,6 +383,8 @@ async function installAgent(extra) {
 }
 for (const btn of agentInstallButtons()) btn.onclick = () => installAgent();
 function showApps() {
+  // Desktop layout (0.5.6): the catalog is its own window (App Store).
+  if (window.stickDesk && window.stickDesk.handles("store") && window.stickDesk.openApp("store")) return;
   mainView = "apps";
   const thread = $("#thread");
   const composer = $("#composer");
@@ -681,7 +683,8 @@ function appRowMessage(id, text) {
 function openAppPaired(a) {
   const box = a.closest("[data-actions-for]");
   const id = box ? box.dataset.actionsFor : (a.dataset.appId || a.dataset.catalogApp || a.dataset.starter || "");
-  // Desktop layout (desktop.js): bundled starter apps open in a window.
+  // Desktop layout (desktop.js): starter and installed catalog apps open in
+  // a window on the desktop (0.5.6), never a browser tab.
   if (window.stickDesk && window.stickDesk.handles(id)) return !!window.stickDesk.openApp(id);
   const link = a.dataset.openLink || "";
   const target = a.getAttribute("target") || ("stickllm-" + id);
@@ -974,6 +977,8 @@ function unlockMessage(text) {
 // Take the user to the passcode box. If the form is hidden (the page thinks
 // the vault is open, or there is none) say why instead of failing silently.
 async function focusVaultUnlock() {
+  // Desktop layout (0.5.6): unlock from the taskbar's vault switch.
+  if (deskOn() && window.stickDesk.vaultPrompt && window.stickDesk.vaultPrompt()) return true;
   openSettings("storage");
   const form = $("#unlockForm");
   if (form && form.hidden) {
@@ -2053,8 +2058,12 @@ document.addEventListener("click", (e) => {
 });
 
 let lastFocus;
+// Desktop layout (0.5.6): Settings and Models are desktop windows, so the
+// modal stays hidden and desktop.js shows the right window instead.
+const deskOn = () => !!(window.stickDesk && window.stickDesk.active && window.stickDesk.active());
 function openSettings(sec = "general") {
-  lastFocus = document.activeElement; $("#settings").hidden = false; $("#statusPop").hidden = true;
+  const desk = deskOn();
+  lastFocus = document.activeElement; if (!desk) $("#settings").hidden = false; $("#statusPop").hidden = true;
   if (mobile()) toggleNav(false);
   showSec(sec, !mobile() || sec !== "__nav");
   if (sec === "models" || sec === "downloads") refreshModels().catch((e) => toast(e.message));
@@ -2062,9 +2071,20 @@ function openSettings(sec = "general") {
   if (sec === "devices" || sec === "network" || sec === "system" || sec === "about")
     refreshStatus().catch(() => {});
   if (sec === "chats") renderSaved();
+  if (desk && window.stickDesk.onSettings) window.stickDesk.onSettings(sec);
 }
 function showSec(sec, open = true) {
-  $$(".sec").forEach((s) => (s.hidden = s.id !== "sec-" + sec));
+  // Only sections that share a container switch: in the desktop layout the
+  // Models window holds Models + Downloads, the Settings window the rest.
+  const target = $("#sec-" + sec);
+  if (!target) return;
+  const scope = target.parentNode || document;
+  $$(".sec", scope).forEach((s) => (s.hidden = s.id !== "sec-" + sec));
+  if (!target.closest(".setScroll")) {
+    $$("[data-desk-sec]").forEach((b) => b.classList.toggle("on", b.dataset.deskSec === sec));
+    scope.scrollTop = 0;
+    return;
+  }
   $$(".setNav [data-sec]").forEach((b) => {
     b.classList.toggle("on", b.dataset.sec === sec);
     b.setAttribute("aria-current", b.dataset.sec === sec ? "page" : "false");
@@ -2073,7 +2093,11 @@ function showSec(sec, open = true) {
   $(".modal:not(.small):not(.fp)")?.classList.toggle("secOpen", open);
   $(".setScroll").scrollTop = 0;
 }
-function closeSettings() { $("#settings").hidden = true; lastFocus?.focus?.(); }
+function closeSettings() {
+  $("#settings").hidden = true;
+  if (deskOn() && window.stickDesk.onSettingsClose) window.stickDesk.onSettingsClose();
+  lastFocus?.focus?.();
+}
 $$("[data-open]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openSettings(b.dataset.open); }));
 $$(".setNav [data-sec]").forEach((b) => (b.onclick = () => {
   showSec(b.dataset.sec);
@@ -2081,6 +2105,7 @@ $$(".setNav [data-sec]").forEach((b) => (b.onclick = () => {
   if (b.dataset.sec === "storage") refreshStorage().catch(() => {});
 }));
 $$("[data-sec-go]").forEach((b) => (b.onclick = () => {
+  if (deskOn()) { openSettings(b.dataset.secGo); return; }
   showSec(b.dataset.secGo);
   if (b.dataset.secGo === "models") refreshModels().catch((e) => toast(e.message));
 }));
@@ -4073,6 +4098,8 @@ function openAgentPaired(e) {
   if (!a || e.button || e.ctrlKey || e.metaKey || e.shiftKey) return;
   e.preventDefault();
   e.stopPropagation();
+  // Desktop layout (0.5.6): Agent is its own window on the desktop.
+  if (window.stickDesk && window.stickDesk.handles("agent") && window.stickDesk.openApp("agent")) return;
   const fallback = a.href;
   let resolve = null;
   if (!detectLocalHost() && token) {
@@ -6137,7 +6164,56 @@ function startOpenAppEvents() {
 
 // Desktop layout (desktop.js): the few page actions its launcher and tray
 // call. app.js is an IIFE, so they are published here explicitly.
-window.stickApp = Object.freeze({ openSettings, lockVault, showApps, toast });
+// The app URL for a desktop window: a paired LAN browser signs in to an
+// add-on through its one-time open link (Agent: /api/agent/handoff); the
+// kiosk and same-origin pages use the plain URL.
+async function deskAppUrl(id) {
+  if (id === "agent") {
+    const fallback = ($("#agentLink") && $("#agentLink").href) || "";
+    if (!detectLocalHost() && token) {
+      try {
+        const r = await fetch("/api/agent/handoff", {
+          method: "POST", cache: "no-store",
+          headers: authHeaders({ "Content-Type": "application/json" }), body: "{}",
+        });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j.url) return j.url;
+      } catch (_) {}
+    }
+    return fallback;
+  }
+  const a = catalogApps.get(id);
+  if (!a || !a.open_url) return "";
+  if (a.open_link && !detectLocalHost() && token) {
+    try {
+      const r = await fetch(a.open_link, {
+        method: "POST", cache: "no-store",
+        headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ id }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.url) return j.url;
+    } catch (_) {}
+  }
+  return a.open_url;
+}
+function deskCatalog() {
+  return [...catalogApps.values()].filter(deskAppOpenable).map((a) => {
+    const g = DESK_APP_GLYPHS[a.id] || { label: a.tile || a.name || a.id, color: "#475569", svg: '<rect x="4" y="4" width="16" height="16" rx="3"/>' };
+    return { id: a.id, title: a.display_name || a.name || g.label, label: g.label, color: g.color, svg: g.svg,
+      frame: a.frame !== false, running: !!a.running, state: a.state || "" };
+  });
+}
+function deskAgent() {
+  const link = $("#agentLink");
+  return { installed: !!(link && !link.hidden), href: (link && link.href) || "",
+    state: ($("#agentLinkState") && $("#agentLinkState").textContent) || "" };
+}
+window.stickApp = Object.freeze({
+  openSettings, closeSettings, showSec, lockVault, showApps, toast,
+  setSessionMode, focusVaultUnlock, refreshApps, refreshAgentLink, refreshModels, installAgent,
+  deskAppUrl, deskCatalog, deskAgent, control,
+  sessionMode: () => state.mode, vaultOpen: () => !!state.vaultOpen,
+});
 })();
 
 // 0.5.2: StickLLM's own right-click menu. On the kiosk (cage, software

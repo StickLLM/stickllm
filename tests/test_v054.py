@@ -245,7 +245,7 @@ def test_every_lock_path_clears_screen():
     assert 'applyModeUi("ephemeral")' in chrome
 
 
-def test_ui_cache_bust_v055():
+def test_ui_cache_bust_v056():
     html = _text(ROOT / "ui" / "index.html")
-    assert "app.js?v=v055" in html and "style.css?v=v055" in html
-    assert "v054a" not in html and "v054b" not in html
+    assert "app.js?v=v056" in html and "style.css?v=v056" in html
+    assert "v054a" not in html and "v054b" not in html and "?v=v055" not in html

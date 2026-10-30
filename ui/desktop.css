@@ -111,3 +111,92 @@ body.deskMode .launchFoot{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;pa
 body.deskMode .launchAct{display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color:var(--ink2);cursor:pointer;font-size:13px}
 body.deskMode .launchAct:hover{border-color:var(--accent);color:var(--ink)}
 body.deskMode .launchAct svg{width:16px;height:16px}
+
+/* ======== 0.5.6: chat-only window, system apps, taskbar switch ======== */
+/* Chat window = chat only. Everything else is its own desktop app. */
+body.deskMode #app .sideFoot,
+body.deskMode #app .modeSeg,
+body.deskMode #app #modeHint,
+body.deskMode #app .topPair,
+body.deskMode #app #lockBtn,
+body.deskMode #app #themeBtn,
+body.deskMode #app .top [data-open],
+body.deskMode #app #appsView{display:none!important}
+body.deskMode #settings{display:none!important}
+body.deskMode #deskHold{display:none!important}
+
+/* System app colours. */
+body.deskMode [data-app="browser"] .deskGlyph{background:#0ea5e9}
+body.deskMode [data-app="agent"] .deskGlyph{background:#0f172a}
+body.deskMode [data-app="store"] .deskGlyph{background:#db2777}
+body.deskMode [data-app="models"] .deskGlyph{background:#4f46e5}
+body.deskMode [data-app="settings"] .deskGlyph{background:#475569}
+body.deskMode .deskGlyph{display:grid;place-items:center;color:#fff}
+body.deskMode .deskGlyph svg{fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+body.deskMode .deskGlyphImg img{width:72%;height:72%;object-fit:contain}
+body.deskMode .deskGlyphCat{font-weight:700;font-size:15px;letter-spacing:.02em;text-transform:uppercase}
+
+/* Mounted panels fill their window. */
+body.deskMode .wb-body > .modal{position:static;width:100%!important;height:100%!important;max-width:none;max-height:none;border:0;border-radius:0;box-shadow:none}
+body.deskMode .wb-body > .modal .setNav [data-sec="models"],
+body.deskMode .wb-body > .modal .setNav [data-sec="downloads"],
+body.deskMode .wb-body > .modal #setClose,
+body.deskMode .wb-body > .modal #setBack{display:none!important}
+body.deskMode .deskPanel{height:100%;display:flex;flex-direction:column;background:var(--panel);color:var(--ink)}
+body.deskMode .deskScroll{flex:1;min-height:0;overflow:auto;padding:18px 26px 26px}
+body.deskMode .deskTabs{display:flex;gap:4px;padding:10px 18px 0;border-bottom:1px solid var(--line2);background:var(--bg2)}
+body.deskMode .deskTabs button{border:0;background:none;padding:9px 16px;border-radius:8px 8px 0 0;color:var(--ink2);cursor:pointer;font-size:14px;border-bottom:2px solid transparent}
+body.deskMode .deskTabs button.on{color:var(--accent);font-weight:600;border-bottom-color:var(--accent);background:var(--panel)}
+body.deskMode .deskPanelHead{padding:16px 26px 12px;border-bottom:1px solid var(--line2);display:flex;flex-direction:column;gap:2px}
+body.deskMode .deskPanelHead b{font-size:17px}
+body.deskMode .deskPanelHead small{color:var(--muted)}
+body.deskMode .deskStore .appsInner{max-width:none}
+body.deskMode .deskAgentPanel{align-items:center;justify-content:center}
+body.deskMode .apCard{max-width:440px;text-align:center;padding:24px}
+body.deskMode .apCard img{width:72px;height:72px;border-radius:16px;background:#0f172a;padding:10px}
+body.deskMode .apCard h2{margin:14px 0 6px}
+body.deskMode .apCard p{color:var(--ink2);margin:6px 0}
+body.deskMode .apCard .apState{color:var(--muted);font-size:13px}
+body.deskMode .apActs{display:flex;gap:8px;justify-content:center;margin-top:16px}
+body.deskMode .winbox .wb-pop{background-size:15px auto;background-position:center;background-repeat:no-repeat;width:30px}
+
+/* ---- Taskbar: storage mode switch ---- */
+body.deskMode .traySep{width:1px;height:24px;background:var(--line);margin:0 6px}
+body.deskMode .trayMode{display:flex;align-items:center;height:34px;padding:2px;border:1px solid var(--line);border-radius:10px;background:var(--bg2)}
+body.deskMode .trayMode button{display:flex;align-items:center;gap:6px;height:28px;padding:0 11px;border:0;border-radius:8px;background:none;color:var(--muted);font-size:13px;cursor:pointer}
+body.deskMode .trayMode button svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2}
+body.deskMode .trayMode .tmLock{display:grid}
+body.deskMode .trayMode button:hover{color:var(--ink)}
+body.deskMode .trayMode button.on[data-tmode="ephemeral"]{background:color-mix(in srgb,var(--warn) 20%,var(--panel));color:var(--ink);font-weight:620;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--warn) 50%,transparent)}
+body.deskMode .trayMode button.on[data-tmode="vault"]{background:color-mix(in srgb,var(--ok) 20%,var(--panel));color:var(--ink);font-weight:620;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ok) 50%,transparent)}
+body.deskMode .trayMode[data-vault="open"] [data-tmode="vault"] .tmLock{color:var(--ok)}
+body.deskMode .trayMode[data-vault="locked"] [data-tmode="vault"] .tmLock,
+body.deskMode .trayMode[data-vault="none"] [data-tmode="vault"] .tmLock{color:var(--muted)}
+
+/* ---- Taskbar: model button ---- */
+body.deskMode .trayModel{position:relative;display:flex;align-items:center;gap:8px;height:34px;max-width:360px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);font-size:13px;cursor:pointer;overflow:hidden}
+body.deskMode .trayModel:hover{border-color:var(--accent)}
+body.deskMode .trayModel .tmName{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:580}
+body.deskMode .trayModel .tmMeta{color:var(--muted);white-space:nowrap}
+body.deskMode .trayModel .tmMeta:empty{display:none}
+body.deskMode .trayModel.none{border-style:dashed;color:var(--accent)}
+body.deskMode .trayModel .tmLoad{left:8px;right:8px;bottom:3px;height:3px}
+
+/* ---- Vault popover ---- */
+body.deskMode .vaultPop{position:fixed;right:8px;bottom:56px;z-index:30;width:340px;padding:14px;background:color-mix(in srgb,var(--panel) 96%,transparent);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:10px;backdrop-filter:blur(16px)}
+body.deskMode .vaultPop[hidden]{display:none}
+body.deskMode .vpHead{display:flex;gap:12px;align-items:center}
+body.deskMode .vpHead b{display:block;font-size:15px}
+body.deskMode .vpHead small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+body.deskMode .vpIcon{display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:var(--bg2);flex:none}
+body.deskMode .vpIcon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}
+body.deskMode .vaultPop[data-vault="open"] .vpIcon{color:var(--ok);background:color-mix(in srgb,var(--ok) 15%,var(--bg2))}
+body.deskMode .vpUnlock{display:flex;gap:8px}
+body.deskMode .vpUnlock[hidden]{display:none}
+body.deskMode .vpUnlock input{flex:1;min-width:0;height:34px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+body.deskMode .vpUnlock input:focus{border-color:var(--accent);outline:none}
+body.deskMode .vpMsg{color:var(--danger);font-size:12.5px}
+body.deskMode .vpMsg.info{color:var(--muted)}
+body.deskMode .vpActs{display:flex;flex-wrap:wrap;gap:6px}
+body.deskMode .vpActs [hidden]{display:none}
+body.deskMode .vpKeys{color:var(--muted);font-size:11.5px}

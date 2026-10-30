@@ -2,7 +2,11 @@
  * Windows: WinBox.js 0.2.82, vendored at vendor/winbox-0.2.82/ (Apache-2.0,
  * see THIRD_PARTY_NOTICES.md). Loaded only when the desktop layout starts.
  * Runs after app.js and reuses its globals (openSettings, showApps,
- * lockVault, toast). Classic/mobile layout is left exactly as it was. */
+ * lockVault, toast). Classic/mobile layout is left exactly as it was.
+ * 0.5.6: the chat window is chat only. Settings, Models, the App Store,
+ * the Agent and the Browser are their own desktop apps; installed catalog
+ * apps get a desktop icon and a launcher entry; the taskbar carries the
+ * Ephemeral/Vault switch (with unlock) and the model button. */
 (function () {
   "use strict";
   const core = window.StickDeskCore;
@@ -23,6 +27,39 @@
     monitor: { title: "System monitor", w: 760, h: 540 },
   };
   const CHAT = "chat";
+  // StickLLM's own apps (0.5.6). Settings, Models and the App Store mount the
+  // existing panels from index.html; Agent and catalog apps are iframes.
+  const SYS = {
+    chat: { title: "Chat" },
+    browser: { title: "Browser", w: 1180, h: 780 },
+    agent: { title: "Agent", w: 1180, h: 800 },
+    store: { title: "App Store", w: 1000, h: 700 },
+    models: { title: "Models", w: 1060, h: 740 },
+    settings: { title: "Settings", w: 1000, h: 720 },
+  };
+  const GLYPH = {
+    chat: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>',
+    browser: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>',
+    store: '<svg viewBox="0 0 24 24"><path d="M5 8h14l-1 12H6z"/><path d="M9 8V6a3 3 0 016 0v2"/></svg>',
+    models: '<svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>',
+    settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>',
+  };
+  // Desktop order: StickLLM apps first, starter apps, catalog apps, then
+  // the two "system" apps at the end (like a dock).
+  const FRONT = ["chat", "browser", "agent", "store"];
+  const BACK = ["models", "settings"];
+  let catalog = [];         // [{id,title,label,color,svg,frame,running,state}] from app.js
+  const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const catalogApp = (id) => catalog.find((a) => a.id === id) || null;
+  function appTitle(id) {
+    if (has(SYS, id)) return SYS[id].title;
+    if (has(APPS, id)) return APPS[id].title;
+    const c = catalogApp(id);
+    return c ? c.title : id;
+  }
+  function appOrder() {
+    return FRONT.concat(Object.keys(APPS), catalog.map((a) => a.id), BACK);
+  }
 
   let on = false;
   // Published by app.js (window.stickApp); absent until app.js has run.
@@ -33,10 +70,25 @@
   let starting = null;
 
   function iconFor(id) {
-    if (id === CHAT) {
+    if (has(GLYPH, id)) {
       const s = document.createElement("span");
       s.className = "deskGlyph";
-      s.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>';
+      s.innerHTML = GLYPH[id];
+      return s;
+    }
+    if (id === "agent") {
+      const s = document.createElement("span");
+      s.className = "deskGlyph deskGlyphImg";
+      s.innerHTML = '<img src="agent-zero.png?v=desk4" alt="">';
+      return s;
+    }
+    const c = catalogApp(id);
+    if (c) {
+      const s = document.createElement("span");
+      s.className = "deskGlyph deskGlyphCat";
+      if (c.color) s.style.background = c.color;
+      if (c.svg) s.innerHTML = /^\s*<svg/.test(c.svg) ? c.svg : '<svg viewBox="0 0 24 24">' + c.svg + "</svg>";
+      else s.textContent = (c.label || c.title || "?").slice(0, 2);
       return s;
     }
     const g = $('#deskIcons a.deskIcon[data-starter="' + id + '"] .deskGlyph');
@@ -108,16 +160,6 @@
     wall.id = "deskWall";
     wall.setAttribute("role", "list");
     wall.setAttribute("aria-label", "Desktop");
-    [CHAT].concat(Object.keys(APPS)).forEach((id) => {
-      const b = el("button", "wallIcon");
-      b.type = "button";
-      b.dataset.app = id;
-      b.setAttribute("role", "listitem");
-      b.title = "Open " + (id === CHAT ? "Chat" : APPS[id].title) + " (double-click)";
-      b.appendChild(iconFor(id));
-      b.appendChild(el("span", "wallLabel")).textContent = id === CHAT ? "Chat" : APPS[id].title;
-      wall.appendChild(b);
-    });
     wall.addEventListener("dblclick", (e) => {
       const b = e.target.closest(".wallIcon");
       if (b) openApp(b.dataset.app);
@@ -144,6 +186,10 @@
     tasks.setAttribute("aria-label", "Open windows");
     tasks.addEventListener("click", (e) => {
       const b = e.target.closest(".taskBtn");
+      if (b && b.classList.contains("taskExt")) {
+        if (appApi().control) appApi().control("browser_focus", { id: b.dataset.ext }).catch(() => {});
+        return;
+      }
       if (b && wm) wm.taskbarClick(b.dataset.app);
     });
     const tray = el("div", "tray");
@@ -166,15 +212,6 @@
       '<div class="launchHead">Apps</div><div class="launchGrid" id="launchGrid" role="menu"></div>' +
       '<div class="launchFoot" id="launchFoot"></div>';
     const grid = launcher.querySelector("#launchGrid");
-    [CHAT].concat(Object.keys(APPS)).forEach((id) => {
-      const b = el("button", "launchItem");
-      b.type = "button";
-      b.dataset.app = id;
-      b.setAttribute("role", "menuitem");
-      b.appendChild(iconFor(id));
-      b.appendChild(el("span", "launchLabel")).textContent = id === CHAT ? "Chat" : APPS[id].title;
-      grid.appendChild(b);
-    });
     const foot = launcher.querySelector("#launchFoot");
     const footBtn = (key, label, svg) => {
       const b = el("button", "launchAct", svg + "<span></span>");
@@ -184,7 +221,7 @@
       foot.appendChild(b);
       return b;
     };
-    footBtn("apps", "Apps & installs", SVG.apps);
+    footBtn("apps", "App Store", SVG.apps);
     footBtn("settings", "Settings", SVG.gear);
     footBtn("lock", "Lock vault", SVG.lockShut).hidden = true;
     footBtn("classic", "Classic layout", SVG.classic);
@@ -212,9 +249,58 @@
       if (step) { e.preventDefault(); const n = items[i + step]; (n || (step < 0 ? launcher.querySelector("#launchSearch") : items[items.length - 1])).focus(); }
     });
 
-    document.body.append(layer, bar, launcher);
-    return { layer: layer, wall: wall, bar: bar, start: start, tasks: tasks, tray: tray, launcher: launcher };
+    // Hidden parking spot for panels while their window is closed.
+    const hold = el("div", "deskHold");
+    hold.id = "deskHold";
+    hold.hidden = true;
+    document.body.append(layer, bar, launcher, hold);
+    return { layer: layer, wall: wall, bar: bar, start: start, tasks: tasks, tray: tray, launcher: launcher, grid: grid, hold: hold };
   }
+
+  // Wall icons and launcher entries, rebuilt when the installed set changes.
+  let iconSig = "";
+  function renderIcons() {
+    if (!ui) return;
+    const order = appOrder();
+    const sig = order.join(",") + "|" + catalog.map((a) => a.title + a.color).join(",");
+    if (sig === iconSig) return;
+    iconSig = sig;
+    ui.wall.textContent = "";
+    ui.grid.textContent = "";
+    order.forEach((id) => {
+      const title = appTitle(id);
+      const b = el("button", "wallIcon");
+      b.type = "button";
+      b.dataset.app = id;
+      if (catalogApp(id)) b.dataset.catalog = "1";
+      b.setAttribute("role", "listitem");
+      b.title = "Open " + title + " (double-click)";
+      b.appendChild(iconFor(id));
+      b.appendChild(el("span", "wallLabel")).textContent = title;
+      ui.wall.appendChild(b);
+      const l = el("button", "launchItem");
+      l.type = "button";
+      l.dataset.app = id;
+      l.setAttribute("role", "menuitem");
+      l.appendChild(iconFor(id));
+      l.appendChild(el("span", "launchLabel")).textContent = title;
+      ui.grid.appendChild(l);
+    });
+  }
+  // Installed catalog apps come from app.js (the same /api/apps rows the App
+  // Store shows). Windows of apps that were uninstalled are closed.
+  function syncCatalog() {
+    if (!on) return;
+    const api = appApi();
+    const next = api.deskCatalog ? api.deskCatalog() : [];
+    const gone = catalog.filter((a) => !next.some((b) => b.id === a.id)).map((a) => a.id);
+    catalog = next;
+    gone.forEach((id) => { if (wm && wm.has(id)) wm.close(id, true); });
+    renderIcons();
+    renderTasks();
+  }
+  let catT = 0;
+  function scheduleCatalog() { clearTimeout(catT); catT = setTimeout(syncCatalog, 80); }
 
   function filterLauncher() {
     const q = ui.launcher.querySelector("#launchSearch").value.trim().toLowerCase();
@@ -238,9 +324,9 @@
     }
   }
   function launcherAction(act) {
-    if (act === "settings") { if (appApi().openSettings) appApi().openSettings(); }
+    if (act === "settings") openApp("settings");
     else if (act === "lock") { if (appApi().lockVault) appApi().lockVault(); }
-    else if (act === "apps") { openApp(CHAT); if (appApi().showApps) appApi().showApps(); }
+    else if (act === "apps") openApp("store");
     else if (act === "classic") { core.writeOverride(store, "classic"); syncLayoutSeg(); evaluate(); }
   }
 
@@ -253,29 +339,57 @@
   }
   function buildTray() {
     const tray = ui.tray;
-    const pairSrc = $(".topPair");
-    if (pairSrc) {
-      const p = pairSrc.cloneNode(true);
-      p.classList.remove("topPair");
-      p.classList.add("trayBtn", "trayPair");
-      p.addEventListener("click", (e) => { e.preventDefault(); pairSrc.click(); });
-      tray.appendChild(p);
-    }
+    // Ephemeral | Vault switch. app.js's setSessionMode keeps every 0.5.5
+    // guard (vault must be unlocked, stale-response epoch, lock clears chat).
+    const mode = el("div", "trayMode");
+    mode.id = "trayMode";
+    mode.setAttribute("role", "radiogroup");
+    mode.setAttribute("aria-label", "Storage mode");
+    mode.innerHTML =
+      '<button type="button" role="radio" data-tmode="ephemeral"><svg viewBox="0 0 24 24"><path d="M12 3c3 4 6 7 6 11a6 6 0 01-12 0c0-4 3-7 6-11z"/></svg><span>Ephemeral</span></button>' +
+      '<button type="button" role="radio" data-tmode="vault"><span class="tmLock"></span><span>Vault</span></button>';
+    mode.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-tmode]");
+      if (!b) return;
+      e.stopPropagation();
+      const want = b.dataset.tmode;
+      if (want === "vault" && vaultState() !== "open") { toggleVaultPop(true); return; }
+      if (want === curMode()) { if (want === "vault") toggleVaultPop(); return; }
+      toggleVaultPop(false);
+      if (appApi().setSessionMode) appApi().setSessionMode(want);
+    });
+    mode.addEventListener("mousedown", (e) => e.stopPropagation());
+    // Model button: the model name opens the Models window.
+    const model = el("button", "trayModel");
+    model.type = "button";
+    model.id = "trayModel";
+    model.innerHTML = '<span class="dot"></span><span class="tmName"></span><span class="tmMeta"></span><span class="chipLoad tmLoad" hidden><span class="chipLoadFill"></span></span>';
+    model.addEventListener("click", () => openApp("models"));
+    // The old chip and its popover stay in the DOM (app.js writes to them)
+    // but are parked out of sight.
     const chipWrap = el("div", "trayChip");
+    chipWrap.hidden = true;
     tray.appendChild(chipWrap);
     move($("#statusChip"), chipWrap);
     move($("#statusPop"), chipWrap);
+    const pairSrc = $(".topPair");
+    let pair = null;
+    if (pairSrc) {
+      pair = pairSrc.cloneNode(true);
+      pair.classList.remove("topPair");
+      pair.classList.add("trayBtn", "trayPair");
+      pair.addEventListener("click", (e) => { e.preventDefault(); pairSrc.click(); });
+      ui.pairObs = new MutationObserver(() => { pair.dataset.state = pairSrc.dataset.state || ""; pair.title = pairSrc.title; });
+      ui.pairObs.observe(pairSrc, { attributes: true });
+    }
     const net = el("button", "trayBtn trayNet");
     net.type = "button";
     net.id = "trayNet";
-    net.addEventListener("click", () => { if (appApi().openSettings) appApi().openSettings("network"); });
+    net.addEventListener("click", () => openSettings("network"));
     const vault = el("button", "trayBtn trayVault");
     vault.type = "button";
     vault.id = "trayVault";
-    vault.addEventListener("click", () => {
-      if (vaultState() === "open") { if (appApi().lockVault) appApi().lockVault(); }
-      else if (appApi().openSettings) appApi().openSettings("storage");
-    });
+    vault.addEventListener("click", (e) => { e.stopPropagation(); toggleVaultPop(); });
     const theme = el("button", "trayBtn trayTheme", '<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>');
     theme.type = "button";
     theme.title = "Toggle theme";
@@ -283,16 +397,82 @@
     theme.addEventListener("click", () => { const t = $("#themeBtn"); if (t) t.click(); });
     const clock = el("div", "trayClock");
     clock.id = "trayClock";
+    tray.append(mode, el("span", "traySep"), model, el("span", "traySep"));
+    if (pair) tray.appendChild(pair);
     tray.append(net, vault, theme, clock);
+    buildVaultPop();
     syncTray();
     const obs = new MutationObserver(syncTray);
-    ["#popVault", "#popUplink", "#chipModel"].forEach((s) => {
+    ["#popVault", "#popUplink", "#statusChip", "#popModel", "#popCtx", "#popBackend", "#unlockMsg"].forEach((s) => {
       const n = $(s);
-      if (n) obs.observe(n, { childList: true, characterData: true, subtree: true });
+      if (n) obs.observe(n, { childList: true, characterData: true, subtree: true, attributes: true });
     });
+    document.querySelectorAll(".modeSeg [data-mode]").forEach((n) => obs.observe(n, { attributes: true }));
     ui.obs = obs;
     tickClock();
     ui.clockT = setInterval(tickClock, 15000);
+  }
+
+  // ---------- vault popover (taskbar) ----------
+  function curMode() {
+    const api = appApi();
+    if (api.sessionMode) return api.sessionMode() === "vault" ? "vault" : "ephemeral";
+    const b = $(".modeSeg [data-mode].on");
+    return b ? b.dataset.mode : "ephemeral";
+  }
+  function openSettings(sec) { if (appApi().openSettings) appApi().openSettings(sec); }
+  function buildVaultPop() {
+    const pop = el("div", "vaultPop");
+    pop.id = "vaultPop";
+    pop.hidden = true;
+    pop.setAttribute("role", "dialog");
+    pop.setAttribute("aria-label", "Vault");
+    pop.innerHTML =
+      '<div class="vpHead"><span class="vpIcon"></span><div><b class="vpTitle"></b><small class="vpSub"></small></div></div>' +
+      '<form class="vpUnlock" autocomplete="off"><input type="text" class="secret vpPass" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-label="Vault passcode"><button class="btn primary sm">Unlock</button></form>' +
+      '<small class="vpMsg" role="alert" hidden></small>' +
+      '<div class="vpActs"><button type="button" class="btn sm vpLock">Lock vault</button><button type="button" class="btn sm ghost vpEph">Use Ephemeral</button><button type="button" class="btn sm ghost vpSet">Storage &amp; Vault settings\u2026</button></div>' +
+      '<small class="vpKeys">Ctrl+Shift+L locks the vault and clears the chat.</small>';
+    pop.addEventListener("mousedown", (e) => e.stopPropagation());
+    pop.querySelector(".vpUnlock").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const v = pop.querySelector(".vpPass");
+      const src = $("#vaultPass"), form = $("#unlockForm");
+      if (!src || !form) { toggleVaultPop(false); openSettings("storage"); return; }
+      if (!v.value) { showVpMsg("Enter the vault passcode."); v.focus(); return; }
+      src.value = v.value;
+      v.value = "";
+      showVpMsg("Unlocking\u2026", true);
+      // The Storage panel's own unlock form does the work (one code path).
+      if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event("submit", { cancelable: true }));
+    });
+    pop.querySelector(".vpLock").addEventListener("click", () => { toggleVaultPop(false); if (appApi().lockVault) appApi().lockVault(); });
+    pop.querySelector(".vpEph").addEventListener("click", () => { toggleVaultPop(false); if (appApi().setSessionMode) appApi().setSessionMode("ephemeral"); });
+    pop.querySelector(".vpSet").addEventListener("click", () => { toggleVaultPop(false); openSettings("storage"); });
+    document.body.appendChild(pop);
+    ui.vaultPop = pop;
+  }
+  function showVpMsg(t, info) {
+    const m = ui && ui.vaultPop && ui.vaultPop.querySelector(".vpMsg");
+    if (!m) return;
+    m.textContent = t || "";
+    m.hidden = !t;
+    m.classList.toggle("info", !!info);
+  }
+  function toggleVaultPop(force) {
+    if (!ui || !ui.vaultPop) return false;
+    const pop = ui.vaultPop;
+    const open = force == null ? pop.hidden : !!force;
+    pop.hidden = !open;
+    if (open) {
+      toggleLauncher(false);
+      showVpMsg("");
+      const um = $("#unlockMsg");
+      if (um) { um.hidden = true; um.textContent = ""; }
+      syncTray();
+      if (vaultState() === "locked") setTimeout(() => pop.querySelector(".vpPass").focus(), 0);
+    }
+    return true;
   }
   function tickClock() {
     const c = $("#trayClock");
@@ -303,9 +483,12 @@
   }
   function syncTray() {
     const net = $("#trayNet"), vault = $("#trayVault");
+    const v = vaultState();
+    const m = curMode();
+    const txt = (s) => (($(s) || {}).textContent || "").trim();
     if (net) {
-      const up = (($("#popUplink") || {}).textContent || "").trim();
-      const model = (($("#chipModel") || {}).textContent || "").trim();
+      const up = txt("#popUplink");
+      const model = txt("#chipModel");
       let st = "unknown", label = "Network: checking";
       if (/not answering/i.test(model)) { st = "down"; label = "Network: stick not answering"; }
       else if (/^online$/i.test(up)) { st = "ok"; label = "Network: online (uplink)"; }
@@ -316,13 +499,63 @@
       net.setAttribute("aria-label", label);
     }
     if (vault) {
-      const v = vaultState();
-      const label = v === "open" ? "Vault unlocked \u2014 click to lock (Ctrl+Shift+L)"
-        : v === "none" ? "Vault not set up \u2014 click for Storage & Vault" : "Vault locked \u2014 click for Storage & Vault";
+      const label = v === "open" ? "Vault unlocked \u2014 click to lock or manage"
+        : v === "none" ? "Vault not set up \u2014 click to set one up" : "Vault locked \u2014 click to unlock";
       vault.dataset.state = v;
       vault.innerHTML = v === "open" ? SVG.lockOpen : SVG.lockShut;
       vault.title = label;
       vault.setAttribute("aria-label", label);
+    }
+    const tm = $("#trayMode");
+    if (tm) {
+      tm.dataset.mode = m;
+      tm.dataset.vault = v;
+      tm.querySelectorAll("[data-tmode]").forEach((b) => {
+        const sel = b.dataset.tmode === m;
+        b.classList.toggle("on", sel);
+        b.setAttribute("aria-checked", String(sel));
+      });
+      const vb = tm.querySelector('[data-tmode="vault"]');
+      vb.querySelector(".tmLock").innerHTML = v === "open" ? SVG.lockOpen : SVG.lockShut;
+      vb.title = v === "open" ? (m === "vault" ? "Vault mode: chats are saved encrypted (click to lock or manage)" : "Vault unlocked \u2014 click to save chats in the vault")
+        : v === "none" ? "No vault yet \u2014 click to set one up" : "Vault locked \u2014 click to unlock";
+      tm.querySelector('[data-tmode="ephemeral"]').title = "Ephemeral: nothing is written to disk; chats are gone at reboot";
+    }
+    const tb = $("#trayModel");
+    if (tb) {
+      const name = txt("#chipModel");
+      const meta = txt("#chipMeta");
+      const none = !name || /^none$/i.test(name) || name === "\u2014";
+      const dot = $("#statusChip .dot");
+      tb.querySelector(".dot").className = dot ? dot.className : "dot";
+      tb.querySelector(".tmName").textContent = none ? "Open Model" : name;
+      tb.querySelector(".tmMeta").textContent = none || !meta || meta === "?" ? "" : meta;
+      tb.classList.toggle("none", none);
+      const ld = $("#chipLoad"), lf = $("#chipLoadFill");
+      const tl = tb.querySelector(".tmLoad");
+      tl.hidden = !ld || ld.hidden;
+      if (lf) tl.firstChild.style.width = lf.style.width;
+      const pm = txt("#popModel"), ctx = txt("#popCtx"), be = txt("#popBackend");
+      tb.title = none ? "No model loaded \u2014 click to open one"
+        : "Model: " + (pm && pm !== "\u2014" ? pm : name) + (ctx && ctx !== "\u2014" ? " \u00b7 context " + ctx : "") + (be && be !== "\u2014" ? " \u00b7 " + be : "") + " \u2014 click for Models";
+    }
+    const pop = ui && ui.vaultPop;
+    if (pop) {
+      pop.dataset.vault = v;
+      pop.querySelector(".vpIcon").innerHTML = v === "open" ? SVG.lockOpen : SVG.lockShut;
+      pop.querySelector(".vpTitle").textContent = v === "open" ? "Vault unlocked" : v === "none" ? "No vault set up" : "Vault locked";
+      pop.querySelector(".vpSub").textContent = v === "open"
+        ? (m === "vault" ? "Vault mode \u2014 chats are saved encrypted." : "Ephemeral mode \u2014 nothing is saved.")
+        : v === "none" ? "Create or attach a vault in Storage & Vault." : "Ephemeral works while locked. Unlock to save chats and use apps.";
+      pop.querySelector(".vpUnlock").hidden = v !== "locked";
+      pop.querySelector(".vpLock").hidden = v !== "open";
+      pop.querySelector(".vpEph").hidden = !(v === "open" && m === "vault");
+      pop.querySelector(".vpSet").textContent = v === "none" ? "Set up a vault\u2026" : "Storage & Vault settings\u2026";
+      const um = $("#unlockMsg");
+      const msg = um && !um.hidden ? (um.textContent || "").trim() : "";
+      const cur = pop.querySelector(".vpMsg").textContent;
+      if (msg && !pop.hidden) showVpMsg(msg);
+      else if (v === "open" && !pop.hidden && /Unlocking/.test(cur)) toggleVaultPop(false);
     }
   }
 
@@ -352,6 +585,22 @@
         b.setAttribute("aria-pressed", String(w.active));
         b.title = w.title + (w.min ? " (minimised) \u2014 click to restore" : w.active ? " \u2014 click to minimise" : " \u2014 click to bring to front");
         if (ui.tasks.children[i] !== b) ui.tasks.insertBefore(b, ui.tasks.children[i] || null);
+      });
+      browserWins.forEach((bw, j) => {
+        const key = "chrome:" + (bw.id || j);
+        let b = have.get(key);
+        if (!b) {
+          b = el("button", "taskBtn taskExt");
+          b.type = "button";
+          b.dataset.app = key;
+          b.dataset.ext = String(bw.id || "");
+          b.appendChild(iconFor("browser"));
+          b.appendChild(el("span", "taskLabel"));
+          ui.tasks.appendChild(b);
+        }
+        have.delete(key);
+        b.querySelector(".taskLabel").textContent = bw.title || "Browser";
+        b.title = (bw.title || "Browser") + " \u2014 click to bring to front";
       });
       have.forEach((b) => b.remove());
       document.body.classList.toggle("deskHasActive", !!wm.activeId());
@@ -412,28 +661,170 @@
       const f = document.createElement("iframe");
       f.name = "stickllm-" + spec.id;          // the app bridge answers Agent Zero for named apps
       f.title = spec.title;
-      f.src = spec.url;
+      if (spec.url && typeof spec.url.then === "function") {
+        spec.url.then((u) => { f.src = u || "about:blank"; }, () => { f.src = "about:blank"; });
+      } else f.src = spec.url;
       f.setAttribute("allow", "fullscreen; clipboard-read; clipboard-write; autoplay");
       frameHooks(f, spec.id);
       wb.body.appendChild(f);
+      if (spec.popOut && wb.addControl) {
+        wb.addControl({ index: 0, class: "wb-pop", image: POP_ICON, click: (ev) => { ev.stopPropagation(); spec.popOut(); } });
+      }
     }
     return wb;
   }
 
-  function openApp(id) {
-    if (!on || !wm) return null;
-    if (id === CHAT) {
-      const w = wm.open(chatSpec());
-      return w;
-    }
-    if (!Object.prototype.hasOwnProperty.call(APPS, id)) return null;
-    const a = APPS[id];
-    return wm.open({ id: id, title: a.title, w: a.w, h: a.h, url: appHref(id) });
-  }
   function chatSpec() {
     return { id: CHAT, title: "Chat", w: 1000, h: 720, pinned: true, mountNode: $("#app") };
   }
-
+  const POP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.2'%3E%3Cpath d='M14 4h6v6M20 4l-9 9M18 14v6H4V6h6'/%3E%3C/svg%3E";
+  function isLocal() {
+    const h = location.hostname;
+    return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+  }
+  function urlFor(id) {
+    const api = appApi();
+    return Promise.resolve(api.deskAppUrl ? api.deskAppUrl(id) : "").then((u) => u || "");
+  }
+  // An app that refuses to be framed opens outside the desktop: a kiosk
+  // Chrome window on the stick's own screen, a named tab on a paired laptop.
+  function openOutside(id) {
+    return urlFor(id).then((u) => {
+      if (!u) return;
+      if (isLocal()) openBrowser(u, appTitle(id));
+      else window.open(u, "stickllm-" + id);
+    });
+  }
+  // Panels (Settings, Models, App Store, Agent setup) are mounted; WinBox
+  // puts them back in their parking spot when the window closes.
+  function mountSpec(id, node) {
+    const a = SYS[id];
+    return { id: id, title: a.title, w: a.w, h: a.h, mountNode: node };
+  }
+  function openApp(id) {
+    if (!on || !wm) return null;
+    const api = appApi();
+    if (id === CHAT) return wm.open(chatSpec());
+    if (id === "settings") {
+      const w = wm.open(mountSpec("settings", ui.settings));
+      if (api.openSettings && !$("#settings .setScroll > section:not([hidden])")) api.openSettings("general");
+      return w;
+    }
+    if (id === "models") {
+      const w = wm.open(mountSpec("models", ui.models));
+      if (!$("#sec-models:not([hidden]), #sec-downloads:not([hidden])", ui.models) && api.showSec) api.showSec("models");
+      if (api.refreshModels) try { api.refreshModels(); } catch (e) {}
+      return w;
+    }
+    if (id === "store") {
+      const w = wm.open(mountSpec("store", ui.store));
+      if (api.refreshApps) api.refreshApps().then(scheduleCatalog, () => {});
+      return w;
+    }
+    if (id === "agent") return openAgent();
+    if (id === "browser") { openBrowser("", "Browser"); return true; }
+    if (has(APPS, id)) {
+      const a = APPS[id];
+      return wm.open({ id: id, title: a.title, w: a.w, h: a.h, url: appHref(id) });
+    }
+    const c = catalogApp(id);
+    if (c) {
+      if (c.frame === false) { openOutside(id); return true; }
+      return wm.open({ id: id, title: c.title, w: 1180, h: 780, url: urlFor(id), popOut: () => openOutside(id) });
+    }
+    return null;
+  }
+  function openAgent() {
+    const api = appApi();
+    const ag = api.deskAgent ? api.deskAgent() : { installed: false };
+    const cur = wm.get("agent");
+    if (ag.installed) {
+      if (cur && cur.agentPanel) wm.close("agent", true);
+      return wm.open({ id: "agent", title: "Agent", w: SYS.agent.w, h: SYS.agent.h, url: urlFor("agent"), popOut: () => openOutside("agent") });
+    }
+    renderAgentPanel(ag);
+    const w = wm.open(mountSpec("agent", ui.agentPanel));
+    if (w) w.agentPanel = true;
+    if (api.refreshAgentLink) Promise.resolve(api.refreshAgentLink()).then(() => {
+      if (!wm) return;
+      const now = api.deskAgent ? api.deskAgent() : ag;
+      const w2 = wm.get("agent");
+      if (now.installed && w2 && w2.agentPanel) openAgent();
+      else renderAgentPanel(now);
+    }).catch(() => {});
+    return w;
+  }
+  function renderAgentPanel(ag) {
+    const p = ui && ui.agentPanel;
+    if (!p) return;
+    p.querySelector(".apState").textContent = (ag && ag.state) || "Agent Zero is not installed yet.";
+  }
+  // The Browser is a real Chrome window on the stick's screen (kiosk),
+  // placed over the desktop like the other windows (stickllm-control). On a
+  // paired laptop the page is already in a browser: a new tab.
+  function openBrowser(url, title) {
+    const api = appApi();
+    if (!isLocal() || !api.control) { window.open(url || "about:blank", "_blank"); return; }
+    const r = ui.layer.getBoundingClientRect();
+    const k = window.devicePixelRatio || 1;
+    const bx = window.screenX || 0, by = window.screenY || 0;
+    const w = Math.min(1180, Math.round(r.width - 80)), h = Math.min(780, Math.round(r.height - 60));
+    const geo = { x: Math.round((bx + (r.width - w) / 2) * k), y: Math.round((by + 30) * k), w: Math.round(w * k), h: Math.round(h * k) };
+    api.control("browser_open", { url: url || "", title: title || "Browser", geometry: geo }).then((res) => {
+      if (res && res.ok === false) { if (api.toast) api.toast(res.error || "The browser could not start"); }
+      else pollBrowser();
+    }).catch((e) => { if (api.toast) api.toast("Browser: " + e.message); });
+  }
+  // Chrome windows show on the taskbar while they run.
+  let browserT = 0;
+  let browserWins = [];
+  function pollBrowser() {
+    clearTimeout(browserT);
+    const api = appApi();
+    if (!on || !api.control || !isLocal()) return;
+    api.control("browser_status").then((res) => {
+      if (!on) return;
+      browserWins = res && Array.isArray(res.windows) ? res.windows : [];
+      renderTasks();
+      if (browserWins.length) browserT = setTimeout(pollBrowser, 4000);
+    }).catch(() => {});
+  }
+  // Desktop-only panels built around the existing Settings sections.
+  function buildPanels() {
+    // Settings window: the existing settings dialog; Models/Downloads are
+    // the Models app now (hidden from its nav by desktop.css).
+    ui.settings = $("#settings > .modal");
+    const m = el("div", "deskPanel deskModels");
+    m.id = "deskModels";
+    m.innerHTML = '<div class="deskTabs" role="tablist"><button type="button" class="on" data-desk-sec="models" role="tab">Models</button><button type="button" data-desk-sec="downloads" role="tab">Downloads</button></div><div class="deskScroll"></div>';
+    const scroll = m.querySelector(".deskScroll");
+    ui.hold.appendChild(m);
+    move($("#sec-models"), scroll);
+    move($("#sec-downloads"), scroll);
+    m.querySelector(".deskTabs").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-desk-sec]");
+      if (b) openSettings(b.dataset.deskSec);
+    });
+    ui.models = m;
+    // App Store window: the catalog of the old Apps page.
+    const st = el("div", "deskPanel deskStore");
+    st.id = "deskStore";
+    st.innerHTML = '<div class="deskPanelHead"><b>App Store</b><small>Apps install onto the vault. Installed apps get a desktop icon and a Start entry.</small></div><div class="deskScroll"></div>';
+    ui.hold.appendChild(st);
+    move($("#appsMenu .appsInner"), st.querySelector(".deskScroll"));
+    ui.store = st;
+    // Agent window while Agent Zero is not installed.
+    const ag = el("div", "deskPanel deskAgentPanel");
+    ag.innerHTML = '<div class="apCard"><img src="agent-zero.png?v=desk4" alt=""><h2>Agent</h2><p>Agent Zero works on tasks for you with the local model. It installs onto the vault.</p><p class="apState"></p><div class="apActs"><button type="button" class="btn primary apInstall">Install Agent Zero</button><button type="button" class="btn ghost apStore">Open App Store</button></div></div>';
+    ag.querySelector(".apInstall").addEventListener("click", () => {
+      const api = appApi();
+      if (api.installAgent) Promise.resolve(api.installAgent()).catch(() => {});
+      setTimeout(() => { if (wm && wm.has("agent")) openAgent(); }, 1500);
+    });
+    ag.querySelector(".apStore").addEventListener("click", () => openApp("store"));
+    ui.hold.appendChild(ag);
+    ui.agentPanel = ag;
+  }
   // ---------- enter / leave ----------
   async function enter() {
     if (on || starting) return starting;
@@ -450,13 +841,22 @@
       // fixed-position children): dialogs, load bar and toast go to <body>.
       document.querySelectorAll("#app > .modalWrap, #app > #loadStatus, #app > #toast").forEach((n) => move(n, document.body));
       buildTray();
+      buildPanels();
       wm = new core.WindowManager({
         create: createWin,
         store: store,
         area: () => ({ w: window.innerWidth, h: window.innerHeight - core.TASKBAR_H }),
         onchange: renderTasks,
       });
+      syncCatalog();
+      ui.catObs = new MutationObserver(scheduleCatalog);
+      const di = $("#deskIcons"), al = $("#agentLink");
+      if (di) ui.catObs.observe(di, { childList: true, subtree: true, attributes: true });
+      if (al) ui.catObs.observe(al, { attributes: true });
+      if (appApi().refreshApps) appApi().refreshApps().then(scheduleCatalog, () => {});
+      ui.catT = setInterval(() => { if (appApi().refreshApps) appApi().refreshApps().then(scheduleCatalog, () => {}); }, 60000);
       openApp(CHAT);
+      pollBrowser();
       window.addEventListener("resize", onResize);
       renderTasks();
       syncLayoutSeg();
@@ -473,11 +873,20 @@
     putBack();
     if (ui) {
       if (ui.obs) ui.obs.disconnect();
+      if (ui.catObs) ui.catObs.disconnect();
+      if (ui.pairObs) ui.pairObs.disconnect();
       clearInterval(ui.clockT);
-      ui.layer.remove(); ui.bar.remove(); ui.launcher.remove();
+      clearInterval(ui.catT);
+      clearTimeout(browserT);
+      ui.layer.remove(); ui.bar.remove(); ui.launcher.remove(); ui.hold.remove();
+      if (ui.vaultPop) ui.vaultPop.remove();
     }
     ui = null;
     wm = null;
+    catalog = [];
+    iconSig = "";
+    browserWins = [];
+    settingsOpen = false;
     window.removeEventListener("resize", onResize);
     document.body.classList.remove("deskMode", "deskHasActive");
     syncLayoutSeg();
@@ -513,6 +922,9 @@
   window.addEventListener("keydown", (e) => {
     if (!on) return;
     const k = (e.key || "").toLowerCase();
+    if (e.key === "Escape" && ui && ui.vaultPop && !ui.vaultPop.hidden) {
+      e.preventDefault(); e.stopImmediatePropagation(); toggleVaultPop(false); return;
+    }
     if (e.key === "Escape" && ui && !ui.launcher.hidden) {
       e.preventDefault(); e.stopImmediatePropagation(); toggleLauncher(false); ui.start.focus(); return;
     }
@@ -529,6 +941,7 @@
     if (done) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
   document.addEventListener("pointerdown", (e) => {
+    if (ui && ui.vaultPop && !ui.vaultPop.hidden && !ui.vaultPop.contains(e.target) && !e.target.closest("#trayMode,#trayVault")) toggleVaultPop(false);
     if (!ui || ui.launcher.hidden) return;
     if (!ui.launcher.contains(e.target) && !ui.start.contains(e.target)) toggleLauncher(false);
   }, true);
@@ -548,7 +961,21 @@
   // Public hooks for app.js.
   window.stickDesk = {
     active: () => on,
-    handles: (id) => on && Object.prototype.hasOwnProperty.call(APPS, id),
+    handles: (id) => on && (has(APPS, id) || has(SYS, id) || !!catalogApp(id)),
+    // app.js: openSettings(sec) in the desktop picks the window.
+    onSettings: (sec) => {
+      if (!on || !wm) return;
+      if (sec === "models" || sec === "downloads") {
+        openApp("models");
+        if (ui && ui.models) ui.models.querySelectorAll("[data-desk-sec]").forEach((b) => b.classList.toggle("on", b.dataset.deskSec === sec));
+      } else if (sec !== "__nav") {
+        if (!wm.has("settings")) openApp("settings");
+        else wm.focus("settings");
+      }
+    },
+    onSettingsClose: () => { if (wm && wm.has("settings")) wm.close("settings"); },
+    vaultPrompt: () => on && toggleVaultPop(true),
+    refreshCatalog: scheduleCatalog,
     openApp: (id) => openApp(id),
     closeAll: () => { if (wm) wm.closeAll(false); toggleLauncher(false); },
     list: () => (wm ? wm.list() : []),
