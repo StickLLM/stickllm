@@ -52,6 +52,7 @@ def test_editor_config_attaches_agent_plugin_only_to_editable_slides(tmp_path):
     assert cfg["editorConfig"]["plugins"] == {"autostart": [GUID], "pluginsData": [url]}
     # ONLYOFFICE starts no plugin at all while customization.plugins is false.
     assert cfg["editorConfig"]["customization"]["plugins"] is True
+    assert cfg["editorConfig"]["customization"]["layout"] == {"toolbar": {"plugins": False}}
     assert docs.jwt_verify(cfg["token"], SECRET)["editorConfig"]["plugins"]["pluginsData"] == [url]
     other = docs.editor_config("b.docx", SECRET, agent_plugin_url=url)["config"]
     assert "plugins" not in other["editorConfig"] and other["editorConfig"]["customization"]["plugins"] is False
@@ -59,11 +60,22 @@ def test_editor_config_attaches_agent_plugin_only_to_editable_slides(tmp_path):
     assert "plugins" not in plain["editorConfig"] and plain["editorConfig"]["customization"]["plugins"] is False
 
 
+def test_docs_image_strips_bundled_plugins():
+    src = (ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-docs").read_text(encoding="utf-8")
+    strip = src.split("STRIP_PLUGINS='", 1)[1].split("\n", 1)[0]
+    assert "sdkjs-plugins" in strip and '= v1 ] || rm -rf' in strip and 'printf "[]' in strip
+    assert "-r false && ${STRIP_PLUGINS}" in src
+    assert "PLUGINS_ENABLED=false" in src
+
+
 def test_gateway_relays_appagent_for_paired_browsers_only():
     src = GATEWAY.read_text(encoding="utf-8")
     assert src.count('path.startswith("/appagent/")') == 2  # GET and POST
     body = src.split("def _appagent_proxy", 1)[1].split("\n    def ", 1)[0]
     assert "self._desktop_allowed()" in body and '"127.0.0.1", APPAGENT_PORT' in body
+    assert 'method == "POST" and not stickllm_ui_client(self.headers) and not self._is_loopback()' in body
+    js = (PKG / "plugin" / "plugin.js").read_text(encoding="utf-8")
+    assert js.count('"X-StickLLM-Client": "ui"') == 2
     assert "agent_plugin_url=plugin_url" in src
 
 
@@ -137,3 +149,49 @@ def test_service_act_and_undo_with_fake_model():
         proc.terminate()
         proc.wait(5)
         llm.shutdown()
+
+
+def test_chat_ui_app_agent_wiring_js():
+    out = subprocess.run(["node", str(Path(__file__).with_name("appagent_ui.test.js"))], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stdout + out.stderr
+
+
+LLM_UNIT = ROOT / "overlay" / "etc" / "systemd" / "system" / "stickllm-appagent-llm.service"
+LLM_WRAPPER = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-appagent-llm"
+
+
+def test_appagent_has_its_own_small_model_server():
+    src = LLM_WRAPPER.read_text(encoding="utf-8")
+    assert "/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf" in src
+    assert "--host 127.0.0.1" in src and "8796" in src and "--jinja" in src
+    assert "--n-gpu-layers 99" in src and "--n-gpu-layers 0" in src  # GPU when VRAM is free, else CPU
+    unit = LLM_UNIT.read_text(encoding="utf-8")
+    assert "ExecStart=/usr/local/bin/stickllm-appagent-llm" in unit and "DynamicUser=yes" in unit
+    assert "ConditionPathExists=/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf" in unit
+    agent_unit = UNIT.read_text(encoding="utf-8")
+    assert "Wants=stickllm-appagent-llm.service" in agent_unit
+    assert "8796" in WRAPPER.read_text(encoding="utf-8")
+    hook = HOOK.read_text(encoding="utf-8")
+    assert "systemctl enable stickllm-appagent-llm.service" in hook and "/usr/local/bin/stickllm-appagent-llm" in hook
+    build = BUILD.read_text(encoding="utf-8")
+    assert "models/appagent/${AA_GGUF}" in build and "sha256sum -c" in build
+    assert "25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c" in build
+    gw = GATEWAY.read_text(encoding="utf-8")
+    assert "8796" not in gw.replace("APPAGENT_PORT = 8795", "")  # not exposed by the gateway
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash")
+def test_appagent_llm_launcher_picks_cpu_without_gpu(tmp_path):
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    fake = tmp_path / "srv"
+    fake.write_text("#!/bin/sh\necho \"$@\"\n")
+    fake.chmod(0o755)
+    env = {"PATH": "/usr/bin:/bin", "STICKLLM_APPAGENT_MODEL": str(model), "STICKLLM_LLAMA_CPU": str(fake),
+           "STICKLLM_LLAMA_CUDA": str(tmp_path / "missing"), "STICKLLM_LIB_CPU": str(tmp_path)}
+    out = subprocess.run(["bash", str(LLM_WRAPPER)], capture_output=True, text=True, env=env, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert "--n-gpu-layers 0" in out.stdout and "--port 8796" in out.stdout and "--host 127.0.0.1" in out.stdout
+    missing = subprocess.run(["bash", str(LLM_WRAPPER)], capture_output=True, text=True,
+                             env={**env, "STICKLLM_APPAGENT_MODEL": str(tmp_path / "none.gguf")}, timeout=30)
+    assert missing.returncode == 1 and "model missing" in missing.stderr

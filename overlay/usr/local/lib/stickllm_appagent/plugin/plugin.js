@@ -3,7 +3,7 @@
   // Service base = this page's URL minus /oo/plugin/..., so it also works behind a path prefix (gateway /appagent).
   var base = window.location.href.split("?")[0].replace(/\/oo\/plugin\/[^\/]*$/, ""), cid = Math.random().toString(36).slice(2), started = false;
   function post(id, value) {
-    return fetch(base + "/oo/result", {method: "POST", headers: {"Content-Type": "application/json"},
+    return fetch(base + "/oo/result", {method: "POST", headers: {"Content-Type": "application/json", "X-StickLLM-Client": "ui"},
       body: JSON.stringify({id: id, value: value})}).catch(function () {});
   }
   function run(job) {
@@ -15,7 +15,7 @@
     });
   }
   function loop() {
-    fetch(base + "/oo/poll?client=" + cid).then(function (r) { return r.status === 200 ? r.json() : null; })
+    fetch(base + "/oo/poll?client=" + cid, {headers: {"X-StickLLM-Client": "ui"}}).then(function (r) { return r.status === 200 ? r.json() : null; })
       .then(function (job) {
         if (!job) return loop();
         run(job).then(function (res) { return post(job.id, res); }).then(loop);

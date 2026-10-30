@@ -2874,6 +2874,11 @@ class Handler(SimpleHTTPRequestHandler):
         """
         if not self._desktop_allowed():
             return
+        if method == "POST" and not stickllm_ui_client(self.headers) and not self._is_loopback():
+            # Like the docs routes: the custom header forces a CORS preflight, so
+            # another site cannot drive the open apps with the apps cookie.
+            self._json(403, {"ok": False, "error": "ui_only"})
+            return
         parsed = urllib.parse.urlparse(self.path)
         upstream = parsed.path[len("/appagent"):] or "/"
         if not upstream.startswith("/") or ".." in upstream.split("/"):

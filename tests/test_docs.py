@@ -87,7 +87,8 @@ def test_pin_file_matches_embedded_default_and_build_check():
         assert pin[key] == docs.DEFAULT_PIN[key]
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", pin["amd64_digest"])
     assert docs.image_ref(pin) == "onlyoffice/documentserver@" + pin["amd64_digest"]
-    assert docs.prepared_ref(pin) == "stickllm-docs:" + pin["amd64_digest"][7:23]
+    assert docs.prepared_ref(pin) == "stickllm-docs:" + pin["amd64_digest"][7:23] + "-" + docs.PREP_REV
+    assert re.fullmatch(r"stickllm-docs:[0-9a-f]{16}-[a-z0-9]+", docs.prepared_ref(pin))
     build = _text(BUILD)
     assert pin["amd64_digest"][7:] in build or pin["amd64_digest"][7:15] in build
     assert "onlyoffice.pin" in build

@@ -127,6 +127,12 @@ ensure_network() {
 # Prep run: no network, no logs, every image VOLUME on RAM tmpfs (so no
 # anonymous volume is created on the SSD and no user font gets in). It only
 # generates files from the image itself, then is committed and removed.
+# Bundled ONLYOFFICE plugins are not exposed: drop every sdkjs-plugins folder
+# except the v1 SDK (the agent plugin loads it) and empty the default install list
+# (PLUGINS_ENABLED=false already stops downloads), so the only plugin that can run
+# is the hidden StickLLM agent plugin served by stickllm-appagent.
+STRIP_PLUGINS='P=/var/www/onlyoffice/documentserver/sdkjs-plugins; for d in "$P"/*/; do [ "$(basename "$d")" = v1 ] || rm -rf "$d"; done; printf "[]\n" > "$P/plugin-list-default.json"'
+
 prepare_image() {
   local ref prepared hash
   ref="$(lib image-ref)"
@@ -146,7 +152,7 @@ prepare_image() {
     --tmpfs /tmp \
     --entrypoint /bin/sh \
     "$ref" \
-    -c "documentserver-generate-allfonts.sh true && documentserver-flush-cache.sh -h ${hash} -r false" \
+    -c "documentserver-generate-allfonts.sh true && documentserver-flush-cache.sh -h ${hash} -r false && ${STRIP_PLUGINS}" \
     >>"$INSTALL_LOG" 2>&1 || { docker_cli rm -f -v "$PREP" >/dev/null 2>&1 || true; return 1; }
   docker_cli commit \
     --change 'ENTRYPOINT ["/app/ds/run-document-server.sh"]' \
@@ -260,8 +266,11 @@ cmd_run() {
   lib prepare-vault
   "$DOCKERD" ensure docs 9>&- || { status error "Docker did not start."; exit 1; }
   if ! docker_cli image inspect "$(lib prepared-ref)" >/dev/null 2>&1; then
-    status error "The Office image is missing from the host drive. Install Office again from Apps."
-    exit 1
+    # An older prepared image (earlier PREP_REV) is re-prepared from the pinned image.
+    if ! docker_cli image inspect "$(lib image-ref)" >/dev/null 2>&1 || ! prepare_image; then
+      status error "The Office image is missing from the host drive. Install Office again from Apps."
+      exit 1
+    fi
   fi
   seed_vault
   ensure_network

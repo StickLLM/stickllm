@@ -98,6 +98,19 @@ test -x config/includes.chroot/opt/stickllm/bin/llama-server
 test -x config/includes.chroot/opt/stickllm/bin/llama-server-cpu
 test -f config/includes.chroot/opt/stickllm/lib/libllama-server-impl.so
 test -f "config/includes.chroot/opt/stickllm/models/${MODEL_3B}"
+
+# App agent model (Qwen3.5-4B Q4_K_M, ~2.7 GB) for stickllm-appagent-llm: baked only when
+# models/appagent/ has it (never downloaded here). Without it the app agent service has no model.
+AA_GGUF="Qwen3.5-4B-Q4_K_M.gguf"
+AA_SHA="25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"
+if [[ -f "/stickllm/models/appagent/${AA_GGUF}" ]]; then
+  echo "[stickllm] bake app agent model ${AA_GGUF}…"
+  mkdir -p config/includes.chroot/opt/stickllm/models/appagent
+  cp "/stickllm/models/appagent/${AA_GGUF}" config/includes.chroot/opt/stickllm/models/appagent/
+  echo "${AA_SHA}  config/includes.chroot/opt/stickllm/models/appagent/${AA_GGUF}" | sha256sum -c -
+else
+  echo "[stickllm] no models/appagent/${AA_GGUF}: app agent model not baked" >&2
+fi
 if compgen -G "config/includes.chroot/opt/stickllm/models/*7b*" >/dev/null; then
   echo "ERROR: 7B GGUF must not be baked into the ISO" >&2
   exit 1

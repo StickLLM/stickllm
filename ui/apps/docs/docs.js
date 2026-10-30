@@ -85,6 +85,18 @@
       document.head.appendChild(s);
     });
   }
+  // The chat tab (same origin) selects ONLYOFFICE in its App picker while a slides
+  // editor with the StickLLM agent plugin is open here.
+  // Tell the chat tab (same origin) a deck with the agent plugin is open / closed, so its
+  // "Send to" picker can auto-select Office. Channel created per message (nothing held open).
+  function tellAppAgent(open) {
+    try {
+      const ch = new BroadcastChannel("stickllm-appagent");
+      ch.postMessage({ app: "onlyoffice", open: !!open, path: open ? openPath : "" });
+      ch.close();
+    } catch (_) {}
+  }
+  if (typeof window.addEventListener === "function") window.addEventListener("pagehide", () => tellAppAgent(false));
   async function open(path) {
     try {
       const doc = await api("/api/docs/config?path=" + encodeURIComponent(path) + "&lang=en");
@@ -103,6 +115,7 @@
         onDownloadAs: () => say("Downloaded to vault/Downloads."),
       };
       editor = new window.DocsAPI.DocEditor("editor", cfg);
+      tellAppAgent(/\.pptx$/i.test(openPath) && !!(doc.config && doc.config.editorConfig && doc.config.editorConfig.plugins));
     } catch (e) { say(e.message); }
   }
   async function editorSaveAs(data) {
@@ -133,6 +146,7 @@
     editor = null;
     openPath = "";
     openKey = "";
+    tellAppAgent(false);
     document.body.classList.remove("editing");
     $("#close").hidden = true;
     refresh();

@@ -29,7 +29,8 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-docs-entrypoint \
           /usr/local/bin/stickllm-addon \
           /usr/local/bin/stickllm-files \
-          /usr/local/bin/stickllm-appagent || true
+          /usr/local/bin/stickllm-appagent \
+          /usr/local/bin/stickllm-appagent-llm || true
 
 # Force LF — CRLF in sudoers breaks ALL rules on the stick
 if [[ -f /etc/sudoers.d/stickllm ]]; then
@@ -127,6 +128,12 @@ systemctl mask docker.socket 2>/dev/null || true
 systemctl enable stickllm-agent.service || true
 systemctl enable stickllm-files.service || true
 systemctl enable stickllm-appagent.service || true
+# App agent model (DynamicUser): only when the 4B GGUF is baked in; readable by everyone.
+if [[ -f /opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf ]]; then
+  chmod 755 /opt/stickllm/models/appagent
+  chmod 644 /opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf
+  systemctl enable stickllm-appagent-llm.service || true
+fi
 
 # NM system-connections must be 600
 if [[ -d /etc/NetworkManager/system-connections ]]; then

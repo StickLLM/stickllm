@@ -1081,7 +1081,10 @@ function msgHtml(m, i) {
   const speak = voiceMode && m.r === "ai" && !m.pending && String(m.t || "").trim()
     ? `<div class="msgTools"><button type="button" class="iconBtn sm speakBtn" data-speak="${i}" title="Read aloud" aria-label="Read aloud"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 8.5a5 5 0 010 7"/></svg></button></div>`
     : "";
-  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${pics}${m.pending ? '<span class="typing"><i></i><i></i><i></i></span>' : md(m.t || "")}${warn}${src}${speak}</div></div>`;
+  const undo = m.appUndo && !m.pending
+    ? `<div class="msgTools"><button type="button" class="appUndoBtn" data-appundo="${i}" title="Undo this change in ${esc(APPAGENT_NAMES[m.appUndo] || m.appUndo)}">Undo</button></div>`
+    : "";
+  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${pics}${m.pending ? '<span class="typing"><i></i><i></i><i></i></span>' : md(m.t || "")}${warn}${src}${speak}${undo}</div></div>`;
 }
 function renderThread(opts) {
   if (!(opts && opts.keepSpeech) && typeof stopSpeak === "function") stopSpeak();
@@ -1570,7 +1573,172 @@ function messagesForRequest(voiceOn) {
   if (!added) out.unshift({ role: "system", content: brief });
   return out;
 }
+// ---- App agent: requests aimed at an open app (ONLYOFFICE slides, Node-RED) go to
+// stickllm-appagent (/appagent/act through the gateway) instead of the chat model.
+// The composer "App" picker chooses the target; "@office ..." / "@nodered ..." picks
+// it for one message; opening a .pptx in Office selects ONLYOFFICE automatically.
+const APPAGENT_NAMES = { onlyoffice: "ONLYOFFICE slides", nodered: "Node-RED", slides: "Test slides" };
+const APPAGENT_PREFIX = /^@(onlyoffice|office|slides|pptx|nodered|node-red)\b[:,]?\s*/i;
+const APPAGENT_ALIAS = { onlyoffice: "onlyoffice", office: "onlyoffice", pptx: "onlyoffice", slides: "onlyoffice", nodered: "nodered", "node-red": "nodered" };
+let appAgentApps = [];
+let appAgentAuto = false;
+let appAgentBusy = false;
+function appAgentSession() {
+  let id = "";
+  try { id = localStorage.getItem("stickllm-appagent-session") || ""; } catch (_) {}
+  if (!/^[a-z0-9]{8,32}$/.test(id)) {
+    id = "ui" + Math.random().toString(36).slice(2, 12);
+    try { localStorage.setItem("stickllm-appagent-session", id); } catch (_) {}
+  }
+  return id;
+}
+function appAgentRoute(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  const m = text.match(APPAGENT_PREFIX);
+  if (m) {
+    const app = APPAGENT_ALIAS[m[1].toLowerCase()];
+    const rest = text.slice(m[0].length).trim();
+    return rest && appAgentApps.includes(app) ? { app, text: rest } : null;
+  }
+  const pick = $("#appTarget");
+  const app = pick && !pick.hidden ? pick.value : "";
+  return app ? { app, text } : null;
+}
+function appAgentReply(app, j) {
+  const name = APPAGENT_NAMES[app] || app;
+  const out = [`**${name}:** ${String(j.understanding || "").trim() || "(no summary)"}`];
+  const res = Array.isArray(j.results) ? j.results : [];
+  if (res.length) {
+    out.push(res.slice(0, 20).map((r) => {
+      const why = r.ok ? "" : " — " + String(r.out || "failed").slice(0, 160);
+      return `${r.ok ? "✓" : "✗"} \`${String(r.cmd || "").slice(0, 160)}\`${why}`;
+    }).join("\n"));
+  } else {
+    out.push(j.plan_err ? "No change: " + String(j.plan_err).slice(0, 200) : "Nothing was changed.");
+  }
+  return out.join("\n\n");
+}
+function setAppTarget(app, auto) {
+  const pick = $("#appTarget");
+  if (!pick || pick.hidden) return;
+  if (app && !appAgentApps.includes(app)) return;
+  pick.value = app || "";
+  appAgentAuto = !!(app && auto);
+  pick.classList.toggle("on", !!app);
+  $("#input").placeholder = app ? `Tell ${APPAGENT_NAMES[app] || app} what to do` : "Message StickLLM";
+}
+async function loadAppAgentApps() {
+  const pick = $("#appTarget");
+  if (!pick) return;
+  try {
+    const r = await fetch("/appagent/apps", { headers: authHeaders(), credentials: "same-origin" });
+    const list = r.ok ? await r.json() : [];
+    appAgentApps = (Array.isArray(list) ? list : []).map((a) => a && a.name).filter((n) => n && n !== "slides");
+  } catch (_) { appAgentApps = []; }
+  const cur = pick.value;
+  pick.innerHTML = `<option value="">Chat</option>` +
+    appAgentApps.map((n) => `<option value="${esc(n)}">${esc(APPAGENT_NAMES[n] || n)}</option>`).join("");
+  pick.hidden = !appAgentApps.length;
+  setAppTarget(appAgentApps.includes(cur) ? cur : "", appAgentAuto);
+}
+async function sendToApp(app, text) {
+  if (appAgentBusy) return;
+  if (!(await ensurePaired())) return;
+  appAgentBusy = true;
+  const inp = $("#input");
+  inp.value = "";
+  autosize();
+  if (!state.current) {
+    const chat = { id: Date.now(), title: text.slice(0, 40), msgs: [] };
+    state.ephemeral.unshift(chat); state.current = chat;
+  }
+  const c = state.current;
+  c.msgs.push({ r: "user", t: text });
+  const pend = { r: "ai", pending: true };
+  c.msgs.push(pend);
+  renderThread(); renderConvs();
+  try {
+    const r = await fetch("/appagent/act", {
+      method: "POST", credentials: "same-origin",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ app, request: text, session: appAgentSession() }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || j.message || `The app agent answered ${r.status}`);
+    pend.t = appAgentReply(app, j);
+    if ((j.results || []).some((x) => x.ok)) pend.appUndo = app;
+  } catch (e) {
+    pend.t = `**${APPAGENT_NAMES[app] || app}:** ${e.message || e}`;
+    pend.warn = "Nothing was sent to the chat model.";
+  } finally {
+    pend.pending = false;
+    appAgentBusy = false;
+    renderThread();
+  }
+}
+async function appAgentUndo(i) {
+  const c = state.current, m = c && c.msgs[i];
+  if (!m || !m.appUndo || appAgentBusy) return;
+  const app = m.appUndo;
+  if (!(await ensurePaired())) return;
+  appAgentBusy = true;
+  let line;
+  try {
+    const r = await fetch("/appagent/undo", {
+      method: "POST", credentials: "same-origin",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ app, session: appAgentSession() }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `The app agent answered ${r.status}`);
+    line = `**${APPAGENT_NAMES[app] || app}:** ${j.ok ? "Undone." : "Nothing to undo."} ${String(j.message || "").slice(0, 200)}`;
+    if (j.ok) m.appUndo = "";
+  } catch (e) {
+    line = `**${APPAGENT_NAMES[app] || app}:** undo failed: ${e.message || e}`;
+  } finally {
+    appAgentBusy = false;
+  }
+  c.msgs.push({ r: "ai", t: line.trim() });
+  renderThread();
+}
+if ($("#appTarget")) {
+  $("#appTarget").onchange = (e) => setAppTarget(e.target.value, false);
+  loadAppAgentApps();
+  // Pairing may finish after load: look again (at most every 15 s) while no app is listed.
+  let appAgentLooked = Date.now();
+  $("#input").addEventListener("focus", () => {
+    if (appAgentApps.length || Date.now() - appAgentLooked < 15000) return;
+    appAgentLooked = Date.now();
+    loadAppAgentApps();
+  });
+}
+$("#thread").addEventListener("click", (e) => {
+  const b = e.target.closest && e.target.closest("[data-appundo]");
+  if (!b) return;
+  e.preventDefault();
+  appAgentUndo(Number(b.dataset.appundo));
+});
+// /apps/docs/ (same origin, another tab) says when a slides editor opens or closes.
+try {
+  const ch = new BroadcastChannel("stickllm-appagent");
+  ch.onmessage = (e) => {
+    const d = e.data || {};
+    if (d.app !== "onlyoffice") return;
+    const pick = $("#appTarget");
+    const go = () => {
+      if (d.open && (!pick.value || appAgentAuto)) setAppTarget("onlyoffice", true);
+      else if (!d.open && appAgentAuto && pick.value === "onlyoffice") setAppTarget("", false);
+    };
+    if (pick && pick.hidden && d.open) loadAppAgentApps().then(go); else if (pick) go();
+  };
+} catch (_) {}
+
 async function send() {
+  {
+    const route = appAgentRoute($("#input").value);
+    if (route && !state.attach.length) return sendToApp(route.app, route.text);
+  }
   unlockSpeech();
   const gen = ++sendGen;
   const prev = sendFlight;

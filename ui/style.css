@@ -207,6 +207,12 @@ button.pill.visionOff:hover{color:var(--ink);border-color:var(--muted)}
 .toggleChip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);background:none;border-radius:99px;padding:4px 10px;font-size:12.5px;color:var(--muted);cursor:pointer}
 .toggleChip svg{width:15px;height:15px}
 .toggleChip[aria-pressed=true]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);background:var(--accent-soft)}
+.appTarget{border:1px solid var(--line);background:none;border-radius:99px;padding:4px 8px;font-size:12.5px;color:var(--muted);cursor:pointer;max-width:170px}
+.appTarget[hidden]{display:none}
+.appTarget.on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);background:var(--accent-soft)}
+.appTarget option{color:var(--ink, #111);background:var(--panel, #fff)}
+.appUndoBtn{border:1px solid var(--line);background:none;border-radius:8px;padding:3px 10px;font-size:12.5px;color:var(--ink2, inherit);cursor:pointer}
+.appUndoBtn:hover{border-color:var(--accent);color:var(--accent)}
 .sendBtn{position:relative;z-index:77;pointer-events:auto;width:36px;height:36px;border-radius:10px;border:0;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;cursor:pointer;margin-left:4px}
 .sendBtn.stop{background:var(--danger, #c44);color:#fff}
 .sendBtn:disabled{opacity:.4;pointer-events:auto;cursor:pointer}

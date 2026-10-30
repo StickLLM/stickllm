@@ -1,0 +1,24 @@
+[Unit]
+Description=StickLLM app agent model (Qwen3.5-4B llama-server, 127.0.0.1:8796 only)
+After=network.target
+ConditionPathExists=/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# Reads the baked model only; keeps no files.
+DynamicUser=yes
+SupplementaryGroups=video render
+EnvironmentFile=-/etc/stickllm/appagent.env
+# Root (+) for modprobe; failure (-) never blocks the CPU fallback.
+ExecStartPre=-+/usr/local/bin/stickllm-nvidia-prep
+ExecStart=/usr/local/bin/stickllm-appagent-llm
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,63 @@
+#!/bin/bash
+# StickLLM app agent model: a small llama-server (Qwen3.5-4B Q4_K_M, thinking off per
+# request) on 127.0.0.1:8796 for stickllm-appagent only, so app actions do not depend
+# on which chat model is activated (or on any being active).
+# GPU (CUDA, all layers) when one NVIDIA GPU has enough free VRAM, else CPU.
+set -u
+MODEL="${STICKLLM_APPAGENT_MODEL:-/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf}"
+PORT="${STICKLLM_APPAGENT_LLM_PORT:-8796}"
+CTX="${STICKLLM_APPAGENT_CTX:-8192}"
+NEED_MIB="${STICKLLM_APPAGENT_VRAM_MIB:-4500}"
+CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
+CPU_BIN="${STICKLLM_LLAMA_CPU:-/opt/stickllm/bin/llama-server-cpu}"
+LIB="${STICKLLM_LIB:-/opt/stickllm/lib}"
+CPU_LIB="${STICKLLM_LIB_CPU:-/opt/stickllm/lib-cpu}"
+REGISTER_SO="${STICKLLM_CUDA_REGISTER:-$LIB/stickllm-cuda-register.so}"
+
+if [[ ! -f "$MODEL" ]]; then
+  echo "stickllm-appagent-llm: model missing: $MODEL" >&2
+  exit 1
+fi
+
+threads() {
+  local n
+  n="$(lscpu -p=core 2>/dev/null | grep -v '^#' | sort -u | wc -l)"
+  [[ "$n" =~ ^[0-9]+$ ]] && [[ "$n" -ge 1 ]] || n="$(nproc 2>/dev/null || echo 4)"
+  [[ "$n" -gt 16 ]] && n=16
+  echo "$n"
+}
+THREADS="$(threads)"
+
+# GPU index with the most free VRAM, if it has at least NEED_MIB free.
+pick_gpu() {
+  command -v nvidia-smi >/dev/null 2>&1 || return 1
+  local best
+  best="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null \
+    | tr -d ' ' | sort -t, -k2 -n -r | head -1)"
+  [[ "$best" =~ ^([0-9]+),([0-9]+)$ ]] || return 1
+  [[ "${BASH_REMATCH[2]}" -ge "$NEED_MIB" ]] || return 1
+  echo "${BASH_REMATCH[1]}"
+}
+
+common=(--model "$MODEL" --host 127.0.0.1 --port "$PORT" --ctx-size "$CTX" --parallel 1
+  --threads "$THREADS" --jinja --alias appagent)
+
+if [[ "${STICKLLM_APPAGENT_BACKEND:-auto}" != "cpu" ]] && [[ -x "$CUDA_BIN" ]] && gpu="$(pick_gpu)"; then
+  export LD_LIBRARY_PATH="${LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export GGML_BACKEND_DIR="$LIB"
+  export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="$gpu"
+  [[ -f "$REGISTER_SO" ]] && export LD_PRELOAD="$REGISTER_SO${LD_PRELOAD:+:$LD_PRELOAD}"
+  if "$CUDA_BIN" --list-devices 2>/dev/null | grep -qE '^[[:space:]]*CUDA[0-9]'; then
+    echo "stickllm-appagent-llm: cuda gpu=$gpu -ngl 99 ctx=$CTX port=$PORT" >&2
+    exec "$CUDA_BIN" "${common[@]}" --n-gpu-layers 99
+  fi
+  unset LD_PRELOAD CUDA_VISIBLE_DEVICES
+  echo "stickllm-appagent-llm: CUDA not usable, using CPU" >&2
+fi
+
+BIN="$CPU_BIN"; L="$CPU_LIB"
+if [[ ! -x "$BIN" ]]; then BIN="$CUDA_BIN"; L="$LIB"; fi
+export LD_LIBRARY_PATH="${L}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GGML_BACKEND_DIR="$L"
+echo "stickllm-appagent-llm: cpu threads=$THREADS ctx=$CTX port=$PORT bin=$BIN" >&2
+exec "$BIN" "${common[@]}" --n-gpu-layers 0

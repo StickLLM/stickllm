@@ -142,10 +142,15 @@ def image_ref(pin: dict | None = None) -> str:
     return f"{pin['image']}@{pin['amd64_digest']}"
 
 
+# Bumped when stickllm-docs prepare_image changes what it bakes in, so an older
+# prepared image is rebuilt. p2: bundled plugins (Plugin Manager and its default list) stripped.
+PREP_REV = "p2"
+
+
 def prepared_ref(pin: dict | None = None) -> str:
     """Local tag of the image after fonts and api.js were generated from it."""
     pin = pin or load_pin()
-    return "stickllm-docs:" + pin["amd64_digest"].split(":", 1)[1][:16]
+    return "stickllm-docs:" + pin["amd64_digest"].split(":", 1)[1][:16] + "-" + PREP_REV
 
 
 # ---------------------------------------------------------------- mounts
@@ -822,7 +827,10 @@ def editor_config(rel: str, secret: str, *, user_name: str = "StickLLM", lang: s
     if agent_plugin_url and editable and KINDS[ext] in APPAGENT_KINDS:
         # ONLYOFFICE does not start any plugin, system ones included, while
         # customization.plugins is false, so it is on only when the agent plugin is attached.
+        # The prepared image has no bundled plugins (see stickllm-docs prepare_image), so this only
+        # runs the hidden agent plugin; the Plugins toolbar tab is hidden as well.
         config["editorConfig"]["customization"]["plugins"] = True
+        config["editorConfig"]["customization"]["layout"] = {"toolbar": {"plugins": False}}
         config["editorConfig"]["plugins"] = {"autostart": [APPAGENT_PLUGIN_GUID], "pluginsData": [agent_plugin_url]}
     config["token"] = jwt_sign(config, secret)
     return {"ok": True, "path": rel, "config": config}
