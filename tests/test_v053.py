@@ -64,9 +64,9 @@ def test_a3_one_reused_named_tab_per_app():
 
 
 def test_a4_version_name_and_iso():
-    assert json.loads((ROOT / "overlay/opt/stickllm/ui/stickllm.json").read_text())["version"] == "0.5.4"
+    assert json.loads((ROOT / "overlay/opt/stickllm/ui/stickllm.json").read_text())["version"] == "0.5.5"
     html = (ROOT / "ui/index.html").read_text()
-    assert 'id="aboutVer">StickLLM v0.5.4<' in html
+    assert 'id="aboutVer">StickLLM v0.5.5<' in html
     about = html.split('id="aboutVer"', 1)[0][-2000:]
     assert "Agent Zero v" not in about
 

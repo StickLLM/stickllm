@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.5 (2026-10-30)
+
+App agent
+- Chat can drive ONLYOFFICE slides and Node-RED through the app agent
+  (stickllm-appagent: request -> checked plan -> actions, with Undo). It uses a
+  dedicated Qwen3.5-4B llama-server on 127.0.0.1:8796; the 4B Q4_K_M model is
+  baked into the image at /opt/stickllm/models/appagent. The Qwen2.5-3B stays the
+  default small chat model. ONLYOFFICE's Plugins tab is hidden.
+- Node-RED: the agent never shadows the editor's own routes, reloads the open
+  editor tab after a deploy and checks the real HTTP endpoint (hello world -> /hello).
+
+Desktop
+- New desktop layout (Auto/Desktop/Classic) with WinBox 0.2.82 windows, a start
+  menu, taskbar and status tray; narrow windows keep the tabbed layout.
+- Minesweeper starts as a game (solver overlay off); Files follows the StickLLM
+  theme; Notepad's Back to Apps link tidied.
+
+Models
+- The baked Qwen3.5-4B shows as installed in Models, loads and chats, and cannot
+  be deleted. Load works for Hugging Face hits already on disk; installed models
+  sort first in search.
+- Model probe no longer leaves "Recommended" blank on a machine with nvidia-smi
+  but no GPU/driver.
+
+Chat and vault
+- A thinking model's reasoning is hidden (Show reasoning, collapsed).
+- No more "No vault set up" / Ephemeral flash right after unlock, and the Vault
+  tab no longer stays lit after lock. /api/health reports the USB settings as
+  present-locked for a vault that is not yet bound.
+
 ## 0.5.4 (rc2, 2026-10-28)
 
 Chat and vault (rc2)
