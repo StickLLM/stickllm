@@ -19,6 +19,8 @@ and 27B-class models) to `STICKLLM-DATA` when space and VRAM allow. Optional dur
 store: encrypted SSD vault ([VAULT.md](VAULT.md)). Target retail base still moves
 toward a cheaper **16 GB** stick + lite GGUF.
 
+Future: replace built-in Qwen2.5-3B with Qwen3.5-4B (Nink 2026-10-29).
+
 **v0.3.9** ships the **~2 GB Qwen2.5-3B Q4_K_M** only. **Qwen2.5-7B Instruct Q5_K_M**
 stays in `catalog.toml` as a pinned download (ISS-020, done). Hugging Face search,
 the download queue, hash checks, and VRAM fit labels ship in that image. **Still open
