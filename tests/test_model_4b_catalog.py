@@ -183,3 +183,19 @@ def test_ui_search_sort_behaviour(tmp_path):
     f = tmp_path / "h.js"
     f.write_text(harness)
     subprocess.run(["node", str(f)], check=True)
+
+
+def test_probe_survives_nvidia_smi_without_gpu(tmp_path):
+    """nvidia-smi installed but no driver/GPU exits 9; pipefail used to kill the probe (UI showed "Recommended —")."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "nvidia-smi").write_text("#!/bin/sh\nexit 9\n")
+    (fake / "nvidia-smi").chmod(0o755)
+    import os
+    env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}", "STICKLLM_CATALOG": str(CATALOG),
+           "STICKLLM_RUN": str(tmp_path / "run"), "STICKLLM_DATA_MNT": str(tmp_path / "nomnt")}
+    r = subprocess.run(["bash", str(PROBE)], env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    import json
+    doc = json.loads((tmp_path / "run" / "model-probe.json").read_text())
+    assert doc["recommend_id"] == "qwen25-3b-q4km"

@@ -23,7 +23,9 @@ done
 
 vram_gb=0
 if command -v nvidia-smi >/dev/null 2>&1; then
-  vram_mb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk 'BEGIN{m=0}{if($1+0>m)m=$1+0} END{print m+0}')"
+  vram_mb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk 'BEGIN{m=0}{if($1+0>m)m=$1+0} END{print m+0}' || true)"
+  # nvidia-smi present but no driver/GPU exits non-zero (e.g. 9); with pipefail that killed the probe.
+  vram_mb="${vram_mb:-0}"
   vram_gb=$(( (vram_mb + 512) / 1024 ))
 fi
 
