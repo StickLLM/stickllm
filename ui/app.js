@@ -2160,9 +2160,24 @@ function updateVramBar(m) {
   if ($("#vramTotal")) $("#vramTotal").textContent = `of ${total} GB`;
   if ($("#vramWarn")) $("#vramWarn").hidden = fit.k !== "no";
 }
+// A search hit for a file the catalog already lists (server sets id = catalog id,
+// e.g. the baked app-agent Qwen3.5-4B) shows as that catalog row: one card with its
+// installed/running/Delete state, not an hf: duplicate.
+function searchRows() {
+  const seen = new Set();
+  const out = [];
+  for (const h of hfHits) {
+    const row = lastCatalog.find((x) => x.id === h.id || (h.catalog_id && x.id === h.catalog_id));
+    const m = row ? { ...h, ...row, hf_id: h.hf_id || h.id, repo: h.repo, file: h.file, sha256: h.sha256 || "", hf: true } : h;
+    if (seen.has(m.id)) continue;
+    seen.add(m.id);
+    out.push(m);
+  }
+  return out;
+}
 function browseSource() {
   const q = (state.mf.q || "").trim();
-  if (state.mtab === "browse" && q.length >= 2) return hfHits;
+  if (state.mtab === "browse" && q.length >= 2) return searchRows();
   return lastCatalog;
 }
 function showLoadTune() {
@@ -2235,11 +2250,14 @@ function renderModelsList() {
   }
   let rows = source.filter(modelVisible);
   const order = { gpu: 0, offload: 1, no: 2 };
+  // Search: what is already on this stick comes first (then the chosen sort).
+  const have = (m) => (searching ? Number(!m.installed) : 0);
   rows.sort((a, b) => {
     if (state.mf.sort === "running") {
       const rank = (m) => (m.running ? 0 : m.active ? 1 : 2);
-      return (rank(a) - rank(b)) || String(a.name || a.id).localeCompare(String(b.name || b.id));
+      return (rank(a) - rank(b)) || (have(a) - have(b)) || String(a.name || a.id).localeCompare(String(b.name || b.id));
     }
+    if (have(a) !== have(b)) return have(a) - have(b);
     if (state.mf.sort === "size") return modelGb(b) - modelGb(a);
     if (state.mf.sort === "name") return String(a.name || a.id).localeCompare(String(b.name || b.id));
     return (order[fitOf(a).k] - order[fitOf(b).k]) || (Number(!!b.recommended) - Number(!!a.recommended));
@@ -2350,7 +2368,12 @@ function syncModelActions() {
   updateVramBar(m);
 }
 function findModel(id) {
-  return hfHits.find((x) => x.id === id) || lastCatalog.find((x) => x.id === id);
+  const q = (state.mf.q || "").trim();
+  if (state.mtab === "browse" && q.length >= 2) {
+    const hit = searchRows().find((x) => x.id === id || x.hf_id === id);
+    if (hit) return hit;
+  }
+  return lastCatalog.find((x) => x.id === id) || hfHits.find((x) => x.id === id);
 }
 function resetModelFilters() {
   state.mf = { ...state.mf, fits: false, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", vis: "any", q: "", sort: "fit" };

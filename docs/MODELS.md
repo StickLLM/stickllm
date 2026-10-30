@@ -21,6 +21,16 @@ toward a cheaper **16 GB** stick + lite GGUF.
 
 Future: replace built-in Qwen2.5-3B with Qwen3.5-4B (Nink 2026-10-29).
 
+**App-agent Qwen3.5-4B in the Models page (0.5.5).** Images that bake the app agent ship
+`/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf`. It is now catalog row
+`qwen35-4b-q4km` (`unsloth/Qwen3.5-4B-GGUF`, sha256 pinned to the baked file), so
+**On this machine** lists it as installed, it can be loaded for chat, and Delete is
+blocked (the app agent's own llama-server on :8796 depends on it). Hugging Face search
+hits for that same file show as this catalog card, and installed hits sort first. It
+has `probe_recommend = false` and `quality_rank` below the 3B, so the **3B stays the
+default and recommended model**. Swapping the default 3B for the 4B (and dropping the
+3B from the image) is **still future work**, not done.
+
 **v0.3.9** ships the **~2 GB Qwen2.5-3B Q4_K_M** only. **Qwen2.5-7B Instruct Q5_K_M**
 stays in `catalog.toml` as a pinned download (ISS-020, done). Hugging Face search,
 the download queue, hash checks, and VRAM fit labels ship in that image. **Still open

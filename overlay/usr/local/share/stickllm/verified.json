@@ -69,7 +69,8 @@
     "Qwen/Qwen2.5-3B-Instruct-GGUF/qwen2.5-3b-instruct-q4_k_m.gguf": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
     "Qwen/Qwen2.5-7B-Instruct-GGUF/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf": "42f6693004793ee6cf1b2b723f0273b10f86a3bb2a949bd9128d4cda5fb866cd",
     "Qwen/Qwen2.5-7B-Instruct-GGUF/qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf": "beba9d4f2f5a1fe7d144dcae332e68b52c26705c5310dece2e5d1997e091e134",
-    "bartowski/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M.gguf": "880a52af8317974f7b4b064a6bc29ff49e188b91aa218e08eea3078b6b1cc673"
+    "bartowski/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M.gguf": "880a52af8317974f7b4b064a6bc29ff49e188b91aa218e08eea3078b6b1cc673",
+    "unsloth/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf": "25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"
   },
   "plugins": {}
 }

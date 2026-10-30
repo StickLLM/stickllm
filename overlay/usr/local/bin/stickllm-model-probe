@@ -72,6 +72,9 @@ for b in re.split(r"\n\[\[model\]\]\n", text)[1:]:
     # Only recommend pinned (downloadable) models
     if not repo or files in ("", "[]"):
         continue
+    # Listed for loading (e.g. baked app-agent Qwen3.5-4B) but never auto-picked.
+    if g("probe_recommend", "true").lower() == "false":
+        continue
     if mv > vram:
         continue
     if free > 0 and size + 1.0 > free:

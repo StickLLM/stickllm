@@ -103,6 +103,22 @@ sha256 = ["626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"]
 vision = false
 notes = "Default baked base model — loads quickly; download larger models later"
 
+[[model]]
+id = "qwen35-4b-q4km"
+name = "Qwen3.5-4B Q4_K_M"
+tier = "vram_8gb"
+# Below the 3B (15) on purpose: the probe picks the highest quality_rank that fits,
+# and the 3B stays the default/recommended model until the 3B->4B swap (docs/MODELS.md).
+quality_rank = 14
+approx_size_gb = 2.6
+min_vram_gb = 5
+hf_repo = "unsloth/Qwen3.5-4B-GGUF"
+hf_files = ["Qwen3.5-4B-Q4_K_M.gguf"]
+sha256 = ["25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"]
+vision = false
+probe_recommend = false
+notes = "Baked for the app agent (/opt/stickllm/models/appagent); also loadable for chat. Protected from Delete."
+
 [usb_data]
 label = "STICKLLM-DATA"
 auto_claim_unallocated = true
