@@ -187,22 +187,18 @@
     tasks.addEventListener("click", (e) => {
       const b = e.target.closest(".taskBtn");
       if (b && b.classList.contains("taskExt")) {
-        const api = appApi();
-        if (api.control) api.control("browser_focus", { id: b.dataset.ext }).then((res) => {
-          if (res && res.ok === false && res.error === "not_found") pollBrowser();
-          else if (res && res.ok === false && api.toast) api.toast(res.message || "Browser window is open on the stick's screen");
-        }).catch(() => pollBrowser());
+        // Like any taskbar: minimised -> restore, front -> minimise, else bring to front.
+        browserOp(b.dataset.ext, "toggle");
         return;
       }
       if (b && wm) wm.taskbarClick(b.dataset.app);
     });
-    // Right-click a browser button to close that Chromium window.
+    // Right-click a browser button: Restore / Minimise / Maximise / Close.
     tasks.addEventListener("contextmenu", (e) => {
       const b = e.target.closest(".taskBtn.taskExt");
       if (!b) return;
       e.preventDefault();
-      const api = appApi();
-      if (api.control) api.control("browser_close", { id: b.dataset.ext }).catch(() => {}).then(() => setTimeout(pollBrowser, 800));
+      showBrowserMenu(b);
     });
     const tray = el("div", "tray");
     tray.id = "deskTray";
@@ -611,8 +607,12 @@
           ui.tasks.appendChild(b);
         }
         have.delete(key);
-        b.querySelector(".taskLabel").textContent = bw.title || "Browser";
-        b.title = (bw.title || "Browser") + " \u2014 Chromium window on the stick's screen (right-click to close)";
+        const label = bw.page_title || bw.title || "Browser";
+        b.querySelector(".taskLabel").textContent = label;
+        b.classList.toggle("active", !!bw.focused && !bw.minimised);
+        b.classList.toggle("min", !!bw.minimised);
+        b.setAttribute("aria-pressed", String(!!bw.focused && !bw.minimised));
+        b.title = label + (bw.minimised ? " (minimised) \u2014 click to restore" : bw.focused ? " \u2014 click to minimise" : " \u2014 click to bring to front") + " \u00b7 right-click for more";
       });
       have.forEach((b) => b.remove());
       document.body.classList.toggle("deskHasActive", !!wm.activeId());
@@ -792,9 +792,62 @@
         if (api.toast) api.toast(res.message || res.error || "The browser could not start");
         return;
       }
-      if (api.toast) api.toast((res && res.downloads === "vault" ? "Downloads go to the vault." : "Downloads are off while the vault is locked.") + " Ctrl+W closes the window.");
+      if (api.toast) api.toast((res && res.downloads === "vault" ? "Downloads go to the vault." : "Downloads are off while the vault is locked.") + " Drag the title bar to move it; the taskbar minimises and restores it.");
       pollBrowser();
     }).catch((e) => { if (api.toast) api.toast("Browser: " + e.message); });
+  }
+  // Window ops go to the compositor (stickllm-control browser_window, which
+  // talks to sway). The desktop taskbar height is reserved when maximising.
+  function browserOp(id, op) {
+    const api = appApi();
+    if (!api.control || !id) return Promise.resolve(null);
+    const taskbar = Math.round(48 * (window.devicePixelRatio || 1));
+    return api.control("browser_window", { id: id, op: op, taskbar: taskbar }).then((res) => {
+      if (res && res.ok === false && res.error === "not_found") { pollBrowser(); return res; }
+      if (res && res.ok === false && api.toast) api.toast(res.message || "That window could not be changed");
+      const bw = browserWins.find((x) => x.id === id);
+      if (bw && res && res.window) Object.assign(bw, { minimised: res.window.minimised, focused: res.window.focused, maximised: res.window.maximised });
+      renderTasks();
+      setTimeout(pollBrowser, 600);
+      return res;
+    }).catch(() => { pollBrowser(); return null; });
+  }
+  let browserMenu = null;
+  function hideBrowserMenu() {
+    if (browserMenu) { browserMenu.remove(); browserMenu = null; }
+    document.removeEventListener("mousedown", hideBrowserMenu, true);
+  }
+  function showBrowserMenu(btn) {
+    hideBrowserMenu();
+    const id = btn.dataset.ext;
+    const bw = browserWins.find((x) => x.id === id) || {};
+    const m = el("div", "taskMenu");
+    m.setAttribute("role", "menu");
+    const items = [
+      bw.minimised ? ["restore", "Restore"] : ["minimise", "Minimise"],
+      ["maximise", bw.maximised ? "Restore size" : "Maximise"],
+      ["close", "Close"],
+    ];
+    items.forEach(([op, label]) => {
+      const it = el("button", "taskMenuItem");
+      it.type = "button";
+      it.setAttribute("role", "menuitem");
+      it.dataset.op = op;
+      it.textContent = label;
+      it.addEventListener("mousedown", (e) => e.stopPropagation());
+      it.addEventListener("click", (e) => {
+        e.stopPropagation();
+        hideBrowserMenu();
+        browserOp(id, op);
+      });
+      m.appendChild(it);
+    });
+    document.body.appendChild(m);
+    const r = btn.getBoundingClientRect();
+    m.style.left = Math.max(4, Math.min(r.left, window.innerWidth - m.offsetWidth - 4)) + "px";
+    m.style.bottom = (window.innerHeight - r.top + 6) + "px";
+    browserMenu = m;
+    setTimeout(() => document.addEventListener("mousedown", hideBrowserMenu, true), 0);
   }
   // Chrome windows show on the taskbar while they run.
   let browserT = 0;
@@ -807,7 +860,7 @@
       if (!on) return;
       browserWins = res && Array.isArray(res.windows) ? res.windows : [];
       renderTasks();
-      if (browserWins.length) browserT = setTimeout(pollBrowser, 4000);
+      if (browserWins.length) browserT = setTimeout(pollBrowser, res && res.wm ? 1500 : 4000);
     }).catch(() => {});
   }
   // Desktop-only panels built around the existing Settings sections.

@@ -352,6 +352,7 @@ restore_display_console() {
   fail_note "STICKLLM_KIOSK_RESTORE_CONSOLE reason=$reason"
   serial_note "STICKLLM_KIOSK_RESTORE_CONSOLE reason=$reason"
   # Drop DRM master: do not leave cage/weston holding CRTCs off.
+  pkill -x sway 2>/dev/null || true
   pkill -x cage 2>/dev/null || true
   pkill -x weston 2>/dev/null || true
   pkill -x cog 2>/dev/null || true
@@ -650,6 +651,9 @@ clear_restore_prompt() {
     "$default/Last Session" "$default/Last Tabs" 2>/dev/null || true
   rm -rf "$default/Sessions" 2>/dev/null || true
   prefs="$default/Preferences"
+  # First run: use the system frame (no Chromium caption buttons; the
+  # compositor ignores their minimise/maximise requests anyway).
+  [[ -f "$prefs" ]] || printf '%s\n' '{"browser":{"custom_chrome_frame":false},"session":{"restore_on_startup":5}}' > "$prefs"
   if [[ -f "$prefs" ]] && command -v python3 >/dev/null 2>&1; then
     python3 - "$prefs" << 'PY'
 import json
@@ -723,6 +727,19 @@ renderer_order_for_drm() {
   fi
 }
 
+# 0.5.6: sway (stock Debian package, our config) gives the desktop real
+# floating windows. Off with stickllm.compositor=cage on the kernel command
+# line or STICKLLM_KIOSK_SWAY=0; also off if our config file is missing, so
+# sway can never fall back to the distribution config (terminal/exit keys).
+SWAY_CONFIG="${STICKLLM_SWAY_CONFIG:-/etc/stickllm/sway/config}"
+sway_enabled() {
+  [[ "${STICKLLM_KIOSK_SWAY:-1}" != "0" ]] || return 1
+  grep -Eqw 'stickllm\.compositor=(cage|weston)' /proc/cmdline 2>/dev/null && return 1
+  command -v sway >/dev/null 2>&1 || return 1
+  [[ -r "$SWAY_CONFIG" && -x /usr/local/bin/stickllm-sway-session ]] || return 1
+  return 0
+}
+
 # Run one compositor+browser combo in foreground; return its exit code.
 try_launch() {
   local label="$1" drm="$2" renderer="$3" comp="$4" browser="$5"
@@ -776,6 +793,9 @@ try_launch() {
         "GBM_BACKEND=${GBM_BACKEND:-}" \
         "__GLX_VENDOR_LIBRARY_NAME=${__GLX_VENDOR_LIBRARY_NAME:-}" \
         "__EGL_VENDOR_LIBRARY_FILENAMES=${__EGL_VENDOR_LIBRARY_FILENAMES:-}" \
+        "STICKLLM_SESSION_BROWSER=${browser}" \
+        "STICKLLM_SESSION_URL=${URL}" \
+        "STICKLLM_SESSION_PROFILE=${PROFILE}" \
         "$@"
     else
       # Root weston path: use root XDG runtime (seatd/logind-friendly).
@@ -790,6 +810,33 @@ try_launch() {
 
   set +e
   case "$comp" in
+    sway)
+      # 0.5.6 desktop session: stock Debian sway (MIT) with our own config.
+      # Desktop Chromium is the tiled full-screen window; Browser / app
+      # pop-outs float on top. Any failure → rc≠0 → ladder falls back to cage.
+      _rcf="${XDG_RUNTIME_DIR}/stickllm-sway-session.rc"
+      rm -f "$_rcf"
+      {
+        echo "=== sway launch $(date -Is 2>/dev/null || date) renderer=$renderer user=$KIOSK_USER config=$SWAY_CONFIG ==="
+        command -v sway; ls -la /run/seatd.sock /var/run/seatd.sock 2>&1 || true
+      } >>"$FAIL_LOG" 2>&1 || true
+      # --unsupported-gpu: let sway start on the NVIDIA proprietary driver
+      # (pixman renderer) instead of refusing; -c: never read /etc/sway/config.
+      _run 1 sway --unsupported-gpu -c "$SWAY_CONFIG" 2>&1 | kiosk_fail_filter
+      rc=${PIPESTATUS[0]}
+      if [[ "$rc" -eq 0 ]]; then
+        # sway exits 0 when the session ends; the desktop's own result decides.
+        _srow="$(cat "$_rcf" 2>/dev/null || true)"
+        _src="$(sed -n 's/^rc=\([0-9]*\).*/\1/p' <<<"$_srow")"
+        _ssecs="$(sed -n 's/.*secs=\([0-9]*\).*/\1/p' <<<"$_srow")"
+        fail_note "STICKLLM_KIOSK_SWAY_SESSION ${_srow:-no-session-record}"
+        if [[ -z "$_src" ]]; then
+          rc=71  # session never ran (exec failed / config not applied)
+        elif [[ "$_src" -ne 0 && "${_ssecs:-0}" -lt 20 ]]; then
+          rc=70  # desktop browser died at start under sway
+        fi
+      fi
+      ;;
     cage)
       {
         echo "=== cage launch $(date -Is 2>/dev/null || date) renderer=$renderer user=$KIOSK_USER ==="
@@ -960,8 +1007,8 @@ touch "$RUN/local-mode"
 serial_note "STICKLLM_KIOSK_START chat=$CHAT_MODE fails=$(fail_count)"
 collect_drm_diag
 
-if ! command -v cage >/dev/null 2>&1 && ! command -v weston >/dev/null 2>&1; then
-  hold_error "neither cage nor weston installed"
+if ! command -v cage >/dev/null 2>&1 && ! command -v weston >/dev/null 2>&1 && ! sway_enabled; then
+  hold_error "neither sway, cage nor weston installed"
 fi
 
 BROWSER="$(pick_browser_bin || true)"
@@ -1128,6 +1175,13 @@ for drm in "${drm_list[@]}"; do
   # shellcheck disable=SC2206
   renderers=( $(renderer_order_for_drm "$drm") )
   for renderer in "${renderers[@]}"; do
+    # 0.5.6: floating-window desktop first; cage/weston kiosk stay the fallback.
+    if sway_enabled && [[ "$BROWSER" != "cog" ]]; then
+      run_stack_forever "sway+$BROWSER/$renderer@$(basename "$drm")" "$drm" "$renderer" sway "$BROWSER" \
+        && exit 0
+      fail_note "STICKLLM_KIOSK_SWAY_FALLBACK drm=$drm renderer=$renderer → cage/weston"
+      serial_note "STICKLLM_KIOSK_SWAY_FALLBACK renderer=$renderer"
+    fi
     if command -v cage >/dev/null 2>&1; then
       run_stack_forever "cage+$BROWSER/$renderer@$(basename "$drm")" "$drm" "$renderer" cage "$BROWSER" \
         && exit 0

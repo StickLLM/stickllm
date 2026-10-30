@@ -170,24 +170,66 @@ each one back.
 | Installed catalog apps (ONLYOFFICE, Node-RED, Trilium, …) — 0.5.5: new tabs | Desktop icon + Start entry; open in a window (iframe through the gateway relay, which rewrites `X-Frame-Options`/`frame-ancestors` to StickLLM's own origins). Apps marked `frame: false`, or that still refuse, open with **Pop out** in a real Chromium window |
 | — | **Browser** desktop app: a real Chromium window on the stick's screen (see below) |
 
-### Browser (stickllm-control `browser_open` / `browser_status` / `browser_focus` / `browser_close`)
+### Browser (stickllm-control `browser_open` / `browser_status` / `browser_window` / `browser_close`)
 
-- Only the stick's own UI may call them: the gateway answers 403
-  `loopback_only` unless the request is from loopback with the StickLLM UI header.
-  A LAN browser's Browser icon opens a normal tab on that PC instead.
-- Each window is a separate Chromium process run as the kiosk user on the
-  kiosk's Wayland display, with a throw-away profile in `/run/stickllm/browser/<id>`
-  (RAM, removed when the window closes). The Browser icon opens a normal
-  window (address bar, tabs); app pop-outs use `--app=<url>`. Only http(s)
-  URLs. At most 4 windows.
-- Downloads: `stickllm-download-policy auto` runs before every launch; the
-  managed policy applies to every Chromium profile, so downloads go straight
-  to `vault/Downloads` while unlocked and are blocked while locked. If the
-  policy cannot be written the window is not opened.
-- Taskbar shows a button per running window (polled). Right-click closes it.
-- Limits: cage and weston kiosk-shell (the kiosk compositors) show every
-  toplevel full screen and Wayland ignores client positions, so
-  `--window-size`/`--window-position` (sent from the desktop geometry) only
-  apply on a floating compositor; there is no way to raise another client's
-  window, so `browser_focus` reports `focus_unsupported` and the newest window
-  is on top. Ctrl+W / Alt+F4 closes it and returns to the StickLLM desktop.
+The Browser is an ordinary floating desktop window, the way it is on any
+desktop: it moves, resizes, minimises to the taskbar, restores, maximises and
+closes. To the user the screen is simply their desktop.
+
+- Compositor: the kiosk starts the stock Debian **sway** 1.7 package (MIT,
+  unmodified) with `sway -c /etc/stickllm/sway/config`; the distribution
+  config is never read. The StickLLM desktop is a chrome-less Chromium
+  `--app` window (no tab strip or address bar). It is the single tiled,
+  borderless window under everything else. `stickllm-wm watch` finds it by the
+  pid `stickllm-sway-session` launched and marks it `stickllm_desktop`.
+  Everything else floats on top with a sway title bar: drag the title bar to
+  move, drag an edge to resize, Super+drag also works.
+- No escape: no bar, no terminal or launcher, no exit or reload binding, no
+  Xwayland, no swaynag. The only key bindings are Super+Down (minimise),
+  Super+Up (maximise) and Alt+F4 (close), all through `stickllm-wm`, which
+  never acts on the desktop window. sway's recommended packages (the foot
+  terminal and others) are not installed.
+- Fallback ladder: sway → cage → weston kiosk-shell. If sway cannot start
+  (rc 70/71, e.g. the GPU) the log records `STICKLLM_KIOSK_SWAY_FALLBACK` and
+  cage runs, with full-screen windows as in 0.5.5. In that case
+  `browser_window` answers `wm_unavailable`.
+- Window control: `stickllm-control` talks to sway's IPC socket using our own
+  Python client (`/usr/local/lib/stickllm_wm.py`). There is no linking and no
+  swaymsg. Each window is marked `stickllm_bid_<id>`. Normal windows are found
+  by `--class=stickllm-browser-<id>`. `--app` pop-outs, whose app_id comes from
+  the URL, are found by process session (`getsid(pid)` == launch pid).
+  - Placement uses the desktop's requested rect, in physical pixels converted
+    to logical ones.
+  - Minimise = scratchpad, which the taskbar shows as minimised.
+  - Restore = back to the saved rect (`stickllm_rect_*` mark).
+  - Maximise = the work area above the 48 px taskbar.
+  - Taskbar: a click toggles minimise/restore/focus; right-click gives
+    Minimise / Maximise / Close.
+- Fresh profiles get `browser.custom_chrome_frame=false`, so Chromium uses the
+  compositor frame and there are no dead caption buttons.
+- Unchanged safety rules: only the stick's own UI may call these (gateway 403
+  `loopback_only` otherwise; a LAN browser's Browser icon opens a normal tab
+  on that PC). Each window is a separate Chromium process with a throw-away
+  RAM profile in `/run/stickllm/browser/<id>`. Only http(s), at most 4
+  windows. `stickllm-download-policy auto` runs before every launch, so
+  downloads go only into the unlocked `vault/Downloads` and are blocked while
+  the vault is locked.
+- Limits:
+  - sway 1.7 title bars have no minimise/maximise/close buttons. Adding them
+    would need a change to sway's source, which we don't do, so they are
+    flagged instead. Use the taskbar or the shortcuts.
+  - WinBox windows inside the desktop are always below floating Chromium
+    windows.
+  - Windows that the desktop Chromium opens itself (Ctrl+N, `target=_blank`)
+    float but have no taskbar button.
+- Licences: see `THIRD_PARTY_NOTICES.md`. All compositor packages are
+  stock Debian and are configured only. Anything that would need a source
+  change is flagged rather than done.
+
+### Later (not in 0.5.6): client / app mode
+
+When StickLLM is used from the user's own desktop, phone or tablet (today it
+is a browser tab on their PC), a later version will ship it as a wrapped
+browser app on their existing desktop. In that mode the host OS window manager
+owns the windows, and the Browser icon keeps opening a normal tab or window
+there. Not developed yet.

@@ -1,0 +1,58 @@
+# StickLLM desktop session — config for the stock Debian "sway" package (MIT).
+# The kiosk always starts sway with "-c /etc/stickllm/sway/config", so the
+# distribution default (/etc/sway/config, which has a terminal launcher, a
+# launcher menu and an exit binding) is never read. sway itself is unmodified;
+# StickLLM only configures it here and talks to it over its IPC socket.
+#
+# Layout: the StickLLM desktop Chromium (an --app window; stickllm-wm marks it
+# stickllm_desktop by its process id) is the one
+# tiled window: full screen, no border, always under everything else. Every
+# other window (Browser, app pop-outs) floats on top with a title bar, at the
+# size and place the desktop asks for (stickllm-control → stickllm_wm.py).
+#
+# Safety: no bar, no terminal, no launcher, no exit/reload binding, no
+# Xwayland, no swaynag. The only key bindings call our own window helper.
+
+xwayland disable
+swaynag_command -
+focus_follows_mouse no
+focus_on_window_activation focus
+mouse_warping none
+tiling_drag disable
+workspace_layout default
+default_orientation horizontal
+
+output * bg #0f1720 solid_color
+
+font pango:DejaVu Sans 10
+titlebar_padding 8 4
+titlebar_border_thickness 1
+default_border normal 2
+default_floating_border normal 2
+hide_edge_borders none
+# Marks are our internal window ids; never show them in title bars.
+show_marks no
+gaps inner 0
+floating_minimum_size 320 x 200
+floating_maximum_size -1 x -1
+# Super + left-drag moves a window, Super + right-drag resizes it. Dragging the
+# title bar moves and dragging an edge resizes, as on any desktop.
+floating_modifier Mod4 normal
+
+# class                 border  backgr. text    indicator child_border
+client.focused          #0d9488 #0d9488 #ffffff #0d9488   #0d9488
+client.focused_inactive #1f2a33 #1f2a33 #cbd5e1 #1f2a33   #1f2a33
+client.unfocused        #1f2a33 #1f2a33 #94a3b8 #1f2a33   #1f2a33
+client.urgent           #b45309 #b45309 #ffffff #b45309   #b45309
+
+# Everything floats; the desktop window is the tiled exception.
+for_window [app_id=".*"] floating enable, border normal 2
+for_window [app_id="^stickllm-desktop$"] floating disable, border none
+
+# Window shortcuts (our helper refuses to touch the desktop window itself).
+bindsym --no-repeat Mod4+Down exec /usr/local/bin/stickllm-wm minimise-focused
+bindsym --no-repeat Mod4+Up exec /usr/local/bin/stickllm-wm maximise-focused
+bindsym --no-repeat Mod1+F4 exec /usr/local/bin/stickllm-wm close-focused
+
+# Session: desktop Chromium + desktop guard; sway exits when the desktop does.
+exec /usr/local/bin/stickllm-sway-session

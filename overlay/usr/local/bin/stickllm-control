@@ -3574,9 +3574,12 @@ def wifi_connect(ssid: str, password: str) -> dict:
 # straight into vault/Downloads while the vault is unlocked, blocked while it
 # is locked, so nothing is ever saved unencrypted on the stick or in RAM.
 # Placement: Wayland lets the compositor, not the client, place windows. The
-# kiosk compositors (cage, weston kiosk-shell) show every window full screen,
-# so --window-size/--window-position only take effect on a compositor that
-# floats windows. The gateway only forwards browser_* from the stick itself.
+# kiosk now runs the stock sway compositor (our config, /etc/stickllm/sway),
+# where these windows float over the desktop; stickllm_wm.py places, moves,
+# resizes, minimises, restores, maximises and focuses them over sway's IPC
+# socket. On the fallback compositors (cage, weston kiosk-shell) every window
+# is full screen and the window ops report "wm_unavailable".
+# The gateway only forwards browser_* from the stick itself (loopback).
 BROWSER_ROOT = RUN / "browser"
 BROWSER_MAX = 4
 BROWSER_START_URL = "about:blank"
@@ -3659,6 +3662,22 @@ def _browser_reap() -> None:
         shutil.rmtree(rec["profile"], ignore_errors=True)
 
 
+# Chromium draws its own caption buttons unless told to use the system frame.
+# Under sway its minimise and maximise requests are ignored, so a fresh profile
+# starts with the system frame: sway's title bar moves the window and the
+# taskbar minimises, restores and maximises it. No dead buttons.
+BROWSER_FIRST_PREFS = {"browser": {"custom_chrome_frame": False},
+                       "session": {"restore_on_startup": 5}}
+
+
+def browser_seed_prefs(profile: Path) -> None:
+    default = profile / "Default"
+    default.mkdir(parents=True, exist_ok=True)
+    prefs = default / "Preferences"
+    if not prefs.exists():
+        prefs.write_text(json.dumps(BROWSER_FIRST_PREFS), encoding="utf-8")
+
+
 def browser_command(bin_path: str, profile: Path, url: str, app: bool, geo: dict | None, bid: str) -> list[str]:
     cmd = [
         bin_path,
@@ -3704,6 +3723,7 @@ def browser_open(params: dict) -> dict:
             (profile / "cache").mkdir(parents=True, exist_ok=False)
             os.chmod(BROWSER_ROOT, 0o711)
             os.chmod(profile, 0o700)
+            browser_seed_prefs(profile)
         except OSError as e:
             return {"ok": False, "code": 500, "error": "profile", "message": str(e)}
         env = {
@@ -3723,6 +3743,7 @@ def browser_open(params: dict) -> dict:
             shutil.rmtree(profile, ignore_errors=True)
             return {"ok": False, "code": 500, "error": "spawn", "message": str(e)}
         _BROWSERS[bid] = {"proc": proc, "profile": profile, "title": title, "url": url, "app": app, "started": time.time()}
+    _wm_place_later(bid, geo, _taskbar_px(params))
     return {"ok": True, "id": bid, "title": title, "downloads": downloads, "placement": "compositor"}
 
 
@@ -3730,7 +3751,29 @@ def browser_status() -> dict:
     with _BROWSER_LOCK:
         _browser_reap()
         wins = [{"id": bid, "title": rec["title"], "url": rec["url"], "app": rec["app"]} for bid, rec in _BROWSERS.items()]
-    return {"ok": True, "windows": wins, "max": BROWSER_MAX}
+    wm_on = False
+    if wins:
+        ipc = _wm_ipc()
+        if ipc is not None:
+            wm = _wm()
+            try:
+                live = wm.states(ipc)
+                wm_on = True
+            except (wm.WMError, OSError):
+                live = {}
+            finally:
+                ipc.close()
+            for w in wins:
+                st = live.get(w["id"])
+                if st:
+                    # Live page title from the compositor (falls back to the launch title).
+                    page = re.sub(r"[\x00-\x1f\x7f]", "", str(st.get("title") or ""))
+                    page = re.sub(r" - Chromium$", "", page)[:80]
+                    w.update({"page_title": page, "minimised": st["minimised"], "focused": st["focused"],
+                              "maximised": st["maximised"], "rect": st["rect"], "mapped": True})
+                else:
+                    w["mapped"] = False
+    return {"ok": True, "windows": wins, "max": BROWSER_MAX, "wm": wm_on}
 
 
 def browser_close(params: dict) -> dict:
@@ -3746,17 +3789,126 @@ def browser_close(params: dict) -> dict:
     return {"ok": True}
 
 
-def browser_focus(params: dict) -> dict:
-    # The kiosk compositors have no "raise this window" request a client may
-    # make (Wayland has no such protocol for other clients' windows). The
-    # newest window is already on top, so report the limit instead.
+def _wm():
+    """stickllm_wm.py (our sway IPC client), loaded once; None if missing."""
+    mod = getattr(_wm, "_mod", None)
+    if mod is not None:
+        return mod
+    lib = Path(os.environ.get("STICKLLM_WM_LIB", "/usr/local/lib/stickllm_wm.py"))
+    if not lib.is_file():
+        return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("stickllm_wm", lib)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _wm._mod = mod
+    return mod
+
+
+def _wm_ipc():
+    """Connected sway IPC client for the kiosk session, or None (cage/weston)."""
+    wm = _wm()
+    if wm is None:
+        return None
+    env_w = _wayland_env(_kiosk_user())
+    dirs = [env_w["XDG_RUNTIME_DIR"]] if env_w else []
+    try:
+        return wm.SwayIPC(wm.find_socket(dirs))
+    except (wm.WMError, OSError):
+        return None
+
+
+def _browser_owns(bid: str):
+    """pid -> True when that process belongs to browser `bid` (its own session:
+    browsers start with start_new_session, so the session id is the launch pid)."""
+    def owns(pid: int) -> bool:
+        with _BROWSER_LOCK:
+            rec = _BROWSERS.get(bid)
+        if not rec:
+            return False
+        try:
+            return os.getsid(pid) == rec["proc"].pid
+        except OSError:
+            return False
+    return owns
+
+
+def _wm_place_later(bid: str, geo: dict | None, taskbar: int) -> None:
+    """Wait for a new window to map, mark it with its id, then float it at the
+    requested rect. Chromium --app windows ignore --class on Wayland, so they
+    are matched by owning process and marked."""
+    def run():
+        ipc = _wm_ipc()
+        if ipc is None:
+            return
+        wm = _wm()
+        try:
+            w = wm.wait_for(ipc, bid, _browser_owns(bid), timeout=45)
+            if w and geo:
+                wm.apply(ipc, "place", con_id=w["id"], geo=geo, taskbar_px=taskbar)
+            elif w:
+                wm.apply(ipc, "focus", con_id=w["id"], taskbar_px=taskbar)
+        except (wm.WMError, OSError):
+            pass
+        finally:
+            ipc.close()
+    threading.Thread(target=run, name=f"wm-place-{bid}", daemon=True).start()
+
+
+def _taskbar_px(params: dict) -> int:
+    try:
+        return max(0, min(400, int(float(params.get("taskbar", 48)))))
+    except (TypeError, ValueError):
+        return 48
+
+
+BROWSER_WINDOW_OPS = ("place", "minimise", "restore", "maximise", "focus", "toggle", "close", "state")
+
+
+def browser_window(params: dict) -> dict:
+    """Window op on one of our browser windows through the sway compositor."""
     bid = str(params.get("id") or "")
+    op = str(params.get("op") or "")
+    if op not in BROWSER_WINDOW_OPS:
+        return {"ok": False, "code": 400, "error": "bad_op"}
     with _BROWSER_LOCK:
         _browser_reap()
-        if bid not in _BROWSERS:
-            return {"ok": False, "code": 404, "error": "not_found"}
-    return {"ok": False, "code": 200, "error": "focus_unsupported",
-            "message": "This screen shows the newest browser window on top. Close it (Ctrl+W) to get back to the desktop."}
+        rec = _BROWSERS.get(bid)
+    if not rec:
+        return {"ok": False, "code": 404, "error": "not_found"}
+    if op == "close":
+        return browser_close({"id": bid})
+    geo = _clamp_geometry(params.get("geometry")) if op == "place" else None
+    if op == "place" and not geo:
+        return {"ok": False, "code": 400, "error": "bad_geometry"}
+    ipc = _wm_ipc()
+    if ipc is None:
+        return {"ok": False, "code": 200, "error": "wm_unavailable",
+                "message": "This screen runs the full-screen fallback, so browser windows cannot be moved or minimised."}
+    wm = _wm()
+    if wm is None:
+        ipc.close()
+        return {"ok": False, "code": 200, "error": "wm_unavailable",
+                "message": "The window helper is not installed on this image."}
+    try:
+        w = wm.wait_for(ipc, bid, _browser_owns(bid), timeout=0.5)
+        if not w:
+            raise wm.WMError("window not found")
+        res = wm.apply(ipc, op, con_id=w["id"], geo=geo, taskbar_px=_taskbar_px(params))
+    except wm.WMError as e:
+        return {"ok": False, "code": 409, "error": "wm", "message": str(e)}
+    except OSError as e:
+        return {"ok": False, "code": 503, "error": "wm", "message": str(e)}
+    finally:
+        ipc.close()
+    return {"ok": bool(res.get("ok")), "id": bid, "op": op, "window": res.get("window")}
+
+
+def browser_focus(params: dict) -> dict:
+    """Bring a browser window to the front (restores it if minimised)."""
+    return browser_window({**params, "op": "focus"})
 
 
 _GGUF_INVALIDATE_ACTIONS = {
@@ -3862,6 +4014,8 @@ def handle(action: str, params: dict) -> dict:
         return browser_focus(params)
     if action == "browser_close":
         return browser_close(params)
+    if action == "browser_window":
+        return browser_window(params)
     if action == "session_mode":
         return {"ok": True, "mode": session_mode(), "modes": sorted(SESSION_MODES)}
     if action == "set_session_mode":

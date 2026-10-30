@@ -127,6 +127,7 @@ def test_browser_open_spawns_chromium_in_ram_profile(monkeypatch, tmp_path):
     monkeypatch.setattr(CTL, "sh", lambda cmd, timeout=600: {"ok": True, "stdout": "downloads=unlocked\n"})
     monkeypatch.setattr(CTL.subprocess, "Popen", popen)
     monkeypatch.setattr(CTL, "_BROWSERS", {})
+    monkeypatch.setattr(CTL, "_wm_ipc", lambda: None)  # cage/weston fallback: no window manager IPC
     r = CTL.browser_open({"url": "http://127.0.0.1:8095/", "title": "Trilium", "app": True,
                           "geometry": {"x": 10, "y": 20, "w": 1000, "h": 700}})
     assert r["ok"] and r["downloads"] == "vault"
@@ -140,7 +141,9 @@ def test_browser_open_spawns_chromium_in_ram_profile(monkeypatch, tmp_path):
     st = CTL.handle("browser_status", {})
     assert [w["title"] for w in st["windows"]] == ["Trilium"]
     f = CTL.handle("browser_focus", {"id": r["id"]})
-    assert f["error"] == "focus_unsupported"
+    assert f["error"] == "wm_unavailable"
+    prefs = json.loads((Path(prof) / "Default" / "Preferences").read_text())
+    assert prefs["browser"]["custom_chrome_frame"] is False
     # Browser icon: a normal window with an address bar, not an app window.
     r2 = CTL.browser_open({"url": "", "title": "Browser"})
     assert r2["ok"] and "--new-window" in seen["cmd"] and not any(c.startswith("--app=") for c in seen["cmd"])
@@ -155,7 +158,7 @@ def test_browser_profile_is_in_ram():
 def test_desktop_browser_and_apps_wiring():
     js = _text(UI / "desktop.js")
     assert 'api.control("browser_open"' in js and "app: !!app" in js
-    assert '"browser_focus"' in js and '"browser_close"' in js and '"browser_status"' in js
+    assert '"browser_window"' in js and '["close", "Close"]' in js and '"browser_status"' in js
     assert "openBrowser(u, appTitle(id), true)" in js
     app = _text(UI / "app.js")
     assert "deskCatalog" in app and "frame: a.frame !== false" in app

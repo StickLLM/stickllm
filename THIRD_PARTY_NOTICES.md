@@ -33,3 +33,32 @@ packages and are not listed here.
 
 Pinned commits and the edits StickLLM made are in each app's `SOURCES.txt`.
 Files, Calculator, Media and System monitor are StickLLM's own code.
+
+## Desktop compositor (Debian packages, unmodified)
+
+The desktop session (0.5.6) runs on the stock Debian bookworm packages below,
+installed by live-build from the Debian archive exactly as published. StickLLM
+does not modify, patch, fork or rebuild them. It configures sway only through
+its own config file (`/etc/stickllm/sway/config`, started with `sway -c`) and
+talks to it over sway's documented IPC socket from StickLLM's own Python code
+(`/usr/local/lib/stickllm_wm.py`, `stickllm-control`). That code is not linked
+against these packages and copies no code from them. Each package's full
+copyright and licence text ships in the image as
+`/usr/share/doc/<package>/copyright`, as Debian provides.
+
+| Package (Debian bookworm) | Version | Upstream | Licence |
+|---|---|---|---|
+| sway | 1.7-6 | https://github.com/swaywm/sway | Expat (MIT); some protocol XML files MIT-like; `protocols/idle.xml` LGPL-2.1+ (protocol description, unmodified) |
+| swaybg | 1.2.0-1 | https://github.com/swaywm/swaybg | Expat (MIT) / MIT-like |
+| libwlroots10 (wlroots) | 0.15.1-6 | https://gitlab.freedesktop.org/wlroots/wlroots | Expat (MIT); `protocol/idle.xml` LGPL-2.1+; Debian packaging files GPL-2+; one CC0-1.0 file |
+
+`libwlroots10` was already in the image for the fallback compositor (cage).
+sway's other dependencies (Mesa, libglvnd, polkitd, json-c, pango, ...) are
+ordinary Debian packages that were already present or are pulled in unchanged;
+their licence texts are likewise in `/usr/share/doc/<package>/copyright`.
+sway's *recommended* packages (the foot terminal, suckless-tools,
+sway-backgrounds) are **not** installed: the image is built with recommends off.
+
+`grim` (MIT) was used only to take screenshots in a test VM; it is not in the
+image's package list.
+

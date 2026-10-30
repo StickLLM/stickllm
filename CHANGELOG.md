@@ -12,8 +12,14 @@ Desktop
   window; the gateway relay lets only StickLLM's own pages frame them. Apps
   that cannot be framed pop out into a Chromium window.
 - Browser opens a real Chromium window on the stick's screen (own RAM profile,
-  downloads only into the unlocked vault, blocked while locked). Kiosk
-  compositors show it full screen; Ctrl+W returns to the desktop.
+  downloads only into the unlocked vault, blocked while locked).
+- The stick's screen now runs a real floating desktop. The kiosk uses the
+  stock Debian sway compositor (MIT, unmodified, our own config only) and
+  falls back to cage. The StickLLM desktop is full screen with no browser
+  chrome. Browser and app pop-out windows float above it at the size the
+  desktop asks for: move, resize, minimise to the taskbar, restore, maximise
+  and close (taskbar click or right-click, Super+Down/Up, Alt+F4). There is no
+  terminal, menu or exit binding.
 - Classic and phone layouts are unchanged.
 
 ## 0.5.5 (2026-10-30)

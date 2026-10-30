@@ -43,6 +43,10 @@ libcuda1
 nvidia-persistenced
 # Local-mode kiosk (cage Wayland + Chromium + seatd/libinput)
 cage
+# 0.5.6 desktop: floating windows (Browser, app pop-outs). Stock Debian sway
+# (MIT) + swaybg (MIT) on the same wlroots (MIT) cage uses; configured only via
+# /etc/stickllm/sway/config. Recommends stay off (no foot terminal, no swaylock).
+sway
 chromium
 seatd
 libinput-bin

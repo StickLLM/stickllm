@@ -1,0 +1,41 @@
+#!/bin/bash
+# Started by sway's `exec` (as the kiosk user) from /etc/stickllm/sway/config.
+# Runs the full-screen StickLLM desktop Chromium; when it exits, records its
+# exit code for stickllm-kiosk and ends the sway session so the kiosk ladder
+# relaunches (clean exit) or falls back to cage (desktop failed to start).
+set -u
+BROWSER="${STICKLLM_SESSION_BROWSER:-chromium}"
+URL="${STICKLLM_SESSION_URL:-http://127.0.0.1/}"
+PROFILE="${STICKLLM_SESSION_PROFILE:-$HOME/.config/stickllm-kiosk}"
+RCFILE="${XDG_RUNTIME_DIR:-/tmp}/stickllm-sway-session.rc"
+# stickllm-wm watch finds the desktop window by this pid: Chromium --app
+# windows take their Wayland app_id from the URL and ignore --class.
+export STICKLLM_DESKTOP_PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/stickllm-desktop.pid"
+rm -f "$RCFILE" "$STICKLLM_DESKTOP_PIDFILE"
+
+/usr/local/bin/stickllm-wm watch >/dev/null 2>&1 &
+guard=$!
+
+start=$(date +%s)
+"$BROWSER" \
+  --class=stickllm-desktop \
+  --ozone-platform=wayland \
+  --use-gl=angle --use-angle=swiftshader \
+  --no-first-run \
+  --disable-infobars \
+  --disable-session-crashed-bubble \
+  --hide-crash-restore-bubble \
+  --check-for-update-interval=31536000 \
+  --user-data-dir="$PROFILE" \
+  --disk-cache-dir="$PROFILE/cache" \
+  --app="$URL" &
+desk=$!
+echo "$desk" >"$STICKLLM_DESKTOP_PIDFILE"
+# Under sway the desktop is an --app window (no tab strip / address bar), so
+# it reads as the user's desktop; real browsing is the floating Browser app.
+wait "$desk"
+rc=$?
+rm -f "$STICKLLM_DESKTOP_PIDFILE"
+echo "rc=$rc secs=$(( $(date +%s) - start ))" >"$RCFILE"
+kill "$guard" 2>/dev/null
+/usr/local/bin/stickllm-wm exit || pkill -u "$(id -u)" -x sway
