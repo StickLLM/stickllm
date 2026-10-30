@@ -117,6 +117,8 @@ current screen.
   Agent Zero `open_app` open a window with no pop-up permission needed.
 - `clearOnLock`: `window.stickDesk.closeAll()`.
 - Settings → General: Layout row (`#layoutSeg`), wired by desktop.js.
+- app.js is one IIFE, so it publishes `window.stickApp` (`openSettings`,
+  `lockVault`, `showApps`, `toast`) for the start menu and tray buttons.
 
 ## Tests
 
