@@ -144,3 +144,50 @@ files hot-copied.
 - No snapping/tiling, no virtual desktops, no window restore after reload.
 - Chat content inside a small window uses viewport media queries, so a narrow
   Chat window keeps the wide layout (container queries later).
+
+## 0.5.6: every old window/control mapped to a desktop app
+
+Desktop layout only; Classic (phones, tablets, narrow windows, or the Classic
+override) is unchanged and still shows all of these in place. Nodes are moved,
+not copied, so every existing handler keeps working; leaving the desktop puts
+each one back.
+
+| Old place (0.5.5 desktop = Chat window) | 0.5.6 desktop |
+| --- | --- |
+| Chat thread, composer, attach, voice, mic, send/stop | **Chat** window (chat only, pinned first on the taskbar) |
+| Sidebar *New chat* + chat history list | **Chat** window (its own sidebar, collapsible with Ctrl+B) |
+| Sidebar Ephemeral / Vault switch + mode hint | **Taskbar** storage switch (Ephemeral · Vault). Vault while locked opens the vault popover with the unlock form; Lock vault and Storage settings from there |
+| Header lock button (`#lockBtn`) | Taskbar vault popover *Lock vault*, Start → Lock vault, Ctrl+Shift+L |
+| Header model chip + status popover (`#statusChip`/`#statusPop`) | **Taskbar** model button: model name; *Open Model* when none is loaded; click opens **Models** |
+| Sidebar *Models*, popover *Manage models*, Settings → Models / Downloads | **Models** window (Models + Downloads tabs). Hidden from the Settings window's nav |
+| Sidebar *Storage & Vault*, *Settings*, header gear, Ctrl+, | **Settings** window (General, Storage & Vault, Network, Devices, Chats, System, About) |
+| Header pairing link (`.topPair`) | Settings → Devices (pairing) |
+| Header theme button | Tray theme button |
+| Uplink row of the status popover | Tray network icon → Settings → Network |
+| Sidebar *Apps* / Apps page (`#appsView`), *Install apps* catalog | **App Store** window; Start → Apps & installs |
+| Sidebar *Agent* link (Agent Zero tab) | **Agent** desktop app: Agent Zero in a window (pop-out button), or install card when not installed |
+| Starter apps (Files, Notepad, …) | Unchanged: windows, desktop icons, Start entries |
+| Installed catalog apps (ONLYOFFICE, Node-RED, Trilium, …) — 0.5.5: new tabs | Desktop icon + Start entry; open in a window (iframe through the gateway relay, which rewrites `X-Frame-Options`/`frame-ancestors` to StickLLM's own origins). Apps marked `frame: false`, or that still refuse, open with **Pop out** in a real Chromium window |
+| — | **Browser** desktop app: a real Chromium window on the stick's screen (see below) |
+
+### Browser (stickllm-control `browser_open` / `browser_status` / `browser_focus` / `browser_close`)
+
+- Only the stick's own UI may call them: the gateway answers 403
+  `loopback_only` unless the request is from loopback with the StickLLM UI header.
+  A LAN browser's Browser icon opens a normal tab on that PC instead.
+- Each window is a separate Chromium process run as the kiosk user on the
+  kiosk's Wayland display, with a throw-away profile in `/run/stickllm/browser/<id>`
+  (RAM, removed when the window closes). The Browser icon opens a normal
+  window (address bar, tabs); app pop-outs use `--app=<url>`. Only http(s)
+  URLs. At most 4 windows.
+- Downloads: `stickllm-download-policy auto` runs before every launch; the
+  managed policy applies to every Chromium profile, so downloads go straight
+  to `vault/Downloads` while unlocked and are blocked while locked. If the
+  policy cannot be written the window is not opened.
+- Taskbar shows a button per running window (polled). Right-click closes it.
+- Limits: cage and weston kiosk-shell (the kiosk compositors) show every
+  toplevel full screen and Wayland ignores client positions, so
+  `--window-size`/`--window-position` (sent from the desktop geometry) only
+  apply on a floating compositor; there is no way to raise another client's
+  window, so `browser_focus` reports `focus_unsupported` and the newest window
+  is on top. Ctrl+W / Alt+F4 closes it and returns to the StickLLM desktop.

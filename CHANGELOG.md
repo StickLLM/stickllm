@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.6 (2026-10-30)
+
+Desktop
+- The Chat window is chat only. Settings, Models (with Downloads), App Store
+  and Agent (Agent Zero) are desktop apps with icons and Start entries.
+- Taskbar: Ephemeral/Vault switch (unlock the vault from its popover; 0.5.5
+  unlock/lock fixes kept) and a model button that opens Models, or reads
+  "Open Model" when none is loaded.
+- Installed catalog apps get a desktop icon and Start entry and open in a
+  window; the gateway relay lets only StickLLM's own pages frame them. Apps
+  that cannot be framed pop out into a Chromium window.
+- Browser opens a real Chromium window on the stick's screen (own RAM profile,
+  downloads only into the unlocked vault, blocked while locked). Kiosk
+  compositors show it full screen; Ctrl+W returns to the desktop.
+- Classic and phone layouts are unchanged.
+
 ## 0.5.5 (2026-10-30)
 
 App agent
