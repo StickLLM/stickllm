@@ -187,10 +187,22 @@
     tasks.addEventListener("click", (e) => {
       const b = e.target.closest(".taskBtn");
       if (b && b.classList.contains("taskExt")) {
-        if (appApi().control) appApi().control("browser_focus", { id: b.dataset.ext }).catch(() => {});
+        const api = appApi();
+        if (api.control) api.control("browser_focus", { id: b.dataset.ext }).then((res) => {
+          if (res && res.ok === false && res.error === "not_found") pollBrowser();
+          else if (res && res.ok === false && api.toast) api.toast(res.message || "Browser window is open on the stick's screen");
+        }).catch(() => pollBrowser());
         return;
       }
       if (b && wm) wm.taskbarClick(b.dataset.app);
+    });
+    // Right-click a browser button to close that Chromium window.
+    tasks.addEventListener("contextmenu", (e) => {
+      const b = e.target.closest(".taskBtn.taskExt");
+      if (!b) return;
+      e.preventDefault();
+      const api = appApi();
+      if (api.control) api.control("browser_close", { id: b.dataset.ext }).catch(() => {}).then(() => setTimeout(pollBrowser, 800));
     });
     const tray = el("div", "tray");
     tray.id = "deskTray";
@@ -600,7 +612,7 @@
         }
         have.delete(key);
         b.querySelector(".taskLabel").textContent = bw.title || "Browser";
-        b.title = (bw.title || "Browser") + " \u2014 click to bring to front";
+        b.title = (bw.title || "Browser") + " \u2014 Chromium window on the stick's screen (right-click to close)";
       });
       have.forEach((b) => b.remove());
       document.body.classList.toggle("deskHasActive", !!wm.activeId());
@@ -691,7 +703,7 @@
   function openOutside(id) {
     return urlFor(id).then((u) => {
       if (!u) return;
-      if (isLocal()) openBrowser(u, appTitle(id));
+      if (isLocal()) openBrowser(u, appTitle(id), true);
       else window.open(u, "stickllm-" + id);
     });
   }
@@ -762,7 +774,10 @@
   // The Browser is a real Chrome window on the stick's screen (kiosk),
   // placed over the desktop like the other windows (stickllm-control). On a
   // paired laptop the page is already in a browser: a new tab.
-  function openBrowser(url, title) {
+  // Browser icon / unframeable apps: a real Chromium window on the stick's
+  // screen (stickllm-control browser_open). app=true opens a bare app window
+  // for one site; the Browser icon gets a normal window with an address bar.
+  function openBrowser(url, title, app) {
     const api = appApi();
     if (!isLocal() || !api.control) { window.open(url || "about:blank", "_blank"); return; }
     const r = ui.layer.getBoundingClientRect();
@@ -770,9 +785,15 @@
     const bx = window.screenX || 0, by = window.screenY || 0;
     const w = Math.min(1180, Math.round(r.width - 80)), h = Math.min(780, Math.round(r.height - 60));
     const geo = { x: Math.round((bx + (r.width - w) / 2) * k), y: Math.round((by + 30) * k), w: Math.round(w * k), h: Math.round(h * k) };
-    api.control("browser_open", { url: url || "", title: title || "Browser", geometry: geo }).then((res) => {
-      if (res && res.ok === false) { if (api.toast) api.toast(res.error || "The browser could not start"); }
-      else pollBrowser();
+    api.control("browser_open", { url: url || "", title: title || "Browser", app: !!app, geometry: geo }).then((res) => {
+      if (res && res.ok === false) {
+        // No Chromium/screen (e.g. cog kiosk): fall back to a page tab.
+        if ((res.error === "no_browser" || res.error === "no_display") && url) window.open(url, "_blank");
+        if (api.toast) api.toast(res.message || res.error || "The browser could not start");
+        return;
+      }
+      if (api.toast) api.toast((res && res.downloads === "vault" ? "Downloads go to the vault." : "Downloads are off while the vault is locked.") + " Ctrl+W closes the window.");
+      pollBrowser();
     }).catch((e) => { if (api.toast) api.toast("Browser: " + e.message); });
   }
   // Chrome windows show on the taskbar while they run.

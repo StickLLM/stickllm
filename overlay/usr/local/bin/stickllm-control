@@ -3565,6 +3565,200 @@ def wifi_connect(ssid: str, password: str) -> dict:
     return r
 
 
+# --- 0.5.6: desktop Browser = real Chromium windows on the stick's screen ---
+# The desktop's Browser icon (and apps that refuse to be framed) open a real
+# Chromium window instead of a page tab. Each window is its own Chromium
+# process with a throw-away profile in RAM (/run), run as the kiosk user on
+# the kiosk's Wayland display. Downloads follow the managed policy that
+# stickllm-download-policy writes for every Chromium profile on the stick:
+# straight into vault/Downloads while the vault is unlocked, blocked while it
+# is locked, so nothing is ever saved unencrypted on the stick or in RAM.
+# Placement: Wayland lets the compositor, not the client, place windows. The
+# kiosk compositors (cage, weston kiosk-shell) show every window full screen,
+# so --window-size/--window-position only take effect on a compositor that
+# floats windows. The gateway only forwards browser_* from the stick itself.
+BROWSER_ROOT = RUN / "browser"
+BROWSER_MAX = 4
+BROWSER_START_URL = "about:blank"
+_BROWSERS: dict[str, dict] = {}
+_BROWSER_LOCK = threading.Lock()
+_BROWSER_URL_RE = re.compile(r"[\x00-\x20\x7f]")
+
+
+def browser_url_ok(url: str) -> bool:
+    url = str(url or "")
+    if url == "about:blank":
+        return True
+    if not url or len(url) > 4096 or _BROWSER_URL_RE.search(url):
+        return False
+    try:
+        u = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    return u.scheme in ("http", "https") and bool(u.hostname)
+
+
+def _browser_bin() -> str:
+    import shutil
+    for name in ("chromium", "chromium-browser"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return ""
+
+
+def _kiosk_user() -> str:
+    return os.environ.get("STICKLLM_KIOSK_USER", "stickllm")
+
+
+def _wayland_env(user: str) -> dict | None:
+    """XDG_RUNTIME_DIR + WAYLAND_DISPLAY of the running kiosk compositor."""
+    import pwd
+    dirs = []
+    try:
+        dirs.append(Path(f"/run/user/{pwd.getpwnam(user).pw_uid}"))
+    except KeyError:
+        pass
+    dirs.append(Path("/run/user/0"))  # weston drm-backend runs as root
+    for d in dirs:
+        try:
+            socks = sorted(p for p in d.glob("wayland-*") if not p.name.endswith(".lock") and p.is_socket())
+        except OSError:
+            continue
+        if socks:
+            return {"XDG_RUNTIME_DIR": str(d), "WAYLAND_DISPLAY": socks[0].name}
+    return None
+
+
+def _clamp_geometry(geo) -> dict | None:
+    if not isinstance(geo, dict):
+        return None
+    out = {}
+    for key, lo, hi in (("x", -4000, 16000), ("y", -4000, 16000), ("w", 320, 16000), ("h", 240, 16000)):
+        try:
+            out[key] = max(lo, min(hi, int(float(geo.get(key)))))
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
+def browser_downloads_state() -> str:
+    """Refresh the managed download policy; "vault" or "blocked"."""
+    r = sh(["/usr/local/bin/stickllm-download-policy", "auto"], timeout=20)
+    if not r.get("ok"):
+        return ""  # no policy written: refuse rather than risk plain downloads
+    return "vault" if "downloads=unlocked" in str(r.get("stdout") or "") else "blocked"
+
+
+def _browser_reap() -> None:
+    import shutil
+    for bid, rec in list(_BROWSERS.items()):
+        if rec["proc"].poll() is None:
+            continue
+        _BROWSERS.pop(bid, None)
+        shutil.rmtree(rec["profile"], ignore_errors=True)
+
+
+def browser_command(bin_path: str, profile: Path, url: str, app: bool, geo: dict | None, bid: str) -> list[str]:
+    cmd = [
+        bin_path,
+        "--ozone-platform=wayland",
+        "--use-gl=angle", "--use-angle=swiftshader",
+        "--no-first-run", "--no-default-browser-check", "--disable-infobars",
+        "--disable-session-crashed-bubble", "--hide-crash-restore-bubble",
+        "--check-for-update-interval=31536000",
+        f"--user-data-dir={profile}", f"--disk-cache-dir={profile / 'cache'}",
+        f"--class=stickllm-browser-{bid}",
+    ]
+    if geo:
+        cmd += [f"--window-size={geo['w']},{geo['h']}", f"--window-position={geo['x']},{geo['y']}"]
+    cmd += [f"--app={url}"] if app else ["--new-window", url]
+    return cmd
+
+
+def browser_open(params: dict) -> dict:
+    url = str(params.get("url") or "").strip() or BROWSER_START_URL
+    if not browser_url_ok(url):
+        return {"ok": False, "code": 400, "error": "bad_url", "message": "Only http and https pages open in the browser."}
+    app = bool(params.get("app")) and url != BROWSER_START_URL
+    title = re.sub(r"[\x00-\x1f\x7f]", "", str(params.get("title") or ("App" if app else "Browser")))[:80]
+    geo = _clamp_geometry(params.get("geometry"))
+    bin_path = _browser_bin()
+    if not bin_path:
+        return {"ok": False, "code": 503, "error": "no_browser", "message": "Chromium is not installed on this stick."}
+    user = _kiosk_user()
+    env_w = _wayland_env(user)
+    if not env_w:
+        return {"ok": False, "code": 503, "error": "no_display", "message": "The stick's screen is not running."}
+    with _BROWSER_LOCK:
+        _browser_reap()
+        if len(_BROWSERS) >= BROWSER_MAX:
+            return {"ok": False, "code": 429, "error": "too_many", "message": f"Close a browser window first (at most {BROWSER_MAX})."}
+        downloads = browser_downloads_state()
+        if not downloads:
+            return {"ok": False, "code": 500, "error": "download_policy",
+                    "message": "Could not apply the vault-only download rule, so the browser stays closed."}
+        bid = os.urandom(6).hex()
+        profile = BROWSER_ROOT / bid
+        try:
+            (profile / "cache").mkdir(parents=True, exist_ok=False)
+            os.chmod(BROWSER_ROOT, 0o711)
+            os.chmod(profile, 0o700)
+        except OSError as e:
+            return {"ok": False, "code": 500, "error": "profile", "message": str(e)}
+        env = {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME": f"/home/{user}", "USER": user, "LOGNAME": user, "LANG": os.environ.get("LANG", "C.UTF-8"),
+            **env_w,
+        }
+        cmd = browser_command(bin_path, profile, url, app, geo, bid)
+        if os.geteuid() == 0 and user != "root":
+            sh(["chown", "-R", f"{user}:{user}", str(profile)], timeout=20)
+            cmd = ["runuser", "-u", user, "--"] + cmd
+        try:
+            proc = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        except OSError as e:
+            import shutil
+            shutil.rmtree(profile, ignore_errors=True)
+            return {"ok": False, "code": 500, "error": "spawn", "message": str(e)}
+        _BROWSERS[bid] = {"proc": proc, "profile": profile, "title": title, "url": url, "app": app, "started": time.time()}
+    return {"ok": True, "id": bid, "title": title, "downloads": downloads, "placement": "compositor"}
+
+
+def browser_status() -> dict:
+    with _BROWSER_LOCK:
+        _browser_reap()
+        wins = [{"id": bid, "title": rec["title"], "url": rec["url"], "app": rec["app"]} for bid, rec in _BROWSERS.items()]
+    return {"ok": True, "windows": wins, "max": BROWSER_MAX}
+
+
+def browser_close(params: dict) -> dict:
+    bid = str(params.get("id") or "")
+    with _BROWSER_LOCK:
+        rec = _BROWSERS.get(bid)
+        if not rec:
+            return {"ok": False, "code": 404, "error": "not_found"}
+        try:
+            os.killpg(rec["proc"].pid, signal.SIGTERM)
+        except OSError:
+            pass
+    return {"ok": True}
+
+
+def browser_focus(params: dict) -> dict:
+    # The kiosk compositors have no "raise this window" request a client may
+    # make (Wayland has no such protocol for other clients' windows). The
+    # newest window is already on top, so report the limit instead.
+    bid = str(params.get("id") or "")
+    with _BROWSER_LOCK:
+        _browser_reap()
+        if bid not in _BROWSERS:
+            return {"ok": False, "code": 404, "error": "not_found"}
+    return {"ok": False, "code": 200, "error": "focus_unsupported",
+            "message": "This screen shows the newest browser window on top. Close it (Ctrl+W) to get back to the desktop."}
+
+
 _GGUF_INVALIDATE_ACTIONS = {
     "model_delete", "set_models_dir", "set_session_mode", "vault_unlock", "vault_lock",
     "vault_use", "vault_attach", "vault_setup", "vault_move_model", "vault_find_models",
@@ -3660,6 +3854,14 @@ def handle(action: str, params: dict) -> dict:
         r["probe"] = read_json(RUN / "model-probe.json")
         r["catalog"] = enrich_models()
         return r
+    if action == "browser_open":
+        return browser_open(params)
+    if action == "browser_status":
+        return browser_status()
+    if action == "browser_focus":
+        return browser_focus(params)
+    if action == "browser_close":
+        return browser_close(params)
     if action == "session_mode":
         return {"ok": True, "mode": session_mode(), "modes": sorted(SESSION_MODES)}
     if action == "set_session_mode":

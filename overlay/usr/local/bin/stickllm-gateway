@@ -96,7 +96,7 @@ mimetypes.add_type("text/javascript", ".mjs")
 OPEN_APP_SEEN_RESULTS = frozenset({"opened", "embedded", "toast-shown", "blocked"})
 
 
-def csp_for_path(path: str) -> str:
+def csp_for_path(path: str, host: str = "") -> str:
     bare = urllib.parse.urlparse(path or "").path
     if any(bare == prefix or bare.startswith(prefix + "/") for prefix in VENDORED_APPS):
         policy = CSP_VENDORED
@@ -107,7 +107,72 @@ def csp_for_path(path: str) -> str:
     # still refuses to be framed.
     if bare.startswith("/apps/"):
         policy = policy.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+    elif policy is CSP:
+        # 0.5.6: the desktop layout opens installed apps (their own relay ports)
+        # and Agent Zero in windows (iframes) on this page. Only this stick's own
+        # hosts: the loopback relays on the console, this host's TLS ports on a LAN.
+        policy = policy.replace("frame-ancestors 'none'; ", "frame-src " + ui_frame_sources(host) + "; frame-ancestors 'none'; ")
     return policy
+
+
+_FRAME_HOST_RE = re.compile(r"[A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\]")
+
+
+def _host_only(host: str) -> str:
+    raw = str(host or "").strip()
+    if raw.startswith("["):
+        raw = raw[: raw.find("]") + 1] if "]" in raw else ""
+    else:
+        raw = raw.split(":")[0]
+    if not raw or not _FRAME_HOST_RE.fullmatch(raw) or raw in ("0.0.0.0",):
+        return ""
+    return raw
+
+
+def ui_frame_sources(host: str = "") -> str:
+    """Origins the StickLLM page may frame: itself, the loopback add-on relays
+    and Agent Zero (console), and this same host's TLS ports (LAN)."""
+    out = ["'self'", "http://127.0.0.1:*", "http://localhost:*"]
+    h = _host_only(host)
+    if h and h not in ("127.0.0.1", "localhost"):
+        out.append(f"https://{h}:*")
+    return " ".join(out)
+
+
+def addon_framers(host: str = "") -> str:
+    """frame-ancestors for a relayed app: only StickLLM pages on this stick."""
+    out = ["'self'", "http://127.0.0.1:*", "http://localhost:*"]
+    h = _host_only(host)
+    if h and h not in ("127.0.0.1", "localhost"):
+        out += [f"https://{h}:*", f"http://{h}:*"]
+    return " ".join(out)
+
+
+_FRAME_ANCESTORS_RE = re.compile(r"(^|;)\s*frame-ancestors\b[^;]*", re.I)
+
+
+def addon_frame_headers(pairs, framers: str):
+    """0.5.6: let the StickLLM desktop frame an app it relays, and nobody else.
+    X-Frame-Options (DENY/SAMEORIGIN; the app's own origin is a different port
+    from StickLLM's) is dropped; a CSP frame-ancestors is rewritten to the
+    StickLLM origins. When the app only sent X-Frame-Options, an equivalent
+    frame-ancestors header keeps other sites from framing it."""
+    out = []
+    had_xfo = False
+    had_fa = False
+    for key, value in pairs:
+        low = key.lower()
+        if low == "x-frame-options":
+            had_xfo = True
+            continue
+        if low in ("content-security-policy", "content-security-policy-report-only") and _FRAME_ANCESTORS_RE.search(str(value)):
+            value = _FRAME_ANCESTORS_RE.sub(lambda m: m.group(1) + " frame-ancestors " + framers, str(value)).strip()
+            if low == "content-security-policy":
+                had_fa = True
+        out.append((key, value))
+    if had_xfo and not had_fa:
+        out.append(("Content-Security-Policy", "frame-ancestors " + framers))
+    return out
 
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
@@ -1643,6 +1708,16 @@ def active_mmproj() -> str:
     return path if path and Path(path).is_file() else ""
 
 
+LOCAL_ONLY_CONTROL_PREFIXES = ("browser_",)
+
+
+def control_action_allowed(action: str, loopback: bool, ui_client: bool) -> bool:
+    """Control actions that act on the stick's screen are local-UI only."""
+    if str(action or "").startswith(LOCAL_ONLY_CONTROL_PREFIXES):
+        return bool(loopback and ui_client)
+    return True
+
+
 def stickllm_ui_client(headers) -> bool:
     """StickLLM web UI only — external OpenAI clients are rejected (ISS-004)."""
     marker = (headers.get("X-StickLLM-Client") or "").strip().lower()
@@ -2453,7 +2528,7 @@ class Handler(SimpleHTTPRequestHandler):
         # Proxied Agent Zero responses keep their own headers. StickLLM's CSP
         # would block that UI's inline startup script.
         if not getattr(self, "_skip_stick_headers", False):
-            self.send_header("Content-Security-Policy", csp_for_path(self.path))
+            self.send_header("Content-Security-Policy", csp_for_path(self.path, (getattr(self, "headers", None) or {}).get("Host") or ""))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             path = urllib.parse.urlparse(self.path).path
@@ -2467,7 +2542,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", csp_for_path(self.path))
+        self.send_header("Content-Security-Policy", csp_for_path(self.path, (getattr(self, "headers", None) or {}).get("Host") or ""))
         self.end_headers()
         self.wfile.write(body)
 
@@ -2864,7 +2939,7 @@ class Handler(SimpleHTTPRequestHandler):
         # ONLYOFFICE sends its own CSP; StickLLM's would block the editor.
         self._skip_stick_headers = True
         self.send_response(resp.status)
-        for key, value in resp.getheaders():
+        for key, value in addon_frame_headers(resp.getheaders(), addon_framers(self.headers.get("Host") or "")):
             if key.lower() in ("transfer-encoding", "connection", "content-length", "keep-alive", "set-cookie") + TAB_REUSE_DROP:
                 continue
             self.send_header(key, value)
@@ -2998,6 +3073,7 @@ class Handler(SimpleHTTPRequestHandler):
                     row["message"] = docs.get("message")
                     row["running"] = bool(docs.get("running"))
                     row["open_url"] = "/apps/docs/"
+                    row["frame"] = True
                     row["label"] = DOCS_STATE_LABELS.get(str(docs.get("state") or ""), row.get("label"))
         except Exception:
             pass
@@ -3013,6 +3089,10 @@ class Handler(SimpleHTTPRequestHandler):
                     row["running"] = bool(st.get("running"))
                     row["open_url"] = self._addon_public_url(row["id"])
                     row["open_link"] = "/api/apps/open-link"
+                    # 0.5.6: the desktop opens it in a window. The relay rewrites the
+                    # app's framing headers; an add-on whose spec says frame: False
+                    # (it breaks inside a frame anyway) opens in a browser window.
+                    row["frame"] = bool((addons.APPS.get(row["id"]) or {}).get("frame", True))
                     row["version"] = st.get("version")
                     row["label"] = ADDON_STATE_LABELS.get(str(st.get("state") or ""), row.get("label"))
         except Exception:
@@ -3865,7 +3945,8 @@ class Handler(SimpleHTTPRequestHandler):
             # The app sends its own CSP and headers; StickLLM's would break it.
             self._skip_stick_headers = True
             self.send_response(resp.status)
-            for key, value in addon_response_headers(resp.getheaders(), self.headers.get("User-Agent") or ""):
+            relayed = addon_response_headers(resp.getheaders(), self.headers.get("User-Agent") or "")
+            for key, value in addon_frame_headers(relayed, addon_framers(self.headers.get("Host") or "")):
                 self.send_header(key, value)
             clen = resp.getheader("Content-Length") or ""
             if method == "HEAD" or resp.status in (204, 304) or resp.status < 200:
@@ -4055,7 +4136,8 @@ class Handler(SimpleHTTPRequestHandler):
             conn.close()
         self._skip_stick_headers = True
         self.send_response(resp.status)
-        for key, value in resp.getheaders():
+        # 0.5.6: the desktop layout shows Agent in a window on the StickLLM page.
+        for key, value in addon_frame_headers(resp.getheaders(), addon_framers(self.headers.get("Host") or "")):
             low = key.lower()
             if low in ("transfer-encoding", "connection", "content-length") + TAB_REUSE_DROP:
                 continue
@@ -5025,6 +5107,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             action = str(req.get("action") or "")
             params = req.get("params") if isinstance(req.get("params"), dict) else {}
+            if not control_action_allowed(action, self._is_loopback(), stickllm_ui_client(self.headers)):
+                # 0.5.6: browser windows open on the stick's own screen, so
+                # only the stick's own StickLLM UI may ask for one.
+                self._json(403, {"ok": False, "error": "loopback_only"})
+                return
             try:
                 timeout = 7200 if action == "model_download" else 180
                 data = http_json(
