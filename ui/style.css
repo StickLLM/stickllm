@@ -197,6 +197,9 @@ button.pill.visionOff:hover{color:var(--ink);border-color:var(--muted)}
 .sugg button:hover{border-color:var(--accent);color:var(--ink)}
 .typing{display:inline-flex;gap:4px}.typing i{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:b 1s infinite}
 .typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
+.thinkNote{margin-left:8px;color:var(--muted);font-size:12px}
+details.reasoning{margin:0 0 8px;color:var(--muted);font-size:12.5px}details.reasoning summary{cursor:pointer;user-select:none;width:max-content}
+details.reasoning>:not(summary){border-left:2px solid var(--line,rgba(127,127,127,.3));padding-left:10px;margin:6px 0}
 @keyframes b{0%,80%,100%{opacity:.3}40%{opacity:1}}
 
 .composer{padding:8px 20px 14px;flex:none}

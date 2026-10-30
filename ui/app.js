@@ -991,7 +991,13 @@ async function focusVaultUnlock() {
   return true;
 }
 
+// Bumped on every vault open/locked change and when an unlock starts. A
+// health/status answer requested before that is stale: applying it repainted
+// "No vault set up" (and the Ephemeral tab, and a clear) just after unlock.
+let vaultEpoch = 0, vaultLocking = false;
+const vaultBusy = () => vaultUnlocking || vaultLocking;
 function setVaultChrome(open, absent = false) {
+  if (!!open !== !!state.vaultOpen) vaultEpoch += 1;
   // Open -> locked from anywhere (another browser, the kiosk lock combo, a
   // lock in Settings): clear the screen too, not only the chrome (0.5.4).
   if (!open && state.vaultOpen && !vaultUnlocking && !clearingOnLock) clearOnLock();
@@ -1015,6 +1021,7 @@ function setVaultChrome(open, absent = false) {
 function clearOnLock() {
   if (clearingOnLock) return;
   clearingOnLock = true;
+  vaultEpoch += 1;
   try {
     try { if (sendAbort) sendAbort.abort(); } catch (_) {}
     try { if (typeof stopSpeak === "function") stopSpeak(); } catch (_) {}
@@ -1042,11 +1049,13 @@ function clearOnLock() {
 async function lockVault() {
   // Screen first, so nothing stays readable while the lock call runs.
   clearOnLock();
+  vaultLocking = true;
   try {
     const res = await control("vault_lock");
     toast(res.ok !== false ? "Vault locked" : ("Lock failed: " + (res.error || "unknown")));
     setVaultChrome(false);
   } catch (e) { toast("Lock failed: " + e.message); }
+  finally { vaultLocking = false; vaultEpoch += 1; }
   try {
     await fetch("/api/session-mode", {
       method: "POST",
@@ -1088,7 +1097,11 @@ function msgHtml(m, i) {
   const undo = m.appUndo && !m.pending
     ? `<div class="msgTools"><button type="button" class="appUndoBtn" data-appundo="${i}" title="Undo this change in ${esc(APPAGENT_NAMES[m.appUndo] || m.appUndo)}">Undo</button></div>`
     : "";
-  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${pics}${m.pending ? '<span class="typing"><i></i><i></i><i></i></span>' : md(m.t || "")}${warn}${src}${speak}${undo}</div></div>`;
+  const parts = m.r === "ai" ? splitThink(m.t) : { answer: m.t || "", think: "" };
+  const think = m.r === "ai" && !m.pending ? [m.think, parts.think].filter(Boolean).join("\n\n") : "";
+  const why = think ? `<details class="reasoning"><summary>Show reasoning</summary>${md(think)}</details>` : "";
+  const wait = `<span class="typing"><i></i><i></i><i></i></span>${m.thinking ? '<span class="thinkNote">Thinking…</span>' : ""}`;
+  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${pics}${m.pending ? wait : why + md(parts.answer)}${warn}${src}${speak}${undo}</div></div>`;
 }
 function renderThread(opts) {
   if (!(opts && opts.keepSpeech) && typeof stopSpeak === "function") stopSpeak();
@@ -1122,8 +1135,25 @@ function paintStream(text) {
   slot.innerHTML = md(String(text || ""));
   th.scrollTop = th.scrollHeight;
 }
+// 0.5.5: thinking models (Qwen3.5) put reasoning in reasoning_content, in
+// <think>…</think>, an unclosed <think> (still streaming), or before an orphan
+// </think> (the template opened it). Only the answer is shown; the rest is
+// "think" for the collapsed Show reasoning box.
+function splitThink(text) {
+  let s = String(text || "");
+  const think = [];
+  s = s.replace(/<think>([\s\S]*?)<\/think>/gi, (_, t) => { think.push(t); return ""; });
+  const open = s.search(/<think>/i);
+  if (open >= 0) { think.push(s.slice(open + 7)); s = s.slice(0, open); }
+  const last = s.toLowerCase().lastIndexOf("</think>");
+  if (last >= 0) {
+    think.unshift(s.slice(0, last).replace(/<\/think>/gi, ""));
+    s = s.slice(last + 8);
+  }
+  return { answer: s, think: think.map((t) => t.trim()).filter(Boolean).join("\n\n") };
+}
 function stripThink(text) {
-  return String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/<think>[\s\S]*$/i, "");
+  return splitThink(text).answer;
 }
 function dropEmptyPlaceholder(text) {
   const raw = String(text || "");
@@ -1416,7 +1446,7 @@ async function takeChat(gen, abort, body) {
   throw new Error(lastMsg);
 }
 async function takeChatStream(gen, abort, body, onShown, opts) {
-  const answerOnly = !!(opts && opts.answerOnly);
+  const onThink = opts && opts.onThink;
   let lastMsg = "Still answering.";
   for (let i = 0; i < 20; i++) {
     if (gen !== sendGen || abort.signal.aborted || userStopGen === gen) {
@@ -1475,11 +1505,12 @@ async function takeChatStream(gen, abort, body, onShown, opts) {
       const content = textOfMessage(data?.choices?.[0]?.message?.content);
       const reasoning = textOfMessage(data?.choices?.[0]?.message?.reasoning_content != null ? data.choices[0].message.reasoning_content : data?.choices?.[0]?.message?.reasoning);
       const answer = dropEmptyPlaceholder(stripThink(content)).trim();
-      const think = dropEmptyPlaceholder(stripThink(reasoning)).trim();
-      const shown = answerOnly ? answer : (answer || think);
+      const think = [stripThink(reasoning).trim(), splitThink(content).think].filter(Boolean).join("\n\n");
+      const shown = answer;
       if (shown && onShown) onShown(shown);
       return {
         shown,
+        think,
         content,
         reasoning,
         stopped: false,
@@ -1520,11 +1551,11 @@ async function takeChatStream(gen, abort, body, onShown, opts) {
         if (ev.reasoning) reasoning += String(ev.reasoning);
       }
       const answer = dropEmptyPlaceholder(stripThink(content));
-      const think = dropEmptyPlaceholder(stripThink(reasoning));
-      // Voice mode shows and speaks the answer only. Text mode may show
-      // reasoning until the answer replaces it, and does not speak it.
-      const shown = answerOnly ? answer : (answer.trim() ? answer : think);
+      // 0.5.5: the bubble shows (and voice speaks) the answer only, never the
+      // reasoning; while there is only reasoning it says "Thinking…".
+      const shown = answer;
       if (shown.trim() && shown.trim() !== "(empty response)" && onShown) onShown(shown);
+      else if (onThink && (reasoning.trim() || splitThink(content).think)) onThink();
       if (ev.stopped) stopped = true;
       if (ev.error && ev.done) errText = String(ev.error);
     };
@@ -1555,9 +1586,9 @@ async function takeChatStream(gen, abort, body, onShown, opts) {
     if (buf.trim()) applyBlock(buf);
     if (errText && !stripThink(content).trim() && !stripThink(reasoning).trim()) throw new Error(errText);
     const answer = dropEmptyPlaceholder(stripThink(content)).trim();
-    const think = dropEmptyPlaceholder(stripThink(reasoning)).trim();
-    const shown = answerOnly ? answer : (answer || think);
-    return { shown, content, reasoning, stopped, web, attachments, usage };
+    const think = [stripThink(reasoning).trim(), splitThink(content).think].filter(Boolean).join("\n\n");
+    const shown = answer;
+    return { shown, think, content, reasoning, stopped, web, attachments, usage };
   }
   throw new Error(lastMsg);
 }
@@ -1646,6 +1677,19 @@ async function loadAppAgentApps() {
   pick.hidden = !appAgentApps.length;
   setAppTarget(appAgentApps.includes(cur) ? cur : "", appAgentAuto);
 }
+// 0.5.5: after the app agent deploys or undoes, reload that app's open tab
+// (the kiosk's Node-RED editor does not show flows changed over the Admin
+// API until it reloads). Only a tab this page opened (appTabs) can be
+// reloaded, and it is not focused. The event is for in-page app views.
+const APPAGENT_TAB_IDS = { nodered: "node-red" };
+function reloadAgentAppTab(app) {
+  const id = APPAGENT_TAB_IDS[app] || app;
+  try { window.dispatchEvent(new CustomEvent("stickllm-app-changed", { detail: { app, id } })); } catch (e) {}
+  const link = appTabLink(id);
+  const w = appTabHandle(link ? link.target : "stickllm-" + id);
+  if (!w || !link || appTabIsBlank(w)) return false;
+  try { w.location.href = new URL(link.href, location.href).href; return true; } catch (e) { return false; }
+}
 async function sendToApp(app, text) {
   if (appAgentBusy) return;
   if (!(await ensurePaired())) return;
@@ -1671,7 +1715,7 @@ async function sendToApp(app, text) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || j.message || `The app agent answered ${r.status}`);
     pend.t = appAgentReply(app, j);
-    if ((j.results || []).some((x) => x.ok)) pend.appUndo = app;
+    if ((j.results || []).some((x) => x.ok)) { pend.appUndo = app; reloadAgentAppTab(app); }
   } catch (e) {
     pend.t = `**${APPAGENT_NAMES[app] || app}:** ${e.message || e}`;
     pend.warn = "Nothing was sent to the chat model.";
@@ -1697,7 +1741,7 @@ async function appAgentUndo(i) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || `The app agent answered ${r.status}`);
     line = `**${APPAGENT_NAMES[app] || app}:** ${j.ok ? "Undone." : "Nothing to undo."} ${String(j.message || "").slice(0, 200)}`;
-    if (j.ok) m.appUndo = "";
+    if (j.ok) { m.appUndo = ""; reloadAgentAppTab(app); }
   } catch (e) {
     line = `**${APPAGENT_NAMES[app] || app}:** undo failed: ${e.message || e}`;
   } finally {
@@ -1876,7 +1920,13 @@ async function runSend(gen, abort, prev) {
       // The bubble is the answer. Speak each finished sentence of this reply.
       if (holdVoice) feedSpeech(shown);
     };
-    let acc = await takeChatStream(gen, abort, base, onShown, { answerOnly: holdVoice });
+    const onThink = () => {
+      if (pend.thinking || gen !== sendGen || userStopGen === gen) return;
+      pend.thinking = true;
+      const ty = $$("#thread .msg.ai .body .typing").pop();
+      if (ty && !ty.nextElementSibling) ty.insertAdjacentHTML("afterend", '<span class="thinkNote">Thinking…</span>');
+    };
+    let acc = await takeChatStream(gen, abort, base, onShown, { onThink });
     if (acc.stopped || userStopGen === gen) {
       const err = new Error("bail");
       err.name = "VoiceBail";
@@ -1889,7 +1939,7 @@ async function runSend(gen, abort, prev) {
         ...base,
         max_tokens: holdVoice ? VOICE_CHAT_TOKENS : CHAT_TOKENS_RETRY,
         chat_template_kwargs: { enable_thinking: false },
-      }, onShown, { answerOnly: holdVoice });
+      }, onShown, { onThink });
       if (acc.stopped || userStopGen === gen) {
         const err = new Error("bail");
         err.name = "VoiceBail";
@@ -1929,7 +1979,7 @@ async function runSend(gen, abort, prev) {
       }
     }
     messages.push({ role: "assistant", content: reply });
-    pend.pending = false; pend.t = reply; if (src.length) pend.src = src;
+    pend.pending = false; pend.thinking = false; pend.t = reply; if (acc.think) pend.think = acc.think; if (src.length) pend.src = src;
     updatePerfStrip(perfFromChatResponse(perfData, wallMs, reply));
     if (sessionMode === "vault" && state.vaultOpen) saveCurrentChat(true).catch(() => {});
   } catch (e) {
@@ -3159,7 +3209,9 @@ $("#delModel").onclick = () => {
 
 async function refreshStorage() {
   if (!(await ensurePaired())) return;
+  const ep = vaultEpoch;
   const st = await control("status");
+  if (ep !== vaultEpoch || vaultBusy()) return; // stale: the vault changed meanwhile
   const v = st.vault || {};
   const open = vaultIsOpen(v);
   setVaultChrome(open, vaultIsAbsent(v));
@@ -3649,6 +3701,7 @@ $("#unlockForm").onsubmit = async (e) => {
   if (vaultUnlocking) return;
   unlockMessage("");
   vaultUnlocking = true;
+  vaultEpoch += 1;
   if ($("#vcState")) $("#vcState").textContent = "Unlocking…";
   try {
     const payload = { passcode: pass };
@@ -4099,6 +4152,8 @@ $("#wifiBtn").onclick = async () => {
 async function refreshStatus() {
   // A refresh must not paint Loading until this browser is paired.
   if (!browserPaired) return;
+  const ep = vaultEpoch;
+  const vaultFresh = () => ep === vaultEpoch && !vaultBusy();
   try {
     const r = await fetch("/api/health", { cache: "no-store" });
     if (!r.ok && r.status !== 503) throw new Error("health " + r.status);
@@ -4108,7 +4163,7 @@ async function refreshStatus() {
     announceRemintFromConnect(j.connect);
     // Vault is highlighted only while the vault is unlocked (a locked vault
     // with a stale "vault" session mode shows Ephemeral).
-    if (j.session_mode) {
+    if (j.session_mode && vaultFresh()) {
       const vOpen = j.vault ? vaultIsOpen(j.vault) : state.vaultOpen;
       applyModeUi(j.session_mode === "vault" && vOpen ? "vault" : "ephemeral");
     }
@@ -4237,7 +4292,7 @@ async function refreshStatus() {
       }
     } catch (_) {}
     // vault chrome from health if present
-    if (j.vault) setVaultChrome(vaultIsOpen(j.vault), vaultIsAbsent(j.vault));
+    if (j.vault && vaultFresh()) setVaultChrome(vaultIsOpen(j.vault), vaultIsAbsent(j.vault));
     healthFails = 0;
   } catch (e) {
     healthFails += 1;

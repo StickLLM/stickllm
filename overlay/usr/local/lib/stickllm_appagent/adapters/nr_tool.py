@@ -17,13 +17,43 @@ SW = {"gt", "lt", "eq", "neq", "gte", "lte"}
 HELP = ("commands: tab NAME | delete_tab NAME | add ID TYPE key=value ... | set ID key=value ... | wire FROM[:PORT] TO | "
         "unwire FROM TO | delete ID | deploy | show | test GET|POST /path [body] | done. types: " + ", ".join(TYPES))
 
+# Node-RED serves its editor and Admin API at "/" (httpAdminRoot) and http-in
+# flows at "/" too (httpNodeRoot). An http-in on "/" or on an editor path
+# (/flows, /red/..., ...) shadows the editor, so those urls are rewritten.
+EDITOR_PATHS = {"", "flows", "flow", "nodes", "settings", "auth", "icons", "locales", "library", "red", "vendor",
+                "theme", "comms", "debug", "inject", "context", "plugins", "diagnostics", "credentials", "projects",
+                "core", "types", "favicon.ico", "index.html", "editor"}
+DEFAULT_HTTP_URL = "/hello"
+
+def editor_collision(url):
+    """True when an http-in url would shadow the Node-RED editor or its Admin API"""
+    seg = str(url or "").split("?", 1)[0].strip("/").split("/", 1)[0].lower()
+    return seg in EDITOR_PATHS
+
+def safe_http_url(url, name="", taken=()):
+    """a non-root url for an http-in node: url itself when safe, else /<name> or /hello (unique)"""
+    if url and not editor_collision(url): return url
+    slug = re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")[:30]
+    base = "/" + slug if slug and not editor_collision(slug) else DEFAULT_HTTP_URL
+    if url and not editor_collision(base):
+        rest = str(url).strip("/")
+        if rest and base == DEFAULT_HTTP_URL: base = "/app/" + re.sub(r"[^A-Za-z0-9/_-]+", "-", rest)
+    cand, i = base, 2
+    while cand in taken: cand = "%s-%d" % (base, i); i += 1
+    return cand
+
+def editor_html(body):
+    """the Node-RED editor page (what an http-in shadowed, or a missing endpoint, returns at /)"""
+    b = str(body or "")[:4000].lower()
+    return "<html" in b and ("<title>node-red</title>" in b or "red/red.min.js" in b or "red/red.js" in b or "red.init(" in b)
+
 def _num(s):
     try: float(s); return True
     except ValueError: return False
 
 class NodeRed:
     def __init__(self, url="http://127.0.0.1:1880"):
-        self.url = url.rstrip("/"); self.reload(); self.cur = None
+        self.url = url.rstrip("/"); self.reload(); self.cur = None; self.notes = []; self.rewrites = {}
 
     def _req(self, method, path, body=None, headers=None, raw=False):
         data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
@@ -89,6 +119,14 @@ class NodeRed:
             if "url" in kv:
                 if not kv["url"].startswith("/"): raise ValueError("url must start with /")
                 n["url"] = kv["url"]
+            if "url" in kv or not n.get("url"):
+                want = n.get("url", "")
+                taken = {x.get("url") for x in self.flows if x.get("type") == "http in" and x.get("id") != n.get("id")}
+                n["url"] = safe_http_url(want, n.get("name", ""), taken)
+                if n["url"] != want:
+                    if want: self.rewrites[want] = n["url"]
+                    self.notes.append(("url %s is the Node-RED editor, so this endpoint uses %s instead" % (want, n["url"]))
+                                      if want else "no url given, so this endpoint uses %s" % n["url"])
         elif t == "http-response":
             if "status" in kv: n["statusCode"] = kv["status"]
         elif t == "template":
@@ -147,6 +185,7 @@ class NodeRed:
             return False, "ERROR: bad quoting (%s)" % e
         if not parts: return False, "ERROR: empty command. " + HELP
         c, a = parts[0].lower(), parts[1:]
+        self.notes = []
         try:
             if c == "tab":
                 if len(a) != 1: raise ValueError("usage: tab NAME")
@@ -172,13 +211,13 @@ class NodeRed:
                 if self.node(nid) or self.tab_id(nid): raise ValueError("ID %s already exists" % nid)
                 n = self.new_node(nid, t); self.apply_props(n, t, self.kv(a[2:]))
                 self.flows.append(n); self.dirty = True
-                return True, "ok: added" + self.describe(n)[1:]
+                return True, "ok: added" + self.describe(n)[1:] + "".join(" (note: %s)" % x for x in self.notes)
             if c == "set":
                 if len(a) < 2: raise ValueError("usage: set ID key=value ...")
                 n = self.node(a[0])
                 if not n: raise ValueError("no node %s" % a[0])
                 self.apply_props(n, RTYPES[n["type"]], self.kv(a[1:])); self.dirty = True
-                return True, "ok: " + self.describe(n).strip()
+                return True, "ok: " + self.describe(n).strip() + "".join(" (note: %s)" % x for x in self.notes)
             if c in ("wire", "unwire"):
                 if len(a) != 2: raise ValueError("usage: %s FROM[:PORT] TO" % c)
                 src, port = (a[0].split(":") + ["1"])[:2]
@@ -217,9 +256,15 @@ class NodeRed:
             if c == "show": return True, self.show()
             if c == "test":
                 if len(a) < 2 or a[0].upper() not in ("GET", "POST"): raise ValueError("usage: test GET|POST /path [body]")
+                if a[1] in self.rewrites:
+                    self.notes.append("%s was moved to %s" % (a[1], self.rewrites[a[1]])); a[1] = self.rewrites[a[1]]
                 st, body = self._req(a[0].upper(), a[1], (" ".join(a[2:])).encode() if a[0].upper() == "POST" else None,
                                      {"Content-Type": "text/plain"}, raw=True)
-                return True, "HTTP %s: %s" % (st, str(body)[:200]) + ("  (note: staged changes are not deployed)" if self.dirty else "")
+                if editor_html(body):
+                    return False, ("ERROR: %s %s returned the Node-RED editor page, not a flow's output (no http-in serves it; "
+                                   "use a path like %s)" % (a[0].upper(), a[1], DEFAULT_HTTP_URL))
+                return True, "HTTP %s: %s" % (st, str(body)[:200]) + ("  (note: staged changes are not deployed)" if self.dirty else "") + \
+                    "".join(" (note: %s)" % x for x in self.notes)
             if c == "done": return True, "ok: done"
             raise ValueError("unknown command %s. %s" % (c, HELP))
         except ValueError as e:
