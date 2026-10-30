@@ -86,6 +86,8 @@ find config/includes.chroot/etc/sudoers.d -type f -exec chmod 440 {} +
 
 mkdir -p config/includes.chroot/opt/stickllm/ui
 rsync -a /stickllm/ui/ config/includes.chroot/opt/stickllm/ui/
+# Third-party licence index (WinBox.js, bundled apps); each licence file ships in ui/.
+install -m 644 /stickllm/THIRD_PARTY_NOTICES.md config/includes.chroot/opt/stickllm/ui/THIRD_PARTY_NOTICES.md
 
 mkdir -p config/includes.chroot/opt/stickllm/models
 cp "/stickllm/models/${MODEL_3B}" config/includes.chroot/opt/stickllm/models/
