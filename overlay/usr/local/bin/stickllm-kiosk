@@ -744,6 +744,98 @@ sway_enabled() {
   return 0
 }
 
+# 0.5.6: Xfce (stock Debian packages, settings only) is the on-stick desktop:
+# real windows, a taskbar and our wallpaper. Off with stickllm.compositor=
+# sway|cage|weston on the kernel command line or STICKLLM_KIOSK_XFCE=0; also
+# off if Xorg or the Xfce session pieces are missing. Any failure to start
+# falls back to sway, then cage/weston.
+XFCE_XDG="${STICKLLM_XFCE_XDG:-/etc/stickllm/xfce/xdg}"
+XORG_CONF="$RUN/xorg-stickllm.conf"
+XORG_LOG="${STICKLLM_XORG_LOG:-/var/log/stickllm-xorg.log}"
+XORG_PID=""
+xfce_enabled() {
+  [[ "${STICKLLM_KIOSK_XFCE:-1}" != "0" ]] || return 1
+  grep -Eqw 'stickllm\.compositor=(sway|cage|weston)' /proc/cmdline 2>/dev/null && return 1
+  local b
+  for b in Xorg xfce4-session xfwm4 xfce4-panel xhost xset; do
+    command -v "$b" >/dev/null 2>&1 || return 1
+  done
+  [[ -d "$XFCE_XDG" && -x /usr/local/bin/stickllm-xfce-session && -x /usr/local/bin/stickllm-xfce-open ]] || return 1
+  return 0
+}
+
+# Xorg config for exactly one GPU (the display card the ladder picked); other
+# GPUs (compute cards) are never added to the X screen.
+write_xorg_conf() {
+  local drm="$1" base slot busid="" drv=modesetting
+  base="$(basename "$drm")"
+  slot="$(basename "$(readlink -f "/sys/class/drm/${base}/device" 2>/dev/null)" 2>/dev/null || true)"
+  if [[ "$slot" =~ ^[0-9a-fA-F]{4}:([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-7])$ ]]; then
+    busid="PCI:$((16#${BASH_REMATCH[1]})):$((16#${BASH_REMATCH[2]})):${BASH_REMATCH[3]}"
+  fi
+  if is_nvidia_path "$drm" && [[ -e /usr/lib/xorg/modules/drivers/nvidia_drv.so || -e /usr/lib/nvidia/current/nvidia_drv.so ]]; then
+    drv=nvidia
+  fi
+  {
+    echo '# Written by stickllm-kiosk at every desktop start.'
+    echo 'Section "ServerFlags"'
+    echo '  Option "AutoAddGPU" "false"'
+    echo '  Option "DontVTSwitch" "true"'
+    echo '  Option "DontZap" "true"'
+    echo '  Option "BlankTime" "0"'
+    echo 'EndSection'
+    echo 'Section "Device"'
+    echo '  Identifier "stickllm-gpu"'
+    echo "  Driver \"$drv\""
+    [[ -n "$busid" ]] && echo "  BusID \"$busid\""
+    [[ "$drv" == modesetting ]] && echo "  Option \"kmsdev\" \"/dev/dri/$base\""
+    echo 'EndSection'
+    echo 'Section "Screen"'
+    echo '  Identifier "stickllm-screen"'
+    echo '  Device "stickllm-gpu"'
+    echo 'EndSection'
+  } >"$XORG_CONF"
+  fail_note "STICKLLM_KIOSK_XORG_CONF drm=$drm driver=$drv busid=${busid:-none}"
+}
+
+stop_xorg() {
+  [[ -n "$XORG_PID" ]] || return 0
+  kill "$XORG_PID" 2>/dev/null || true
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$XORG_PID" 2>/dev/null || break
+    sleep 0.5
+  done
+  kill -9 "$XORG_PID" 2>/dev/null || true
+  XORG_PID=""
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+}
+trap 'stop_xorg' EXIT
+
+# Xorg runs as root (as Xorg.wrap would); only the kiosk user may connect.
+start_xorg() {
+  local drm="$1" i
+  write_xorg_conf "$drm"
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+  Xorg :0 vt1 -keeptty -nolisten tcp -noreset -novtswitch -config "$XORG_CONF" \
+    -logfile "$XORG_LOG" >>"$FAIL_LOG" 2>&1 &
+  XORG_PID=$!
+  for i in $(seq 1 60); do
+    if [[ -S /tmp/.X11-unix/X0 ]] && DISPLAY=:0 xset q >/dev/null 2>&1; then
+      DISPLAY=:0 xhost - >/dev/null 2>&1 || true
+      DISPLAY=:0 xhost "+SI:localuser:${KIOSK_USER}" >/dev/null 2>&1 || true
+      DISPLAY=:0 xset s off -dpms >/dev/null 2>&1 || true
+      return 0
+    fi
+    kill -0 "$XORG_PID" 2>/dev/null || break
+    sleep 0.5
+  done
+  fail_note "STICKLLM_KIOSK_XORG_FAIL drm=$drm"
+  tail -n 30 "$XORG_LOG" >>"$FAIL_LOG" 2>/dev/null || true
+  stop_xorg
+  return 1
+}
+
 # Run one compositor+browser combo in foreground; return its exit code.
 try_launch() {
   local label="$1" drm="$2" renderer="$3" comp="$4" browser="$5"
@@ -757,6 +849,8 @@ try_launch() {
     # Chromium cold-start on software GL needs >40s before first paint in QEMU.
     run_timeout="${STICKLLM_KIOSK_VIRTIO_TRY_SECS:-90}"
   fi
+  # The Xfce session is long-running by design; its own start check decides.
+  [[ "$comp" == "xfce" ]] && run_timeout=0
   chvt 1 2>/dev/null || true
   release_display_for_compositor
   fail_note "STICKLLM_KIOSK_TRY label=$label drm=$drm renderer=$renderer comp=$comp browser=$browser timeout=$run_timeout"
@@ -785,6 +879,7 @@ try_launch() {
         "LOGNAME=${KIOSK_USER}" \
         "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" \
         "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-wayland}" \
+        "DISPLAY=${DISPLAY:-}" \
         "LIBSEAT_BACKEND=${LIBSEAT_BACKEND:-seatd}" \
         "WLR_NO_HARDWARE_CURSORS=${WLR_NO_HARDWARE_CURSORS:-1}" \
         "WLR_BACKENDS=${WLR_BACKENDS:-drm,libinput}" \
@@ -814,6 +909,30 @@ try_launch() {
 
   set +e
   case "$comp" in
+    xfce)
+      # 0.5.6 desktop: stock Xfce on Xorg. A session that ends within 20 s
+      # (or never starts) is a failure, so the ladder moves on to sway.
+      _rcf="${XDG_RUNTIME_DIR}/stickllm-xfce-session.rc"
+      rm -f "$_rcf"
+      echo "=== xfce launch $(date -Is 2>/dev/null || date) drm=$drm user=$KIOSK_USER ===" >>"$FAIL_LOG" 2>&1 || true
+      if start_xorg "$drm"; then
+        DISPLAY=:0 XDG_SESSION_TYPE=x11 _run 1 /usr/local/bin/stickllm-xfce-session 2>&1 | kiosk_fail_filter
+        rc=${PIPESTATUS[0]}
+        stop_xorg
+        _srow="$(cat "$_rcf" 2>/dev/null || true)"
+        _ssecs="$(sed -n 's/.*secs=\([0-9]*\).*/\1/p' <<<"$_srow")"
+        fail_note "STICKLLM_KIOSK_XFCE_SESSION ${_srow:-no-session-record} rc=$rc"
+        if [[ -z "$_srow" ]]; then
+          rc=71
+        elif [[ "${_ssecs:-0}" -lt 20 ]]; then
+          rc=70
+        else
+          rc=0
+        fi
+      else
+        rc=72
+      fi
+      ;;
     sway)
       # 0.5.6 desktop session: stock Debian sway (MIT) with our own config.
       # Desktop Chromium is the tiled full-screen window; Browser / app
@@ -1011,8 +1130,8 @@ touch "$RUN/local-mode"
 serial_note "STICKLLM_KIOSK_START chat=$CHAT_MODE fails=$(fail_count)"
 collect_drm_diag
 
-if ! command -v cage >/dev/null 2>&1 && ! command -v weston >/dev/null 2>&1 && ! sway_enabled; then
-  hold_error "neither sway, cage nor weston installed"
+if ! command -v cage >/dev/null 2>&1 && ! command -v weston >/dev/null 2>&1 && ! sway_enabled && ! xfce_enabled; then
+  hold_error "neither Xfce, sway, cage nor weston installed"
 fi
 
 BROWSER="$(pick_browser_bin || true)"
@@ -1202,6 +1321,13 @@ for _c in /dev/dri/card[0-9]; do
 done
 
 for drm in "${drm_list[@]}"; do
+  # 0.5.6: Xfce desktop first (X does not use the wlroots renderer list).
+  if xfce_enabled && [[ "$BROWSER" != "cog" ]]; then
+    run_stack_forever "xfce+$BROWSER@$(basename "$drm")" "$drm" x11 xfce "$BROWSER" \
+      && exit 0
+    fail_note "STICKLLM_KIOSK_XFCE_FALLBACK drm=$drm → sway/cage/weston"
+    serial_note "STICKLLM_KIOSK_XFCE_FALLBACK drm=$(basename "$drm")"
+  fi
   # shellcheck disable=SC2206
   renderers=( $(renderer_order_for_drm "$drm") )
   for renderer in "${renderers[@]}"; do

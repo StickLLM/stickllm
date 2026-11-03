@@ -47,6 +47,20 @@ cage
 # (MIT) + swaybg (MIT) on the same wlroots (MIT) cage uses; configured only via
 # /etc/stickllm/sway/config. Recommends stay off (no foot terminal, no swaylock).
 sway
+# 0.5.6 on-stick desktop: stock Debian Xfce (GPL/LGPL, unmodified, configured
+# only through settings) on Xorg (MIT). No terminal, no application menu, no
+# file manager; Recommends stay off. sway/cage/weston stay as fallbacks.
+xserver-xorg-core
+xserver-xorg-input-libinput
+x11-xserver-utils
+dbus-x11
+xfwm4
+xfce4-panel
+xfce4-session
+xfce4-settings
+xfdesktop4
+xfconf
+adwaita-icon-theme
 chromium
 seatd
 libinput-bin

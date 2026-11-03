@@ -102,7 +102,17 @@
     return (a && a.getAttribute("href")) || "/apps/" + id + "/";
   }
 
+  // 0.5.6: on the stick's own screen this page is a window on the Xfce
+  // desktop (stickllm-xfce-open adds ?shell=xfce), which already gives real
+  // windows and a taskbar, so "auto" keeps the classic page there.
+  function hostShell() {
+    try {
+      if (/[?&]shell=xfce(?:&|$)/.test(location.search)) sessionStorage.setItem("stickllm.shell", "xfce");
+      return sessionStorage.getItem("stickllm.shell") || "";
+    } catch (e) { return ""; }
+  }
   function wantDesktop() {
+    if (hostShell() === "xfce" && core.readOverride(store) === "auto") return false;
     return core.detectLayout({
       pointerFine: matchMedia("(pointer:fine)").matches,
       hover: matchMedia("(hover:hover)").matches,

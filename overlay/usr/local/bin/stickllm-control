@@ -3926,6 +3926,8 @@ def browser_open(params: dict) -> dict:
         return {"ok": False, "code": 503, "error": "no_browser", "message": "Chromium is not installed on this stick."}
     user = _kiosk_user()
     env_w = _wayland_env(user)
+    if not env_w and Path("/tmp/.X11-unix/X0").is_socket():
+        env_w = {"DISPLAY": ":0"}  # 0.5.6: the Xfce desktop (Xorg :0)
     if not env_w:
         return {"ok": False, "code": 503, "error": "no_display", "message": "The stick's screen is not running."}
     with _BROWSER_LOCK:
@@ -3951,6 +3953,8 @@ def browser_open(params: dict) -> dict:
             **env_w,
         }
         cmd = browser_command(bin_path, profile, url, app, geo, bid)
+        if "DISPLAY" in env_w:
+            cmd = ["--ozone-platform=x11" if c == "--ozone-platform=wayland" else c for c in cmd]
         if os.geteuid() == 0 and user != "root":
             sh(["chown", "-R", f"{user}:{user}", str(profile)], timeout=20)
             cmd = ["runuser", "-u", user, "--"] + cmd

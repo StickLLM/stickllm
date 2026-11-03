@@ -1,0 +1,42 @@
+#!/bin/bash
+# StickLLM (MIT). Opens one StickLLM page as its own Xfce window.
+#   stickllm-xfce-open home      the StickLLM chat page (maximised)
+#   stickllm-xfce-open browser   a normal Chromium window
+#   stickllm-xfce-open <app-id>  a StickLLM web app (/apps/<id>/)
+# All windows share ONE Chromium profile, so the chat page and the app
+# windows are the same browser and origin (the app agent talks to the apps
+# over BroadcastChannel; that only works inside one profile).
+set -u
+BROWSER="${STICKLLM_SESSION_BROWSER:-chromium}"
+BASE="${STICKLLM_SESSION_URL:-http://127.0.0.1/}"
+BASE="${BASE%/}"
+PROFILE="${STICKLLM_SESSION_PROFILE:-$HOME/.config/stickllm-kiosk}"
+id="${1:-home}"
+common=(
+  --ozone-platform=x11
+  --use-gl=angle --use-angle=swiftshader
+  --no-first-run
+  --disable-infobars
+  --disable-session-crashed-bubble
+  --hide-crash-restore-bubble
+  --check-for-update-interval=31536000
+  --user-data-dir="$PROFILE"
+  --disk-cache-dir="$PROFILE/cache"
+)
+case "$id" in
+  home)
+    exec "$BROWSER" "${common[@]}" --class=stickllm-home --start-maximized --app="$BASE/?shell=xfce" ;;
+  browser)
+    # Web browsing gets its own RAM profile (as on the sway desktop): no
+    # cookies or storage shared with the StickLLM pages. Downloads follow the
+    # managed vault-only policy like every Chromium window on the stick.
+    bp="${XDG_RUNTIME_DIR:-/tmp}/stickllm-web"
+    mkdir -p "$bp/cache" && chmod 700 "$bp"
+    web=("${common[@]}")
+    web=("${web[@]/--user-data-dir=*/--user-data-dir=$bp}")
+    web=("${web[@]/--disk-cache-dir=*/--disk-cache-dir=$bp/cache}")
+    exec "$BROWSER" "${web[@]}" --class=stickllm-browser --new-window ;;
+  *)
+    [[ "$id" =~ ^[a-z0-9-]{1,32}$ ]] || exit 2
+    exec "$BROWSER" "${common[@]}" --class="stickllm-$id" --app="$BASE/apps/$id/" ;;
+esac

@@ -246,10 +246,22 @@ function focusAppTab(w) {
 // url: where a fresh tab goes. resolve(): optional promise of a better URL
 // (a paired LAN browser's one-time sign-in link). force: navigate even when
 // the tab is already open (Office opening a given document).
+// 0.5.6: on the Xfce desktop each app opens as its own window (a popup of
+// the same browser profile), not as a tab, so it gets its own taskbar button.
+function onXfceShell() {
+  try {
+    if (/[?&]shell=xfce(?:&|$)/.test(location.search)) sessionStorage.setItem("stickllm.shell", "xfce");
+    return sessionStorage.getItem("stickllm.shell") === "xfce";
+  } catch (e) { return false; }
+}
 function openNamedTab(target, url, resolve, force) {
   let w = appTabHandle(target);
   if (!w) {
-    try { w = window.open("", target); } catch (e) { w = null; }
+    try {
+      w = onXfceShell()
+        ? window.open("", target, "popup,width=" + Math.min(1280, screen.availWidth || 1280) + ",height=" + Math.min(820, screen.availHeight || 820))
+        : window.open("", target);
+    } catch (e) { w = null; }
     if (!w) return null;
     appTabs.set(target, w);
     if (!appTabIsBlank(w) && !force) return focusAppTab(w);

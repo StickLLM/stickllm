@@ -1,0 +1,19 @@
+# StickLLM: Xfce kiosk mode (an Xfce setting; Xfce itself is unmodified).
+# Nobody can change the panel, the desktop or the session on the stick screen.
+[xfce4-session]
+SaveSession=NONE
+CustomizeSplash=NONE
+CustomizeChooser=NONE
+CustomizeLogout=NONE
+CustomizeCompatibility=NONE
+CustomizeSecurity=NONE
+
+[xfce4-panel]
+CustomizePanel=NONE
+
+[xfdesktop]
+UserMenu=NONE
+CustomizeBackdrop=NONE
+CustomizeDesktopMenu=NONE
+CustomizeWindowlist=NONE
+CustomizeDesktopIcons=NONE

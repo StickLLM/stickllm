@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=StickLLM
+Comment=Open the StickLLM window when the desktop starts
+Exec=/usr/local/bin/stickllm-xfce-open home
+Terminal=false
+X-XFCE-Autostart-Override=true

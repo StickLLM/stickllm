@@ -1,8 +1,47 @@
 # Changelog
 
-## 0.5.6 (2026-10-30)
+## 0.5.6 (2026-11-03)
 
-Desktop
+Desktop (stick screen)
+- The stick's own screen (and PCs booted from the stick) now opens a stock
+  Xfce desktop: the Debian Xfce 4.18 packages on Xorg, unmodified and set up
+  only through Xfce settings. A bottom taskbar has StickLLM, Browser and the
+  StickLLM apps that are installed, plus the window list and clock, on a
+  StickLLM wallpaper. StickLLM and each app open in their own windows, all in
+  one browser profile, so the app agent can still drive them. It is locked
+  down: no terminal, application menu, desktop menu or log-out button; the
+  panel, desktop and session cannot be changed or saved.
+- If Xfce cannot start, the screen falls back to the sway desktop, then cage
+  or weston. `stickllm.compositor=sway|cage|weston` on the boot line skips Xfce.
+- Phones and other PCs keep the browser UI (the classic and phone layouts,
+  and the in-page desktop below) unchanged.
+- No monitor connected: the kiosk waits quietly instead of restarting in a loop.
+
+App agent
+- One Qwen3.5-4B serves chat and app control (no second llama-server and no
+  hidden helper model). Load or unload the app agent and models yourself in
+  Models; there is no 3B, and the recommender suggests the 4B for cards with
+  6 GB or more.
+- New knowledge packs: Notepad, Calculator and Solitaire (in-browser apps,
+  driven over the page's app bridge). Slide pack updated to the 7f3b75e pack.
+- No app picker: requests go to the focused or last-used app, to the app you
+  name ("... in Notepad"), or a router picks among the installed apps.
+- Only installed apps are listed. The app agent helper detects AMD/Vulkan.
+- The 4B's thinking is hidden in chat; only the answer shows.
+- Node-RED: the editor reloads by itself after the agent deploys or undoes
+  (a StickLLM page script set in our Node-RED settings file; Node-RED itself
+  is unchanged). New HTTP-in nodes never use "/" as their path.
+
+Vault
+- The vault remembers which computer it lives on. On another computer unlock
+  fails fast with "Vault is on another computer", with Search for vault and
+  Pick drive buttons, instead of probing drives for a long time. Host mounts
+  time out after 25 s.
+
+Models
+- Models page fixes, including an Unload button for the loaded model.
+
+In-page desktop (browser UI)
 - The Chat window is chat only. Settings, Models (with Downloads), App Store
   and Agent (Agent Zero) are desktop apps with icons and Start entries.
 - Taskbar: Ephemeral/Vault switch (unlock the vault from its popover; 0.5.5

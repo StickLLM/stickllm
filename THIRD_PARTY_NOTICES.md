@@ -59,6 +59,29 @@ their licence texts are likewise in `/usr/share/doc/<package>/copyright`.
 sway's *recommended* packages (the foot terminal, suckless-tools,
 sway-backgrounds) are **not** installed: the image is built with recommends off.
 
+### Xfce desktop (0.5.6, Debian packages, unmodified)
+
+On the stick's own screen the desktop is stock Xfce 4.18 on Xorg, installed
+from the Debian bookworm archive exactly as published (recommends off). StickLLM
+does not modify, patch, fork or rebuild Xfce or Xorg. It only writes their
+settings: xfconf XML defaults (`/etc/stickllm/xfce/xdg`), panel launchers and
+an xfdesktop wallpaper written by `stickllm-xfce-session`, an Xfce
+`/etc/xdg/xfce4/kiosk/kioskrc`, and an Xorg config file generated at start by
+`stickllm-kiosk`. StickLLM's apps open in Chromium windows; no StickLLM code is
+linked against Xfce or Xorg. Licence texts ship as
+`/usr/share/doc/<package>/copyright`.
+
+| Package (Debian bookworm) | Upstream | Licence |
+|---|---|---|
+| xfwm4, xfce4-panel, xfce4-session, xfce4-settings, xfdesktop4, xfconf (and their libxfce4ui/libxfce4util/garcon/exo libraries) | https://xfce.org | GPL-2+ (programs), LGPL-2+ (libraries) |
+| xserver-xorg-core, xserver-xorg-input-libinput, x11-xserver-utils | https://x.org | MIT/X11 and similar permissive licences |
+| dbus-x11 | https://www.freedesktop.org/wiki/Software/dbus/ | AFL-2.1 or GPL-2+ |
+| adwaita-icon-theme | https://gitlab.gnome.org/GNOME/adwaita-icon-theme | LGPL-3 or CC-BY-SA-3.0 |
+
+These are used as unmodified Debian binaries, with their source available from
+the Debian archive (`apt-get source <package>`). Xfce's recommended packages
+(xfce4-terminal, thunar, xfce4-appfinder, ...) are **not** installed.
+
 `grim` (MIT) was used only to take screenshots in a test VM; it is not in the
 image's package list.
 
