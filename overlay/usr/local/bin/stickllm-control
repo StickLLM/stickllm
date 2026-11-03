@@ -4483,7 +4483,9 @@ def vault_action(cmd: str, params: dict) -> dict:
             return {"ok": False, "error": str(e)}
     if cmd == "lock":
         sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
-        r = sh([script, "lock"], timeout=120)
+        # 0.5.6: Office alone can take ~60-150s to flush and stop (TimeoutStopSec=150),
+        # then Agent Zero, add-ons and dockerd stop; 120s killed the lock midway.
+        r = sh([script, "lock"], timeout=360)
         return merge_vault_run(r)
     if cmd == "find-vault":
         data = parse_vault_json(

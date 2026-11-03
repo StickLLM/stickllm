@@ -801,3 +801,20 @@ def test_office_default_new_names_are_dated():
     t, doc, xls, ppt = json.loads(out)
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", t)
     assert doc == f"Document {t}.docx" and xls == f"Spreadsheet {t}.xlsx" and ppt == f"Presentation {t}.pptx"
+
+
+def test_vault_lock_budget_covers_office_stop():
+    """0.5.6: Office flush + stop takes ~60s and up to 150s; the lock must not be killed first."""
+    import re
+    root = Path(__file__).resolve().parents[1]
+    unit = (root / "overlay/etc/systemd/system/stickllm-docs.service").read_text()
+    stop_sec = int(re.search(r"^TimeoutStopSec=(\d+)", unit, re.M).group(1))
+    ctl = (root / "overlay/usr/local/bin/stickllm-control").read_text()
+    lock_t = int(re.search(r'sh\(\[script, "lock"\], timeout=(\d+)\)', ctl).group(1))
+    gw = (root / "overlay/usr/local/bin/stickllm-gateway").read_text()
+    m = re.search(r'elif action in \(([^)]*"vault_lock"[^)]*)\):\s*\n(?:\s*#.*\n)*\s*timeout = (\d+)', gw)
+    assert m, "gateway needs a longer timeout for vault_lock"
+    gw_t = int(m.group(2))
+    assert stop_sec >= 120  # prepare4shutdown (<=60) + docker stop (<=60)
+    assert lock_t >= stop_sec + 120  # plus Agent Zero, add-ons, dockerd, umount
+    assert gw_t >= lock_t + 60  # plus the model stop before the lock

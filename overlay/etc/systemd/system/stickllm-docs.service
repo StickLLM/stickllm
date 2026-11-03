@@ -16,6 +16,6 @@ ExecStart=/usr/local/bin/stickllm-docs run
 ExecStop=/usr/local/bin/stickllm-docs stop
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=90
+TimeoutStopSec=150
 # Started by vault unlock (when installed) or by stickllm-docs-install.service.
 # Not enabled: never at boot without an unlocked vault.

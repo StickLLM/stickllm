@@ -5146,7 +5146,13 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(403, {"ok": False, "error": "loopback_only"})
                 return
             try:
-                timeout = 7200 if action == "model_download" else 180
+                if action == "model_download":
+                    timeout = 7200
+                elif action in ("vault_lock", "set_session_mode", "session_mode"):
+                    # Model stop (60s) + vault lock (control allows 360s).
+                    timeout = 480
+                else:
+                    timeout = 180
                 data = http_json(
                     CONTROL + "/action",
                     {"action": action, "params": params},
