@@ -992,6 +992,7 @@ function unlockMessage(text) {
 // stick's settings, which may hold this computer's own vault location.
 const VAULT_OTHER_RE = /VAULT_OTHER_COMPUTER:?\s*/;
 function showVaultOther(on, label) {
+  state.vaultOther = !!on;
   const box = $("#vaultOther");
   if (box) box.hidden = !on;
   if (!on) return;
@@ -1042,7 +1043,9 @@ function setVaultChrome(open, absent = false) {
   if (!open && sessionMode === "vault") applyModeUi("ephemeral");
   const none = !open && !!absent;
   $("#vaultCard")?.classList.toggle("open", open);
-  if ($("#vcState")) $("#vcState").textContent = open ? "Vault unlocked" : (none ? "No vault set up" : "Vault locked");
+  // 0.5.6: the health poll repaints this too; keep "on another computer"
+  // (set by refreshStorage) instead of flipping it back to "Vault locked".
+  if ($("#vcState")) $("#vcState").textContent = open ? "Vault unlocked" : (none ? "No vault set up" : (state.vaultOther ? "Vault is on another computer" : "Vault locked"));
   if ($("#unlockForm")) $("#unlockForm").hidden = open;
   if (open) unlockMessage("");
   if ($("#lockBtn2")) $("#lockBtn2").hidden = !open;
