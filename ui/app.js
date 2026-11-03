@@ -2661,7 +2661,7 @@ const TUNE_PRESETS = {
   long: { ctx: 32768, kv: "q4", temp: 0.6 },
 };
 const TUNE_KEY = "stickllm_tune";
-const LLAMA_CTX_FLOOR = 32768; // stickllm-llama-start raises smaller values (Agent Zero)
+const LLAMA_CTX_FLOOR = 32768; // below this, show the Agent Zero hint (llama-start honours the value)
 function tuneNow() {
   const num = (sel, d) => { const el = $(sel); const v = el ? Number(el.value) : NaN; return Number.isFinite(v) ? v : d; };
   return {

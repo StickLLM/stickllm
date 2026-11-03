@@ -26,14 +26,16 @@ EnvironmentFile=-/run/stickllm/ngl.env
 Environment=LD_LIBRARY_PATH=/opt/stickllm/lib
 Environment=STICKLLM_LLAMA_HOST=127.0.0.1
 Environment=STICKLLM_LLAMA_PORT=8080
-# Ensure run dir writable before pick-gpus (runs as User=stickllm-llama).
+# Ensure run dir writable for llama-start / the planner (User=stickllm-llama).
 ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true'
 # Prep needs root (modprobe); + ignores User=. Soft-fail — never block CPU.
 ExecStartPre=+/bin/bash -c '/usr/local/bin/stickllm-nvidia-prep || true'
 # Drop a baked CUDA_VISIBLE_DEVICES=0 pin so pick-gpus (cuda.env) is the only list.
 ExecStartPre=+/bin/sed -i '/^CUDA_VISIBLE_DEVICES=/d' /etc/stickllm/runtime.env
 # Leading - : failure never blocks start (also always exits 0 by contract).
-ExecStartPre=-/usr/local/bin/stickllm-pick-gpus
+# + = root: cuda.env is root-owned (written at boot); as User= it could not be
+# replaced and the planner saw a stale GPU_COUNT=0 (AMD ran on CPU).
+ExecStartPre=-+/usr/local/bin/stickllm-pick-gpus
 ExecStart=/usr/local/bin/stickllm-llama-start
 # Root, so the CUDA line can be copied out of the journal for the UI.
 ExecStopPost=+/usr/local/bin/stickllm-llama-start --capture-fail

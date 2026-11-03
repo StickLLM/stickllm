@@ -67,6 +67,9 @@ if [[ -z "${STICKLLM_MODEL:-}" && -f "$RUN/model.env" ]]; then
   . "$RUN/model.env"
   set -u
 fi
+# Re-read after sourcing: model.env (not only the unit environment) sets these.
+MODEL="${STICKLLM_MODEL:-}"
+CTX="${STICKLLM_CTX_SIZE:-32768}"
 
 BACKEND="${STICKLLM_BACKEND:-cpu}"
 
@@ -164,11 +167,17 @@ if [[ "${1:-}" == "--print-fit" ]]; then
   exit 0
 fi
 
-# Agent Zero's chat path needs jinja templates and a long context.
-# A smaller saved value is raised here so the next start picks it up.
-if [[ "$CTX" =~ ^[0-9]+$ ]] && (( CTX < 32768 )); then
-  echo "stickllm-llama-start: raising ctx-size ${CTX} to 32768" >&2
+# Context: the user's STICKLLM_CTX_SIZE (model.env) wins. It may be capped to
+# what the model supports (planner STICKLLM_PLAN_CTX_MAX), never raised.
+# (Agent Zero prefers >= 32768; that is now the user's choice in Models.)
+if [[ ! "$CTX" =~ ^[0-9]+$ ]] || (( CTX < 256 )); then
+  echo "stickllm-llama-start: bad STICKLLM_CTX_SIZE='${CTX}', using 32768" >&2
   CTX=32768
+fi
+CTX_MAX="${STICKLLM_PLAN_CTX_MAX:-0}"
+if [[ "$CTX_MAX" =~ ^[0-9]+$ ]] && (( CTX_MAX >= 256 && CTX > CTX_MAX )); then
+  echo "stickllm-llama-start: capping ctx-size ${CTX} to model limit ${CTX_MAX}" >&2
+  CTX="$CTX_MAX"
 fi
 
 gpu_extra=()
@@ -225,7 +234,15 @@ if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "fallback" ]]; then
       export LD_LIBRARY_PATH="${LIB_VK}:${LD_LIBRARY_PATH}"
       export GGML_BACKEND_DIR="${LIB_VK}"
     fi
-    echo "stickllm-llama-start: STICKLLM_BACKEND=vulkan (-ngl $NGL) threads=$THREADS host=$HOST:$PORT model=$MODEL" >&2
+    # One Vulkan device (most free VRAM, from pick-gpus/planner), e.g. Vulkan1.
+    vk_dev="${STICKLLM_PLAN_DEVICES:-}"
+    if [[ ! "$vk_dev" =~ ^Vulkan[0-9]+$ ]]; then
+      vk_dev="${STICKLLM_VULKAN_DEVICE:-}"
+    fi
+    if [[ "$vk_dev" =~ ^Vulkan[0-9]+$ ]] && [[ "$NGL" =~ ^[0-9]+$ ]] && (( NGL > 0 )); then
+      gpu_extra+=(--device "$vk_dev")
+    fi
+    echo "stickllm-llama-start: STICKLLM_BACKEND=vulkan (-ngl $NGL device=${vk_dev:-default} fit=${PLAN_FIT:-?} vram_free=${STICKLLM_VRAM_FREE_MIB:-?}MiB) threads=$THREADS host=$HOST:$PORT ctx=$CTX model=$MODEL" >&2
     write_runtime_env vulkan
     exec "$VULKAN_BIN" \
       --model "$MODEL" \

@@ -46,7 +46,7 @@ def test_llama_start_kv_flags(tmp_path):
     assert a[a.index("--cache-type-k") + 1] == "q8_0"
     assert a[a.index("--cache-type-v") + 1] == "q8_0"
     assert a[a.index("--flash-attn") + 1] == "on"
-    assert a[a.index("--ctx-size") + 1] == "32768"  # floor kept (Agent Zero)
+    assert a[a.index("--ctx-size") + 1] == "8192"  # user value honoured (no 32768 floor)
     for kv in (None, "f16", "bogus"):
         a = _run_llama_start(tmp_path, kv)
         assert "--cache-type-k" not in a and "--flash-attn" not in a
@@ -71,11 +71,11 @@ def test_activate_writes_kv_type(tmp_path, monkeypatch):
     monkeypatch.setattr(c, "llama_service_snapshot", lambda **k: {})
     monkeypatch.setattr(c.time, "sleep", lambda s: None)
     r = c.handle("model_activate", {"id": "x", "ctx_size": 8192, "kv_type": "q4_0"})
-    assert r["kv_type"] == "q4_0" and r["ctx_size"] == 32768 and r["ctx_requested"] == 8192
+    assert r["kv_type"] == "q4_0" and r["ctx_size"] == 8192 and r["ctx_requested"] == 8192
     env = (tmp_path / "run" / "model.env").read_text(encoding="utf-8")
     assert "STICKLLM_KV_TYPE=q4_0" in env
     assert c.active_kv_type() == "q4_0"
-    assert c.active_ctx_size() == 32768
+    assert c.active_ctx_size() == 8192
     assert c.activate_model("x", 8192, "q2")["ok"] is False
     r = c.activate_model("x", 8192, None)
     assert r["kv_type"] == "f16"

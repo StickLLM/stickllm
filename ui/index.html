@@ -353,7 +353,7 @@
     <div class="advBody">
       <label class="field"><span>Context size <b id="ctxVal">8,192</b> tokens</span>
         <input type="range" id="ctx" min="2048" max="32768" step="1024" value="8192"></label>
-      <p class="muted small" id="ctxNote">The stick runs at least 32,768 tokens so Agent Zero works. A smaller value only lowers the memory estimate here.</p>
+      <p class="muted small" id="ctxNote">The model runs with this context. Agent Zero works best with 32,768 tokens or more.</p>
       <div class="vram">
         <div class="vramBar" aria-label="VRAM usage"><i class="w" id="vW"></i><i class="kv" id="vKV"></i><i class="free" id="vFree"></i></div>
         <div class="legend"><span><i class="w"></i>Weights <b id="lW"></b></span><span><i class="kv"></i>KV cache <b id="lKV"></b></span><span><i class="free"></i>Free <b id="lFree"></b></span><span class="muted" id="vramTotal">of — GB</span></div>
