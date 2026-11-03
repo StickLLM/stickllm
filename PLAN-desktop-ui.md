@@ -233,3 +233,32 @@ is a browser tab on their PC), a later version will ship it as a wrapped
 browser app on their existing desktop. In that mode the host OS window manager
 owns the windows, and the Browser icon keeps opening a normal tab or window
 there. Not developed yet.
+
+## Windowing options (paused 2026-10-30)
+
+- **A (chosen, paused):** our own small window manager built on wlroots (MIT). It draws our title bars with min/max/close, the taskbar and stacking, so the whole thing feels like a Chromebook.
+- **Option L (added at Nink's request, not decided):** a stock, unmodified Linux desktop (e.g. Xfce) on the stick. StickLLM apps (Chat, Models, Vault, Settings, the bundled apps) stay web pages that open as normal windows. A later client/app mode opens the same pages in the user's own browser or a wrapped app, with no StickLLM desktop. Overhead still to be measured in the VM.
+
+**Update 2026-10-30 9:32 AM ET (Nink):** Xfce is added to option A. A now means: a stock, unmodified Xfce desktop (Debian packages, GPL, used as separate programs and configured only through its settings) gives real windows, buttons, a taskbar and stacking, themed and locked down to look like StickLLM (no terminal or exit menus, our wallpaper, and our vault, network and model status). StickLLM's own apps stay web pages in normal windows, so a later client mode can reuse them. Writing our own wlroots window manager is no longer needed unless Xfce falls short. RAM, ISO size and VRAM overhead get measured in the VM when work resumes. Still paused.
+
+**Note 2026-10-30 9:34 AM ET:** Xfce would also run normal Linux apps (e.g. LibreOffice, GIMP, VLC). Use an approved list (Debian/Flathub, or Flatpak sandboxing) and check each licence for commercial redistribution. Nink finds ONLYOFFICE unfriendly; LibreOffice (MPL-2.0, unmodified, scripting API) is a candidate replacement and app-agent target. Not decided.
+
+**Option (not decided) 2026-10-30 9:49 AM ET, platform layout from Nink:**
+- **USB boot:** full Xfce desktop.
+- **Remote client that boots from the USB:** the same Xfce desktop, with apps from the host machine.
+- **Remote desktop from another computer:** the current browser app (or a VM view). The browser version only shows web apps, so non-web Linux apps would need a streamed desktop or VM view.
+- **Phone:** the tabbed browser version for now, with native iOS and Android apps later.
+- StickLLM's own apps stay web pages so they work in all four.
+
+## 0.5.6 scope update (Nink, 2026-11-02 ~9:00-9:47 PM ET)
+
+Agreed for 0.5.6:
+- AMD/Vulkan support for old cards (branch fix/amd-vulkan-detect: sysfs VRAM detect, PCIe-link-aware GPU pick, runtime PM pinned on chosen card, ctx no longer forced to 32768).
+- Desktop: Xfce on USB and USB-boot remote clients; existing browser UI kept for phones and remote desktops. Apps unchanged; ONLYOFFICE stays (LibreOffice maybe later).
+- Security changes stay paused.
+- One Qwen3.5-4B by default for chat AND app control. No hidden second helper. User loads/unloads the app agent and models themselves; nothing auto-loads. Stickman points its model URL at the shared chat llama-server; load/unload UI lives in StickLLM.
+- Stickman integration: freeze the slide retrieval pack (30/30 unseen, 6/6 original on current main), plus the Node-RED http-in -> http-response wiring check in service/checker.py. Docs/spreadsheets/full Universal API not shipping yet. Open: add "new slide"/"next page" sections before freeze?
+- New knowledge packs: Notepad and Calculator.
+- App list: apps that are not installed do not appear at all.
+- App targeting (scales to hundreds of apps): no app picker list. The agent acts on the focused or last-used app window by default; "in <App>, ..." routes by name; ambiguous requests go through a small router (4B or keyword match) over installed apps only, retrieving just that app's manual chunks (RAG-style); optional search box + recent apps row instead of a full list.
+- Stickman slide pack 7f3b75e (feature/slide-deck-nav: addslide/nextslide/prevslide sections, Node-RED http-in -> http-response check, retrieval 30/30 unseen + 6/6 original) pulled in for 0.5.6 integration (Nink OK 2026-11-02 10:54 PM ET); box clone at /workspace/stickman. Answers the "new slide"/"next page" question above.
