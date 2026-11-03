@@ -736,8 +736,9 @@ VULKAN_SUITABLE_MIB = 3000
 def vulkan_gpu_rows(env_path: Path | None = None) -> list[dict]:
     """Vulkan GPUs from stickllm-pick-gpus (cuda.env STICKLLM_VULKAN_GPUS).
 
-    Empty unless STICKLLM_BACKEND=vulkan. Each entry is vk_index:total:free MiB
-    (VRAM from amdgpu sysfs, vulkaninfo heap fallback)."""
+    Empty unless STICKLLM_BACKEND=vulkan. Each entry is
+    vk_index:total:free[:link_width:link_mts] (VRAM in MiB from amdgpu sysfs,
+    vulkaninfo heap fallback; PCIe link from sysfs, 0 when unknown)."""
     env_path = env_path or (RUN / "cuda.env")
     try:
         text = env_path.read_text(encoding="utf-8")
@@ -753,12 +754,14 @@ def vulkan_gpu_rows(env_path: Path | None = None) -> list[dict]:
     rows: list[dict] = []
     for item in (vals.get("STICKLLM_VULKAN_GPUS") or "").split(","):
         parts = item.strip().split(":")
-        if len(parts) != 3:
+        if len(parts) not in (3, 5):
             continue
         try:
-            idx, total, free = (int(x) for x in parts)
+            nums = [int(x) for x in parts]
         except ValueError:
             continue
+        idx, total, free = nums[:3]
+        width, mts = (nums[3], nums[4]) if len(nums) == 5 else (0, 0)
         rows.append(
             {
                 "index": idx,
@@ -767,17 +770,25 @@ def vulkan_gpu_rows(env_path: Path | None = None) -> list[dict]:
                 "total_mib": total,
                 "free_mib": max(0, free),
                 "used_mib": max(0, total - free),
+                "link_width": max(0, width),
+                "link_mts": max(0, mts),
                 "backend": "vulkan",
             }
         )
     return rows
 
 
-def suitable_gpus(rows: list[dict] | None = None) -> list[dict]:
+def _vk_link(g: dict) -> int:
+    return int(g.get("link_width") or 0) * int(g.get("link_mts") or 0)
+
+
+def suitable_gpus(rows: list[dict] | None = None, need_bytes: int | None = None) -> list[dict]:
     """Every GPU large enough to hold weights. Skips tiny/display cards.
 
-    CUDA: all cards >= 16 GiB (tensor-split). Vulkan: the single card with the
-    most free VRAM (one device, no cross-card split)."""
+    CUDA: all cards >= 16 GiB (tensor-split). Vulkan: one card (no cross-card
+    split). Among cards with enough free VRAM for the plan (need_bytes), the
+    widest/fastest PCIe link wins, then most free VRAM — a card on an x1 riser
+    is far slower. When none has room, the card with the most free VRAM."""
     if rows is None:
         rows = nvidia_gpu_rows()
         if not rows:
@@ -787,7 +798,14 @@ def suitable_gpus(rows: list[dict] | None = None) -> list[dict]:
         ok = [g for g in vk if int(g.get("total_mib") or 0) >= VULKAN_SUITABLE_MIB]
         if not ok:
             return []
-        best = max(ok, key=lambda g: (int(g.get("free_mib") or 0), -int(g.get("index") or 0)))
+        need_mib = (int(need_bytes) + (1 << 20) - 1) >> 20 if need_bytes else VULKAN_SUITABLE_MIB
+        roomy = [g for g in ok if int(g.get("free_mib") or 0) >= need_mib]
+        if roomy:
+            best = max(roomy, key=lambda g: (_vk_link(g), int(g.get("free_mib") or 0),
+                                             -int(g.get("index") or 0)))
+        else:
+            best = max(ok, key=lambda g: (int(g.get("free_mib") or 0), _vk_link(g),
+                                          -int(g.get("index") or 0)))
         return [best]
     return [g for g in rows if int(g.get("total_mib") or 0) >= GPU_SUITABLE_MIB]
 
@@ -930,7 +948,7 @@ def plan_gpu_fit(
     kv_bpt = kv_bytes_per_token(dims, n_layer, file_bytes)
     kv = kv_bpt * ctx
     weights = max(1, int(file_bytes))
-    cards = suitable_gpus(gpus)
+    cards = suitable_gpus(gpus, need_bytes=weights + kv + GPU_BUFFER_BYTES)
     gpu_count = len(cards)
     devices = ",".join(str(g.get("device") or g["index"]) for g in cards)
     # Proportions follow free VRAM. A card reporting 0 free still gets its total

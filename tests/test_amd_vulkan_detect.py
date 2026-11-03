@@ -72,8 +72,9 @@ def _exe(path: Path, body: str) -> Path:
     return path
 
 
-def _sysfs(root: Path, cards: dict) -> Path:
-    """cards: {"card0": ("0000:10:00.0", total_bytes, used_bytes), ...}"""
+def _sysfs(root: Path, cards: dict, links: dict | None = None, power: dict | None = None) -> Path:
+    """cards: {"card0": ("0000:10:00.0", total_bytes, used_bytes), ...}
+    links: {"card0": {"current_link_width": "16", ...}}; power: {"card1": "auto"}"""
     drm = root / "drm"
     devs = root / "devices"
     drv = root / "drivers" / "amdgpu"
@@ -86,20 +87,29 @@ def _sysfs(root: Path, cards: dict) -> Path:
         if total is not None:
             (d / "mem_info_vram_total").write_text(f"{total}\n")
             (d / "mem_info_vram_used").write_text(f"{used}\n")
+        for name, val in ((links or {}).get(card) or {}).items():
+            (d / name).write_text(f"{val}\n")
+        if (power or {}).get(card):
+            (d / "power").mkdir()
+            (d / "power" / "control").write_text(power[card] + "\n")
         (drm / card).mkdir()
         (drm / card / "device").symlink_to(d)
     (drm / "card0-DP-1").mkdir()  # connector entries must be skipped
     return drm
 
 
-def _pick(tmp_path: Path, *, drm: Path, vulkaninfo: str | None):
+LD_DEFAULT = ("8029", "8186")
+
+
+def _pick(tmp_path: Path, *, drm: Path, vulkaninfo: str | None, ld_free=LD_DEFAULT, extra_env=None):
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)
     _exe(fakebin / "nvidia-smi", "exit 9\n")
     _exe(fakebin / "lspci", "exit 0\n")
-    vk_bin = _exe(tmp_path / "llama-server-vulkan",
-                  'echo "Available devices:"\necho "  Vulkan0: AMD Radeon RX 570 Series (RADV POLARIS10) (8192 MiB, 8029 MiB free)"\n'
-                  'echo "  Vulkan1: AMD Radeon RX 570 Series (RADV POLARIS10) (8192 MiB, 8186 MiB free)"\n')
+    lines = "".join(
+        f'echo "  Vulkan{i}: AMD Radeon RX 570 Series (RADV POLARIS10) (8192 MiB, {f} MiB free)"\n'
+        for i, f in enumerate(ld_free))
+    vk_bin = _exe(tmp_path / "llama-server-vulkan", 'echo "Available devices:"\n' + lines)
     if vulkaninfo is None:
         vki = str(tmp_path / "no-vulkaninfo")
     else:
@@ -115,6 +125,7 @@ def _pick(tmp_path: Path, *, drm: Path, vulkaninfo: str | None):
         "STICKLLM_LLAMA_VULKAN": str(vk_bin),
         "STICKLLM_LLAMA_CUDA": str(tmp_path / "no-cuda"),
     })
+    env.update(extra_env or {})
     p = subprocess.run(["bash", str(BIN / "stickllm-pick-gpus")], env=env, capture_output=True,
                        text=True, timeout=60)
     assert p.returncode == 0, p.stderr
@@ -138,7 +149,7 @@ def test_pick_vulkan_sysfs_count_and_best_card(tmp_path):
     v, err = _pick(tmp_path, drm=drm, vulkaninfo=VK_TWO_RX570.format(bus0=16, bus1=33))
     assert v["STICKLLM_BACKEND"] == "vulkan"
     assert v["STICKLLM_GPU_COUNT"] == "2"
-    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:8022,1:8192:8187"
+    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:8022:0:0,1:8192:8187:0:0"
     assert v["STICKLLM_VULKAN_DEVICE"] == "Vulkan1"
     assert v["STICKLLM_VRAM_FREE_MIB"] == "8187"
     assert v["STICKLLM_VRAM_TOTAL_MIB"] == "8192"
@@ -152,7 +163,7 @@ def test_pick_vulkan_maps_by_pci_bus_not_card_number(tmp_path):
         "card1": ("0000:21:00.0", RX570, 1 * GiB),
     })
     v, _ = _pick(tmp_path, drm=drm, vulkaninfo=VK_TWO_RX570.format(bus0=33, bus1=16))
-    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:7168,1:8192:2048"
+    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:7168:0:0,1:8192:2048:0:0"
     assert v["STICKLLM_VULKAN_DEVICE"] == "Vulkan0"
 
 
@@ -160,7 +171,7 @@ def test_pick_vulkan_falls_back_to_vulkaninfo_heaps(tmp_path):
     drm = _sysfs(tmp_path, {"card0": ("0000:10:00.0", None, None), "card1": ("0000:21:00.0", None, None)})
     v, err = _pick(tmp_path, drm=drm, vulkaninfo=VK_TWO_RX570.format(bus0=16, bus1=33))
     assert v["STICKLLM_GPU_COUNT"] == "2"  # llvmpipe (CPU) excluded
-    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:8192,1:8192:8192"
+    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:8192:0:0,1:8192:8192:0:0"
     assert v["STICKLLM_VULKAN_DEVICE"] == "Vulkan0"
     assert v["STICKLLM_VRAM_FREE_MIB"] == "8192"
     assert "(vulkaninfo)" in err
@@ -172,7 +183,7 @@ def test_pick_vulkan_sysfs_only_uses_pci_order(tmp_path):
         "card0": ("0000:10:00.0", RX570, 2 * GiB),
     })
     v, _ = _pick(tmp_path, drm=drm, vulkaninfo=None)
-    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:6144,1:8192:8192"
+    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:6144:0:0,1:8192:8192:0:0"
     assert v["STICKLLM_VULKAN_DEVICE"] == "Vulkan1"
 
 
@@ -350,3 +361,142 @@ def test_llama_start_cuda_has_no_vulkan_device(tmp_path):
     s = (BIN / "stickllm-llama-start").read_text(encoding="utf-8")
     cuda_block = s[s.index("# 1) CUDA"):s.index("# 2) Vulkan")]
     assert "--device" not in cuda_block
+
+
+# --- PCIe link ranking / PCI mapping / runtime PM (x16 over x1 riser) --------
+
+MiB = 1024 * 1024
+LINK_X16 = {"current_link_width": "16", "current_link_speed": "2.5 GT/s PCIe",
+            "max_link_width": "16", "max_link_speed": "8.0 GT/s PCIe"}
+LINK_X1 = {"current_link_width": "1", "current_link_speed": "2.5 GT/s PCIe",
+           "max_link_width": "16", "max_link_speed": "8.0 GT/s PCIe"}
+
+
+def test_pick_vulkan_prefers_x16_over_x1_riser(tmp_path):
+    # The test rig: card0 x16 (display, 170 MiB used), card1 on an x1 riser.
+    drm = _sysfs(tmp_path, {
+        "card0": ("0000:10:00.0", RX570, 170 * MiB),
+        "card1": ("0000:21:00.0", RX570, 5 * MiB),
+    }, links={"card0": LINK_X16, "card1": LINK_X1})
+    v, err = _pick(tmp_path, drm=drm, vulkaninfo=VK_TWO_RX570.format(bus0=16, bus1=33),
+                   ld_free=("8022", "8187"))
+    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:8022:16:2500,1:8192:8187:1:2500"
+    assert v["STICKLLM_VULKAN_DEVICE"] == "Vulkan0"
+    assert v["STICKLLM_VULKAN_PCI"] == "0000:10:00.0"
+    assert v["STICKLLM_VULKAN_LINK"] == "x16@2500MT/s"
+    assert v["STICKLLM_VRAM_FREE_MIB"] == "8022"
+    assert "WARN" not in err
+
+
+def test_pick_vulkan_x16_mapping_follows_pci_not_order(tmp_path):
+    # vulkaninfo lists the riser card (bus 0x21) first → Vulkan1 is the x16 card0.
+    drm = _sysfs(tmp_path, {
+        "card0": ("0000:10:00.0", RX570, 170 * MiB),
+        "card1": ("0000:21:00.0", RX570, 5 * MiB),
+    }, links={"card0": LINK_X16, "card1": LINK_X1})
+    v, _ = _pick(tmp_path, drm=drm, vulkaninfo=VK_TWO_RX570.format(bus0=33, bus1=16),
+                 ld_free=("8187", "8022"))
+    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:8187:1:2500,1:8192:8022:16:2500"
+    assert v["STICKLLM_VULKAN_DEVICE"] == "Vulkan1"
+    assert v["STICKLLM_VULKAN_PCI"] == "0000:10:00.0"
+
+
+def test_pick_vulkan_matches_full_pci_address_same_bus(tmp_path):
+    vk = VK_TWO_RX570.format(bus0=16, bus1=16)
+    vk = vk.replace("pciDevice   = 0", "pciDevice   = 1", 1)  # Vulkan0 = 10:01.0
+    drm = _sysfs(tmp_path, {
+        "card0": ("0000:10:00.0", RX570, 1 * GiB),
+        "card1": ("0000:10:01.0", RX570, 3 * GiB),
+    })
+    v, _ = _pick(tmp_path, drm=drm, vulkaninfo=vk, ld_free=("5120", "7168"))
+    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:5120:0:0,1:8192:7168:0:0"
+
+
+def test_pick_vulkan_link_falls_back_to_max_link(tmp_path):
+    only_max_x16 = {"max_link_width": "16", "max_link_speed": "8.0 GT/s PCIe"}
+    only_max_x4 = {"max_link_width": "4", "max_link_speed": "8.0 GT/s PCIe"}
+    drm = _sysfs(tmp_path, {
+        "card0": ("0000:10:00.0", RX570, 2 * GiB),
+        "card1": ("0000:21:00.0", RX570, 0),
+    }, links={"card0": only_max_x16, "card1": only_max_x4})
+    v, _ = _pick(tmp_path, drm=drm, vulkaninfo=VK_TWO_RX570.format(bus0=16, bus1=33),
+                 ld_free=("6144", "8192"))
+    assert v["STICKLLM_VULKAN_GPUS"] == "0:8192:6144:16:8000,1:8192:8192:4:8000"
+    assert v["STICKLLM_VULKAN_DEVICE"] == "Vulkan0"
+
+
+def test_pick_vulkan_x16_without_room_loses_to_roomy_card(tmp_path):
+    drm = _sysfs(tmp_path, {
+        "card0": ("0000:10:00.0", RX570, 6 * GiB),   # x16 but only 2048 MiB free
+        "card1": ("0000:21:00.0", RX570, 0),
+    }, links={"card0": LINK_X16, "card1": LINK_X1})
+    v, _ = _pick(tmp_path, drm=drm, vulkaninfo=VK_TWO_RX570.format(bus0=16, bus1=33),
+                 ld_free=("2048", "8192"))
+    assert v["STICKLLM_VULKAN_DEVICE"] == "Vulkan1"
+
+
+def test_pick_vulkan_warns_when_list_devices_disagrees(tmp_path):
+    drm = _sysfs(tmp_path, {
+        "card0": ("0000:10:00.0", RX570, 170 * MiB),
+        "card1": ("0000:21:00.0", RX570, 5 * MiB),
+    }, links={"card0": LINK_X16, "card1": LINK_X1})
+    _, err = _pick(tmp_path, drm=drm, vulkaninfo=None, ld_free=("4000", "8187"))
+    assert "WARN Vulkan0 --list-devices free=4000MiB" in err
+
+
+def test_pick_vulkan_pins_runtime_pm_on_chosen_card_only(tmp_path):
+    drm = _sysfs(tmp_path, {
+        "card0": ("0000:10:00.0", RX570, 170 * MiB),
+        "card1": ("0000:21:00.0", RX570, 5 * MiB),
+    }, links={"card0": LINK_X16, "card1": LINK_X1}, power={"card0": "auto", "card1": "auto"})
+    _, err = _pick(tmp_path, drm=drm, vulkaninfo=VK_TWO_RX570.format(bus0=16, bus1=33),
+                   ld_free=("8022", "8187"))
+    devs = tmp_path / "devices"
+    assert (devs / "0000:10:00.0" / "power" / "control").read_text().strip() == "on"
+    assert (devs / "0000:21:00.0" / "power" / "control").read_text().strip() == "auto"
+    assert "runtime PM pinned on" in err
+
+
+def test_pick_vulkan_runtime_pm_pin_can_be_disabled(tmp_path):
+    drm = _sysfs(tmp_path, {"card0": ("0000:10:00.0", RX570, 0)},
+                 links={"card0": LINK_X16}, power={"card0": "auto"})
+    _pick(tmp_path, drm=drm, vulkaninfo=VK_TWO_RX570.format(bus0=16, bus1=99),
+          ld_free=("8192",), extra_env={"STICKLLM_VK_PM_PIN": "0"})
+    assert (tmp_path / "devices" / "0000:10:00.0" / "power" / "control").read_text().strip() == "auto"
+
+
+def test_planner_prefers_link_among_cards_that_fit(tmp_path, monkeypatch):
+    c = _load_control(tmp_path, monkeypatch)
+    (tmp_path / "run" / "cuda.env").write_text(
+        "STICKLLM_BACKEND=vulkan\nSTICKLLM_GPU_COUNT=2\n"
+        "STICKLLM_VULKAN_GPUS=0:8192:8022:16:2500,1:8192:8187:1:2500\n")
+    rows = c.vulkan_gpu_rows()
+    assert [(g["device"], g["link_width"], g["link_mts"]) for g in rows] == [
+        ("Vulkan0", 16, 2500), ("Vulkan1", 1, 2500)]
+    monkeypatch.setattr(c, "nvidia_gpu_rows", lambda: [])
+    plan = c.plan_gpu_fit(file_bytes=int(1.93 * 1e9), ctx=2048, meta=_meta_qwen25_3b())
+    assert plan["devices"] == "Vulkan0" and plan["fit"] == "full" and plan["n_gpu_layers"] == 37
+
+
+def test_planner_link_only_counts_when_plan_fits(tmp_path, monkeypatch):
+    c = _load_control(tmp_path, monkeypatch)
+    rows = [
+        {"index": 0, "device": "Vulkan0", "total_mib": 8192, "free_mib": 3000,
+         "link_width": 16, "link_mts": 8000, "backend": "vulkan"},
+        {"index": 1, "device": "Vulkan1", "total_mib": 8192, "free_mib": 8000,
+         "link_width": 1, "link_mts": 2500, "backend": "vulkan"},
+    ]
+    # ~3.6 GiB needed: only Vulkan1 has room, so link does not matter.
+    plan = c.plan_gpu_fit(file_bytes=int(1.93 * 1e9), ctx=2048, meta=_meta_qwen25_3b(), gpus=rows)
+    assert plan["devices"] == "Vulkan1"
+    # Neither fits a huge model: most free VRAM wins (partial offload).
+    plan = c.plan_gpu_fit(file_bytes=20 * GiB, ctx=2048, meta=_meta_qwen25_3b(), gpus=rows)
+    assert plan["devices"] == "Vulkan1" and plan["fit"] == "partial"
+
+
+def test_planner_accepts_old_three_field_rows(tmp_path, monkeypatch):
+    c = _load_control(tmp_path, monkeypatch)
+    (tmp_path / "run" / "cuda.env").write_text(
+        "STICKLLM_BACKEND=vulkan\nSTICKLLM_VULKAN_GPUS=0:8192:8030,1:8192:8187,bad:1\n")
+    rows = c.vulkan_gpu_rows()
+    assert [(g["device"], g["link_width"]) for g in rows] == [("Vulkan0", 0), ("Vulkan1", 0)]

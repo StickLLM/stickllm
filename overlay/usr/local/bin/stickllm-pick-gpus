@@ -40,6 +40,8 @@ write_env() {
     if [[ "$2" == "vulkan" ]]; then
       printf 'STICKLLM_VULKAN_DEVICE=%s\n' "${STICKLLM_VULKAN_DEVICE:-}"
       printf 'STICKLLM_VULKAN_GPUS=%s\n' "${STICKLLM_VULKAN_GPUS:-}"
+      printf 'STICKLLM_VULKAN_PCI=%s\n' "${STICKLLM_VULKAN_PCI:-}"
+      printf 'STICKLLM_VULKAN_LINK=%s\n' "${STICKLLM_VULKAN_LINK:-}"
       printf 'STICKLLM_VRAM_TOTAL_MIB=%s\n' "${STICKLLM_VRAM_TOTAL_MIB:-0}"
       printf 'GGML_BACKEND_DIR=%s\n' "$LIB_VK"
       printf 'LD_PRELOAD=\n'
@@ -124,20 +126,32 @@ has_amd_or_intel_gpu() {
 }
 
 # --- Vulkan (AMD/Intel) inventory ---------------------------------------
-# Rows "vk_index:total_mib:free_mib" for every Vulkan GPU llama.cpp will see.
-# VRAM comes from amdgpu sysfs (mem_info_vram_total/used); vulkaninfo's
-# DEVICE_LOCAL heap is the fallback (no "used" figure → free = total).
-# Vulkan index order = vulkaninfo GPU order minus CPU devices (llvmpipe),
-# which is what ggml-vulkan enumerates. Matched to sysfs by PCI bus address.
+# Rows "vk_index:total_mib:free_mib:link_width:link_mts" for every Vulkan GPU
+# llama.cpp will see. VRAM comes from amdgpu sysfs (mem_info_vram_total/used);
+# vulkaninfo's DEVICE_LOCAL heap is the fallback (no "used" figure → free = total).
+# PCIe link from sysfs current_link_width/current_link_speed (max_link_* fallback).
+# Vulkan index order = vulkaninfo GPU order minus CPU devices (llvmpipe), which is
+# what ggml-vulkan enumerates. Matched to sysfs by PCI address (domain:bus:dev.fn).
+# Choice: among cards with >= STICKLLM_VK_MIN_FREE_MIB free, the widest/fastest
+# PCIe link wins, then most free VRAM (an x1 riser card is far slower).
 DRM_ROOT="${STICKLLM_DRM_ROOT:-/sys/class/drm}"
 VULKANINFO="${STICKLLM_VULKANINFO:-vulkaninfo}"
+VK_MIN_FREE_MIB="${STICKLLM_VK_MIN_FREE_MIB:-3000}"
 STICKLLM_VULKAN_GPUS=""
 STICKLLM_VULKAN_DEVICE=""
+STICKLLM_VULKAN_PCI=""
+STICKLLM_VULKAN_LINK=""
 STICKLLM_VRAM_TOTAL_MIB=0
+VK_CHOSEN_SYSFS=""
 
-# stdout: "pci_bus_dec total_mib used_mib" per amdgpu card with sysfs VRAM.
+# "16x 8.0 GT/s PCIe" pieces → MT/s integer (8000). Empty/unknown → 0.
+link_mts() {
+  awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+(\.[0-9]+)?$/) { printf "%d", $i * 1000; exit } } END {}' <<<"${1:-}" 2>/dev/null
+}
+
+# stdout: "dom bus dev fn total_mib used_mib link_width link_mts card" per amdgpu card.
 sysfs_vram_rows() {
-  local card dev driver pci bus tot used
+  local card dev driver pci dom bus pdev fn tot used w s
   for card in "$DRM_ROOT"/card[0-9]*; do
     [[ "$(basename "$card")" =~ ^card[0-9]+$ ]] || continue
     dev="$card/device"
@@ -145,28 +159,39 @@ sysfs_vram_rows() {
     driver="$(basename "$(readlink -f "$dev/driver" 2>/dev/null)" 2>/dev/null || true)"
     [[ -z "$driver" || "$driver" == "amdgpu" ]] || continue
     pci="$(basename "$(readlink -f "$dev" 2>/dev/null)" 2>/dev/null || true)"
-    # 0000:21:00.0 -> bus 0x21
-    bus=""
-    if [[ "$pci" =~ ^[0-9a-fA-F]{4}:([0-9a-fA-F]{2}):[0-9a-fA-F]{2}\.[0-7]$ ]]; then
-      bus=$((16#${BASH_REMATCH[1]}))
+    dom=-1; bus=-1; pdev=-1; fn=-1
+    if [[ "$pci" =~ ^([0-9a-fA-F]{4}):([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-7])$ ]]; then
+      dom=$((16#${BASH_REMATCH[1]})); bus=$((16#${BASH_REMATCH[2]}))
+      pdev=$((16#${BASH_REMATCH[3]})); fn=${BASH_REMATCH[4]}
     fi
     tot="$(tr -cd '0-9' <"$dev/mem_info_vram_total" 2>/dev/null)"
     used="$(tr -cd '0-9' <"$dev/mem_info_vram_used" 2>/dev/null)"
     [[ -n "$tot" ]] || continue
     [[ -n "$used" ]] || used=0
-    printf '%s %s %s\n' "${bus:--1}" $((tot / 1048576)) $((used / 1048576))
+    w="$(tr -cd '0-9' <"$dev/current_link_width" 2>/dev/null)"
+    s="$(link_mts "$(cat "$dev/current_link_speed" 2>/dev/null)")"
+    if [[ -z "$w" || "$w" == 0 || -z "$s" || "$s" == 0 ]]; then
+      w="$(tr -cd '0-9' <"$dev/max_link_width" 2>/dev/null)"
+      s="$(link_mts "$(cat "$dev/max_link_speed" 2>/dev/null)")"
+    fi
+    printf '%s %s %s %s %s %s %s %s %s\n' "$dom" "$bus" "$pdev" "$fn" \
+      $((tot / 1048576)) $((used / 1048576)) "${w:-0}" "${s:-0}" "$(basename "$card")"
   done
 }
 
-# stdout: "type pci_bus_dec heap_mib" per vulkaninfo device, in Vulkan order.
+# stdout: "type dom bus dev fn heap_mib" per vulkaninfo device, in Vulkan order.
 vulkaninfo_rows() {
   command -v "$VULKANINFO" >/dev/null 2>&1 || [[ -x "$VULKANINFO" ]] || return 0
   "$VULKANINFO" 2>/dev/null | awk '
-    function flush() { if (have) printf "%s %s %d\n", type, (bus == "" ? -1 : bus), heap; }
+    function v(x) { return (x == "" ? -1 : x) }
+    function flush() { if (have) printf "%s %s %s %s %s %d\n", type, v(dom), v(bus), v(pdev), v(fn), heap; }
     /deviceType[[:space:]]*=/ {
-      flush(); have = 1; type = $NF; bus = ""; heap = 0; inheap = 0; next
+      flush(); have = 1; type = $NF; dom = ""; bus = ""; pdev = ""; fn = ""; heap = 0; next
     }
+    have && /pciDomain[[:space:]]*=/ { dom = $NF; next }
     have && /pciBus[[:space:]]*=/ { bus = $NF; next }
+    have && /pciDevice[[:space:]]*=/ { pdev = $NF; next }
+    have && /pciFunction[[:space:]]*=/ { fn = $NF; next }
     have && /size[[:space:]]*=[[:space:]]*[0-9]+/ {
       for (i = 1; i <= NF; i++) if ($i == "=") { sz = $(i + 1); break }
       cand = int(sz / 1048576); next
@@ -176,27 +201,41 @@ vulkaninfo_rows() {
   '
 }
 
+# stdout: free MiB per VulkanN from llama-server --list-devices (index order).
+list_devices_free() {
+  [[ -x "$VULKAN_BIN" ]] || return 0
+  env "LD_LIBRARY_PATH=$LIB_VK${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    "GGML_BACKEND_DIR=$LIB_VK" \
+    "$VULKAN_BIN" --list-devices 2>/dev/null |
+    sed -nE 's/^[[:space:]]*Vulkan([0-9]+):.*\(([0-9]+) MiB, ([0-9]+) MiB free\).*/\1 \3/p'
+}
+
 # Fills STICKLLM_GPU_COUNT / STICKLLM_VRAM_FREE_MIB / STICKLLM_VRAM_TOTAL_MIB /
-# STICKLLM_VULKAN_GPUS / STICKLLM_VULKAN_DEVICE (best = most free VRAM).
+# STICKLLM_VULKAN_GPUS / STICKLLM_VULKAN_DEVICE / STICKLLM_VULKAN_PCI / _LINK.
 probe_vulkan_gpus() {
-  local -a vk_type=() vk_bus=() vk_heap=() sy_bus=() sy_tot=() sy_used=()
-  local t b h tot used i j idx free best_free=-1 best="" rows="" best_tot=0
-  # ggml-vulkan uses discrete GPUs only when any exist, else other non-CPU GPUs.
+  local -a vk_type=() vk_dom=() vk_bus=() vk_dev=() vk_fn=() vk_heap=()
+  local -a sy_dom=() sy_bus=() sy_dev=() sy_fn=() sy_tot=() sy_used=() sy_w=() sy_s=() sy_card=()
+  local -a ld_free=()
+  local t d b p f h tot used w s c i j idx free rows=""
   local vk_all has_discrete=0
   vk_all="$(vulkaninfo_rows)"
   grep -q 'DISCRETE_GPU' <<<"$vk_all" && has_discrete=1
-  while read -r t b h; do
+  while read -r t d b p f h; do
     [[ -n "$t" ]] || continue
     case "$t" in *CPU*) continue ;; esac
     if (( has_discrete )) && [[ "$t" != *DISCRETE_GPU* ]]; then
       continue
     fi
-    vk_type+=("$t"); vk_bus+=("$b"); vk_heap+=("$h")
+    vk_type+=("$t"); vk_dom+=("$d"); vk_bus+=("$b"); vk_dev+=("$p"); vk_fn+=("$f"); vk_heap+=("$h")
   done <<<"$vk_all"
-  while read -r b tot used; do
-    [[ -n "$b" ]] || continue
-    sy_bus+=("$b"); sy_tot+=("$tot"); sy_used+=("$used")
-  done < <(sysfs_vram_rows | sort -n -k1,1)
+  while read -r d b p f tot used w s c; do
+    [[ -n "$d" ]] || continue
+    sy_dom+=("$d"); sy_bus+=("$b"); sy_dev+=("$p"); sy_fn+=("$f")
+    sy_tot+=("$tot"); sy_used+=("$used"); sy_w+=("$w"); sy_s+=("$s"); sy_card+=("$c")
+  done < <(sysfs_vram_rows | sort -n -k1,1 -k2,2 -k3,3 -k4,4)
+  while read -r i free; do
+    [[ -n "$i" ]] && ld_free[$i]=$free
+  done < <(list_devices_free)
 
   local n_vk=${#vk_type[@]} n_sy=${#sy_bus[@]}
   if (( n_vk == 0 && n_sy == 0 )); then
@@ -204,32 +243,51 @@ probe_vulkan_gpus() {
     return 1
   fi
   if (( n_vk == 0 )); then
-    # vulkaninfo missing: assume Vulkan order follows PCI order (Mesa RADV does).
+    # vulkaninfo missing: assume Vulkan order follows PCI order (Mesa RADV does);
+    # the --list-devices cross-check below warns when free VRAM disagrees.
     for ((i = 0; i < n_sy; i++)); do
-      vk_type+=("PHYSICAL_DEVICE_TYPE_DISCRETE_GPU"); vk_bus+=("${sy_bus[$i]}"); vk_heap+=(0)
+      vk_type+=("PHYSICAL_DEVICE_TYPE_DISCRETE_GPU"); vk_dom+=(-1); vk_bus+=(-1); vk_dev+=(-1); vk_fn+=(-1); vk_heap+=(0)
     done
     n_vk=$n_sy
   fi
+
+  local best="" best_key="" best_free=0 best_tot=0 best_pci="" best_link="" best_card=""
+  local best_ok=0 ok key src pci_s
   for ((idx = 0; idx < n_vk; idx++)); do
-    tot=0; used=0; local src="none"
-    for ((j = 0; j < n_sy; j++)); do
-      if [[ "${sy_bus[$j]}" == "${vk_bus[$idx]}" && "${vk_bus[$idx]}" != "-1" ]]; then
-        tot=${sy_tot[$j]}; used=${sy_used[$j]}; src=sysfs; break
-      fi
-    done
-    if [[ "$src" == "none" && "${vk_bus[$idx]}" == "-1" && $n_sy -eq $n_vk ]]; then
-      # No PCI bus info from vulkaninfo: pair by position.
-      tot=${sy_tot[$idx]}; used=${sy_used[$idx]}; src=sysfs-order
+    tot=0; used=0; w=0; s=0; c=""; pci_s=""; src="none"
+    if [[ "${vk_bus[$idx]}" != "-1" ]]; then
+      for ((j = 0; j < n_sy; j++)); do
+        [[ "${sy_bus[$j]}" == "${vk_bus[$idx]}" ]] || continue
+        [[ "${vk_dom[$idx]}" == "-1" || "${vk_dom[$idx]}" == "${sy_dom[$j]}" ]] || continue
+        [[ "${vk_dev[$idx]}" == "-1" || "${vk_dev[$idx]}" == "${sy_dev[$j]}" ]] || continue
+        [[ "${vk_fn[$idx]}" == "-1" || "${vk_fn[$idx]}" == "${sy_fn[$j]}" ]] || continue
+        src=sysfs; break
+      done
+    elif (( n_sy == n_vk )); then
+      j=$idx; src=sysfs-order  # no PCI info from vulkaninfo: pair by position
     fi
-    if [[ "$src" == "none" ]]; then
+    if [[ "$src" != "none" ]]; then
+      tot=${sy_tot[$j]}; used=${sy_used[$j]}; w=${sy_w[$j]}; s=${sy_s[$j]}; c=${sy_card[$j]}
+      pci_s="$(printf '%04x:%02x:%02x.%x' "${sy_dom[$j]}" "${sy_bus[$j]}" "${sy_dev[$j]}" "${sy_fn[$j]}" 2>/dev/null)"
+    else
       tot=${vk_heap[$idx]:-0}; used=0; src=vulkaninfo
     fi
     (( tot > 0 )) || continue
     free=$((tot - used)); (( free < 0 )) && free=0
-    rows+="${rows:+,}${idx}:${tot}:${free}"
-    echo "stickllm-pick-gpus: Vulkan${idx} total=${tot}MiB used=${used}MiB free=${free}MiB (${src})" >&2
-    if (( free > best_free )); then
-      best_free=$free; best="Vulkan${idx}"; best_tot=$tot
+    rows+="${rows:+,}${idx}:${tot}:${free}:${w}:${s}"
+    echo "stickllm-pick-gpus: Vulkan${idx} ${c:-?} pci=${pci_s:-?} link=x${w}@${s}MT/s total=${tot}MiB used=${used}MiB free=${free}MiB (${src})" >&2
+    if [[ -n "${ld_free[$idx]:-}" && "$src" != vulkaninfo ]]; then
+      local diff=$(( ld_free[idx] - free )); (( diff < 0 )) && diff=$(( -diff ))
+      if (( diff > 256 )); then
+        echo "stickllm-pick-gpus: WARN Vulkan${idx} --list-devices free=${ld_free[$idx]}MiB vs sysfs ${free}MiB; card mapping may be wrong" >&2
+      fi
+    fi
+    ok=0; (( free >= VK_MIN_FREE_MIB )) && ok=1
+    # Rank: enough free VRAM, then PCIe bandwidth (width x MT/s), then free VRAM.
+    key="$(printf '%d %012d %08d' "$ok" $(( w * s )) "$free")"
+    if [[ -z "$best_key" || "$key" > "$best_key" ]]; then
+      best_key="$key"; best="Vulkan${idx}"; best_free=$free; best_tot=$tot
+      best_pci="$pci_s"; best_link="x${w}@${s}MT/s"; best_card="$c"; best_ok=$ok
     fi
   done
   if [[ -z "$rows" ]]; then
@@ -239,9 +297,33 @@ probe_vulkan_gpus() {
   STICKLLM_VULKAN_GPUS="$rows"
   STICKLLM_GPU_COUNT=$(awk -F, '{print NF}' <<<"$rows")
   STICKLLM_VULKAN_DEVICE="$best"
+  STICKLLM_VULKAN_PCI="$best_pci"
+  STICKLLM_VULKAN_LINK="$best_link"
   STICKLLM_VRAM_FREE_MIB=$best_free
   STICKLLM_VRAM_TOTAL_MIB=$best_tot
+  VK_CHOSEN_SYSFS="${best_card:+$DRM_ROOT/$best_card/device}"
+  echo "stickllm-pick-gpus: chose ${best} ${best_card:-?} pci=${best_pci:-?} link=${best_link} free=${best_free}MiB (min ${VK_MIN_FREE_MIB}MiB met=${best_ok})" >&2
+  pin_runtime_pm
   return 0
+}
+
+# amdgpu runtime PM suspends a headless card after ~5 s idle (BACO) and moves
+# its VRAM buffers to system RAM (GTT); llama-server then runs from GTT over
+# PCIe. Keep the chosen card powered while it serves the model. Root only
+# (ExecStartPre=+); resets at reboot. STICKLLM_VK_PM_PIN=0 disables.
+pin_runtime_pm() {
+  local ctl
+  [[ "${STICKLLM_VK_PM_PIN:-1}" == "1" && -n "$VK_CHOSEN_SYSFS" ]] || return 0
+  ctl="$VK_CHOSEN_SYSFS/power/control"
+  [[ -f "$ctl" ]] || return 0
+  if [[ "$(cat "$ctl" 2>/dev/null)" == "on" ]]; then
+    return 0
+  fi
+  if echo on >"$ctl" 2>/dev/null; then
+    echo "stickllm-pick-gpus: runtime PM pinned on for ${VK_CHOSEN_SYSFS} (was auto)" >&2
+  else
+    echo "stickllm-pick-gpus: WARN cannot set $ctl=on (running as $(id -un 2>/dev/null || id -u)); card may runtime-suspend and evict VRAM" >&2
+  fi
 }
 
 try_vulkan() {
