@@ -46,6 +46,12 @@ assert.strictEqual(api.appAgentRoute("on the calculator add 2 and 2").app, "calc
 assert.deepStrictEqual(api.appAgentRoute("in calc, 2+2"), { app: "calculator", text: "2+2", why: "named" });
 api.setApps(["onlyoffice"]);
 assert.strictEqual(api.appAgentRoute("@nodered add a node"), null);
+api.setApps(["tetris", "browser"]);
+api.appAgentWins.set("tetris:a", { id: "tetris", inst: "a", focusT: 0, seen: Date.now() });
+assert.strictEqual(api.appAgentRoute("hard drop").app, "tetris");
+assert.deepStrictEqual(api.appAgentRoute("in the browser, open https://example.com"), { app: "browser", text: "open https://example.com", why: "named" });
+assert.strictEqual(api.appAgentRoute("open https://example.com").app, "browser");
+assert.strictEqual(api.appAgentRoute("write a program and display it in the browser").app, "browser");
 
 const reply = api.appAgentReply("onlyoffice", {
   understanding: "Add a big yellow rectangle.",

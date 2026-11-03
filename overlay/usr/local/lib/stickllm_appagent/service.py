@@ -24,7 +24,7 @@ class Service:
             from adapters.nodered import NodeRedAdapter; return NodeRedAdapter(self.cfg["nodered_url"], start)
         if app == "onlyoffice":
             from adapters.onlyoffice import OOSlides; return OOSlides(self.bridge, start)
-        if app in ("notepad", "calculator", "solitaire"):
+        if app in ("notepad", "calculator", "solitaire", "tetris", "minesweeper", "media", "browser"):
             from adapters.browser import CLIENT_APPS; return CLIENT_APPS[app](start)
         raise KeyError("unknown app %r (have: %s)" % (app, ", ".join(self.apps)))
     def lock(self, app): return self.locks.setdefault(app, threading.Lock())
@@ -46,8 +46,12 @@ class Service:
                  "onlyoffice": "ONLYOFFICE presentation open in the editor (real document, via the editor plugin)",
                  "notepad": "Notepad: write, append, replace or clear text, Save As",
                  "calculator": "Calculator: press keys to work out sums",
-                 "solitaire": "Solitaire: move cards, draw, new game"}.get(n, n)
-            e = {"name": n, "description": d, "client": n in ("notepad", "calculator", "solitaire")}
+                 "solitaire": "Solitaire: move cards, draw, new game",
+                 "tetris": "Tetris: move, rotate, and drop the falling piece",
+                 "minesweeper": "Minesweeper: reveal or flag a square",
+                 "media": "Media: open a picture, audio, or video in a folder",
+                 "browser": "Browser: open, focus, or close a page on the stick screen"}.get(n, n)
+            e = {"name": n, "description": d, "client": n in ("notepad", "calculator", "solitaire", "tetris", "minesweeper", "media", "browser")}
             if n == "onlyoffice": e["connected"] = self.bridge.connected()
             out.append(e)
         return out

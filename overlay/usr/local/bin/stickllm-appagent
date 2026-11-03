@@ -1,6 +1,6 @@
 #!/bin/sh
 # StickLLM app agent: turns a chat request into app actions (ONLYOFFICE slides, Node-RED,
-# Notepad, Calculator, Solitaire). 0.5.6: it uses the SHARED chat llama-server (one
+# Notepad, Calculator, Solitaire, Tetris, Minesweeper, Media, Browser). 0.5.6: it uses the SHARED chat llama-server (one
 # Qwen3.5-4B by default, 127.0.0.1:8080); it never starts or loads a model itself.
 # The user loads/unloads both the model (Models page) and this agent (chat > App agent).
 # Loopback only; browsers reach it through the gateway at /appagent/.
@@ -14,4 +14,4 @@ exec /usr/bin/python3 /usr/local/lib/stickllm_appagent/service.py \
   --nodered-url "${STICKLLM_APPAGENT_NODERED:-http://127.0.0.1:8105}" \
   --docs-url "/docs-server" \
   --self-url "/appagent" \
-  --apps "${STICKLLM_APPAGENT_APPS:-onlyoffice,nodered,notepad,calculator,solitaire}"
+  --apps "${STICKLLM_APPAGENT_APPS:-onlyoffice,nodered,notepad,calculator,solitaire,tetris,minesweeper,media,browser}"

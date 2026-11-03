@@ -862,6 +862,7 @@
   // Chrome windows show on the taskbar while they run.
   let browserT = 0;
   let browserWins = [];
+  window.addEventListener("stickllm-browser-changed", () => pollBrowser());
   function pollBrowser() {
     clearTimeout(browserT);
     const api = appApi();

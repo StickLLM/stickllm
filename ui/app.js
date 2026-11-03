@@ -1663,12 +1663,13 @@ function messagesForRequest(voiceOn) {
 // search box + recent-apps row pick one by hand. Browser apps (Notepad,
 // Calculator, Solitaire) are read and driven over the same-origin
 // BroadcastChannel "stickllm-appbridge" (ui/apps/stickllm-bridge.js).
-const APPAGENT_NAMES = { onlyoffice: "ONLYOFFICE slides", nodered: "Node-RED", notepad: "Notepad", calculator: "Calculator", solitaire: "Solitaire", slides: "Test slides" };
-const APPAGENT_PREFIX = /^@(onlyoffice|office|slides|pptx|nodered|node-red|notepad|calculator|calc|solitaire)\b[:,]?\s*/i;
-const APPAGENT_IN = /^(?:in|on|with|use|using)\s+(?:the\s+)?(onlyoffice|office|slides|presentation|powerpoint|pptx|node-red|nodered|node red|notepad|notes?|calculator|calc|solitaire|cards)(?:\s+app)?\s*[,:]\s*/i;
+const APPAGENT_NAMES = { onlyoffice: "ONLYOFFICE slides", nodered: "Node-RED", notepad: "Notepad", calculator: "Calculator", solitaire: "Solitaire", tetris: "Tetris", minesweeper: "Minesweeper", media: "Media", browser: "Browser", slides: "Test slides" };
+const APPAGENT_PREFIX = /^@(onlyoffice|office|slides|pptx|nodered|node-red|notepad|calculator|calc|solitaire|tetris|minesweeper|media|browser)\b[:,]?\s*/i;
+const APPAGENT_IN = /^(?:in|on|with|use|using)\s+(?:the\s+)?(onlyoffice|office|slides|presentation|powerpoint|pptx|node-red|nodered|node red|notepad|notes?|calculator|calc|solitaire|cards|tetris|minesweeper|media|browser)(?:\s+app)?\s*[,:]\s*/i;
 const APPAGENT_ALIAS = { onlyoffice: "onlyoffice", office: "onlyoffice", pptx: "onlyoffice", slides: "onlyoffice", presentation: "onlyoffice", powerpoint: "onlyoffice",
   nodered: "nodered", "node-red": "nodered", "node red": "nodered", notepad: "notepad", note: "notepad", notes: "notepad",
-  calculator: "calculator", calc: "calculator", solitaire: "solitaire", cards: "solitaire" };
+  calculator: "calculator", calc: "calculator", solitaire: "solitaire", cards: "solitaire",
+  tetris: "tetris", minesweeper: "minesweeper", media: "media", browser: "browser" };
 // Keyword router for requests with no app named and no app window used lately.
 const APPAGENT_KEYWORDS = {
   onlyoffice: /\b(slides?|presentation|deck|textbox|text box|rectangle|ellipse|triangle|shape)\b/i,
@@ -1676,8 +1677,13 @@ const APPAGENT_KEYWORDS = {
   notepad: /\b(notepad|in the note|the document text|append|save as)\b/i,
   calculator: /\b(calculator|on the calc)\b/i,
   solitaire: /\b(solitaire|foundation|tableau|draw a card|move the [a-z0-9]+ of (hearts|spades|diamonds|clubs))\b/i,
+  tetris: /\b(tetris|hard drop|falling piece)\b/i,
+  minesweeper: /\b(minesweeper|flag the square|reveal the square)\b/i,
+  media: /\b(media player|the video|the song|play the (?:video|song|music))\b/i,
+  browser: /\b(web browser|in the browser|https?:\/\/|hello world|write a (?:page|program))\b/i,
 };
-const APPAGENT_CLIENT = ["notepad", "calculator", "solitaire"];
+const APPAGENT_CLIENT = ["notepad", "calculator", "solitaire", "tetris", "minesweeper", "media"];
+const APPAGENT_DESKTOP = ["browser"];
 const APPAGENT_RECENT_MS = 2 * 60 * 1000;
 let appAgentApps = [];
 let appAgentOn = false;
@@ -1703,6 +1709,7 @@ function appAgentLastUsed(now) {
   return best && (now || Date.now()) - best.focusT <= APPAGENT_RECENT_MS ? best.id : "";
 }
 function appAgentOpen(app) {
+  if (APPAGENT_DESKTOP.includes(app)) return true;
   if (!APPAGENT_CLIENT.includes(app)) return true;
   for (const w of appAgentWins.values()) if (w.id === app) return true;
   return false;
@@ -1861,6 +1868,46 @@ function appAgentCall(app, kind, action, ms = 8000) {
     appAgentBC.postMessage({ type: "call", to: app, inst: w.inst, req, kind, action: action || {} });
   });
 }
+async function appAgentBrowserState() {
+  try {
+    const j = await control("browser_status", {});
+    return j && typeof j === "object" ? j : { windows: [] };
+  } catch (e) {
+    return { windows: [] };
+  }
+}
+async function appAgentRunBrowser(actions) {
+  const out = [];
+  const taskbar = Math.round(48 * (window.devicePixelRatio || 1));
+  for (const a of (Array.isArray(actions) ? actions : []).slice(0, 20)) {
+    let res;
+    try {
+      if (a.page && a.page.html) {
+        const saved = await fetch("/api/browser-page", {
+          method: "POST", credentials: "same-origin",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ title: a.page.title || "Page", html: a.page.html }),
+        });
+        const doc = await saved.json().catch(() => ({}));
+        if (!saved.ok || !doc.url) throw new Error(doc.message || doc.error || "The page was not saved");
+        res = await control("browser_open", { url: doc.url, title: doc.title || a.page.title || "Page" });
+        if (res && doc.vault && doc.vault.saved && doc.vault.path) res.vault_path = doc.vault.path;
+      } else if (a.open) res = await control("browser_open", { url: a.open, title: a.title || "Browser" });
+      else if (a.focus) res = await control("browser_focus", { id: a.focus });
+      else if (a.close) res = await control("browser_close", { id: a.close });
+      else if (a.op && a.id) res = await control("browser_window", { id: a.id, op: a.op, taskbar });
+      else { out.push({ action: a, ok: false, error: "unknown browser action" }); break; }
+    } catch (e) {
+      out.push({ action: a, ok: false, error: String(e.message || e) });
+      break;
+    }
+    const ok = !!(res && res.ok !== false && !res.error);
+    out.push({ action: a, ok, error: ok ? "" : String((res && (res.message || res.error)) || "failed"), note: res && res.vault_path ? "Saved " + res.vault_path : "" });
+    if (!ok) break;
+  }
+  try { window.dispatchEvent(new CustomEvent("stickllm-browser-changed")); } catch (_) {}
+  return out;
+}
 async function appAgentRunClient(app, actions) {
   const out = [];
   for (const a of (Array.isArray(actions) ? actions : []).slice(0, 20)) {
@@ -1903,9 +1950,12 @@ async function sendToApp(app, text) {
   try {
     const body = { app, request: text, session: appAgentSession() };
     const client = APPAGENT_CLIENT.includes(app);
+    const desk = APPAGENT_DESKTOP.includes(app);
     if (client) {
       const st = await appAgentCall(app, "state");
       body.state = st && st.result && typeof st.result === "object" ? st.result : {};
+    } else if (desk) {
+      body.state = await appAgentBrowserState();
     }
     const r = await fetch("/appagent/act", {
       method: "POST", credentials: "same-origin",
@@ -1917,12 +1967,14 @@ async function sendToApp(app, text) {
     if (!r.ok) throw new Error(j.error || j.message || `The app agent answered ${r.status}`);
     let txt = appAgentReply(app, j);
     let changed = (j.results || []).some((x) => x.ok);
-    if (client && Array.isArray(j.client_actions) && j.client_actions.length) {
-      const ran = await appAgentRunClient(app, j.client_actions);
+    if ((client || desk) && Array.isArray(j.client_actions) && j.client_actions.length) {
+      const ran = desk ? await appAgentRunBrowser(j.client_actions) : await appAgentRunClient(app, j.client_actions);
       const bad = ran.find((x) => !x.ok);
       if (bad) txt += `\n\n✗ ${APPAGENT_NAMES[app] || app} refused \`${JSON.stringify(bad.action).slice(0, 120)}\`: ${String(bad.error).slice(0, 120)}`;
+      const notes = ran.filter((x) => x.note).map((x) => x.note);
+      if (notes.length) txt += "\n\n" + notes.join("\n");
       changed = ran.some((x) => x.ok);
-    } else if (client) {
+    } else if (client || desk) {
       changed = false;
     }
     pend.t = txt;
@@ -1947,9 +1999,12 @@ async function appAgentUndo(i) {
   try {
     const body = { app, session: appAgentSession() };
     const client = APPAGENT_CLIENT.includes(app);
+    const desk = APPAGENT_DESKTOP.includes(app);
     if (client) {
       const st = await appAgentCall(app, "state");
       body.state = st && st.result && typeof st.result === "object" ? st.result : {};
+    } else if (desk) {
+      body.state = await appAgentBrowserState();
     }
     const r = await fetch("/appagent/undo", {
       method: "POST", credentials: "same-origin",
@@ -1959,8 +2014,8 @@ async function appAgentUndo(i) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || `The app agent answered ${r.status}`);
     let ok = !!j.ok;
-    if (ok && client && Array.isArray(j.client_actions)) {
-      const ran = await appAgentRunClient(app, j.client_actions);
+    if (ok && (client || desk) && Array.isArray(j.client_actions)) {
+      const ran = desk ? await appAgentRunBrowser(j.client_actions) : await appAgentRunClient(app, j.client_actions);
       ok = ran.length > 0 && ran.every((x) => x.ok);
     }
     line = `**${APPAGENT_NAMES[app] || app}:** ${ok ? "Undone." : "Nothing to undo."} ${String(j.message || "").slice(0, 200)}`;

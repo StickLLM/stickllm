@@ -6,6 +6,15 @@
   const MEDIA = /\.(png|jpe?g|gif|webp|bmp|mp3|wav|ogg|m4a|mp4|webm|ogv)$/i;
   let rel = "";
   function say(text) { $("#msg").textContent = text || ""; }
+  function publish() {
+    const stage = $("#stage");
+    const el = stage && stage.querySelector("img,audio,video");
+    document.body.dataset.mediaRoot = ($("#root") && $("#root").value) || "";
+    document.body.dataset.mediaPath = rel || "";
+    document.body.dataset.mediaFile = el ? (el.alt || el.currentSrc || "") : "";
+    document.body.dataset.mediaKind = el ? el.tagName.toLowerCase() : "";
+    document.body.dataset.mediaPaused = el && el.paused ? "1" : "";
+  }
   function kind(name) {
     if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) return "img";
     if (/\.(mp3|wav|ogg|m4a)$/i.test(name)) return "audio";
@@ -23,7 +32,10 @@
     el.controls = tag !== "img";
     el.alt = name;
     stage.appendChild(el);
+    if (el.tagName !== "IMG") el.addEventListener("play", publish);
+    if (el.tagName !== "IMG") el.addEventListener("pause", publish);
     say(name);
+    publish();
   }
   async function load() {
     const r = await fetch("/api/files/roots", { cache: "no-store" });
@@ -40,7 +52,7 @@
       sel.appendChild(opt);
     });
     rel = "";
-    if (!sel.options.length) say("No folders are available. You can still pick a file on this computer.");
+    if (!sel.options.length) { say("No folders are available. You can still pick a file on this computer."); publish(); }
     else list();
   }
   async function list() {
@@ -75,6 +87,7 @@
     });
     if (!dirs.length && !files.length) say("No pictures, audio, or video in this folder. You can still pick a file on this computer.");
     else say(rel ? root + " / " + rel : "");
+    publish();
   }
   $("#root").addEventListener("change", () => { rel = ""; list().catch((e) => say(e.message)); });
   $("#up").addEventListener("click", () => {
