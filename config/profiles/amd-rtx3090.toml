@@ -29,13 +29,13 @@ n_gpu_layers = -1  # offload all layers to GPU
 threads = 8
 
 [model]
-# Default baked model is the 3B. The 7B is download-only.
-id = "qwen25-3b-q4km"
-filename = "qwen2.5-3b-instruct-q4_k_m.gguf"
-hf_repo = "Qwen/Qwen2.5-3B-Instruct-GGUF"
-hf_files = ["qwen2.5-3b-instruct-q4_k_m.gguf"]
-approx_size_gb = 2.0
-sha256 = "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
+# 0.5.6: the baked base model is the Qwen3.5-4B (chat and the app agent). 3B/7B are downloads.
+id = "qwen35-4b-q4km"
+filename = "Qwen3.5-4B-Q4_K_M.gguf"
+hf_repo = "unsloth/Qwen3.5-4B-GGUF"
+hf_files = ["Qwen3.5-4B-Q4_K_M.gguf"]
+approx_size_gb = 2.6
+sha256 = "25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"
 
 [ui]
 bind = "0.0.0.0"

@@ -502,9 +502,51 @@ def _short_gpu_name(name: str) -> str:
     return s.strip() or "GPU"
 
 
+def _vulkan_label() -> str:
+    """Vendor name for Vulkan cards from sysfs (AMD 0x1002, Intel 0x8086)."""
+    vendors = set()
+    try:
+        for v in Path("/sys/class/drm").glob("card[0-9]*/device/vendor"):
+            try:
+                vendors.add(v.read_text(encoding="utf-8").strip().lower())
+            except OSError:
+                pass
+    except OSError:
+        pass
+    if "0x1002" in vendors:
+        return "AMD GPU"
+    if "0x8086" in vendors:
+        return "Intel GPU"
+    return "Vulkan GPU"
+
+
 def gpu_inventory() -> dict:
-    """Usable VRAM pool. Cards under 16 GB (the display GPU) are left out."""
+    """VRAM the model can use, per card.
+
+    CUDA: cards under 16 GB (the display GPU) are left out and the rest are
+    pooled (tensor split). Vulkan (AMD/Intel, 0.5.6): llama.cpp runs on ONE
+    card, so the plan is that card's own VRAM, never the sum of the cards and
+    never shared system memory (GTT)."""
     rows = nvidia_gpu_rows()
+    backend = "cuda" if rows else ""
+    if not rows:
+        vk = [g for g in vulkan_gpu_rows() if int(g.get("total_mib") or 0) >= VULKAN_SUITABLE_MIB]
+        if vk:
+            label = _vulkan_label()
+            gpus = [{"index": int(g.get("index") or 0), "name": label,
+                     "total_gb": round(int(g.get("total_mib") or 0) / 1024.0, 1),
+                     "free_gb": round(int(g.get("free_mib") or 0) / 1024.0, 1)} for g in vk]
+            best = suitable_gpus(vk) or [max(vk, key=lambda g: int(g.get("total_mib") or 0))]
+            each = int(best[0].get("total_mib") or 0) / 1024.0
+            return {
+                "vram_gb": each,
+                "each_gb": each,
+                "count": len(vk),
+                "plan_count": 1,
+                "name": label,
+                "gpus": gpus,
+                "backend": "vulkan",
+            }
     suitable = suitable_gpus(rows)
     use = suitable if suitable else rows
     total_mib = sum(int(g.get("total_mib") or 0) for g in use)
@@ -525,15 +567,17 @@ def gpu_inventory() -> dict:
     same = bool(each) and all(abs(x - each[0]) < 0.6 for x in each)
     return {
         "vram_gb": (total_mib / 1024.0) if use else 0.0,
-        "each_gb": each[0] if same else 0.0,
+        "each_gb": each[0] if same else (max(each) if each else 0.0),
         "count": len(use),
+        "plan_count": len(use),
         "name": label,
         "gpus": gpus,
+        "backend": backend or "cpu",
     }
 
 
 def detect_vram_gb() -> float:
-    """Combined VRAM of every GPU large enough to hold weights."""
+    """VRAM a model can be planned into (CUDA pool, or the one Vulkan card)."""
     try:
         return float(gpu_inventory()["vram_gb"])
     except Exception:
@@ -557,9 +601,16 @@ def detect_ram_gb() -> float:
 
 
 def has_nvidia() -> bool:
-    if detect_vram_gb() > 0.5:
+    if nvidia_gpu_rows():
         return True
     return Path("/dev/nvidia0").exists() or Path("/dev/nvidiactl").exists()
+
+
+def has_gpu() -> bool:
+    """Any GPU llama-server offloads to: NVIDIA (CUDA) or AMD/Intel (Vulkan)."""
+    if has_nvidia():
+        return True
+    return detect_vram_gb() > 0.5
 
 
 def _gguf_read_string(f) -> str:
@@ -1434,6 +1485,8 @@ def detect_backend() -> str:
             pass
     if has_nvidia():
         return "cuda"
+    if vulkan_gpu_rows():
+        return "vulkan"
     return "cpu"
 
 
@@ -2001,7 +2054,7 @@ def _settings_api():
     return mod
 
 
-def hardware_warnings(vram_gb: float, gpu_count: int) -> list[str]:
+def hardware_warnings(vram_gb: float, gpu_count: int, backend: str = "") -> list[str]:
     """AVX / VRAM warnings from stickllm_system (warn, never refuse)."""
     lib = Path(os.environ.get("STICKLLM_SYSTEM_LIB", "/usr/local/lib/stickllm_system.py"))
     if not lib.is_file():
@@ -2017,7 +2070,10 @@ def hardware_warnings(vram_gb: float, gpu_count: int) -> list[str]:
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             hardware_warnings._mod = mod
-        return list(mod.hardware_warnings(None, vram_gb, gpu_count))
+        try:
+            return list(mod.hardware_warnings(None, vram_gb, gpu_count, backend=backend))
+        except TypeError:
+            return list(mod.hardware_warnings(None, vram_gb, gpu_count))
     except Exception:
         return []
 
@@ -3301,7 +3357,8 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
     if vram_gb is None:
         vram_gb = detect_vram_gb()
     ram_gb = detect_ram_gb()
-    gpu = has_nvidia()
+    gpu = has_gpu()
+    vk_host = gpu and not has_nvidia()
     active = active_model_path()
     healthy, _ = llama_health_ok()
     loaded_ctx = active_ctx_size()
@@ -3309,7 +3366,7 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
     act_row = _active_fallback_row(active, models)
     if act_row is not None:
         models.append(act_row)
-    gpu_rows = nvidia_gpu_rows() if gpu else []
+    gpu_rows = (vulkan_gpu_rows() if vk_host else nvidia_gpu_rows()) if gpu else []
     for m in models:
         files = m.get("hf_files") or []
         local = str(m.get("local_path") or "").strip()
@@ -3334,7 +3391,7 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
         size_gb = float(m.get("approx_size_gb") or need or 0)
         if gpu:
             fits = vram_gb + 0.01 >= need if need > 0 else True
-            fit_note = f"VRAM ~{vram_gb:.1f} GB"
+            fit_note = f"VRAM ~{vram_gb:.1f} GB" + (" (one card)" if vk_host else "")
         else:
             # CPU path: model weights must fit in available system RAM (ISS-018).
             budget = max(size_gb, need) * 1.15 + 1.5
@@ -3376,7 +3433,17 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
             and not str(first).startswith("/opt/stickllm/models/")
             and m["id"] != BAKED_4B_ID
         )
-        backend = "cuda" if gpu else "cpu"
+        backend = ("vulkan" if vk_host else "cuda") if gpu else "cpu"
+        # 0.5.6 RAM check: what does not fit in VRAM runs from system RAM, and
+        # llama-server reads the whole file through the page cache while loading.
+        spill_gb = max(0.0, size_gb * 1.1 - (vram_gb if gpu else 0.0))
+        ram_warning = ""
+        if size_gb > 0 and ram_gb > 0:
+            if spill_gb > 0 and spill_gb + 1.0 > ram_gb:
+                ram_warning = (f"Needs ~{spill_gb + 1.0:.1f} GB of system RAM beyond the GPU; "
+                               f"this machine has ~{ram_gb:.1f} GB free. It may not load or may be very slow.")
+            elif not gpu and size_gb * 1.15 + 1.5 > ram_gb:
+                ram_warning = f"Needs ~{size_gb * 1.15 + 1.5:.1f} GB of RAM; ~{ram_gb:.1f} GB is free."
         dims: dict = {}
         model_max_ctx = 0
         meta: dict = {}
@@ -3418,6 +3485,7 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
             "fits_vram": fits,
             "fits": fits,
             "fit_note": fit_note,
+            "ram_warning": ram_warning,
             "path": first,
             "vram_gb": round(vram_gb, 1),
             "ram_gb": round(ram_gb, 1),
@@ -4054,9 +4122,11 @@ def handle(action: str, params: dict) -> dict:
             "vram_gb": round(vram, 1),
             "vram_each_gb": round(float(inv.get("each_gb") or 0), 1),
             "gpu_count": int(inv.get("count") or 0),
+            "gpu_plan_count": int(inv.get("plan_count") or inv.get("count") or 0),
+            "gpu_backend": inv.get("backend") or "cpu",
             "gpu": inv.get("name") or "",
             "gpus": inv.get("gpus") or [],
-            "hw_warnings": hardware_warnings(round(vram, 1), int(inv.get("count") or 0)),
+            "hw_warnings": hardware_warnings(round(vram, 1), int(inv.get("count") or 0), inv.get("backend") or ""),
             "hf_token": read_hf_token(),
             "hf_token_saved": bool(read_hf_token()),
             "settings_mounted": portable_secrets_dir() is not None,

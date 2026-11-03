@@ -3,8 +3,7 @@
 # /stickllm = repo (ro), /work = Linux filesystem volume (rw) for live-build.
 set -euo pipefail
 
-MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
-# ISO bake is the 3B only. The 7B Q5 stays a catalog download (ISS-020).
+# 0.5.6: ISO bakes one model, the Qwen3.5-4B. The 3B and 7B are catalog downloads.
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -90,7 +89,7 @@ rsync -a /stickllm/ui/ config/includes.chroot/opt/stickllm/ui/
 install -m 644 /stickllm/THIRD_PARTY_NOTICES.md config/includes.chroot/opt/stickllm/ui/THIRD_PARTY_NOTICES.md
 
 mkdir -p config/includes.chroot/opt/stickllm/models
-cp "/stickllm/models/${MODEL_3B}" config/includes.chroot/opt/stickllm/models/
+# 0.5.6: the 3B is no longer baked. The Qwen3.5-4B (below) is the base model.
 
 mkdir -p config/includes.chroot/etc/stickllm config/includes.chroot/etc/stickllm/models
 cp /stickllm/config/profiles/amd-rtx3090.toml config/includes.chroot/etc/stickllm/profile.toml
@@ -99,19 +98,22 @@ cp /stickllm/config/models/catalog.toml config/includes.chroot/etc/stickllm/mode
 test -x config/includes.chroot/opt/stickllm/bin/llama-server
 test -x config/includes.chroot/opt/stickllm/bin/llama-server-cpu
 test -f config/includes.chroot/opt/stickllm/lib/libllama-server-impl.so
-test -f "config/includes.chroot/opt/stickllm/models/${MODEL_3B}"
 
-# App agent model (Qwen3.5-4B Q4_K_M, ~2.7 GB) for stickllm-appagent-llm: baked only when
-# models/appagent/ has it (never downloaded here). Without it the app agent service has no model.
+# Base model (0.5.6): Qwen3.5-4B Q4_K_M, ~2.7 GB, shared by chat AND the app agent.
+# Required: never downloaded here (scripts/build.sh fetches it before the build).
 AA_GGUF="Qwen3.5-4B-Q4_K_M.gguf"
 AA_SHA="25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"
-if [[ -f "/stickllm/models/appagent/${AA_GGUF}" ]]; then
-  echo "[stickllm] bake app agent model ${AA_GGUF}…"
-  mkdir -p config/includes.chroot/opt/stickllm/models/appagent
-  cp "/stickllm/models/appagent/${AA_GGUF}" config/includes.chroot/opt/stickllm/models/appagent/
-  echo "${AA_SHA}  config/includes.chroot/opt/stickllm/models/appagent/${AA_GGUF}" | sha256sum -c -
-else
-  echo "[stickllm] no models/appagent/${AA_GGUF}: app agent model not baked" >&2
+if [[ ! -f "/stickllm/models/appagent/${AA_GGUF}" ]]; then
+  echo "ERROR: models/appagent/${AA_GGUF} missing (the 0.5.6 base model)" >&2
+  exit 1
+fi
+echo "[stickllm] bake base model ${AA_GGUF}…"
+mkdir -p config/includes.chroot/opt/stickllm/models/appagent
+cp "/stickllm/models/appagent/${AA_GGUF}" config/includes.chroot/opt/stickllm/models/appagent/
+echo "${AA_SHA}  config/includes.chroot/opt/stickllm/models/appagent/${AA_GGUF}" | sha256sum -c -
+if compgen -G "config/includes.chroot/opt/stickllm/models/*3b*" >/dev/null; then
+  echo "ERROR: 0.5.6 bakes one model (the 4B); no 3B" >&2
+  exit 1
 fi
 if compgen -G "config/includes.chroot/opt/stickllm/models/*7b*" >/dev/null; then
   echo "ERROR: 7B GGUF must not be baked into the ISO" >&2
@@ -136,7 +138,7 @@ if find config/includes.chroot -path '*vault*' \( -name 'ggml-tiny.en.bin' -o -n
 fi
 test -x config/includes.chroot/usr/local/bin/stickllm-kiosk
 test -f config/includes.chroot/etc/systemd/system/stickllm-kiosk.service
-grep -q 'base_model_id = "qwen25-3b-q4km"' config/includes.chroot/etc/stickllm/models/catalog.toml
+grep -q 'base_model_id = "qwen35-4b-q4km"' config/includes.chroot/etc/stickllm/models/catalog.toml
 grep -q 'stickllm-llama-start' config/includes.chroot/etc/systemd/system/stickllm-llama.service
 grep -q 'STICKLLM_LLAMA_HOST=127.0.0.1' config/includes.chroot/etc/systemd/system/stickllm-llama.service
 test -f config/includes.chroot/usr/local/share/stickllm/agent-zero.pin

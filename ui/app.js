@@ -37,7 +37,7 @@ let vaultBrowsePath = "";
 let vaultPickerMount = "";
 let vaultBrowseBlobPath = "";
 let pickerPurpose = "vault"; // vault | models_dir | folder
-let hwInfo = { vram: 24, vramEach: 24, gpuCount: 1, ram: 64, gpu: "", name: "This machine" };
+let hwInfo = { vram: 0, vramEach: 0, gpuCount: 0, planCount: 0, backend: "", ram: 0, gpu: "", name: "This machine" };
 // AVX / VRAM warnings from control status (v0.5.4): shown, never blocking.
 let hwWarnings = [];
 let hwWarnToasted = false;
@@ -2161,12 +2161,34 @@ function hardwareDetectedLine() {
   const n = Math.max(0, Number(hwInfo.gpuCount) || 0);
   const name = hwInfo.gpu ? hwInfo.gpu : "GPU";
   const ram = `${Number(hwInfo.ram).toFixed(1)} GB`;
+  if (!n || !(Number(hwInfo.vram) > 0)) return `Detected: no GPU (CPU only) · RAM ${ram}`;
+  // 0.5.6: Vulkan (AMD/Intel) runs a model on ONE card: show that card's VRAM, never a sum.
+  if (hwInfo.backend === "vulkan") {
+    const each = fitGb(hwInfo.vramEach || hwInfo.vram);
+    return n > 1
+      ? `Detected: ${n}× ${name} (Vulkan) · ${each} VRAM each, a model uses one card · RAM ${ram}`
+      : `Detected: ${name} (Vulkan) · ${each} VRAM · RAM ${ram}`;
+  }
   if (n > 1) {
     const each = Number(hwInfo.vramEach) || 0;
     const split = each ? ` (${n}× ${fitGb(each)})` : "";
     return `Detected: ${n}× ${name} · ${fitGb(hwInfo.vram)} VRAM${split} · RAM ${ram}`;
   }
   return `Detected: ${hwInfo.gpu ? hwInfo.gpu + " " : ""}${fitGb(hwInfo.vram)} VRAM · RAM ${ram}`;
+}
+function llamaStarting() {
+  const s = String(lastLlama?.active_state || "");
+  return s === "activating" || (s === "active" && !lastLlama?.stopped);
+}
+// Where an installed model's file lives (0.5.6): the baked 4B is on the stick even
+// in a vault session.
+function modelWhere(m) {
+  const p = String(m.path || m.location || "");
+  if (p.startsWith("/opt/stickllm/")) return "stick";
+  if (p.includes("/mnt/stickllm-host") || p.includes("host-ssd")) return "host SSD";
+  if (p.includes("vault")) return "vault";
+  if (!p && sessionMode === "vault") return "vault";
+  return "stick";
 }
 function hardwarePool() {
   if (state.mf.target === "custom") {
@@ -2181,14 +2203,25 @@ function fitOf(m) {
   const kvMul = { f16: 1, q8: 0.53, q4: 0.28 }[state.kv] || 1;
   const kv = Math.max(0.5, (gb / 8) * (state.mf.ctx / 8192) * kvMul);
   const need = gb + kv + 1;
-  const pool = Number(hw.vram) || 0;
+  const vk = hw.backend === "vulkan";
+  // Vulkan plans one card (no cross-card split): the pool is that card's VRAM.
+  const pool = vk ? (Number(hw.vramEach) || Number(hw.vram) || 0) : (Number(hw.vram) || 0);
   const each = Number(hw.vramEach) || pool;
-  const cards = Math.max(1, Number(hw.gpuCount) || 1);
+  const cards = vk ? 1 : Math.max(1, Number(hw.gpuCount) || 1);
+  const ram = Number(hw.ram) || 0;
   const size = fitGb(need);
-  if (cards > 1 && each > 0 && need <= each) return { k: "gpu", need, kv, label: `Fits on 1 GPU · ${size}`, cls: "fit-ok" };
-  if (need <= pool) return { k: "gpu", need, kv, label: cards > 1 ? `Fits on ${cards} GPUs · ${size}` : `Fits in VRAM · ${size}`, cls: "fit-ok" };
-  if (need <= pool + (Number(hw.ram) || 0) - 8) return { k: "offload", need, kv, label: `Partial · ${fitGb(pool)} in VRAM`, cls: "fit-warn" };
-  return { k: "no", need, kv, label: `Won't fit · needs ${size}`, cls: "fit-no" };
+  // 0.5.6 RAM check: whatever does not fit in VRAM runs from system RAM.
+  const spill = Math.max(0, gb * 1.1 - pool);
+  const ramShort = ram > 0 && spill > 0 && spill + 1 > ram;
+  const ramNote = ramShort ? ` · needs ~${fitGb(spill + 1)} RAM, ${fitGb(ram)} free` : "";
+  if (pool > 0 && cards > 1 && each > 0 && need <= each) return { k: "gpu", need, kv, label: `Fits on 1 GPU · ${size}`, cls: "fit-ok" };
+  if (pool > 0 && need <= pool) return { k: "gpu", need, kv, label: cards > 1 ? `Fits on ${cards} GPUs · ${size}` : `Fits in VRAM · ${size}`, cls: "fit-ok" };
+  if (pool <= 0) {
+    if (ram > 0 && need + 1.5 <= ram) return { k: "offload", need, kv, label: `CPU only · ${size} in RAM`, cls: "fit-warn" };
+    return { k: "no", need, kv, label: ram > 0 ? `Not enough RAM · needs ${size}, ${fitGb(ram)} free` : `Won't fit · needs ${size}`, cls: "fit-no" };
+  }
+  if (!ramShort && need <= pool + ram - 2) return { k: "offload", need, kv, label: `Partial · ${fitGb(pool)} in VRAM`, cls: "fit-warn" };
+  return { k: "no", need, kv, label: ramShort ? `Won't fit${ramNote}` : `Won't fit · needs ${size}`, cls: "fit-no" };
 }
 function visionTag(m, id) {
   if (!modelSees(m)) return "";
@@ -2225,7 +2258,7 @@ function modelVisible(m) {
 function updateVramBar(m) {
   const gb = modelGb(m) || 0;
   const fit = fitOf(m || {});
-  const total = Math.max(1, hwInfo.vram || 24);
+  const total = Math.max(1, (hwInfo.backend === "vulkan" ? hwInfo.vramEach : 0) || hwInfo.vram || Number(hwInfo.ram) || 1);
   const wPct = Math.min(100, (gb / total) * 100);
   const kvPct = Math.min(100 - wPct, (fit.kv / total) * 100);
   const freePct = Math.max(0, 100 - wPct - kvPct);
@@ -2235,7 +2268,7 @@ function updateVramBar(m) {
   if ($("#lW")) $("#lW").textContent = gb ? gb.toFixed(1) + " GB" : "—";
   if ($("#lKV")) $("#lKV").textContent = fit.kv.toFixed(1) + " GB";
   if ($("#lFree")) $("#lFree").textContent = Math.max(0, total - gb - fit.kv).toFixed(1) + " GB";
-  if ($("#vramTotal")) $("#vramTotal").textContent = `of ${total} GB`;
+  if ($("#vramTotal")) $("#vramTotal").textContent = `of ${fitGb(total)}${hwInfo.backend === "vulkan" && hwInfo.gpuCount > 1 ? " (one card)" : !(hwInfo.vram > 0) ? " RAM" : ""}`;
   if ($("#vramWarn")) $("#vramWarn").hidden = fit.k !== "no";
 }
 // A search hit for a file the catalog already lists (server sets id = catalog id,
@@ -2328,8 +2361,8 @@ function renderModelsList() {
   }
   let rows = source.filter(modelVisible);
   const order = { gpu: 0, offload: 1, no: 2 };
-  // Search: what is already on this stick comes first (then the chosen sort).
-  const have = (m) => (searching ? Number(!m.installed) : 0);
+  // 0.5.6: installed models always come first (then the chosen sort).
+  const have = (m) => Number(!m.installed);
   rows.sort((a, b) => {
     if (state.mf.sort === "running") {
       const rank = (m) => (m.running ? 0 : m.active ? 1 : 2);
@@ -2352,13 +2385,15 @@ function renderModelsList() {
     const have = !!m.installed;
     const run = !!m.running;
     // Optimistic id → Loading on click; only that card (never leave others stuck).
-    const loading = !run && (loadingModelId === id || (!loadingModelId && !!m.active));
+    // An active row only shows Loading while llama-server is actually starting;
+    // a stopped or crashed server must not leave the card stuck on "Loading…".
+    const loading = !run && (loadingModelId === id || (!loadingModelId && !!m.active && llamaStarting()));
     const rec = !!m.recommended;
     const sel = id === selectedModelId;
     const trust = modelTrust(m);
     const t = TRUST[trust];
     const fit = fitOf(m);
-    const where = String(m.path || m.location || "").includes("vault") || sessionMode === "vault" ? "vault/SSD" : "stick";
+    const where = modelWhere(m);
     let actions = "";
     const delBtn = m.deletable
       ? `<button class="btn sm danger ghost" data-delf="${esc(id)}" type="button" title="Permanently delete model files">Delete</button>`
@@ -2385,7 +2420,7 @@ function renderModelsList() {
       </div>
       <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${visionTag(m, id)}${isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">GGUF</span></div>
       <div class="mcFoot">
-        <span class="fit ${fit.cls}" title="Needs ~${fit.need.toFixed(1)} GB">${fit.label}</span>
+        <span class="fit ${fit.cls}" title="Needs ~${fit.need.toFixed(1)} GB">${fit.label}</span>${m.ram_warning && fit.k !== "no" ? `<span class="pill warn" title="${esc(m.ram_warning)}">low RAM</span>` : ""}
         <span class="grow"></span>${actions}
       </div>
     </article>`;
@@ -2485,13 +2520,16 @@ async function refreshModelsNow() {
   if (st.offload && st.offload.caption && lastLlama && !lastLlama.caption) lastLlama.caption = st.offload.caption;
   lastCatalog = st.catalog || [];
   const probe = st.probe || {};
-  const gpuCount = Number(st.gpu_count || (Array.isArray(st.gpus) ? st.gpus.length : 0) || hwInfo.gpuCount) || 1;
-  const vram = Number(st.vram_gb || probe.vram_gb || hwInfo.vram) || 24;
+  const gpuCount = Number(st.gpu_count ?? (Array.isArray(st.gpus) ? st.gpus.length : 0)) || 0;
+  // No made-up defaults (0.5.6): an unknown or GPU-less host shows 0 GB VRAM, not 24.
+  const vram = Number(st.vram_gb || probe.vram_gb || 0) || 0;
   hwInfo = {
     vram,
     vramEach: Number(st.vram_each_gb) || (gpuCount > 1 ? vram / gpuCount : vram),
     gpuCount,
-    ram: Number(st.ram_gb || hwInfo.ram) || 64,
+    planCount: Number(st.gpu_plan_count || gpuCount) || 0,
+    backend: String(st.gpu_backend || st.backend || ""),
+    ram: Number(st.ram_gb || hwInfo.ram) || 0,
     gpu: String(st.gpu || probe.gpu || hwInfo.gpu || ""),
     name: "This machine",
   };
@@ -2501,7 +2539,8 @@ async function refreshModelsNow() {
     toast(hwWarnings[0]);
   }
   if ($("#recGpuLabel")) {
-    $("#recGpuLabel").textContent = gpuCount > 1 ? `Recommended for these ${gpuCount} GPUs` : "Recommended for this GPU";
+    $("#recGpuLabel").textContent = !gpuCount ? "Recommended for this PC"
+      : hwInfo.backend === "vulkan" ? "Recommended for one card" : gpuCount > 1 ? `Recommended for these ${gpuCount} GPUs` : "Recommended for this GPU";
   }
   const run = lastCatalog.find((m) => m.running || m.active) || lastCatalog.find((m) => m.installed);
   // Do not clear a click just because some other model is still healthy.

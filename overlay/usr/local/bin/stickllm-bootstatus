@@ -851,7 +851,7 @@ dump_svc_diag() {
     printf 'passwd stickllm-llama: '; getent passwd stickllm-llama || echo MISSING
     ls -la /usr/local/bin/stickllm-llama-start 2>&1 || true
     ls -lad /var/lib/stickllm /mnt/stickllm-data 2>&1 || true
-    ls -la /opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf 2>&1 || true
+    ls -la /opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf 2>&1 || true
     systemctl status stickllm-ui.service --no-pager -l 2>&1 | head -50 || true
     systemctl status stickllm-llama.service --no-pager -l 2>&1 | head -50 || true
     journalctl -b -u stickllm-ui.service --no-pager -n 50 2>&1 || true

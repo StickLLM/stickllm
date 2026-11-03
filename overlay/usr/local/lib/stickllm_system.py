@@ -248,8 +248,20 @@ def cpu_flags(cpuinfo: str | None = None) -> set[str]:
     return set()
 
 
+def _amd_present(drm: Path | None = None) -> bool:
+    """An AMD (0x1002) display device in sysfs."""
+    root = drm or Path("/sys/class/drm")
+    try:
+        for v in root.glob("card[0-9]*/device/vendor"):
+            if _read(v).strip().lower() == "0x1002":
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def hardware_warnings(cpuinfo: str | None = None, vram_gb: float | None = None,
-                      gpu_count: int | None = None) -> list[str]:
+                      gpu_count: int | None = None, backend: str = "") -> list[str]:
     """Plain-language warnings about this machine. Empty when all is well.
 
     cpuinfo None reads /proc/cpuinfo; an unreadable file gives no CPU warning.
@@ -263,8 +275,17 @@ def hardware_warnings(cpuinfo: str | None = None, vram_gb: float | None = None,
                        "Apps, files and the vault still work.")
         elif "avx2" not in flags:
             out.append("This CPU has AVX but not AVX2, so the local AI model may fail to start or run slowly.")
-    if gpu_count is not None and gpu_count <= 0:
-        out.append("No NVIDIA GPU found: models run on the CPU and will be slow. Pick a small model.")
+    if backend == "vulkan":
+        # 0.5.6: an AMD/Intel card is a GPU, not "no NVIDIA GPU".
+        if vram_gb is not None and 0 < vram_gb < LOW_VRAM_GB:
+            out.append(f"AMD GPU found, using Vulkan. It has {vram_gb:.1f} GB of VRAM: pick a small model.")
+        else:
+            out.append("AMD GPU found, using Vulkan.")
+    elif gpu_count is not None and gpu_count <= 0:
+        if _amd_present():
+            out.append("AMD GPU found, using Vulkan.")
+        else:
+            out.append("No GPU found: models run on the CPU and will be slow. Pick a small model.")
     elif vram_gb is not None and 0 < vram_gb < LOW_VRAM_GB:
         out.append(f"Only {vram_gb:.1f} GB of GPU memory: pick a small model; larger ones run partly on the CPU "
                    "and are slow.")

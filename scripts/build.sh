@@ -26,7 +26,8 @@ case "$OUT_DIR" in
   *) OUT_HOST="${ROOT}/${OUT_DIR}" ;;
 esac
 CHECKSUM_FILE="checksums/v${VERSION}.sha256"
-MODEL_3B="qwen2.5-3b-instruct-q4_k_m.gguf"
+BASE_GGUF="Qwen3.5-4B-Q4_K_M.gguf"
+BASE_SHA="25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"
 VOL_WORK="stickllm-lb-work"
 
 case "$VERSION_DIR" in
@@ -39,10 +40,15 @@ esac
 echo "=== StickLLM build (${ISO_NAME}) ==="
 ./scripts/verify-host.sh
 
-if [[ ! -f "models/${MODEL_3B}" ]]; then
-  echo "3B GGUF missing — fetching the baked base model…"
-  ./scripts/download-model.sh
+# 0.5.6: one baked model, the Qwen3.5-4B (chat + app agent). No 3B.
+if [[ ! -f "models/appagent/${BASE_GGUF}" ]]; then
+  echo "Base model missing — fetching ${BASE_GGUF}…"
+  mkdir -p models/appagent
+  curl -fL --retry 3 -o "models/appagent/${BASE_GGUF}.part" \
+    "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/${BASE_GGUF}"
+  mv "models/appagent/${BASE_GGUF}.part" "models/appagent/${BASE_GGUF}"
 fi
+echo "${BASE_SHA}  models/appagent/${BASE_GGUF}" | sha256sum -c -
 
 echo "Speech assets (image build only; the stick does not download these)…"
 if [[ -x /c/Python314/python.exe ]]; then

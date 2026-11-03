@@ -5,8 +5,8 @@ version = 1
 family = "qwen"
 
 base_image = "lite"
-base_model_id = "qwen25-3b-q4km"
-base_model_target_id = "qwen25-3b-q4km"
+base_model_id = "qwen35-4b-q4km"
+base_model_target_id = "qwen35-4b-q4km"
 optional_fat_default_id = "qwen38-27b-q4km"
 family_policy = "qwen_only"
 vision_requires_min_vram_gb = 6
@@ -25,15 +25,15 @@ pinned_only = true
 id = "ram_only"
 label = "RAM only (no GPU)"
 min_vram_gb = 0
-series = "qwen2.5"
-entries = ["qwen25-3b-q4km"]
+series = "qwen3.5"
+entries = ["qwen35-4b-q4km"]
 
 [[tier]]
 id = "vram_8gb"
 label = "8 GB VRAM"
 min_vram_gb = 8
 series = "qwen2.5"
-entries = ["qwen25-7b-q5km", "qwen25-3b-q4km"]
+entries = ["qwen25-7b-q5km", "qwen35-4b-q4km"]
 
 [[tier]]
 id = "vram_12gb"
@@ -94,30 +94,31 @@ notes = "Download only. Not baked on the stick."
 id = "qwen25-3b-q4km"
 name = "Qwen2.5-3B Instruct Q4_K_M"
 tier = "ram_only"
-quality_rank = 15
+quality_rank = 10
 approx_size_gb = 2.0
 min_vram_gb = 0
 hf_repo = "Qwen/Qwen2.5-3B-Instruct-GGUF"
 hf_files = ["qwen2.5-3b-instruct-q4_k_m.gguf"]
 sha256 = ["626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"]
 vision = false
-notes = "Default baked base model — loads quickly; download larger models later"
+probe_recommend = false
+notes = "Download only (0.5.6: not baked; the Qwen3.5-4B is the base model)."
 
 [[model]]
 id = "qwen35-4b-q4km"
 name = "Qwen3.5-4B Q4_K_M"
-tier = "vram_8gb"
-# Below the 3B (15) on purpose: the probe picks the highest quality_rank that fits,
-# and the 3B stays the default/recommended model until the 3B->4B swap (docs/MODELS.md).
-quality_rank = 14
+tier = "ram_only"
+# 0.5.6: base model on the stick, for chat AND app control (one model, no hidden
+# second helper). The probe recommends it for 6 GB+ cards, and below that it is
+# the fallback (already on the stick). Bigger cards get the 7B/27B.
+quality_rank = 16
 approx_size_gb = 2.6
-min_vram_gb = 5
+min_vram_gb = 6
 hf_repo = "unsloth/Qwen3.5-4B-GGUF"
 hf_files = ["Qwen3.5-4B-Q4_K_M.gguf"]
 sha256 = ["25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"]
 vision = false
-probe_recommend = false
-notes = "Baked for the app agent (/opt/stickllm/models/appagent); also loadable for chat. Protected from Delete."
+notes = "On the stick (/opt/stickllm/models/appagent). Chat and the app agent share it. Protected from Delete."
 
 [usb_data]
 label = "STICKLLM-DATA"

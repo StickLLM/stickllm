@@ -54,29 +54,35 @@ def test_catalog_entry_pins_baked_hash(monkeypatch):
     sha = re.search(r'AA_SHA="([0-9a-f]{64})"', BUILD.read_text()).group(1)
     assert m["sha256"] == [sha], "catalog hash must match the baked app-agent file"
     assert 2.0 <= m["approx_size_gb"] <= 3.5 and 4 <= m["min_vram_gb"] <= 6
-    # 3B stays default/recommended; 4B never outranks it.
+    # 0.5.6: the 4B is the one baked base model (chat AND app control); the 3B is a
+    # download that is never recommended.
     assert "qwen25-3b-q4km" in rows
-    assert m["quality_rank"] < rows["qwen25-3b-q4km"]["quality_rank"]
+    assert m["quality_rank"] > rows["qwen25-3b-q4km"]["quality_rank"]
+    assert m["min_vram_gb"] == 6
     text = CATALOG.read_text()
-    assert 'base_model_id = "qwen25-3b-q4km"' in text
-    assert "qwen35-4b-q4km" not in text.split("[[model]]")[0], "not in any tier"
+    assert 'base_model_id = "qwen35-4b-q4km"' in text
+    assert 'entries = ["qwen35-4b-q4km"]' in text.split("[[model]]")[0]
+    three = text.split('id = "qwen25-3b-q4km"', 1)[1].split("[[model]]")[0]
+    assert "probe_recommend = false" in three
     # Multi-line sha arrays parse too (7B has two).
     assert len(rows["qwen25-7b-q5km"]["sha256"]) == 2
 
 
-def test_probe_never_recommends_4b(tmp_path):
-    """Run the probe's embedded selection: 3B (not 4B) wins at 5-7 GB VRAM."""
+def test_probe_recommends_4b(tmp_path):
+    """Run the probe's embedded selection: the 4B for CPU and 6-7 GB cards, 7B at 8 GB+."""
     src = PROBE.read_text()
     py = src.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
     script = tmp_path / "sel.py"
     script.write_text(py)
-    for vram in ("0", "6", "7"):
+    for vram, want in (("0", "qwen35-4b-q4km"), ("6", "qwen35-4b-q4km"), ("7", "qwen35-4b-q4km"),
+                       ("8", "qwen25-7b-q5km")):
         out = tmp_path / f"p{vram}.json"
         r = subprocess.run(
             ["python3", str(script), str(CATALOG), vram, "50", "/x", str(out)],
             capture_output=True, text=True, check=True,
         )
-        assert '"recommend_id": "qwen25-3b-q4km"' in out.read_text(), r.stdout
+        assert f'"recommend_id": "{want}"' in out.read_text(), (vram, r.stdout)
+    assert "mem_info_vram_total" in src, "AMD cards: plan VRAM from amdgpu sysfs (one card)"
 
 
 def test_baked_4b_installed_protected_and_running(monkeypatch, tmp_path):
@@ -162,7 +168,7 @@ def test_ui_search_installed_first_and_merges_catalog():
     js = _js()
     i = js.index("function renderModelsList")
     body = js[i : js.index("function syncModelActions")]
-    assert "const have = (m) => (searching ? Number(!m.installed) : 0);" in body
+    assert "const have = (m) => Number(!m.installed);" in body
     assert "if (have(a) !== have(b)) return have(a) - have(b);" in body
     assert "return searchRows();" in js and "function searchRows()" in js
 
@@ -198,4 +204,4 @@ def test_probe_survives_nvidia_smi_without_gpu(tmp_path):
     assert r.returncode == 0, r.stderr
     import json
     doc = json.loads((tmp_path / "run" / "model-probe.json").read_text())
-    assert doc["recommend_id"] == "qwen25-3b-q4km"
+    assert doc["recommend_id"] == "qwen35-4b-q4km"

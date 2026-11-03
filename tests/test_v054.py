@@ -125,8 +125,15 @@ def test_gateway_chat_says_no_model_loaded():
 def test_hardware_warnings():
     sysmod = _load(LIB / "stickllm_system.py", "stickllm_system_v054")
     noavx = "processor : 0\nflags : fpu sse sse2 ssse3\n"
+    sysmod._amd_present = lambda drm=None: False
     w = sysmod.hardware_warnings(noavx, None, 0)
-    assert any("no AVX" in x for x in w) and any("No NVIDIA GPU" in x for x in w)
+    assert any("no AVX" in x for x in w) and any("No GPU found" in x for x in w)
+    # 0.5.6: AMD is a GPU (Vulkan), never "No NVIDIA GPU found".
+    w = sysmod.hardware_warnings("flags : avx avx2\n", 8.0, 2, backend="vulkan")
+    assert w == ["AMD GPU found, using Vulkan."]
+    sysmod._amd_present = lambda drm=None: True
+    w = sysmod.hardware_warnings("flags : avx avx2\n", None, 0)
+    assert w == ["AMD GPU found, using Vulkan."] and not any("NVIDIA" in x for x in w)
     w = sysmod.hardware_warnings("flags : avx sse\n", 4.0, 1)
     assert any("not AVX2" in x for x in w) and any("4.0 GB" in x for x in w)
     assert sysmod.hardware_warnings("flags : avx avx2\n", 24.0, 1) == []

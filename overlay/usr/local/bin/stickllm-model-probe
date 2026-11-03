@@ -28,6 +28,21 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   vram_mb="${vram_mb:-0}"
   vram_gb=$(( (vram_mb + 512) / 1024 ))
 fi
+# 0.5.6: AMD/Intel cards (Vulkan) run on ONE card, so plan for the largest card's
+# own VRAM (amdgpu sysfs), never the sum of cards and never shared memory (GTT).
+if [[ "$vram_gb" -le 0 ]]; then
+  vk_max=0
+  for f in /sys/class/drm/card[0-9]*/device/mem_info_vram_total; do
+    [[ -r "$f" ]] || continue
+    b="$(tr -cd '0-9' <"$f" 2>/dev/null || true)"
+    [[ -n "$b" ]] || continue
+    mb=$(( b / 1048576 ))
+    (( mb > vk_max )) && vk_max=$mb
+  done
+  if (( vk_max >= 3000 )); then
+    vram_gb=$(( (vk_max + 512) / 1024 ))
+  fi
+fi
 
 free_gb="0"
 dest="ram"
@@ -46,10 +61,11 @@ PROBE_OUT="$STATUS_DIR/model-probe.json"
 python3 - "$CATALOG" "$vram_gb" "$free_gb" "$dest" "$PROBE_OUT" <<'PY'
 import json, re, sys
 path, vram, free, dest, out = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4], sys.argv[5]
+# 0.5.6: the baked Qwen3.5-4B is the base model (chat AND app control).
 best = {
-    "recommend_id": "qwen35-lite-q4km",
-    "recommend_name": "Qwen3.5 lite (base)",
-    "recommend_size_gb": 2.5,
+    "recommend_id": "qwen35-4b-q4km",
+    "recommend_name": "Qwen3.5-4B Q4_K_M",
+    "recommend_size_gb": 2.6,
 }
 try:
     text = open(path, encoding="utf-8").read()

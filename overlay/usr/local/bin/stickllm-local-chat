@@ -126,7 +126,7 @@ def model_hint() -> str:
                         return f"{path} exists={os.path.isfile(path)}"
         except Exception:
             pass
-    baked3 = "/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+    baked3 = "/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf"
     baked7 = "/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
     if os.path.isfile(baked3):
         return f"{baked3} exists=True (default)"

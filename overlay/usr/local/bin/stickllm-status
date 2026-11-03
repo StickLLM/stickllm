@@ -20,12 +20,12 @@ else
 fi
 echo
 
-MODEL_3B="/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+MODEL_BASE="/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf"
 MODEL_7B="/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
-if [[ -f "$MODEL_3B" ]]; then
-  echo "model:    default 3B present ($(du -h "$MODEL_3B" | awk '{print $1}'))"
+if [[ -f "$MODEL_BASE" ]]; then
+  echo "model:    base Qwen3.5-4B present ($(du -h "$MODEL_BASE" | awk '{print $1}'))"
 else
-  echo "model:    DEFAULT 3B MISSING — run stickllm-download-model (explicit)"
+  echo "model:    BASE Qwen3.5-4B MISSING — run stickllm-download-model (explicit)"
 fi
 if [[ -f "$MODEL_7B" ]]; then
   echo "model:    7B also present ($(du -h "$MODEL_7B" | awk '{print $1}'))"
