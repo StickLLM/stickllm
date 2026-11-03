@@ -103,3 +103,23 @@ def test_editor_page_is_never_a_passing_check():
 def test_manual_and_actions_warn_against_root():
     src = (ROOT / "overlay/usr/local/lib/stickllm_appagent/adapters/nodered.py").read_text(encoding="utf-8")
     assert "never /: that is the editor" in src
+
+
+def test_autowire_completes_an_unwired_http_endpoint_plan():
+    """0.5.6: a plan that adds http-in/template/http-response without wires gets the wires appended."""
+    from stickllm_appagent import core
+    srv, url = _server()
+    try:
+        a = NodeRedAdapter(url, start=[]); a.begin_request("hello world endpoint at /hello")
+        plan = ["tab hello", "add w1 http-in method=get url=/hello", 'add w2 template text="hello world"', "add w3 http-response"]
+        assert core.nodered_autowire(a, plan) == ["wire w1 w2", "wire w2 w3"]
+        wired = plan + ["wire w1 w2", "wire w2 w3"]
+        assert core.nodered_autowire(a, wired) == []  # already complete
+        assert core.nodered_autowire(a, ["tab x", "add d1 debug"]) == []  # no http-in
+        part = plan + ["wire w1 w2"]
+        assert core.nodered_autowire(a, part) == ["wire w2 w3"]
+        for c in plan + core.nodered_autowire(a, plan):
+            assert a.do(c)[0], c
+        assert {(n["id"], d) for n in _FakeNR.flows if n["type"] != "tab" for ws in n.get("wires", []) for d in ws} >= {("w1", "w2"), ("w2", "w3")}
+    finally:
+        srv.shutdown()

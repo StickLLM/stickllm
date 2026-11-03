@@ -120,6 +120,46 @@ def hybrid(cfg, app, plan, tries=2):
             if ok: break
     return log, tt
 
+def nodered_autowire(app, plan):
+    """0.5.6: the 4B sometimes adds http-in -> template -> http-response without the
+    `wire` steps, which deploys a dead endpoint. For http-in nodes this plan adds,
+    append the missing wires along the plan order (the same steps the checker
+    names). Never rewires a node that already sends somewhere."""
+    if getattr(app, "name", "") != "nodered" or not hasattr(app, "simulate") or not plan:
+        return []
+    try:
+        import checker as ck
+    except ImportError:
+        from . import checker as ck
+    try:
+        res, sim = app.simulate(plan)
+    except Exception:
+        return []
+    if not all(ok for ok, _ in res):
+        return []
+    kinds = ck._flow_kinds(sim)
+    edges = set(sim.edges()) if hasattr(sim, "edges") else set()
+    senders = ck._senders(sim, kinds)
+    goals = {i for i, k in kinds.items() if k in ck._HTTP_OUT}
+    added = ck._added(plan)
+    out = []
+    for nid, typ in added:
+        if typ not in ck._HTTP_IN or nid not in kinds or ck._reaches(nid, edges, goals):
+            continue
+        chain = ck._chain_for(nid, added, kinds)
+        if len(chain) < 2 or kinds.get(chain[-1]) not in ck._HTTP_OUT:
+            continue
+        steps = []
+        for a, b in zip(chain, chain[1:]):
+            if (a, b) in edges:
+                continue
+            if a not in senders or any(x == a for x, _ in edges):
+                steps = []
+                break
+            steps.append("wire %s %s" % (a, b))
+        out += [s for s in steps if s not in out]
+    return out
+
 def act(cfg, app, sess, req, checker):
     """one user request = one undo step. sess = {"prev": [...], "tlog": TurnLog()}"""
     t0 = time.time(); rec = {"request": req}
@@ -142,6 +182,9 @@ def act(cfg, app, sess, req, checker):
                 else: rec["kept_first"] = True
             except Exception as e: rec.update(reask=True, reask_err=str(e))
         pl = plan["plan"] if plan else []
+        auto = nodered_autowire(app, pl)
+        if auto:
+            pl = pl + auto; rec["autowired"] = auto
         log, tex = hybrid(cfg, app, pl)
     finally:
         app.end_request()
