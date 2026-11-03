@@ -111,6 +111,6 @@ test -x "$BIN_DIR/whisper-server"
 test -f "$DEST/ggml-tiny.en.bin"
 test -f "$DEST/kitten_tts_mini_v0_8.onnx"
 test -f "$DEST/voices.npz"
-# The 3B GGUF bake is separate and must still be present.
-test -f "$ROOT/config/includes.chroot/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+# The base model bake (0.5.6: the shared Qwen3.5-4B) is separate and must still be present.
+compgen -G "$ROOT/config/includes.chroot/opt/stickllm/models/appagent/*.gguf" >/dev/null
 echo "bake-speech: OK (/opt/stickllm/speech, not the vault)"
