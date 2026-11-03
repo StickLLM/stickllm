@@ -4,8 +4,9 @@
 # block stickllm-llama. No set -e / pipefail around GPU probes.
 set -u
 
-mkdir -p /run/stickllm
-OUT=/run/stickllm/cuda.env
+RUN_DIR="${STICKLLM_RUN:-/run/stickllm}"
+mkdir -p "$RUN_DIR" 2>/dev/null || echo "stickllm-pick-gpus: WARN cannot create $RUN_DIR" >&2
+OUT="$RUN_DIR/cuda.env"
 LIB="${STICKLLM_LIB:-/opt/stickllm/lib}"
 LIB_VK="${STICKLLM_LIB_VULKAN:-/opt/stickllm/lib-vulkan}"
 CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
@@ -19,7 +20,15 @@ STICKLLM_VRAM_FREE_MIB=0
 
 write_env() {
   # $1 = CUDA_VISIBLE_DEVICES; $2 = STICKLLM_BACKEND; optional $3 = reason
-  {
+  # Atomic: temp file in the same dir, then rename. Works when OUT is owned by
+  # another user (dir is root:stickllm-llama 775). Errors are logged, not hidden.
+  local tmp
+  mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
+  if ! tmp="$(mktemp "$(dirname "$OUT")/.cuda.env.XXXXXX" 2>&1)"; then
+    echo "stickllm-pick-gpus: ERROR cannot create temp file next to $OUT: $tmp" >&2
+    return 1
+  fi
+  if ! {
     printf 'CUDA_DEVICE_ORDER=PCI_BUS_ID\n'
     printf 'CUDA_VISIBLE_DEVICES=%s\n' "$1"
     printf 'STICKLLM_BACKEND=%s\n' "$2"
@@ -29,6 +38,9 @@ write_env() {
       printf 'STICKLLM_TENSOR_SPLIT=%s\n' "$STICKLLM_TENSOR_SPLIT"
     fi
     if [[ "$2" == "vulkan" ]]; then
+      printf 'STICKLLM_VULKAN_DEVICE=%s\n' "${STICKLLM_VULKAN_DEVICE:-}"
+      printf 'STICKLLM_VULKAN_GPUS=%s\n' "${STICKLLM_VULKAN_GPUS:-}"
+      printf 'STICKLLM_VRAM_TOTAL_MIB=%s\n' "${STICKLLM_VRAM_TOTAL_MIB:-0}"
       printf 'GGML_BACKEND_DIR=%s\n' "$LIB_VK"
       printf 'LD_PRELOAD=\n'
     else
@@ -39,9 +51,19 @@ write_env() {
         printf 'LD_PRELOAD=\n'
       fi
     fi
-  } >"$OUT" 2>/dev/null || true
-  chmod 644 "$OUT" 2>/dev/null || true
-  chgrp stickllm-llama "$OUT" 2>/dev/null || true
+  } >"$tmp"; then
+    echo "stickllm-pick-gpus: ERROR writing $tmp" >&2
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  fi
+  chmod 644 "$tmp" 2>/dev/null || echo "stickllm-pick-gpus: WARN chmod 644 $tmp failed" >&2
+  chgrp stickllm-llama "$tmp" 2>/dev/null || true
+  if ! mv -f "$tmp" "$OUT"; then
+    echo "stickllm-pick-gpus: ERROR cannot replace $OUT (running as $(id -un 2>/dev/null || id -u)); llama-start will see stale values" >&2
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  fi
+  return 0
 }
 
 fallback_cpu() {
@@ -101,6 +123,127 @@ has_amd_or_intel_gpu() {
   return 1
 }
 
+# --- Vulkan (AMD/Intel) inventory ---------------------------------------
+# Rows "vk_index:total_mib:free_mib" for every Vulkan GPU llama.cpp will see.
+# VRAM comes from amdgpu sysfs (mem_info_vram_total/used); vulkaninfo's
+# DEVICE_LOCAL heap is the fallback (no "used" figure → free = total).
+# Vulkan index order = vulkaninfo GPU order minus CPU devices (llvmpipe),
+# which is what ggml-vulkan enumerates. Matched to sysfs by PCI bus address.
+DRM_ROOT="${STICKLLM_DRM_ROOT:-/sys/class/drm}"
+VULKANINFO="${STICKLLM_VULKANINFO:-vulkaninfo}"
+STICKLLM_VULKAN_GPUS=""
+STICKLLM_VULKAN_DEVICE=""
+STICKLLM_VRAM_TOTAL_MIB=0
+
+# stdout: "pci_bus_dec total_mib used_mib" per amdgpu card with sysfs VRAM.
+sysfs_vram_rows() {
+  local card dev driver pci bus tot used
+  for card in "$DRM_ROOT"/card[0-9]*; do
+    [[ "$(basename "$card")" =~ ^card[0-9]+$ ]] || continue
+    dev="$card/device"
+    [[ -r "$dev/mem_info_vram_total" ]] || continue
+    driver="$(basename "$(readlink -f "$dev/driver" 2>/dev/null)" 2>/dev/null || true)"
+    [[ -z "$driver" || "$driver" == "amdgpu" ]] || continue
+    pci="$(basename "$(readlink -f "$dev" 2>/dev/null)" 2>/dev/null || true)"
+    # 0000:21:00.0 -> bus 0x21
+    bus=""
+    if [[ "$pci" =~ ^[0-9a-fA-F]{4}:([0-9a-fA-F]{2}):[0-9a-fA-F]{2}\.[0-7]$ ]]; then
+      bus=$((16#${BASH_REMATCH[1]}))
+    fi
+    tot="$(tr -cd '0-9' <"$dev/mem_info_vram_total" 2>/dev/null)"
+    used="$(tr -cd '0-9' <"$dev/mem_info_vram_used" 2>/dev/null)"
+    [[ -n "$tot" ]] || continue
+    [[ -n "$used" ]] || used=0
+    printf '%s %s %s\n' "${bus:--1}" $((tot / 1048576)) $((used / 1048576))
+  done
+}
+
+# stdout: "type pci_bus_dec heap_mib" per vulkaninfo device, in Vulkan order.
+vulkaninfo_rows() {
+  command -v "$VULKANINFO" >/dev/null 2>&1 || [[ -x "$VULKANINFO" ]] || return 0
+  "$VULKANINFO" 2>/dev/null | awk '
+    function flush() { if (have) printf "%s %s %d\n", type, (bus == "" ? -1 : bus), heap; }
+    /deviceType[[:space:]]*=/ {
+      flush(); have = 1; type = $NF; bus = ""; heap = 0; inheap = 0; next
+    }
+    have && /pciBus[[:space:]]*=/ { bus = $NF; next }
+    have && /size[[:space:]]*=[[:space:]]*[0-9]+/ {
+      for (i = 1; i <= NF; i++) if ($i == "=") { sz = $(i + 1); break }
+      cand = int(sz / 1048576); next
+    }
+    have && /MEMORY_HEAP_DEVICE_LOCAL_BIT/ { if (cand > heap) heap = cand; next }
+    END { flush() }
+  '
+}
+
+# Fills STICKLLM_GPU_COUNT / STICKLLM_VRAM_FREE_MIB / STICKLLM_VRAM_TOTAL_MIB /
+# STICKLLM_VULKAN_GPUS / STICKLLM_VULKAN_DEVICE (best = most free VRAM).
+probe_vulkan_gpus() {
+  local -a vk_type=() vk_bus=() vk_heap=() sy_bus=() sy_tot=() sy_used=()
+  local t b h tot used i j idx free best_free=-1 best="" rows="" best_tot=0
+  # ggml-vulkan uses discrete GPUs only when any exist, else other non-CPU GPUs.
+  local vk_all has_discrete=0
+  vk_all="$(vulkaninfo_rows)"
+  grep -q 'DISCRETE_GPU' <<<"$vk_all" && has_discrete=1
+  while read -r t b h; do
+    [[ -n "$t" ]] || continue
+    case "$t" in *CPU*) continue ;; esac
+    if (( has_discrete )) && [[ "$t" != *DISCRETE_GPU* ]]; then
+      continue
+    fi
+    vk_type+=("$t"); vk_bus+=("$b"); vk_heap+=("$h")
+  done <<<"$vk_all"
+  while read -r b tot used; do
+    [[ -n "$b" ]] || continue
+    sy_bus+=("$b"); sy_tot+=("$tot"); sy_used+=("$used")
+  done < <(sysfs_vram_rows | sort -n -k1,1)
+
+  local n_vk=${#vk_type[@]} n_sy=${#sy_bus[@]}
+  if (( n_vk == 0 && n_sy == 0 )); then
+    echo "stickllm-pick-gpus: Vulkan inventory empty (no amdgpu sysfs VRAM, no vulkaninfo GPU)" >&2
+    return 1
+  fi
+  if (( n_vk == 0 )); then
+    # vulkaninfo missing: assume Vulkan order follows PCI order (Mesa RADV does).
+    for ((i = 0; i < n_sy; i++)); do
+      vk_type+=("PHYSICAL_DEVICE_TYPE_DISCRETE_GPU"); vk_bus+=("${sy_bus[$i]}"); vk_heap+=(0)
+    done
+    n_vk=$n_sy
+  fi
+  for ((idx = 0; idx < n_vk; idx++)); do
+    tot=0; used=0; local src="none"
+    for ((j = 0; j < n_sy; j++)); do
+      if [[ "${sy_bus[$j]}" == "${vk_bus[$idx]}" && "${vk_bus[$idx]}" != "-1" ]]; then
+        tot=${sy_tot[$j]}; used=${sy_used[$j]}; src=sysfs; break
+      fi
+    done
+    if [[ "$src" == "none" && "${vk_bus[$idx]}" == "-1" && $n_sy -eq $n_vk ]]; then
+      # No PCI bus info from vulkaninfo: pair by position.
+      tot=${sy_tot[$idx]}; used=${sy_used[$idx]}; src=sysfs-order
+    fi
+    if [[ "$src" == "none" ]]; then
+      tot=${vk_heap[$idx]:-0}; used=0; src=vulkaninfo
+    fi
+    (( tot > 0 )) || continue
+    free=$((tot - used)); (( free < 0 )) && free=0
+    rows+="${rows:+,}${idx}:${tot}:${free}"
+    echo "stickllm-pick-gpus: Vulkan${idx} total=${tot}MiB used=${used}MiB free=${free}MiB (${src})" >&2
+    if (( free > best_free )); then
+      best_free=$free; best="Vulkan${idx}"; best_tot=$tot
+    fi
+  done
+  if [[ -z "$rows" ]]; then
+    echo "stickllm-pick-gpus: Vulkan devices found but no VRAM size readable" >&2
+    return 1
+  fi
+  STICKLLM_VULKAN_GPUS="$rows"
+  STICKLLM_GPU_COUNT=$(awk -F, '{print NF}' <<<"$rows")
+  STICKLLM_VULKAN_DEVICE="$best"
+  STICKLLM_VRAM_FREE_MIB=$best_free
+  STICKLLM_VRAM_TOTAL_MIB=$best_tot
+  return 0
+}
+
 try_vulkan() {
   local reason="$1"
   if [[ ! -x "$VULKAN_BIN" ]]; then
@@ -111,14 +254,16 @@ try_vulkan() {
     # will fall back to CPU if launch fails. Prefer explicit list-devices proof.
     if has_amd_or_intel_gpu; then
       echo "stickllm-pick-gpus: Vulkan list-devices empty but AMD/Intel GPU present — trying vulkan (${reason})" >&2
+      probe_vulkan_gpus || true
       write_env "" vulkan
-      echo "stickllm-pick-gpus: STICKLLM_BACKEND=vulkan CUDA_VISIBLE_DEVICES= (${reason})" >&2
+      echo "stickllm-pick-gpus: STICKLLM_BACKEND=vulkan gpus=${STICKLLM_GPU_COUNT} best=${STICKLLM_VULKAN_DEVICE:-none} (${reason})" >&2
       exit 0
     fi
     fallback_cpu "CUDA unavailable and no Vulkan device (${reason})"
   fi
+  probe_vulkan_gpus || true
   write_env "" vulkan
-  echo "stickllm-pick-gpus: STICKLLM_BACKEND=vulkan CUDA_VISIBLE_DEVICES= (list-devices OK; ${reason})" >&2
+  echo "stickllm-pick-gpus: STICKLLM_BACKEND=vulkan gpus=${STICKLLM_GPU_COUNT} best=${STICKLLM_VULKAN_DEVICE:-none} free=${STICKLLM_VRAM_FREE_MIB}MiB (list-devices OK; ${reason})" >&2
   exit 0
 }
 

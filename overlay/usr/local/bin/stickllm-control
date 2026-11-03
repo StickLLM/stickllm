@@ -729,9 +729,66 @@ def nvidia_gpu_rows() -> list[dict]:
     return rows
 
 
+# Vulkan (AMD/Intel): smallest card worth offloading to. 8 GB RX 570s qualify.
+VULKAN_SUITABLE_MIB = 3000
+
+
+def vulkan_gpu_rows(env_path: Path | None = None) -> list[dict]:
+    """Vulkan GPUs from stickllm-pick-gpus (cuda.env STICKLLM_VULKAN_GPUS).
+
+    Empty unless STICKLLM_BACKEND=vulkan. Each entry is vk_index:total:free MiB
+    (VRAM from amdgpu sysfs, vulkaninfo heap fallback)."""
+    env_path = env_path or (RUN / "cuda.env")
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    vals: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            vals[k.strip()] = v.strip().strip("'\"")
+    if vals.get("STICKLLM_BACKEND") != "vulkan":
+        return []
+    rows: list[dict] = []
+    for item in (vals.get("STICKLLM_VULKAN_GPUS") or "").split(","):
+        parts = item.strip().split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            idx, total, free = (int(x) for x in parts)
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "index": idx,
+                "device": f"Vulkan{idx}",
+                "name": f"Vulkan{idx}",
+                "total_mib": total,
+                "free_mib": max(0, free),
+                "used_mib": max(0, total - free),
+                "backend": "vulkan",
+            }
+        )
+    return rows
+
+
 def suitable_gpus(rows: list[dict] | None = None) -> list[dict]:
-    """Every GPU large enough to hold weights. Skips tiny/display cards."""
-    rows = nvidia_gpu_rows() if rows is None else rows
+    """Every GPU large enough to hold weights. Skips tiny/display cards.
+
+    CUDA: all cards >= 16 GiB (tensor-split). Vulkan: the single card with the
+    most free VRAM (one device, no cross-card split)."""
+    if rows is None:
+        rows = nvidia_gpu_rows()
+        if not rows:
+            rows = vulkan_gpu_rows()
+    vk = [g for g in rows if g.get("backend") == "vulkan"]
+    if vk:
+        ok = [g for g in vk if int(g.get("total_mib") or 0) >= VULKAN_SUITABLE_MIB]
+        if not ok:
+            return []
+        best = max(ok, key=lambda g: (int(g.get("free_mib") or 0), -int(g.get("index") or 0)))
+        return [best]
     return [g for g in rows if int(g.get("total_mib") or 0) >= GPU_SUITABLE_MIB]
 
 
@@ -866,12 +923,16 @@ def plan_gpu_fit(
     dims = gguf_arch_dims(meta)
     n_layer, layer_src = estimate_n_layer(dims, file_bytes)
     ctx = max(256, int(ctx or 8192))
+    # Never plan (or run) past the model's trained context. Never raised.
+    ctx_max = int(dims.get("n_ctx_train") or 0)
+    if ctx_max > 0:
+        ctx = min(ctx, ctx_max)
     kv_bpt = kv_bytes_per_token(dims, n_layer, file_bytes)
     kv = kv_bpt * ctx
     weights = max(1, int(file_bytes))
     cards = suitable_gpus(gpus)
     gpu_count = len(cards)
-    devices = ",".join(str(g["index"]) for g in cards)
+    devices = ",".join(str(g.get("device") or g["index"]) for g in cards)
     # Proportions follow free VRAM. A card reporting 0 free still gets its total
     # so tensor-split does not drop it.
     shares = []
@@ -988,6 +1049,7 @@ def plan_gpu_fit(
         "caption": caption,
         "tok_s": tok_s,
         "ctx": ctx,
+        "ctx_max": ctx_max,
         "vram_free_mib": int(free_sum),
         "need_mib": int(need / (1024 * 1024)),
         "budget_mib": int(budget / (1024 * 1024)),
@@ -1057,6 +1119,7 @@ def write_offload_plan(plan: dict) -> dict:
         "STICKLLM_PLAN_CAPTION=" + _shell_quote(str(plan.get("caption") or "")),
         f"STICKLLM_PLAN_TOK_S={int(plan.get('tok_s') or 0)}",
         f"STICKLLM_PLAN_EXPECTED_GPU_MIB={int(plan.get('expected_gpu_mib') or 0)}",
+        f"STICKLLM_PLAN_CTX_MAX={int(plan.get('ctx_max') or 0)}",
     ]
     text = "\n".join(lines) + "\n"
     for dest in (RUN / "llama-plan.env",):
@@ -1383,6 +1446,7 @@ def llama_health_ok() -> tuple[bool, str]:
 
 
 # stickllm-llama-start raises any smaller context to this (Agent Zero needs it).
+# Agent Zero prefers >= 32768, but llama-start honours the user value (no floor).
 LLAMA_CTX_FLOOR = 32768
 KV_TYPES = {"f16": "f16", "q8": "q8_0", "q8_0": "q8_0", "q4": "q4_0", "q4_0": "q4_0"}
 
@@ -1400,14 +1464,14 @@ def active_kv_type() -> str:
 
 
 def active_ctx_size() -> int | None:
-    """Context llama-server really runs with: model.env (raised to the
-    llama-start floor), else the running llama-server --ctx-size."""
+    """Context llama-server really runs with: model.env (the user's value;
+    llama-start never raises it), else the running llama-server --ctx-size."""
     env = RUN / "model.env"
     if env.is_file():
         try:
             for line in env.read_text(encoding="utf-8").splitlines():
                 if line.startswith("STICKLLM_CTX_SIZE="):
-                    return max(LLAMA_CTX_FLOOR, int(line.split("=", 1)[1].strip()))
+                    return int(line.split("=", 1)[1].strip())
         except (OSError, ValueError, TypeError):
             pass
     # Older Activate writes omitted STICKLLM_CTX_SIZE — read live process args.
@@ -3454,7 +3518,7 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     r["active_model"] = path
     r["id"] = model_id
     r["name"] = m.get("name") or model_id
-    r["ctx_size"] = max(LLAMA_CTX_FLOOR, ctx)
+    r["ctx_size"] = ctx
     r["ctx_requested"] = ctx
     r["kv_type"] = kv
     r["running"] = healthy
