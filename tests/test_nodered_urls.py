@@ -123,3 +123,22 @@ def test_autowire_completes_an_unwired_http_endpoint_plan():
         assert {(n["id"], d) for n in _FakeNR.flows if n["type"] != "tab" for ws in n.get("wires", []) for d in ws} >= {("w1", "w2"), ("w2", "w3")}
     finally:
         srv.shutdown()
+
+
+def test_begin_request_rereads_flows_changed_in_the_editor():
+    """0.5.6: edits deployed outside the app agent are seen by the next request (never deployed over)."""
+    srv, url = _server()
+    try:
+        a = NodeRedAdapter(url, start=[]); a.begin_request("x")
+        a.do("tab T"); a.do("add w1 http-in method=get url=/x"); a.end_request()
+        tab = next(n for n in _FakeNR.flows if n["type"] == "tab")
+        _FakeNR.flows = _FakeNR.flows + [{"id": "u1", "type": "comment", "z": tab["id"], "name": "mine", "wires": []}]
+        a.begin_request("y")
+        assert any(n["id"] == "u1" for n in a.nr.flows)
+        a.do("add d1 debug")
+        assert any(n["id"] == "u1" for n in _FakeNR.flows)  # the user's node survived the agent's deploy
+        _FakeNR.flows = []
+        a.begin_request("z")
+        assert a.nr.flows == [] and a.nr.cur is None
+    finally:
+        srv.shutdown()

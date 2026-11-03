@@ -58,6 +58,14 @@ class NodeRedAdapter:
     def export(self): return {"flows": self.nr.flows}
 
     def begin_request(self, text):
+        # 0.5.6: re-read the deployed flows first. The user (or a reset) may have
+        # changed them in the editor since the last request; planning on a stale
+        # copy would deploy over those edits.
+        try:
+            self.nr.reload()
+            if self.nr.cur and not any(n["id"] == self.nr.cur for n in self.nr.flows): self.nr.cur = None
+        except Exception:
+            pass
         self._snapf = copy.deepcopy(self.nr.flows); self._hist0 = list(self.history); self._log = []; self._text = text
     def end_request(self):
         if self._log:
