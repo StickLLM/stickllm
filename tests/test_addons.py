@@ -216,6 +216,9 @@ def test_node_red(tmp_path):
     lib = _lib(tmp_path, "addons_node_red")
     args = _check_common(lib, "node-red", tmp_path)
     assert f"{SHARE}/node-red-settings.js:/data/settings.js:ro" in _opt(args, "-v")
+    assert f"{SHARE}/node-red-autoreload.js:/data/stickllm-autoreload.js:ro" in _opt(args, "-v")
+    assert '"/data/stickllm-autoreload.js"' in _text(SHARE / "node-red-settings.js")
+    assert "notification/runtime-deploy" in _text(SHARE / "node-red-autoreload.js")
     settings = _text(SHARE / "node-red-settings.js")
     for needle in ("allowInstall: false", "allowUpload: false", "autoInstall: false",
                    "functionExternalModules: false", "enabled: false"):

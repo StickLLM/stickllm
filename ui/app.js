@@ -974,6 +974,24 @@ function unlockMessage(text) {
   el.hidden = !text;
 }
 
+// 0.5.6: the stick's vault was set up on a different computer. Say so at once
+// (no unlock attempt that probes this computer's drives) and offer to search
+// this computer or pick a drive. Unlocking still works: the passcode opens the
+// stick's settings, which may hold this computer's own vault location.
+const VAULT_OTHER_RE = /VAULT_OTHER_COMPUTER:?\s*/;
+function showVaultOther(on, label) {
+  const box = $("#vaultOther");
+  if (box) box.hidden = !on;
+  if (!on) return;
+  if ($("#vcState")) $("#vcState").textContent = "Vault is on another computer";
+  if ($("#vcSub")) {
+    $("#vcSub").textContent = (label ? `Set up on ${label}. ` : "") +
+      "Search this computer for a vault, pick a drive, or enter the passcode to use this computer's saved vault.";
+  }
+}
+if ($("#vaultOtherSearch")) $("#vaultOtherSearch").onclick = () => searchForVault({ inPicker: false });
+if ($("#vaultOtherPick")) $("#vaultOtherPick").onclick = () => openFolderPicker("vault", "Choose folder / vault");
+
 // Take the user to the passcode box. If the form is hidden (the page thinks
 // the vault is open, or there is none) say why instead of failing silently.
 async function focusVaultUnlock() {
@@ -1155,6 +1173,16 @@ function splitThink(text) {
     s = s.slice(last + 8);
   }
   return { answer: s, think: think.map((t) => t.trim()).filter(Boolean).join("\n\n") };
+}
+// 0.5.6: Qwen3.5-4B often streams its reasoning as plain text before an orphan
+// </think> (no <think>, nothing in reasoning_content). While streaming, text
+// that opens like reasoning is held back ("Thinking…") until </think> comes;
+// if it never comes the whole text is shown at the end.
+const THINK_OPENER = /^\s*(thinking process:|here'?s a thinking process|\*\*thinking|okay,? (so )?(the user|let me|i need)|let me (think|analy[sz]e|figure)|the user (is asking|wants|asked|has asked|said))/i;
+function streamingAnswer(content) {
+  const s = String(content || "");
+  if (!/<\/think>/i.test(s) && !/<think>/i.test(s) && THINK_OPENER.test(s)) return "";
+  return stripThink(s);
 }
 function stripThink(text) {
   return splitThink(text).answer;
@@ -1554,12 +1582,12 @@ async function takeChatStream(gen, abort, body, onShown, opts) {
         if (ev.content) content += String(ev.content);
         if (ev.reasoning) reasoning += String(ev.reasoning);
       }
-      const answer = dropEmptyPlaceholder(stripThink(content));
+      const answer = dropEmptyPlaceholder(streamingAnswer(content));
       // 0.5.5: the bubble shows (and voice speaks) the answer only, never the
       // reasoning; while there is only reasoning it says "Thinking…".
       const shown = answer;
       if (shown.trim() && shown.trim() !== "(empty response)" && onShown) onShown(shown);
-      else if (onThink && (reasoning.trim() || splitThink(content).think)) onThink();
+      else if (onThink && (reasoning.trim() || splitThink(content).think || (content.trim() && !answer.trim()))) onThink();
       if (ev.stopped) stopped = true;
       if (ev.error && ev.done) errText = String(ev.error);
     };
@@ -1612,16 +1640,36 @@ function messagesForRequest(voiceOn) {
   if (!added) out.unshift({ role: "system", content: brief });
   return out;
 }
-// ---- App agent: requests aimed at an open app (ONLYOFFICE slides, Node-RED) go to
-// stickllm-appagent (/appagent/act through the gateway) instead of the chat model.
-// The composer "App" picker chooses the target; "@office ..." / "@nodered ..." picks
-// it for one message; opening a .pptx in Office selects ONLYOFFICE automatically.
-const APPAGENT_NAMES = { onlyoffice: "ONLYOFFICE slides", nodered: "Node-RED", slides: "Test slides" };
-const APPAGENT_PREFIX = /^@(onlyoffice|office|slides|pptx|nodered|node-red)\b[:,]?\s*/i;
-const APPAGENT_ALIAS = { onlyoffice: "onlyoffice", office: "onlyoffice", pptx: "onlyoffice", slides: "onlyoffice", nodered: "nodered", "node-red": "nodered" };
+// ---- App agent (0.5.6): requests aimed at an app go to stickllm-appagent
+// (/appagent/act through the gateway) instead of the chat model. It shares the
+// chat model (one Qwen3.5-4B) and only runs when the user loads it here.
+// No picker: the target is the app window used last (focus), "in <App>, ..."
+// names one, a keyword router covers the rest (installed apps only), and a
+// search box + recent-apps row pick one by hand. Browser apps (Notepad,
+// Calculator, Solitaire) are read and driven over the same-origin
+// BroadcastChannel "stickllm-appbridge" (ui/apps/stickllm-bridge.js).
+const APPAGENT_NAMES = { onlyoffice: "ONLYOFFICE slides", nodered: "Node-RED", notepad: "Notepad", calculator: "Calculator", solitaire: "Solitaire", slides: "Test slides" };
+const APPAGENT_PREFIX = /^@(onlyoffice|office|slides|pptx|nodered|node-red|notepad|calculator|calc|solitaire)\b[:,]?\s*/i;
+const APPAGENT_IN = /^(?:in|on|with|use|using)\s+(?:the\s+)?(onlyoffice|office|slides|presentation|powerpoint|pptx|node-red|nodered|node red|notepad|notes?|calculator|calc|solitaire|cards)(?:\s+app)?\s*[,:]\s*/i;
+const APPAGENT_ALIAS = { onlyoffice: "onlyoffice", office: "onlyoffice", pptx: "onlyoffice", slides: "onlyoffice", presentation: "onlyoffice", powerpoint: "onlyoffice",
+  nodered: "nodered", "node-red": "nodered", "node red": "nodered", notepad: "notepad", note: "notepad", notes: "notepad",
+  calculator: "calculator", calc: "calculator", solitaire: "solitaire", cards: "solitaire" };
+// Keyword router for requests with no app named and no app window used lately.
+const APPAGENT_KEYWORDS = {
+  onlyoffice: /\b(slides?|presentation|deck|textbox|text box|rectangle|ellipse|triangle|shape)\b/i,
+  nodered: /\b(flows?|inject node|debug node|http[- ]in|http[- ]response|node-red|wire)\b/i,
+  notepad: /\b(notepad|in the note|the document text|append|save as)\b/i,
+  calculator: /\b(calculator|on the calc)\b/i,
+  solitaire: /\b(solitaire|foundation|tableau|draw a card|move the [a-z0-9]+ of (hearts|spades|diamonds|clubs))\b/i,
+};
+const APPAGENT_CLIENT = ["notepad", "calculator", "solitaire"];
+const APPAGENT_RECENT_MS = 2 * 60 * 1000;
 let appAgentApps = [];
-let appAgentAuto = false;
+let appAgentOn = false;
 let appAgentBusy = false;
+let appAgentPinned = "";
+let appAgentSkipOnce = false;
+const appAgentWins = new Map();
 function appAgentSession() {
   let id = "";
   try { id = localStorage.getItem("stickllm-appagent-session") || ""; } catch (_) {}
@@ -1631,21 +1679,42 @@ function appAgentSession() {
   }
   return id;
 }
-function appAgentRoute(raw) {
+function appAgentLastUsed(now) {
+  let best = null;
+  for (const w of appAgentWins.values()) {
+    if (!appAgentApps.includes(w.id) || !w.focusT) continue;
+    if (!best || w.focusT > best.focusT) best = w;
+  }
+  return best && (now || Date.now()) - best.focusT <= APPAGENT_RECENT_MS ? best.id : "";
+}
+function appAgentOpen(app) {
+  if (!APPAGENT_CLIENT.includes(app)) return true;
+  for (const w of appAgentWins.values()) if (w.id === app) return true;
+  return false;
+}
+function appAgentKeyword(text) {
+  const hits = appAgentApps.filter((a) => APPAGENT_KEYWORDS[a] && APPAGENT_KEYWORDS[a].test(text) && appAgentOpen(a));
+  return hits.length === 1 ? hits[0] : "";
+}
+function appAgentRoute(raw, now) {
   const text = String(raw || "").trim();
-  if (!text) return null;
-  const m = text.match(APPAGENT_PREFIX);
+  if (!text || !appAgentApps.length) return null;
+  let m = text.match(APPAGENT_PREFIX) || text.match(APPAGENT_IN);
   if (m) {
     const app = APPAGENT_ALIAS[m[1].toLowerCase()];
     const rest = text.slice(m[0].length).trim();
-    return rest && appAgentApps.includes(app) ? { app, text: rest } : null;
+    return rest && appAgentApps.includes(app) ? { app, text: rest, why: "named" } : null;
   }
-  const pick = $("#appTarget");
-  const app = pick && !pick.hidden ? pick.value : "";
-  return app ? { app, text } : null;
+  if (appAgentSkipOnce) return null;
+  if (appAgentPinned && appAgentApps.includes(appAgentPinned)) return { app: appAgentPinned, text, why: "picked" };
+  const last = appAgentLastUsed(now);
+  if (last) return { app: last, text, why: "last used" };
+  const kw = appAgentKeyword(text);
+  return kw ? { app: kw, text, why: "matched" } : null;
 }
 function appAgentReply(app, j) {
   const name = APPAGENT_NAMES[app] || app;
+  if (j && j.error === "no_model") return `**${name}:** ${String(j.message || "No model is loaded.")}`;
   const out = [`**${name}:** ${String(j.understanding || "").trim() || "(no summary)"}`];
   const res = Array.isArray(j.results) ? j.results : [];
   if (res.length) {
@@ -1658,28 +1727,133 @@ function appAgentReply(app, j) {
   }
   return out.join("\n\n");
 }
-function setAppTarget(app, auto) {
-  const pick = $("#appTarget");
-  if (!pick || pick.hidden) return;
-  if (app && !appAgentApps.includes(app)) return;
-  pick.value = app || "";
-  appAgentAuto = !!(app && auto);
-  pick.classList.toggle("on", !!app);
-  $("#input").placeholder = app ? `Tell ${APPAGENT_NAMES[app] || app} what to do` : "Message StickLLM";
+function appAgentRecent() {
+  let r = [];
+  try { r = JSON.parse(localStorage.getItem("stickllm-appagent-recent") || "[]"); } catch (_) {}
+  return (Array.isArray(r) ? r : []).filter((a) => appAgentApps.includes(a)).slice(0, 4);
+}
+function appAgentTouch(app) {
+  const r = [app].concat(appAgentRecent().filter((a) => a !== app)).slice(0, 4);
+  try { localStorage.setItem("stickllm-appagent-recent", JSON.stringify(r)); } catch (_) {}
+}
+function renderAppAgentBar() {
+  const row = $("#appAgentRow");
+  if (!row) return;
+  const tog = $("#appAgentToggle");
+  tog.setAttribute("aria-pressed", appAgentOn ? "true" : "false");
+  tog.textContent = appAgentOn ? "App agent: on" : "App agent: off";
+  tog.title = appAgentOn ? "Unload the app agent (the chat model stays loaded)" : "Load the app agent: chat can then work in your open apps";
+  const on = appAgentOn && appAgentApps.length > 0;
+  $("#appAgentPick").hidden = !on;
+  const route = on ? appAgentRoute($("#input").value || "x") : null;
+  const chip = $("#appAgentTarget");
+  chip.hidden = !route;
+  if (route) {
+    chip.innerHTML = `→ ${esc(APPAGENT_NAMES[route.app] || route.app)} <small>(${esc(route.why)})</small> <button type="button" data-aaclear="1" title="Send this message to the chat instead" aria-label="Send to chat instead">✕</button>`;
+  }
+  $("#input").placeholder = route ? `Tell ${APPAGENT_NAMES[route.app] || route.app} what to do` : "Message StickLLM";
+  const rec = $("#appAgentRecent");
+  rec.innerHTML = on ? appAgentRecent().map((a) =>
+    `<button type="button" class="aaChip${appAgentPinned === a ? " on" : ""}" data-aapin="${esc(a)}">${esc(APPAGENT_NAMES[a] || a)}</button>`).join("") : "";
+  const dl = $("#appAgentList");
+  dl.innerHTML = appAgentApps.map((a) => `<option value="${esc(APPAGENT_NAMES[a] || a)}"></option>`).join("");
 }
 async function loadAppAgentApps() {
-  const pick = $("#appTarget");
-  if (!pick) return;
+  if (!$("#appAgentRow")) return;
+  appAgentApps = [];
+  if (appAgentOn) {
+    try {
+      const r = await fetch("/appagent/apps", { headers: authHeaders(), credentials: "same-origin" });
+      const list = r.ok ? await r.json() : [];
+      appAgentApps = (Array.isArray(list) ? list : []).map((a) => a && a.name).filter((n) => n && n !== "slides");
+    } catch (_) { appAgentApps = []; }
+  }
+  if (appAgentPinned && !appAgentApps.includes(appAgentPinned)) appAgentPinned = "";
+  renderAppAgentBar();
+}
+async function appAgentRefresh() {
+  // Quiet status read: an unpaired browser just sees "off" (no pair prompt).
   try {
-    const r = await fetch("/appagent/apps", { headers: authHeaders(), credentials: "same-origin" });
-    const list = r.ok ? await r.json() : [];
-    appAgentApps = (Array.isArray(list) ? list : []).map((a) => a && a.name).filter((n) => n && n !== "slides");
-  } catch (_) { appAgentApps = []; }
-  const cur = pick.value;
-  pick.innerHTML = `<option value="">Chat</option>` +
-    appAgentApps.map((n) => `<option value="${esc(n)}">${esc(APPAGENT_NAMES[n] || n)}</option>`).join("");
-  pick.hidden = !appAgentApps.length;
-  setAppTarget(appAgentApps.includes(cur) ? cur : "", appAgentAuto);
+    const r = await fetch("/api/control", {
+      method: "POST", headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ action: "appagent_status", params: {} }),
+    });
+    const j = r.ok ? await r.json() : {};
+    appAgentOn = !!(j && j.running);
+  } catch (_) { appAgentOn = false; }
+  await loadAppAgentApps();
+}
+async function appAgentToggle() {
+  const tog = $("#appAgentToggle");
+  if (!(await ensurePaired())) return;
+  tog.disabled = true;
+  tog.textContent = appAgentOn ? "Unloading…" : "Loading…";
+  try {
+    const j = await control(appAgentOn ? "appagent_unload" : "appagent_load", {});
+    appAgentOn = !!(j && j.running);
+    if (appAgentOn && j && j.model_loaded === false) {
+      toast("App agent loaded. Load a model on the Models page (Qwen3.5-4B is on the stick) before asking an app.");
+    }
+  } catch (e) {
+    toast(`App agent: ${e.message || e}`);
+  } finally {
+    tog.disabled = false;
+  }
+  await loadAppAgentApps();
+}
+// Browser apps: who is open, which window was used last, and calls into one.
+let appAgentBC = null;
+const appAgentCalls = new Map();
+try {
+  appAgentBC = new BroadcastChannel("stickllm-appbridge");
+  appAgentBC.onmessage = (e) => {
+    const d = e.data || {};
+    if (!d.id || !/^[a-z-]{1,32}$/.test(String(d.id))) return;
+    const key = `${d.id}:${d.inst || ""}`;
+    if (d.type === "bye") { appAgentWins.delete(key); renderAppAgentBar(); return; }
+    if (d.type === "reply") {
+      const p = appAgentCalls.get(d.req);
+      if (p) { appAgentCalls.delete(d.req); p(d); }
+      return;
+    }
+    if (d.type !== "hello" && d.type !== "focus") return;
+    const w = appAgentWins.get(key) || { id: d.id, inst: d.inst || "", focusT: 0 };
+    w.seen = Date.now();
+    if (d.type === "focus") { w.focusT = Date.now(); }
+    appAgentWins.set(key, w);
+    renderAppAgentBar();
+  };
+  appAgentBC.postMessage({ type: "who" });
+} catch (_) { appAgentBC = null; }
+function appAgentWindow(app) {
+  let best = null;
+  for (const w of appAgentWins.values()) {
+    if (w.id !== app) continue;
+    if (!best || (w.focusT || 0) > (best.focusT || 0) || ((w.focusT || 0) === (best.focusT || 0) && w.seen > best.seen)) best = w;
+  }
+  return best;
+}
+function appAgentCall(app, kind, action, ms = 8000) {
+  return new Promise((resolve, reject) => {
+    const w = appAgentWindow(app);
+    if (!appAgentBC || !w) {
+      reject(new Error(`${APPAGENT_NAMES[app] || app} is not open. Open it from the desktop, then ask again.`));
+      return;
+    }
+    const req = "r" + Math.random().toString(36).slice(2, 12);
+    const timer = setTimeout(() => { appAgentCalls.delete(req); reject(new Error(`${APPAGENT_NAMES[app] || app} did not answer. Is its window still open?`)); }, ms);
+    appAgentCalls.set(req, (d) => { clearTimeout(timer); resolve(d); });
+    appAgentBC.postMessage({ type: "call", to: app, inst: w.inst, req, kind, action: action || {} });
+  });
+}
+async function appAgentRunClient(app, actions) {
+  const out = [];
+  for (const a of (Array.isArray(actions) ? actions : []).slice(0, 20)) {
+    const d = await appAgentCall(app, "act", a, 15000);
+    out.push({ action: a, ok: !!d.ok, error: d.error || "" });
+    if (!d.ok) break;
+  }
+  return out;
 }
 // 0.5.5: after the app agent deploys or undoes, reload that app's open tab
 // (the kiosk's Node-RED editor does not show flows changed over the Admin
@@ -1698,6 +1872,7 @@ async function sendToApp(app, text) {
   if (appAgentBusy) return;
   if (!(await ensurePaired())) return;
   appAgentBusy = true;
+  appAgentTouch(app);
   const inp = $("#input");
   inp.value = "";
   autosize();
@@ -1711,15 +1886,32 @@ async function sendToApp(app, text) {
   c.msgs.push(pend);
   renderThread(); renderConvs();
   try {
+    const body = { app, request: text, session: appAgentSession() };
+    const client = APPAGENT_CLIENT.includes(app);
+    if (client) {
+      const st = await appAgentCall(app, "state");
+      body.state = st && st.result && typeof st.result === "object" ? st.result : {};
+    }
     const r = await fetch("/appagent/act", {
       method: "POST", credentials: "same-origin",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ app, request: text, session: appAgentSession() }),
+      body: JSON.stringify(body),
     });
     const j = await r.json().catch(() => ({}));
+    if (r.status === 502) throw new Error("The app agent is not loaded. Turn it on with the App agent button.");
     if (!r.ok) throw new Error(j.error || j.message || `The app agent answered ${r.status}`);
-    pend.t = appAgentReply(app, j);
-    if ((j.results || []).some((x) => x.ok)) { pend.appUndo = app; reloadAgentAppTab(app); }
+    let txt = appAgentReply(app, j);
+    let changed = (j.results || []).some((x) => x.ok);
+    if (client && Array.isArray(j.client_actions) && j.client_actions.length) {
+      const ran = await appAgentRunClient(app, j.client_actions);
+      const bad = ran.find((x) => !x.ok);
+      if (bad) txt += `\n\n✗ ${APPAGENT_NAMES[app] || app} refused \`${JSON.stringify(bad.action).slice(0, 120)}\`: ${String(bad.error).slice(0, 120)}`;
+      changed = ran.some((x) => x.ok);
+    } else if (client) {
+      changed = false;
+    }
+    pend.t = txt;
+    if (changed) { pend.appUndo = app; if (!client) reloadAgentAppTab(app); }
   } catch (e) {
     pend.t = `**${APPAGENT_NAMES[app] || app}:** ${e.message || e}`;
     pend.warn = "Nothing was sent to the chat model.";
@@ -1727,6 +1919,7 @@ async function sendToApp(app, text) {
     pend.pending = false;
     appAgentBusy = false;
     renderThread();
+    renderAppAgentBar();
   }
 }
 async function appAgentUndo(i) {
@@ -1737,15 +1930,26 @@ async function appAgentUndo(i) {
   appAgentBusy = true;
   let line;
   try {
+    const body = { app, session: appAgentSession() };
+    const client = APPAGENT_CLIENT.includes(app);
+    if (client) {
+      const st = await appAgentCall(app, "state");
+      body.state = st && st.result && typeof st.result === "object" ? st.result : {};
+    }
     const r = await fetch("/appagent/undo", {
       method: "POST", credentials: "same-origin",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ app, session: appAgentSession() }),
+      body: JSON.stringify(body),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || `The app agent answered ${r.status}`);
-    line = `**${APPAGENT_NAMES[app] || app}:** ${j.ok ? "Undone." : "Nothing to undo."} ${String(j.message || "").slice(0, 200)}`;
-    if (j.ok) { m.appUndo = ""; reloadAgentAppTab(app); }
+    let ok = !!j.ok;
+    if (ok && client && Array.isArray(j.client_actions)) {
+      const ran = await appAgentRunClient(app, j.client_actions);
+      ok = ran.length > 0 && ran.every((x) => x.ok);
+    }
+    line = `**${APPAGENT_NAMES[app] || app}:** ${ok ? "Undone." : "Nothing to undo."} ${String(j.message || "").slice(0, 200)}`;
+    if (ok) { m.appUndo = ""; if (!client) reloadAgentAppTab(app); }
   } catch (e) {
     line = `**${APPAGENT_NAMES[app] || app}:** undo failed: ${e.message || e}`;
   } finally {
@@ -1754,15 +1958,39 @@ async function appAgentUndo(i) {
   c.msgs.push({ r: "ai", t: line.trim() });
   renderThread();
 }
-if ($("#appTarget")) {
-  $("#appTarget").onchange = (e) => setAppTarget(e.target.value, false);
-  loadAppAgentApps();
-  // Pairing may finish after load: look again (at most every 15 s) while no app is listed.
+if ($("#appAgentRow")) {
+  $("#appAgentToggle").onclick = () => appAgentToggle();
+  $("#appAgentRow").addEventListener("click", (e) => {
+    const pin = e.target.closest && e.target.closest("[data-aapin]");
+    if (pin) {
+      appAgentPinned = appAgentPinned === pin.dataset.aapin ? "" : pin.dataset.aapin;
+      appAgentSkipOnce = false;
+      renderAppAgentBar();
+      return;
+    }
+    if (e.target.closest && e.target.closest("[data-aaclear]")) {
+      // This message goes to the chat; the pin and the last-used window are dropped.
+      appAgentPinned = "";
+      appAgentSkipOnce = true;
+      renderAppAgentBar();
+    }
+  });
+  $("#appAgentSearch").addEventListener("change", (e) => {
+    const q = String(e.target.value || "").trim().toLowerCase();
+    const hit = appAgentApps.find((a) => a === q || (APPAGENT_NAMES[a] || "").toLowerCase() === q)
+      || appAgentApps.find((a) => (APPAGENT_NAMES[a] || a).toLowerCase().includes(q));
+    e.target.value = "";
+    if (hit) { appAgentPinned = hit; appAgentSkipOnce = false; appAgentTouch(hit); }
+    renderAppAgentBar();
+  });
+  $("#input").addEventListener("input", () => renderAppAgentBar());
+  appAgentRefresh();
+  // Pairing may finish after load: look again (at most every 15 s).
   let appAgentLooked = Date.now();
   $("#input").addEventListener("focus", () => {
-    if (appAgentApps.length || Date.now() - appAgentLooked < 15000) return;
+    if (Date.now() - appAgentLooked < 15000) return;
     appAgentLooked = Date.now();
-    loadAppAgentApps();
+    appAgentRefresh();
   });
 }
 $("#thread").addEventListener("click", (e) => {
@@ -1771,24 +1999,23 @@ $("#thread").addEventListener("click", (e) => {
   e.preventDefault();
   appAgentUndo(Number(b.dataset.appundo));
 });
-// /apps/docs/ (same origin, another tab) says when a slides editor opens or closes.
+// /apps/docs/ (same origin, another tab) says when a slides editor opens or
+// closes; an open editor counts as the last-used app window.
 try {
   const ch = new BroadcastChannel("stickllm-appagent");
   ch.onmessage = (e) => {
     const d = e.data || {};
     if (d.app !== "onlyoffice") return;
-    const pick = $("#appTarget");
-    const go = () => {
-      if (d.open && (!pick.value || appAgentAuto)) setAppTarget("onlyoffice", true);
-      else if (!d.open && appAgentAuto && pick.value === "onlyoffice") setAppTarget("", false);
-    };
-    if (pick && pick.hidden && d.open) loadAppAgentApps().then(go); else if (pick) go();
+    if (d.open) appAgentWins.set("onlyoffice:", { id: "onlyoffice", inst: "", focusT: Date.now(), seen: Date.now() });
+    else appAgentWins.delete("onlyoffice:");
+    renderAppAgentBar();
   };
 } catch (_) {}
 
 async function send() {
   {
-    const route = appAgentRoute($("#input").value);
+    const route = appAgentOn ? appAgentRoute($("#input").value) : null;
+    appAgentSkipOnce = false;
     if (route && !state.attach.length) return sendToApp(route.app, route.text);
   }
   unlockSpeech();
@@ -2401,7 +2628,7 @@ function renderModelsList() {
     if (trust === "blocked") {
       actions = delBtn;
     } else if (have) {
-      actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : "Load"}</button>${delBtn}`;
+      actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : "Load"}</button>${run || loading ? `<button class="btn sm ghost" data-unload="${esc(id)}" type="button" title="Stop this model (chat and the app agent have no model until you load one)">Unload</button>` : ""}${delBtn}`;
     } else if (queueState(id) === "active" || dlActiveId === id) {
       actions = `<span class="pill warn">downloading</span>`;
     } else if (queueState(id) === "pending") {
@@ -2445,6 +2672,19 @@ function renderModelsList() {
     beginModelLoadUi(id, m?.name || id);
     // Yield a frame so the badge/status line paint before the long activate await.
     paintSoon().then(() => $("#activate").click());
+  }));
+  $$("#modelList [data-unload]").forEach((b) => (b.onclick = async (e) => {
+    e.stopPropagation();
+    b.disabled = true;
+    b.textContent = "Unloading…";
+    try {
+      await control("model_unload", {});
+      loadingModelId = null;
+      toast("Model unloaded. Load one when you want to chat.");
+    } catch (err) {
+      toast(`Unload failed: ${err.message || err}`);
+    }
+    refreshModelsNow();
   }));
   $$("#modelList [data-delf]").forEach((b) => (b.onclick = (e) => {
     e.stopPropagation();
@@ -3281,6 +3521,7 @@ async function refreshStorage() {
   if ($("#vcSub")) {
     $("#vcSub").textContent = v.blob || v.root || v.path || (vaultIsAbsent(v) ? "No vault attached yet" : (open ? "" : "Enter the passcode to unlock"));
   }
+  showVaultOther(!open && !!v.other_computer, v.vault_computer_label);
   const wipe = Number(v.wipe_after_failed_unlocks || 0);
   if ($("#wipeN") && document.activeElement !== $("#wipeN")) $("#wipeN").value = String(wipe);
   await refreshDrivesLive();
@@ -3781,8 +4022,16 @@ $("#unlockForm").onsubmit = async (e) => {
   } catch (err) {
     vaultUnlocking = false;
     setVaultChrome(false);
-    unlockMessage("Unlock failed: " + err.message);
-    toast("Unlock failed: " + err.message);
+    const raw = String(err.message || "");
+    if (VAULT_OTHER_RE.test(raw)) {
+      const msg = (raw.split(VAULT_OTHER_RE)[1] || "Vault is on another computer.").split("\n")[0].replace(/^stickllm-vault:\s*/, "");
+      showVaultOther(true, "");
+      unlockMessage(msg);
+      toast("Vault is on another computer");
+      return;
+    }
+    unlockMessage("Unlock failed: " + raw);
+    toast("Unlock failed: " + raw);
   } finally {
     vaultUnlocking = false;
   }

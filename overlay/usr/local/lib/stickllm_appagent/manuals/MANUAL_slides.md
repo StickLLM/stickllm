@@ -28,6 +28,12 @@ Always use these values. Do not invent others.
 | move it right / left / up / down a bit | `nudge ID dx=96` / `dx=-96` / `dy=-54` / `dy=54` (10% of the page). "a lot" = double that |
 | colour names | red blue green yellow orange purple pink black white gray brown teal navy lightblue. "warm" = orange. "dark blue" = navy. "light blue" = lightblue |
 
+## Slides in the deck
+- "new slide", "add a slide/page": `addslide` (the new blank slide is shown; later objects go on it).
+- "next slide", "next page", "go to the next slide": `nextslide`.
+- "previous slide", "back one slide", "the slide before": `prevslide`. Plain "go back" or "undo that" without the word slide/page means `undo`.
+- OBJECTS in STATE are on the shown slide only.
+
 ## Which object? (resolve every reference against STATE)
 1. "it", "that", "this", "the box": the object of the most recent request in HISTORY, which is also SELECTION.
 2. "the red one", "the circle", "the one on the left", "the small/big one": match fill, type, pos, or area in OBJECTS. Biggest/smallest = area.

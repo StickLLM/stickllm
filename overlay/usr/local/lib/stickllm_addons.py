@@ -150,7 +150,8 @@ APPS: dict[str, dict] = {
         "binds": (("data", "/data"),),
         # Read-only settings.js over the one in /data: palette installs,
         # npm modules in function nodes, telemetry and diagnostics stay off.
-        "share": (("node-red-settings.js", "/data/settings.js"),),
+        "share": (("node-red-settings.js", "/data/settings.js"),
+                  ("node-red-autoreload.js", "/data/stickllm-autoreload.js")),
         "volumes": ("/data",),
         "env": (("NODE_RED_ENABLE_SAFE_MODE", "false"), ("NODE_RED_ENABLE_PROJECTS", "false")),
         "command": (),

@@ -8,9 +8,9 @@ class Bridge:
         self.last_poll = 0.0; self.client = None
     def connected(self, within=30): return time.time() - self.last_poll < within
     def run(self, body, timeout=30):
-        """body = JS statements; S = slide 0; must `return` a JSON-able value. Returns the value or raises."""
+        """body = JS statements; P = presentation, S = the shown slide; must `return` a JSON-able value. Returns the value or raises."""
         jid = next(self.ids)
-        code = ("try { var P = Api.GetPresentation(); var S = P.GetSlideByIndex(0);\n%s\n} catch (e) {"
+        code = ("try { var P = Api.GetPresentation(); var __ci = (P.GetCurSlideIndex ? P.GetCurSlideIndex() : 0); var S = P.GetSlideByIndex(__ci >= 0 ? __ci : 0) || P.GetSlideByIndex(0);\n%s\n} catch (e) {"
                 " return JSON.stringify({__error: String(e && e.message || e)}); }") % body
         wrapped = "var __r = (function(){ %s })(); return typeof __r === 'string' ? __r : JSON.stringify(__r);" % code
         self.jobs.put({"id": jid, "code": wrapped})

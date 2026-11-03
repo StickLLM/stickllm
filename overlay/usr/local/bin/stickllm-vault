@@ -81,10 +81,19 @@ json_state() {
   elif [[ -f "$DATA_MNT/stickllm-settings-part.json" ]]; then
     usb_settings="present-locked"
   fi
-  python3 - "$STATE_JSON" "$status" "$note" "$wipe" "$fails" "$MNT_POINT" "$root" "$blob" "$usb_settings" <<'PY'
+  local vmatch="unknown" vlabel=""
+  if [[ "$status" != "unlocked" ]]; then
+    vmatch="$(vault_machine_match 2>/dev/null || echo unknown)"
+  else
+    vmatch="same"
+  fi
+  [[ -f "$META_DIR/machine_label" ]] && vlabel="$(head -c 80 "$META_DIR/machine_label" | tr -d '\n' || true)"
+  python3 - "$STATE_JSON" "$status" "$note" "$wipe" "$fails" "$MNT_POINT" "$root" "$blob" "$usb_settings" "$vmatch" "$vlabel" <<'PY'
 import json, sys, os
 path, status, note, wipe, fails, mnt, root, blob = sys.argv[1:9]
 usb_settings = sys.argv[9] if len(sys.argv) > 9 else "absent"
+vmatch = sys.argv[10] if len(sys.argv) > 10 else "unknown"
+vlabel = sys.argv[11] if len(sys.argv) > 11 else ""
 doc = {
   "ok": True,
   "status": status,
@@ -98,11 +107,67 @@ doc = {
   "backend": "luks2-argon2id-file",
   "usb_settings": usb_settings,
   "usb_settings_mount": "/mnt/stickllm-settings",
+  # 0.5.6: "other" = this stick's vault was set up on a different computer.
+  "vault_computer": vmatch,
+  "vault_computer_label": vlabel or None,
+  "other_computer": vmatch == "other",
   "safety": "file-blob-only; never formats host disks",
 }
 open(path, "w", encoding="utf-8").write(json.dumps(doc, indent=2) + "\n")
 print(json.dumps(doc))
 PY
+}
+
+# --- Which computer the vault lives on (0.5.6) ------------------------------
+# The vault file sits on one computer's drive, but vault-meta and the DATA
+# pointer live on the stick and travel with it. Tag them with a stable
+# per-computer id (DMI hash, same as the USB settings records) so another
+# computer says "Vault is on another computer" at once instead of probing and
+# mounting its own drives looking for a path that only exists elsewhere.
+SETTINGS_LIB="${STICKLLM_SETTINGS_LIB:-/usr/local/lib/stickllm_usb_settings.py}"
+[[ -f "$SETTINGS_LIB" ]] || SETTINGS_LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)/stickllm_usb_settings.py"
+_THIS_MACHINE=""
+_THIS_MACHINE_LABEL=""
+this_machine() {
+  # Prints "<id>\t<label>"; empty when the helper is missing.
+  if [[ -z "$_THIS_MACHINE" ]]; then
+    if [[ -n "${STICKLLM_MACHINE_ID:-}" ]]; then
+      _THIS_MACHINE="$STICKLLM_MACHINE_ID"
+      _THIS_MACHINE_LABEL="${STICKLLM_MACHINE_LABEL:-this computer}"
+    elif [[ -f "$SETTINGS_LIB" ]]; then
+      local out
+      out="$(python3 "$SETTINGS_LIB" machine-id 2>/dev/null | python3 -c 'import json,sys
+d=json.load(sys.stdin); print(d.get("id","")+"\t"+" ".join(str(d.get("label","")).split()))' 2>/dev/null || true)"
+      _THIS_MACHINE="${out%%$'\t'*}"
+      _THIS_MACHINE_LABEL="${out#*$'\t'}"
+    fi
+  fi
+  [[ -n "$_THIS_MACHINE" ]] || return 1
+  printf '%s\t%s\n' "$_THIS_MACHINE" "$_THIS_MACHINE_LABEL"
+}
+
+this_machine_id() {
+  this_machine >/dev/null || return 1
+  printf '%s\n' "$_THIS_MACHINE"
+}
+
+tag_meta_machine() {
+  this_machine >/dev/null || return 0
+  printf '%s\n' "$_THIS_MACHINE" >"$META_DIR/machine_id"
+  printf '%s\n' "$_THIS_MACHINE_LABEL" >"$META_DIR/machine_label"
+  chmod 600 "$META_DIR/machine_id" "$META_DIR/machine_label" 2>/dev/null || true
+}
+
+# same | other | unknown (no tag yet: vaults made before 0.5.6, or no DMI)
+vault_machine_match() {
+  local tagged=""
+  [[ -f "$META_DIR/container" ]] || { echo unknown; return 0; }
+  [[ -f "$META_DIR/machine_id" ]] && tagged="$(tr -cd '0-9a-f' <"$META_DIR/machine_id" || true)"
+  [[ -n "$tagged" ]] || { echo unknown; return 0; }
+  local mine=""
+  mine="$(this_machine_id 2>/dev/null || true)"
+  [[ -n "$mine" ]] || { echo unknown; return 0; }
+  if [[ "$tagged" == "$mine" ]]; then echo same; else echo other; fi
 }
 
 # --- Path / target safety (fail-closed) ------------------------------------
@@ -908,10 +973,17 @@ if os.path.ismount(str(target)):
 target.mkdir(parents=True, exist_ok=True)
 mnt_type = "ntfs3" if fst == "ntfs" else fst
 cmd = ["mount", "-t", mnt_type, "-o", opts, dev, str(target)]
-p = subprocess.run(cmd, capture_output=True, text=True, check=False)
+# 0.5.6: a drive that will not mount (hibernated Windows, failing disk) must
+# fail in seconds, not hang the Unlock button.
+def run_mount(c):
+    try:
+        return subprocess.run(c, capture_output=True, text=True, check=False, timeout=25)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(c, 124, "", "mount timed out after 25 s")
+p = run_mount(cmd)
 if p.returncode != 0 and fst == "ntfs":
     # fallback
-    p = subprocess.run(["mount", "-t", "ntfs", "-o", opts, dev, str(target)], capture_output=True, text=True, check=False)
+    p = run_mount(["mount", "-t", "ntfs", "-o", opts, dev, str(target)])
 if p.returncode != 0:
     fail((p.stderr or p.stdout or "mount failed").strip()[:500])
 
@@ -1933,8 +2005,10 @@ cmd_ui_mount_status() {
 write_location_pointer() {
   # Durable hint on STICKLLM-DATA (USB free-space partition). No passcode ever.
   local root="$1" blob="$2"
+  this_machine >/dev/null 2>&1 || true
   STICKLLM_LOC_ROOT="$root" STICKLLM_LOC_BLOB="$blob" \
     STICKLLM_LOC_FILE="$LOCATION_FILE" STICKLLM_LOC_DATA="$DATA_MNT" \
+    STICKLLM_LOC_MACHINE="$_THIS_MACHINE" STICKLLM_LOC_MACHINE_LABEL="$_THIS_MACHINE_LABEL" \
     STICKLLM_LOC_HOST="$HOST_MNT_ROOT" python3 <<'PY'
 import json, os, subprocess
 from datetime import datetime, timezone
@@ -1992,6 +2066,8 @@ doc = {
     "fstype": fst or None,
     "source": src or None,
     "updated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "machine_id": os.environ.get("STICKLLM_LOC_MACHINE") or None,
+    "machine_label": os.environ.get("STICKLLM_LOC_MACHINE_LABEL") or None,
     "safety": "path hint only — never stores passcode or recovery phrase",
 }
 # Refuse accidental secret fields
@@ -2016,6 +2092,8 @@ write_meta() {
   rm -f "$META_DIR/device" 2>/dev/null || true
   printf '%s\n' "${WIPE_AFTER:-$DEFAULT_WIPE_AFTER}" >"$META_DIR/wipe_after"
   printf '0\n' >"$META_DIR/unlock_fails"
+  rm -f "$META_DIR/machine_id" "$META_DIR/machine_label" 2>/dev/null || true
+  tag_meta_machine
   chmod 600 "$META_DIR"/* 2>/dev/null || true
   # Best-effort durable pointer on USB DATA (survives ISO reflash if DATA kept).
   write_location_pointer "$root" "$blob" >/dev/null 2>&1 || true
@@ -2146,7 +2224,10 @@ sync_usb_settings() {
 }
 
 maybe_bind_from_settings() {
-  [[ -f "$META_DIR/container" ]] && return 0
+  # Meta from another computer is replaced by this computer's own record.
+  if [[ -f "$META_DIR/container" && "$(vault_machine_match)" != "other" ]]; then
+    return 0
+  fi
   local helper="" blob="" rc=0
   helper="$(settings_helper)" || return 0
   # rc=1 means "settings closed or no computer recorded yet": normal on a
@@ -2646,8 +2727,18 @@ cmd_unlock() {
   # Open an already-encrypted settings partition before binding a per-computer
   # location. Do not format it until the SSD vault accepts this passcode.
   sync_usb_settings "$pass" 0
-  if [[ ! -f "$META_DIR/container" ]]; then
+  if [[ ! -f "$META_DIR/container" || "$(vault_machine_match)" == "other" ]]; then
     maybe_bind_from_settings || true
+  fi
+  if [[ "$(vault_machine_match)" == "other" ]]; then
+    # 0.5.6: fail fast. The saved path is on a different computer's drive;
+    # never probe or mount this computer's drives for it, and a missing drive
+    # is not a wrong passcode (no bump_fail).
+    local where=""
+    where="$(head -c 80 "$META_DIR/machine_label" 2>/dev/null | tr -d '\n' || true)"
+    unset pass
+    json_state locked "vault is on another computer" >/dev/null 2>&1 || true
+    die "VAULT_OTHER_COMPUTER: Vault is on another computer${where:+ ($where)}. Search for a vault on this computer, or pick a drive and folder."
   fi
 
   local tgt
@@ -2673,6 +2764,7 @@ cmd_unlock() {
     fi
     if is_mounted; then
       printf '0\n' >"$META_DIR/unlock_fails"
+      [[ -f "$META_DIR/machine_id" ]] || tag_meta_machine
       sync_usb_settings "$pass" 1
       unset pass
       json_state unlocked "already open"
@@ -2695,6 +2787,7 @@ cmd_unlock() {
   mount "$MAPPER" "$MNT_POINT"
   ensure_dirs_in_vault
   printf '0\n' >"$META_DIR/unlock_fails"
+  [[ -f "$META_DIR/machine_id" ]] || tag_meta_machine
   sync_usb_settings "$pass" 1
   unset pass
   json_state unlocked "unlocked $tgt"

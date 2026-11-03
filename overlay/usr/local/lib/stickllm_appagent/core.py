@@ -1,7 +1,10 @@
 """App-agent core: INTENT plan (json_schema, thinking off) -> frozen plan checker (one re-ask)
 -> hybrid execution (harness runs plan lines; the LLM only repairs a failed line, max 2 tries, may skip).
 Ported from agent-manuals/intent/agent.py (cond b + --check + --exec hybrid). checker.py is a verbatim copy."""
-import json, re, time, urllib.request
+import json, re, time, urllib.error, urllib.request
+
+class NoModel(RuntimeError):
+    """the shared chat llama-server is not running (user has not loaded a model)"""
 
 def chat(url, messages, think=False, temperature=0.0, grammar=None, schema=None, max_tokens=512, timeout=600):
     body = {"model": "x", "messages": messages, "temperature": temperature, "max_tokens": max_tokens,
@@ -11,13 +14,20 @@ def chat(url, messages, think=False, temperature=0.0, grammar=None, schema=None,
     req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     t = time.time()
-    with urllib.request.urlopen(req, timeout=timeout) as r: d = json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r: d = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 503: raise NoModel("The model is still loading. Try again in a moment.")
+        raise
+    except (urllib.error.URLError, ConnectionError) as e:
+        # 0.5.6: the app agent shares the chat model and never loads one itself
+        raise NoModel("No model is loaded. Load one on the Models page (Qwen3.5-4B is on the stick), then try again.")
     m = d["choices"][0]["message"]
     return (m.get("content") or ""), d.get("usage", {}), time.time() - t
 
 def exec_grammar(verbs):
-    alts = " | ".join('"%s "' % v for v in verbs)
-    return 'root ::= (( %s ) [^\\n]{1,200}) | "undo" | "done" | "skip"\n' % alts
+    alts = " | ".join('"%s"' % v for v in verbs)
+    return 'root ::= (( %s ) (" " [^\\n]{1,200})?) | "undo" | "done" | "skip"\n' % alts
 
 PLAN_SCHEMA = {"type": "object", "properties": {"understanding": {"type": "string", "maxLength": 300},
                "plan": {"type": "array", "items": {"type": "string", "maxLength": 200}, "minItems": 0, "maxItems": 8}},
@@ -62,10 +72,31 @@ def parse_plan(text):
 def convo_text(prev):
     return "\n".join("%d. %s" % (i + 1, u) for i, u in enumerate(prev)) or "(this is the first request)"
 
+def count_tokens(llm_url, text):
+    """runtime tokenizer of the loaded model (llama-server /tokenize); raises when it cannot answer"""
+    r = urllib.request.Request(llm_url.rstrip("/") + "/tokenize", data=json.dumps({"content": text}).encode(),
+                               headers={"Content-Type": "application/json"})
+    return len(json.loads(urllib.request.urlopen(r, timeout=10).read().decode())["tokens"])
+
+def retrieved_notes(cfg, app, req):
+    """stickman retrieval: the manual chunks of the capabilities this request matches (slides only).
+    Empty when nothing matches or the tokenizer is unavailable; the full manual is in the prompt anyway."""
+    idx = getattr(app, "retrieval", None)
+    if idx is None: return ""
+    try:
+        found = idx.candidates(req, limit=4); ids = [r["id"] for r in found["candidates"]]
+        if not ids: return ""
+        out = idx.compile(ids, lambda t: count_tokens(cfg["llm_url"], t), budget=1024)
+        return out.get("brief", "") if out.get("status") == "compiled" else ""
+    except Exception:
+        return ""
+
 def intent(cfg, app, prev, req, extra=None):
     """prompt order = stable prefix (actions + manual, cached by llama-server) -> state -> history -> request"""
     sysm = INTENT_SYS % (app.list_actions(), app.manual)
     user = "CURRENT STATE:\n%s\n\nEARLIER REQUESTS IN THIS CONVERSATION:\n%s\n\nNEW REQUEST: %s" % (app.state(), convo_text(prev), req)
+    notes = retrieved_notes(cfg, app, req)
+    if notes: user += "\n\nNOTES FOR THIS REQUEST (from the manual):\n" + notes
     msgs = [{"role": "system", "content": sysm}, {"role": "user", "content": user}] + (extra or [])
     txt, use, dt = chat(cfg["llm_url"], msgs, temperature=cfg.get("temperature", 0.0), schema=PLAN_SCHEMA, max_tokens=700)
     plan, err = parse_plan(txt)
@@ -95,6 +126,9 @@ def act(cfg, app, sess, req, checker):
     app.begin_request(req)
     try:
         try: plan, err, ti, use, raw = intent(cfg, app, sess["prev"], req)
+        except NoModel as e:
+            rec.update(error="no_model", message=str(e), understanding="", plan=[], results=[], state=app.state())
+            return rec
         except Exception as e: plan, err, ti, use, raw = None, "llm_error %s" % e, 0.0, {}, ""
         flags = checker.check(app, plan["plan"], req, sess["tlog"]) if plan else ["The answer was not a valid JSON plan."]
         rec["check_flags"] = flags; rec["reask"] = False

@@ -82,6 +82,15 @@
       <div class="composerBox">
         <div class="attachments" id="attachments" hidden aria-label="Attachments"></div>
         <textarea id="input" rows="1" placeholder="Message StickLLM" aria-label="Message"></textarea>
+        <div class="appAgentRow" id="appAgentRow" aria-label="App agent">
+          <button type="button" class="toggleChip" id="appAgentToggle" aria-pressed="false" title="Load the app agent: chat can then work in your open apps">App agent: off</button>
+          <span class="appTarget on" id="appAgentTarget" hidden></span>
+          <span class="appAgentPick" id="appAgentPick" hidden>
+            <span id="appAgentRecent"></span>
+            <input type="search" id="appAgentSearch" list="appAgentList" placeholder="Find an app…" aria-label="Send to an app" autocomplete="off">
+            <datalist id="appAgentList"></datalist>
+          </span>
+        </div>
         <div class="composerBar">
           <button type="button" class="iconBtn" id="attachBtn" title="Attach a file" aria-label="Attach a file">
             <svg viewBox="0 0 24 24"><path d="M21.4 11l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"/></svg>
@@ -90,7 +99,6 @@
           <button type="button" class="toggleChip" id="webToggle" aria-pressed="true" title="Allow live web lookup when needed (needs internet)">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>Web
           </button>
-          <select class="appTarget" id="appTarget" hidden title="Send to the chat model or to an open app (ONLYOFFICE slides, Node-RED)" aria-label="Send to"></select>
           <span class="grow"></span>
           <button type="button" class="toggleChip" id="voiceModeBtn" aria-pressed="false" title="Voice off">Voice</button>
           <button type="button" class="iconBtn" id="stopSpeechBtn" hidden title="Stop speaking" aria-label="Stop speaking">
@@ -398,6 +406,7 @@
     <form class="vcUnlock" id="unlockForm" autocomplete="off"><input type="text" id="vaultPass" class="secret" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
     <button class="btn" id="lockBtn2" hidden>Lock</button>
     <small class="unlockMsg" id="unlockMsg" role="alert" hidden></small>
+    <div class="vaultOther" id="vaultOther" hidden><button class="btn sm primary" id="vaultOtherSearch" type="button">Search for vault</button><button class="btn sm" id="vaultOtherPick" type="button">Pick drive…</button></div>
   </div>
 
   <div class="secTools"><h3>Drives</h3><span class="grow"></span>

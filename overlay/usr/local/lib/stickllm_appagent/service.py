@@ -24,6 +24,8 @@ class Service:
             from adapters.nodered import NodeRedAdapter; return NodeRedAdapter(self.cfg["nodered_url"], start)
         if app == "onlyoffice":
             from adapters.onlyoffice import OOSlides; return OOSlides(self.bridge, start)
+        if app in ("notepad", "calculator", "solitaire"):
+            from adapters.browser import CLIENT_APPS; return CLIENT_APPS[app](start)
         raise KeyError("unknown app %r (have: %s)" % (app, ", ".join(self.apps)))
     def lock(self, app): return self.locks.setdefault(app, threading.Lock())
     def session(self, app, sid, start=None, fresh=False):
@@ -41,8 +43,11 @@ class Service:
         for n in self.apps:
             d = {"slides": "simulated one-slide presentation editor (in memory)",
                  "nodered": "Node-RED flows (real instance at %s)" % self.cfg["nodered_url"],
-                 "onlyoffice": "ONLYOFFICE presentation open in the editor (real document, via the editor plugin)"}.get(n, n)
-            e = {"name": n, "description": d}
+                 "onlyoffice": "ONLYOFFICE presentation open in the editor (real document, via the editor plugin)",
+                 "notepad": "Notepad: write, append, replace or clear text, Save As",
+                 "calculator": "Calculator: press keys to work out sums",
+                 "solitaire": "Solitaire: move cards, draw, new game"}.get(n, n)
+            e = {"name": n, "description": d, "client": n in ("notepad", "calculator", "solitaire")}
             if n == "onlyoffice": e["connected"] = self.bridge.connected()
             out.append(e)
         return out
@@ -51,14 +56,20 @@ class Service:
         if not req: raise ValueError("empty request")
         with self.lock(app):
             s = self.session(app, sid)
-            return core.act(self.cfg, s["app"], s, req, self.checker(s["app"]))
+            if hasattr(s["app"], "set_client_state"): s["app"].set_client_state(body.get("state"))
+            rec = core.act(self.cfg, s["app"], s, req, self.checker(s["app"]))
+            if hasattr(s["app"], "set_client_state"): rec["client_actions"] = list(s["app"].done_actions)
+            return rec
     def undo(self, body):
         app, sid = body.get("app"), body.get("session") or "default"
         with self.lock(app):
             s = self.session(app, sid); a = s["app"]
+            if hasattr(a, "set_client_state"): a.set_client_state(body.get("state"))
             a.begin_request("undo"); ok, out = a.undo(); a.end_request()
             s["tlog"].add("undo", [{"cmd": "undo", "ok": ok, "out": out}], a); s["prev"].append("undo")
-            return {"ok": ok, "message": out, "state": a.state()}
+            r = {"ok": ok, "message": out, "state": a.state()}
+            if hasattr(a, "set_client_state"): r["client_actions"] = list(a.done_actions)
+            return r
     def do(self, body):
         """debug: run action lines directly (no LLM) as one request"""
         app, sid = body.get("app"), body.get("session") or "default"

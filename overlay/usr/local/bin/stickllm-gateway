@@ -781,6 +781,37 @@ _AGENT_LIB = None
 APPAGENT_PORT = 8795
 
 
+APPAGENT_BROWSER_APPS = ("notepad", "calculator", "solitaire")
+
+
+def appagent_app_installed(name: str) -> bool:
+    """0.5.6: the app agent lists only apps that are installed on this stick.
+    ONLYOFFICE and Node-RED are vault add-ons; Notepad, Calculator and Solitaire
+    are StickLLM's own web apps under the UI root."""
+    try:
+        if name == "onlyoffice":
+            return bool(docs_lib().is_installed())
+        if name == "nodered":
+            return bool(addons_lib().is_installed("node-red"))
+        if name in APPAGENT_BROWSER_APPS:
+            return (UI_ROOT / "apps" / name / "index.html").is_file()
+    except Exception:
+        return False
+    return False
+
+
+def appagent_filter_apps(data: bytes) -> bytes:
+    """Drop apps that are not installed (and the test-only simulator) from /appagent/apps."""
+    try:
+        apps = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return data
+    if not isinstance(apps, list):
+        return data
+    keep = [a for a in apps if isinstance(a, dict) and appagent_app_installed(str(a.get("name") or ""))]
+    return json.dumps(keep).encode("utf-8")
+
+
 def _appagent_port_open(port: int = APPAGENT_PORT) -> bool:
     """True when stickllm-appagent listens on loopback."""
     try:
@@ -2984,6 +3015,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         finally:
             conn.close()
+        if method == "GET" and upstream == "/apps" and resp.status == 200:
+            data = appagent_filter_apps(data)
         # The plugin page runs inside the ONLYOFFICE frame, like /docs-server.
         self._skip_stick_headers = True
         self.send_response(resp.status)

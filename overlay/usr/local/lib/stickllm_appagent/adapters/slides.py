@@ -1,13 +1,13 @@
 """Slides simulator adapter (in-memory, the reference app of the intent experiments)."""
 from .slides_sim import SlideApp
-from . import manual
+from . import manual, slide_index
 
 class SimSlides(SlideApp):
     name = "slides"
     description = "simulated one-slide presentation editor (in memory)"
-    verbs = ["add", "scale", "resize", "move", "nudge", "fill", "settext", "delete"]
+    verbs = ["add", "scale", "resize", "move", "nudge", "fill", "settext", "delete", "addslide", "nextslide", "prevslide"]
     def __init__(self, start=None):
-        super().__init__(start); self.manual = manual("MANUAL_slides.md")
+        super().__init__(start); self.manual = manual("MANUAL_slides.md"); self.retrieval = slide_index(self.verbs)
     def undo(self): return self.do("undo")
     def reset(self, start): self.__init__(start)
     def export(self): return {"objs": self.objs}

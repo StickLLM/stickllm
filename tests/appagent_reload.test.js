@@ -37,8 +37,8 @@ assert.strictEqual(api.reloadAgentAppTab("onlyoffice"), false);
 
 // Wired after a change that went through and after a successful undo, nowhere else.
 const send = src.slice(src.indexOf("async function sendToApp"), src.indexOf("async function appAgentUndo"));
-assert.ok(/some\(\(x\) => x\.ok\)\) \{ pend\.appUndo = app; reloadAgentAppTab\(app\); \}/.test(send));
-const undo = src.slice(src.indexOf("async function appAgentUndo"), src.indexOf("async function appAgentUndo") + 1500);
-assert.ok(/if \(j\.ok\) \{ m\.appUndo = ""; reloadAgentAppTab\(app\); \}/.test(undo));
+assert.ok(/if \(changed\) \{ pend\.appUndo = app; if \(!client\) reloadAgentAppTab\(app\); \}/.test(send));
+const undo = src.slice(src.indexOf("async function appAgentUndo"), src.indexOf("async function appAgentUndo") + 2500);
+assert.ok(/if \(ok\) \{ m\.appUndo = ""; if \(!client\) reloadAgentAppTab\(app\); \}/.test(undo));
 assert.strictEqual((src.match(/reloadAgentAppTab\(/g) || []).length, 3);
 console.log("appagent_reload ok");

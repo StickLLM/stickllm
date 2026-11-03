@@ -23,6 +23,9 @@ ACTIONS = """actions (one per line, key=value, no spaces around =):
   fill ID COLOR              COLOR: red blue green yellow orange purple pink black white gray brown teal navy lightblue or #RRGGBB (for a textbox = text colour)
   settext ID "new text"     change the words of a textbox
   delete ID
+  addslide                   add one blank slide at the end of the deck (it becomes the shown slide)
+  nextslide                  show the next slide
+  prevslide                  show the previous slide
   undo                       revert the whole previous user request (repeat to go further back)
   done                       finish this request"""
 
@@ -48,6 +51,27 @@ class SlideApp:
             o = dict(o); o.setdefault("id", "s%d" % self.next_id); o.setdefault("text", "")
             self.next_id = max(self.next_id, int(o["id"][1:]) + 1); self.objs.append(o)
         self._turn_snapshot = None; self._turn_log = []; self._turn_text = ""
+        # deck navigation (stickman 7f3b75e): slides in the deck and the shown one
+        self.slides = [{"id": 1}]; self._next_slide = 2; self.current = 0
+
+    def showing(self):
+        if not self.slides: return 0
+        if self.current < 0 or self.current >= len(self.slides): self.current = max(0, len(self.slides) - 1)
+        return self.slides[self.current]["id"]
+
+    def deck_action_js(self, verb):
+        """ONLYOFFICE statements for one deck action (stickman 7f3b75e). AddSlide selects the new slide."""
+        if verb == "addslide":
+            return "var __pres = Api.GetPresentation(); __pres.AddSlide(Api.CreateSlide());"
+        if verb == "nextslide":
+            return ("var __pres = Api.GetPresentation(); var __i = __pres.GetCurSlideIndex();"
+                    " if (__i + 1 >= __pres.GetSlidesCount()) { throw new Error('no next slide'); }"
+                    " if (typeof editor !== 'undefined' && editor && editor.goToPage) editor.goToPage(__i + 1);")
+        if verb == "prevslide":
+            return ("var __pres = Api.GetPresentation(); var __i = __pres.GetCurSlideIndex();"
+                    " if (__i <= 0) { throw new Error('no previous slide'); }"
+                    " if (typeof editor !== 'undefined' && editor && editor.goToPage) editor.goToPage(__i - 1);")
+        raise ValueError("no deck action %s" % verb)
 
     # ---- turn bookkeeping (one user request = one undo step) ----
     def begin_request(self, text):
@@ -58,11 +82,14 @@ class SlideApp:
             self.history.append('"%s" -> %s' % (self._turn_text, "; ".join(self._turn_log)))
         self._turn_snapshot = None
     def _snap(self):
-        return copy.deepcopy((self.objs, self.next_id, self.selection, self.history))
+        return copy.deepcopy((self.objs, self.next_id, self.selection, self.history,
+                              getattr(self, "slides", [{"id": 1}]), getattr(self, "_next_slide", 2), getattr(self, "current", 0)))
 
     # ---- universal API ----
     def state(self):
-        lines = ["PAGE %dx%d pt (one slide). Margin %d." % (W, H, MARGIN), "OBJECTS (back to front):"]
+        sl = getattr(self, "slides", [{"id": 1}])
+        lines = ["PAGE %dx%d pt. SLIDES %d showing=%d (objects below are on the shown slide). Margin %d." % (
+            W, H, len(sl), self.showing() if sl else 1, MARGIN), "OBJECTS (back to front):"]
         if not self.objs: lines.append("  (none)")
         for o in self.objs:
             area = 100.0 * o["w"] * o["h"] / (W * H)
@@ -128,7 +155,9 @@ class SlideApp:
         if v == "done": return "done"
         if v == "undo":
             if not self.turn_stack: raise ValueError("nothing to undo")
-            self.objs, self.next_id, self.selection, self.history = self.turn_stack.pop()
+            snap = self.turn_stack.pop()
+            self.objs, self.next_id, self.selection, self.history = snap[:4]
+            if len(snap) > 4: self.slides, self._next_slide, self.current = snap[4:7]
             self._turn_snapshot = self._snap(); self._turn_log = []
             return "ok: undid the previous request"
         if v == "add":
@@ -148,6 +177,18 @@ class SlideApp:
             else: o["x"], o["y"] = 0, 0; self._anchor(o, kv.get("at", "center"))
             self._clamp(o); self.objs.append(o); self.next_id += 1; self.selection = o["id"]
             self._turn_log.append("add %s %s" % (t, o["id"])); return "ok: created %s" % o["id"]
+        if v == "addslide":
+            self.slides[self.current]["objs"] = self.objs
+            self.slides.append({"id": self._next_slide}); self._next_slide += 1
+            self.current = len(self.slides) - 1; self.objs = []; self.selection = None
+            self._turn_log.append("addslide"); return "ok: %d slides, showing %d" % (len(self.slides), self.showing())
+        if v in ("nextslide", "prevslide"):
+            step = 1 if v == "nextslide" else -1
+            if not 0 <= self.current + step < len(self.slides): raise ValueError("no %s slide" % ("next" if step > 0 else "previous"))
+            self.slides[self.current]["objs"] = self.objs
+            self.current += step; self.selection = None
+            self.objs = self.slides[self.current].pop("objs", [])
+            self._turn_log.append(v); return "ok: showing %d" % self.showing()
         if not pos: raise ValueError("%s needs an object ID" % v)
         o = self.get(pos[0]); self.selection = o["id"]
         cx, cy = o["x"] + o["w"] / 2, o["y"] + o["h"] / 2
@@ -174,7 +215,7 @@ class SlideApp:
         elif v == "delete":
             self.objs.remove(o); self.selection = None
         else:
-            raise ValueError("unknown action %s. %s" % (v, "valid: add scale resize move nudge fill settext delete undo done"))
+            raise ValueError("unknown action %s. %s" % (v, "valid: add scale resize move nudge fill settext delete addslide nextslide prevslide undo done"))
         if v != "delete": self._clamp(o)
         self._turn_log.append(cmd); return "ok: %s %s -> x=%d y=%d w=%d h=%d" % (v, o["id"], o["x"], o["y"], o["w"], o["h"]) if v != "delete" else "ok: deleted %s" % o["id"]
 

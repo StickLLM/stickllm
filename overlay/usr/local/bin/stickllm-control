@@ -1370,6 +1370,75 @@ def llama_service_snapshot(*, stop_loop: bool = True) -> dict:
     return snap
 
 
+def model_unload() -> dict:
+    """Stop the chat llama-server (0.5.6: the user loads and unloads models).
+
+    The app agent shares this server, so it loses its model too; nothing reloads
+    on its own."""
+    r = sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
+    for name in ("model.env", "current.gguf"):
+        try:
+            f = RUN / name
+            if f.exists() or f.is_symlink():
+                f.unlink()
+        except Exception:
+            pass
+    return {"ok": bool(r.get("ok", True)), "unloaded": True}
+
+
+APPAGENT_UNIT = "stickllm-appagent.service"
+APPAGENT_PORT = int(os.environ.get("STICKLLM_APPAGENT_PORT", "8795") or 8795)
+
+
+def _appagent_port_open(port: int = APPAGENT_PORT) -> bool:
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _unit_active(unit: str) -> str:
+    try:
+        p = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True,
+                           timeout=10, check=False)
+        return (p.stdout or "").strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def appagent_status() -> dict:
+    """App agent state for the chat UI. It uses the chat model (one Qwen3.5-4B by
+    default, 0.5.6); it never loads a model itself."""
+    ok, _ = llama_health_ok()
+    state = _unit_active(APPAGENT_UNIT)
+    active = active_model_path()
+    return {
+        "ok": True,
+        "running": state == "active" and _appagent_port_open(),
+        "state": state,
+        "model_loaded": bool(ok),
+        "model": os.path.basename(active) if active else "",
+        "base_model_id": BAKED_4B_ID,
+        "base_model_on_stick": BAKED_4B.is_file(),
+    }
+
+
+def appagent_set(on: bool) -> dict:
+    r = sh(["systemctl", "start" if on else "stop", APPAGENT_UNIT], timeout=60)
+    if on:
+        for _ in range(20):
+            if _appagent_port_open():
+                break
+            time.sleep(0.25)
+    st = appagent_status()
+    st["ok"] = bool(r.get("ok", True)) and (st["running"] if on else True)
+    if not r.get("ok", True):
+        st["error"] = (r.get("stderr") or r.get("error") or "systemctl failed")[-300:]
+    return st
+
+
 def llama_fewer_layers() -> dict:
     """Relaunch with about half the current -ngl. Clears the crash-loop limit."""
     plan = build_offload_plan(honor_override=True)
@@ -4206,6 +4275,14 @@ def handle(action: str, params: dict) -> dict:
         return activate_model(mid, ctx_arg, params.get("kv_type"))
     if action == "llama_fewer_layers":
         return llama_fewer_layers()
+    if action == "model_unload":
+        return model_unload()
+    if action == "appagent_status":
+        return appagent_status()
+    if action == "appagent_load":
+        return appagent_set(True)
+    if action == "appagent_unload":
+        return appagent_set(False)
     if action == "model_delete":
         mid = str(params.get("id") or "").strip()
         if not mid:

@@ -6,7 +6,7 @@ SlideApp's parser computes the target model, the adapter applies the difference 
 then reads the document back. One user request = one undo step (snapshot restore through the same diff path)."""
 import copy, json, re
 from .slides_sim import SlideApp, COLORS, W, H
-from . import manual
+from . import manual, slide_index
 
 EMU = 12700
 GEO = {"rect": "rect", "ellipse": "ellipse", "triangle": "triangle", "textbox": "rect"}
@@ -26,7 +26,7 @@ for (var i = 0; i < a.length; i++) {
   out.push({name: o.GetName(), preset: g.preset || null, fill: f ? (f.type === 'noFill' ? 'none' : rgb(f)) : null,
             x: o.GetPosX(), y: o.GetPosY(), w: o.GetWidth(), h: o.GetHeight(), text: txt.join(' '), tcolor: firstRunFill(j.content)});
 }
-return out;"""
+return {shapes: out, n: P.GetSlidesCount(), cur: (P.GetCurSlideIndex ? P.GetCurSlideIndex() : 0)};"""
 
 FIND_JS = "function F(n){ var a = S.GetAllShapes(); for (var i = 0; i < a.length; i++) if (a[i].GetName() === n) return a[i]; throw new Error('no shape ' + n + ' in the document'); }\n"
 
@@ -70,17 +70,23 @@ def diff_js(before, after):
 class OOSlides(SlideApp):
     name = "onlyoffice"
     description = "ONLYOFFICE presentation (real document via the editor plugin)"
-    verbs = ["add", "scale", "resize", "move", "nudge", "fill", "settext", "delete"]
+    verbs = ["add", "scale", "resize", "move", "nudge", "fill", "settext", "delete", "addslide", "nextslide", "prevslide"]
 
     def __init__(self, bridge, start=None):
-        SlideApp.__init__(self, start or []); self.bridge = bridge; self.manual = manual("MANUAL_slides.md")
+        SlideApp.__init__(self, start or []); self.bridge = bridge; self.manual = manual("MANUAL_slides.md"); self.retrieval = slide_index(self.verbs)
         if start is not None:   # test hook: make the real slide match the scenario start
             self.bridge.run("S.RemoveAllObjects();\n" + diff_js([], self.objs).replace("return 'ok';", "") + "return 'ok';")
         self.read()
 
     # ---- read the real document ----
     def read(self):
-        shapes = self.bridge.run(READ_JS); objs = []; rename = []
+        got = self.bridge.run(READ_JS); objs = []; rename = []
+        shapes = got.get("shapes", []) if isinstance(got, dict) else got
+        if isinstance(got, dict) and isinstance(got.get("n"), int) and got["n"] >= 1:
+            n = got["n"]; cur = got.get("cur") if isinstance(got.get("cur"), int) else 0
+            if len(self.slides) != n:
+                self.slides = [{"id": i + 1} for i in range(n)]; self._next_slide = n + 1
+            self.current = max(0, min(cur, n - 1))
         for s in shapes:
             pre = s.get("preset") or "rect"
             t = {"ellipse": "ellipse", "triangle": "triangle"}.get(pre, "rect")
@@ -115,8 +121,33 @@ class OOSlides(SlideApp):
         try: self.read()
         except Exception as e: return False, "ERROR: cannot read the document (%s)" % e
         before = copy.deepcopy(self.objs); saved = copy.deepcopy((self.next_id, self.selection, self.history, self.turn_stack, self._turn_log))
+        n0, cur0 = len(self.slides), self.current
         ok, msg = SlideApp.do(self, cmd)
         if not ok or msg == "done": return ok, msg
+        target_objs = copy.deepcopy(self.objs)
+        if (len(self.slides), self.current) != (n0, cur0):
+            # deck action, or an undo that crosses slides: change the deck first, then the shapes
+            want_n, want_cur = len(self.slides), self.current
+            js_deck = []
+            if want_n > n0:
+                js_deck.append(self.deck_action_js("addslide") * (want_n - n0))
+            elif want_n < n0:
+                js_deck.append("var __pres = Api.GetPresentation(); for (var __k = %d; __k > %d; __k--) __pres.GetSlideByIndex(__k - 1).Delete();" % (n0, want_n))
+            js_deck.append("if (typeof editor !== 'undefined' && editor && editor.goToPage) editor.goToPage(%d);" % want_cur)
+            try:
+                self.bridge.run("".join(js_deck) + " return 'ok';")
+                self.read()
+            except Exception as e:
+                self.next_id, self.selection, self.history, self.turn_stack, self._turn_log = saved
+                try: self.read()
+                except Exception: self.objs = before
+                return False, "ERROR: the editor refused the change (%s)" % e
+            if self.current != want_cur or len(self.slides) != want_n:
+                msg += " (warning: editor shows slide %d of %d)" % (self.current + 1, len(self.slides))
+            if not cmd.strip().lower().startswith("undo"):
+                return True, msg
+            # undo: restore the snapshot objects on the slide now shown
+            before = copy.deepcopy(self.objs); self.objs = target_objs
         try:
             self.bridge.run(diff_js(before, self.objs)); target = {o["id"]: o for o in self.objs}; self.read()
         except Exception as e:

@@ -303,6 +303,10 @@ pick_display_drm() {
 ensure_nvidia_kms() {
   local modeset="" has_conn=0
   has_nvidia_drm || return 0
+  # 0.5.6: once per boot. A headless box (no monitor) used to reload
+  # nvidia_drm — stopping the model — on every kiosk restart.
+  [[ -e "$RUN/kiosk-kms-tried" ]] && return 0
+  touch "$RUN/kiosk-kms-tried" 2>/dev/null || true
   for s in /sys/class/drm/card*-*/status; do
     [[ -f "$s" ]] || continue
     if [[ "$(tr -d '[:space:]' <"$s" 2>/dev/null || true)" == "connected" ]]; then
@@ -1115,6 +1119,32 @@ modprobe virtio_gpu 2>/dev/null || true
 # Monitor on 3090: modeset=0 hides connectors — enable KMS before pick.
 ensure_nvidia_kms || fail_note "STICKLLM_KIOSK_NVIDIA_KMS_WARN"
 sleep 1
+
+# 0.5.6: no monitor connected (headless server / BMC): do not fail, so systemd
+# does not restart the kiosk in a loop. Wait quietly and start when a monitor
+# is plugged in.
+any_display_connected() {
+  local conn
+  for conn in /sys/class/drm/card*-*/status; do
+    [[ -f "$conn" ]] || continue
+    [[ "$(tr -d '[:space:]' <"$conn" 2>/dev/null || true)" == "connected" ]] && return 0
+  done
+  return 1
+}
+if ! any_display_connected; then
+  _w=0
+  while ! any_display_connected && [[ "$_w" -lt 12 ]]; do sleep 1; _w=$((_w + 1)); done
+fi
+if ! any_display_connected; then
+  fail_note "STICKLLM_KIOSK_NO_DISPLAY waiting"
+  serial_note "STICKLLM_KIOSK_NO_DISPLAY waiting for a monitor (no restart loop)"
+  restore_display_console "no-display"
+  paint "  No monitor connected. The browser UI works from a phone or PC on the LAN."
+  paint "  This screen starts when a monitor is plugged in."
+  while ! any_display_connected; do sleep 15; done
+  fail_note "STICKLLM_KIOSK_DISPLAY_APPEARED"
+  sleep 2
+fi
 
 # Restore fbcon so status text is visible while we pick DRM, then release in try_launch.
 restore_display_console "pre-launch"

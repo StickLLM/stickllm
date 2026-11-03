@@ -214,6 +214,15 @@ details.reasoning>:not(summary){border-left:2px solid var(--line,rgba(127,127,12
 .appTarget[hidden]{display:none}
 .appTarget.on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);background:var(--accent-soft)}
 .appTarget option{color:var(--ink, #111);background:var(--panel, #fff)}
+.appAgentRow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:2px 8px 4px;font-size:12.5px}
+.appAgentRow .toggleChip{font-size:12px}
+.appAgentRow .appTarget{cursor:default;max-width:none}
+.appAgentRow .appTarget button{border:0;background:none;color:inherit;cursor:pointer;padding:0 2px}
+.appAgentPick{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px}
+.appAgentPick[hidden]{display:none}
+.aaChip{border:1px solid var(--line);background:none;border-radius:99px;padding:2px 8px;font-size:12px;color:var(--muted);cursor:pointer}
+.aaChip.on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);background:var(--accent-soft)}
+#appAgentSearch{border:1px solid var(--line);background:none;border-radius:99px;padding:2px 8px;font-size:12px;color:inherit;width:9em}
 .appUndoBtn{border:1px solid var(--line);background:none;border-radius:8px;padding:3px 10px;font-size:12.5px;color:var(--ink2, inherit);cursor:pointer}
 .appUndoBtn:hover{border-color:var(--accent);color:var(--accent)}
 .sendBtn{position:relative;z-index:77;pointer-events:auto;width:36px;height:36px;border-radius:10px;border:0;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;cursor:pointer;margin-left:4px}
@@ -645,3 +654,7 @@ input.secret { -webkit-text-security: disc; }
 /* v0.5.4: AVX / VRAM warning under the hardware line */
 .hwWarn{display:block;margin-top:4px;color:#f5b041;font-weight:600}
 .unlockMsg{flex-basis:100%;color:var(--danger,#e5484d);font-weight:600}
+
+/* 0.5.6: "Vault is on another computer" actions under the unlock form */
+.vaultOther { display: flex; gap: 8px; flex-wrap: wrap; flex-basis: 100%; }
+.vaultOther[hidden] { display: none; }

@@ -127,12 +127,14 @@ systemctl mask docker.service 2>/dev/null || true
 systemctl mask docker.socket 2>/dev/null || true
 systemctl enable stickllm-agent.service || true
 systemctl enable stickllm-files.service || true
-systemctl enable stickllm-appagent.service || true
-# App agent model (DynamicUser): only when the 4B GGUF is baked in; readable by everyone.
+# 0.5.6: nothing auto-loads. The app agent and its (shared chat) model are loaded by
+# the user, so neither app agent unit is enabled at boot.
+systemctl disable stickllm-appagent.service 2>/dev/null || true
+systemctl disable stickllm-appagent-llm.service 2>/dev/null || true
+# Base model (Qwen3.5-4B): readable by the llama and DynamicUser services.
 if [[ -f /opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf ]]; then
   chmod 755 /opt/stickllm/models/appagent
   chmod 644 /opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf
-  systemctl enable stickllm-appagent-llm.service || true
 fi
 
 # NM system-connections must be 600

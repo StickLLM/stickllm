@@ -168,6 +168,7 @@ test -f config/includes.chroot/usr/local/lib/stickllm_addons.py
 test -f config/includes.chroot/etc/systemd/system/stickllm-addon@.service
 test -f config/includes.chroot/etc/systemd/system/stickllm-addon-install@.service
 test -f config/includes.chroot/usr/local/share/stickllm/addons/node-red-settings.js
+test -f config/includes.chroot/usr/local/share/stickllm/addons/node-red-autoreload.js
 for pin in tasks-md paisa trilium node-red comfyui; do
   grep -q '^amd64_digest=sha256:' "config/includes.chroot/usr/local/share/stickllm/addons/${pin}.pin"
 done

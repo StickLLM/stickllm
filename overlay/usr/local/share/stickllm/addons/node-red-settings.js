@@ -17,6 +17,9 @@ module.exports = {
     palette: { editable: false },
     projects: { enabled: false },
     tours: false,
+    // 0.5.6: StickLLM's own script (not part of Node-RED): reloads the
+    // editor after the app agent changes the flows, when nothing is unsaved.
+    page: { scripts: ["/data/stickllm-autoreload.js"] },
   },
   externalModules: {
     autoInstall: false,

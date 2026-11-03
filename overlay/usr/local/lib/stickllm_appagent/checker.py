@@ -90,6 +90,111 @@ class TurnLog:
     def last_undone(self):
         return next((t for t in reversed(self.turns) if t.undone), None)
 
+_HTTP_IN = ("http in", "http-in")
+_HTTP_OUT = ("http response", "http-response")
+
+def _flow_kinds(sim):
+    flows = getattr(getattr(sim, "nr", None), "flows", None)
+    if flows is None:
+        kinds = getattr(sim, "kinds", None)
+        if callable(kinds): kinds = kinds()
+        return dict(kinds or {})
+    return {n["id"]: n.get("type", "") for n in flows if n.get("type") != "tab"}
+
+def _reaches(src, edges, goals):
+    seen = set(); stack = [b for a, b in edges if a == src]
+    while stack:
+        n = stack.pop()
+        if n in seen: continue
+        seen.add(n)
+        if n in goals: return True
+        stack.extend(b for a, b in edges if a == n)
+    return False
+
+def _dangling(src, edges):
+    outs = {}
+    for a, b in edges: outs.setdefault(a, []).append(b)
+    seen, stack, tails = set(), [src], []
+    while stack:
+        n = stack.pop()
+        if n in seen: continue
+        seen.add(n)
+        nxt = outs.get(n) or []
+        if nxt: stack.extend(nxt)
+        else: tails.append(n)
+    return sorted(tails)
+
+def _added(plan):
+    rows = []
+    for c in plan:
+        if verb(c) != "add": continue
+        pos = positionals(c)
+        if len(pos) >= 2: rows.append((pos[0], pos[1].lower()))
+    return rows
+
+def _senders(sim, kinds):
+    """nodes that have an output port. debug and http-response cannot be the source of a wire."""
+    flows = getattr(getattr(sim, "nr", None), "flows", None)
+    if not flows: return {i for i, k in kinds.items() if k not in _HTTP_OUT}
+    return {n["id"] for n in flows if n.get("type") != "tab" and n.get("wires")}
+
+def _chain_for(src, added, kinds):
+    """plan order from this http-in through the following new nodes, stopping at the next http-in or an http-response."""
+    chain = None
+    for i, (nid, typ) in enumerate(added):
+        if nid == src and typ in _HTTP_IN:
+            chain = [nid]
+            for nid2, typ2 in added[i + 1:]:
+                if typ2 in _HTTP_IN: break
+                if nid2 not in kinds: continue
+                chain.append(nid2)
+                if typ2 in _HTTP_OUT: break
+            break
+    if not chain: chain = [src]
+    else: chain = [n for n in chain if n in kinds] or [src]
+    if kinds.get(chain[-1]) not in _HTTP_OUT:
+        added_ids = [nid for nid, _ in added]
+        responses = [i for i, k in kinds.items() if k in _HTTP_OUT and i not in chain]
+        responses.sort(key=lambda i: (i not in added_ids, added_ids.index(i) if i in added_ids else 10 ** 9, i))
+        if responses: chain.append(responses[0])
+    return chain
+
+def _wire_words(pairs):
+    return ", ".join("`wire %s %s`" % (a, b) for a, b in pairs)
+
+def http_in_wire_complaints(sim, plan):
+    """every http-in must reach an http-response. The complaint names the wire steps to add."""
+    kinds = _flow_kinds(sim)
+    http_ins = [i for i, k in kinds.items() if k in _HTTP_IN]
+    if not http_ins: return []
+    edges = set(sim.edges()) if hasattr(sim, "edges") else set()
+    senders = _senders(sim, kinds)
+    added = _added(plan)
+    added_ids = [nid for nid, _ in added]
+    goals = {i for i, k in kinds.items() if k in _HTTP_OUT}
+    http_ins.sort(key=lambda i: (i not in added_ids, added_ids.index(i) if i in added_ids else 10 ** 9, i))
+    out = []
+    for src in http_ins:
+        if _reaches(src, edges, goals): continue
+        chain = _chain_for(src, added, kinds)
+        resp = chain[-1] if kinds.get(chain[-1]) in _HTTP_OUT else None
+        missing = [(a, b) for a, b in zip(chain, chain[1:]) if (a, b) not in edges and a in senders]
+        # a flow that already leaves the http-in should be extended from its open end, not bridged again from the start
+        if resp and missing and len(chain) == 2 and any(a == src for a, _ in edges):
+            tails = [t for t in _dangling(src, edges) if t != src and t in senders]
+            if tails: missing = [(t, resp) for t in tails if (t, resp) not in edges]
+        if resp:
+            text = _wire_words(missing) or ("`wire %s %s`" % (src, resp))
+            out.append("`%s` is an http-in but its wires do not reach an http-response. Add %s." % (src, text))
+        else:
+            tail = chain[-1] if chain[-1] in senders else src
+            if missing:
+                out.append("`%s` is an http-in but its wires do not reach an http-response. Add %s. Add an http-response and `wire %s <http-response>`." % (
+                    src, _wire_words(missing), tail))
+            else:
+                out.append("`%s` is an http-in but its wires do not reach an http-response. Add an http-response and `wire %s <http-response>`." % (src, tail))
+    return out
+
 class PlanChecker:
     def __init__(self, manual, verbs):
         self.cues, self.manual_cues = from_manual(manual); self.verbs = set(verbs) | {"undo"}
@@ -108,11 +213,12 @@ class PlanChecker:
         for c in plan:
             if verb(c) not in self.verbs:
                 out.append("`%s`: unknown action '%s'. Valid actions: %s." % (c, verb(c), ", ".join(sorted(self.verbs)))); break
-        sim = None
+        sim = None; sim_ok = False
         if hasattr(app, "simulate") and not out:
-            res, sim = app.simulate(plan)
+            res, sim = app.simulate(plan); sim_ok = True
             for c, (ok, msg) in zip(plan, res):
                 if not ok:
+                    sim_ok = False
                     out.append("Step `%s` fails on the current state: %s" % (c, msg.replace("ERROR: ", ""))); break
         # 2. undo must be requested (an undo request, a correction, or 'instead' after a change that must not stay)
         if undos and not (is_undo_req or is_correct or is_instead):
@@ -195,4 +301,7 @@ class PlanChecker:
                 if outs and not ins:
                     pv = sorted(a for a, b2 in e0 if b2 in outs and a in ids)
                     if pv: out.append("'between': %s sends to %s but gets no input. Wire %s into it." % (n, ", ".join(outs), ", ".join(pv)))
+        # 9. Node-RED only: after a successful dry run, every http-in must reach an http-response along the wires
+        if sim_ok and getattr(app, "name", "") == "nodered":
+            out.extend(http_in_wire_complaints(sim, plan))
         return list(dict.fromkeys(out))

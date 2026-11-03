@@ -24,7 +24,7 @@ UNIT = ROOT / "overlay" / "etc" / "systemd" / "system" / "stickllm-appagent.serv
 WRAPPER = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-appagent"
 BUILD = ROOT / "scripts" / "lib" / "docker-build-live.sh"
 HOOK = ROOT / "live-build" / "hooks" / "normal" / "0100-stickllm-setup.hook.chroot"
-CHECKER_SHA = "6efd3e887772abba2dbb1ebf8228c5cdc08d67ad245118a3d6e8401c476188fa"
+CHECKER_SHA = "085e2a4058fee59d46f2a7a245734eecaaf66a683937425bd7a77129aec2ccff"  # stickman 7f3b75e service/checker.py (http-in -> http-response wire check)
 GUID = "asc.{5A1C0E2B-7D4F-4E8A-9B6C-511C4A11A0E1}"
 
 
@@ -84,7 +84,10 @@ def test_packaging():
     assert "ExecStart=/usr/local/bin/stickllm-appagent" in unit and "DynamicUser=yes" in unit
     wrap = WRAPPER.read_text(encoding="utf-8")
     assert "--host 127.0.0.1" in wrap and "8795" in wrap
-    assert "systemctl enable stickllm-appagent.service" in HOOK.read_text(encoding="utf-8")
+    hook = HOOK.read_text(encoding="utf-8")
+    # 0.5.6: nothing auto-loads; the user loads the app agent from the chat page
+    assert "systemctl enable stickllm-appagent.service" not in hook
+    assert "systemctl disable stickllm-appagent.service" in hook
     assert "stickllm_appagent/service.py" in BUILD.read_text(encoding="utf-8")
 
 
@@ -160,24 +163,49 @@ LLM_UNIT = ROOT / "overlay" / "etc" / "systemd" / "system" / "stickllm-appagent-
 LLM_WRAPPER = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-appagent-llm"
 
 
-def test_appagent_has_its_own_small_model_server():
+def test_appagent_shares_the_chat_model_and_helper_is_optional():
+    """0.5.6: one Qwen3.5-4B for chat AND app control. The app agent talks to the chat llama-server;
+    the separate 8796 helper stays shipped for advanced use but is never enabled or pulled in."""
+    wrap = WRAPPER.read_text(encoding="utf-8")
+    assert "STICKLLM_LLAMA_PORT:-8080" in wrap and "STICKLLM_APPAGENT_LLM_PORT" not in wrap
     src = LLM_WRAPPER.read_text(encoding="utf-8")
     assert "/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf" in src
     assert "--host 127.0.0.1" in src and "8796" in src and "--jinja" in src
-    assert "--n-gpu-layers 99" in src and "--n-gpu-layers 0" in src  # GPU when VRAM is free, else CPU
+    assert "--n-gpu-layers 99" in src and "--n-gpu-layers 0" in src
+    assert "llama-server-vulkan" in src and "mem_info_vram_total" in src  # AMD/Intel via Vulkan
     unit = LLM_UNIT.read_text(encoding="utf-8")
     assert "ExecStart=/usr/local/bin/stickllm-appagent-llm" in unit and "DynamicUser=yes" in unit
-    assert "ConditionPathExists=/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf" in unit
     agent_unit = UNIT.read_text(encoding="utf-8")
-    assert "Wants=stickllm-appagent-llm.service" in agent_unit
-    assert "8796" in WRAPPER.read_text(encoding="utf-8")
+    assert "stickllm-appagent-llm" not in agent_unit.split("[Service]")[0].replace("Description", "")
+    assert "Wants=stickllm-appagent-llm" not in agent_unit
     hook = HOOK.read_text(encoding="utf-8")
-    assert "systemctl enable stickllm-appagent-llm.service" in hook and "/usr/local/bin/stickllm-appagent-llm" in hook
+    assert "systemctl enable stickllm-appagent-llm.service" not in hook
     build = BUILD.read_text(encoding="utf-8")
     assert "models/appagent/${AA_GGUF}" in build and "sha256sum -c" in build
     assert "25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c" in build
     gw = GATEWAY.read_text(encoding="utf-8")
     assert "8796" not in gw.replace("APPAGENT_PORT = 8795", "")  # not exposed by the gateway
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash")
+def test_appagent_llm_launcher_picks_vulkan_for_amd(tmp_path):
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    fake = tmp_path / "vk"
+    fake.write_text("#!/bin/sh\necho VK \"$@\"\n")
+    fake.chmod(0o755)
+    drm = tmp_path / "drm"
+    for i, (tot, used) in enumerate(((8 << 30, 7 << 30), (16 << 30, 1 << 30))):
+        d = drm / ("card%d" % i) / "device"
+        d.mkdir(parents=True)
+        (d / "mem_info_vram_total").write_text(str(tot))
+        (d / "mem_info_vram_used").write_text(str(used))
+    env = {"PATH": "/usr/bin:/bin", "STICKLLM_APPAGENT_MODEL": str(model), "STICKLLM_LLAMA_VULKAN": str(fake),
+           "STICKLLM_LLAMA_CUDA": str(tmp_path / "missing"), "STICKLLM_LLAMA_CPU": str(tmp_path / "missing"),
+           "STICKLLM_SYSFS_DRM": str(drm), "STICKLLM_LIB_VULKAN": str(tmp_path)}
+    out = subprocess.run(["bash", str(LLM_WRAPPER)], capture_output=True, text=True, env=env, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.startswith("VK ") and "--device Vulkan1" in out.stdout and "--n-gpu-layers 99" in out.stdout
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="bash")
@@ -188,7 +216,8 @@ def test_appagent_llm_launcher_picks_cpu_without_gpu(tmp_path):
     fake.write_text("#!/bin/sh\necho \"$@\"\n")
     fake.chmod(0o755)
     env = {"PATH": "/usr/bin:/bin", "STICKLLM_APPAGENT_MODEL": str(model), "STICKLLM_LLAMA_CPU": str(fake),
-           "STICKLLM_LLAMA_CUDA": str(tmp_path / "missing"), "STICKLLM_LIB_CPU": str(tmp_path)}
+           "STICKLLM_LLAMA_CUDA": str(tmp_path / "missing"), "STICKLLM_LIB_CPU": str(tmp_path),
+           "STICKLLM_LLAMA_VULKAN": str(tmp_path / "missing")}
     out = subprocess.run(["bash", str(LLM_WRAPPER)], capture_output=True, text=True, env=env, timeout=30)
     assert out.returncode == 0, out.stderr
     assert "--n-gpu-layers 0" in out.stdout and "--port 8796" in out.stdout and "--host 127.0.0.1" in out.stdout

@@ -192,7 +192,7 @@ def test_unlock_no_flash_and_hidden_form_error():
     assert "if (vaultUnlocking) return false;" in js
     assert "async function focusVaultUnlock()" in js
     assert "The unlock form is not available." in js
-    assert 'unlockMessage("Unlock failed: " + err.message);' in js
+    assert 'unlockMessage("Unlock failed: " + raw);' in js   # 0.5.6: raw = err.message
     html = _text(ROOT / "ui" / "index.html")
     assert '<small class="unlockMsg" id="unlockMsg" role="alert" hidden></small>' in html
     assert "No vault set up" not in html

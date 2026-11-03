@@ -53,7 +53,7 @@ def posix(p: Path) -> str:
 
 @unittest.skipUnless(BASH, "bash not available")
 class UnlockHostMountTests(unittest.TestCase):
-    def run_unlock(self, drive_present: bool):
+    def run_unlock(self, drive_present: bool, tagged: str = "", this: str = "aa11"):
         text = VAULT.read_text(encoding="utf-8")
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -62,9 +62,13 @@ class UnlockHostMountTests(unittest.TestCase):
         meta = tmp / "meta"
         meta.mkdir()
         (meta / "container").write_text(blob + "\n", encoding="utf-8")
+        if tagged:
+            (meta / "machine_id").write_text(tagged + "\n", encoding="utf-8")
+            (meta / "machine_label").write_text("Other PC\n", encoding="utf-8")
         name = LEAF if drive_present else "nvme0n1p2-nvme0n1p2"
         stubs = f"""
 set -euo pipefail
+export STICKLLM_MACHINE_ID='{this}' STICKLLM_MACHINE_LABEL='This PC'
 HOST_MNT_ROOT='{posix(host)}'
 META_DIR='{posix(meta)}'
 LOG='{posix(tmp)}/log'
@@ -96,6 +100,11 @@ refresh_gateway_vault_view() {{ :; }}
         script = "\n".join([
             func(text, "die"),
             stubs,
+            "_THIS_MACHINE=''; _THIS_MACHINE_LABEL=''",
+            func(text, "this_machine"),
+            func(text, "this_machine_id"),
+            func(text, "tag_meta_machine"),
+            func(text, "vault_machine_match"),
             func(text, "ensure_host_mount_for_blob"),
             func(text, "cmd_unlock"),
             "STICKLLM_VAULT_PASS=test-passcode cmd_unlock",
@@ -105,7 +114,26 @@ refresh_gateway_vault_view() {{ :; }}
         p = subprocess.run([BASH, posix(sh)], capture_output=True, text=True, timeout=60)
         log_path = tmp / "log"
         log = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+        self.meta = meta
         return p, log
+
+    def test_vault_on_another_computer_fails_fast(self):
+        p, log = self.run_unlock(drive_present=True, tagged="bb22", this="aa11")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("VAULT_OTHER_COMPUTER: Vault is on another computer (Other PC)", p.stderr)
+        self.assertNotIn("hostmount", log)      # never probes this computer's drives
+        self.assertNotIn("luksopen", log)
+        self.assertNotIn("bump_fail", log)      # not a wrong passcode
+
+    def test_same_computer_tag_unlocks(self):
+        p, log = self.run_unlock(drive_present=True, tagged="aa11", this="aa11")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("luksopen", log)
+
+    def test_untagged_vault_is_tagged_on_unlock(self):
+        p, log = self.run_unlock(drive_present=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((self.meta / "machine_id").read_text().strip(), "aa11")
 
     def test_unmounted_drive_is_mounted_and_unlock_proceeds(self):
         p, log = self.run_unlock(drive_present=True)
