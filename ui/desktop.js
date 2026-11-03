@@ -1007,7 +1007,6 @@
     catalog = [];
     iconSig = "";
     browserWins = [];
-    settingsOpen = false;
     window.removeEventListener("resize", onResize);
     document.body.classList.remove("deskMode", "deskHasActive");
     syncLayoutSeg();
