@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Pick a console font for the StickLLM loading screen (0.5.8).
+
+Prints "unicode <font>" when a font with every banner glyph was loaded on the
+tty, or "ascii" when none was found (the screen then uses plain # blocks).
+Usage: stickllm-console-font /dev/tty1
+"""
+import glob
+import gzip
+import os
+import subprocess
+import sys
+
+NEED = "█╗╔═║╝╚…✓·"
+PREFER = [
+    "Uni3-TerminusBold20x10", "Uni2-TerminusBold20x10",
+    "Uni3-Terminus20x10", "Uni2-Terminus20x10",
+    "Uni3-TerminusBold16", "Uni2-TerminusBold16",
+    "Uni3-Terminus16", "Uni2-Terminus16",
+]
+DIR = "/usr/share/consolefonts"
+
+
+def unicode_set(path):
+    try:
+        data = gzip.open(path).read() if path.endswith(".gz") else open(path, "rb").read()
+    except Exception:
+        return set()
+    out = set()
+    if data[:4] == b"\x72\xb5\x4a\x86":
+        hsz = int.from_bytes(data[8:12], "little")
+        flags = int.from_bytes(data[12:16], "little")
+        n = int.from_bytes(data[16:20], "little")
+        csz = int.from_bytes(data[20:24], "little")
+        if not flags & 1:
+            return out
+        tab = data[hsz + n * csz:]
+        for entry in tab.split(b"\xff"):
+            head = entry.split(b"\xfe")[0]
+            try:
+                out.update(head.decode("utf-8"))
+            except UnicodeDecodeError:
+                pass
+        return out
+    if data[:2] == b"\x36\x04":
+        mode, csz = data[2], data[3]
+        n = 512 if mode & 1 else 256
+        if not mode & 6:
+            return out
+        tab = data[4 + n * csz:]
+        for i in range(0, len(tab) - 1, 2):
+            u = int.from_bytes(tab[i:i + 2], "little")
+            if u < 0xFFFE:
+                out.add(chr(u))
+    return out
+
+
+def main():
+    tty = sys.argv[1] if len(sys.argv) > 1 else "/dev/tty1"
+    cands = []
+    for name in PREFER:
+        for ext in (".psf.gz", ".psf", ".psfu.gz"):
+            p = os.path.join(DIR, name + ext)
+            if os.path.isfile(p):
+                cands.append(p)
+    cands += sorted(glob.glob(os.path.join(DIR, "*Terminus*.psf.gz")))
+    for p in cands:
+        if set(NEED) <= unicode_set(p):
+            r = subprocess.run(["setfont", "-C", tty, p], capture_output=True, timeout=10)
+            if r.returncode == 0:
+                print("unicode " + os.path.basename(p))
+                return 0
+    print("ascii")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

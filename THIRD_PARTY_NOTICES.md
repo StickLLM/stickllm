@@ -60,7 +60,11 @@ linked against Xfce or Xorg. Licence texts ship as
 These are used as unmodified Debian binaries, with their source available from
 the Debian archive (`apt-get source <package>`). Xfce's recommended packages
 (xfce4-terminal, thunar, xfce4-appfinder, ...) are **not** installed. 0.5.7
-removed sway, swaybg, cage, weston and wlroots from the image.
+removed sway, swaybg, cage, weston and wlroots from the image. 0.5.8 adds
+back `cage` (MIT, https://github.com/cage-kiosk/cage) with `wlroots` (MIT) and
+`xwayland` (MIT) for the fallback browser kiosk only, and `kbd` (GPL-2+) and
+`console-setup-linux` (GPL-2+; Terminus font, OFL-1.1) for the console font.
+sway stays removed.
 
 `grim` (MIT) was used only to take screenshots in a test VM; it is not in the
 image's package list.

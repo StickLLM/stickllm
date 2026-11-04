@@ -953,6 +953,16 @@ try_launch() {
         rc=72
       fi
       ;;
+    cage)
+      # 0.5.8: pre-0.5.6 full-screen kiosk (cage + browser), only when Xfce failed.
+      ensure_seatd 2>/dev/null || true
+      export WLR_RENDERER="${renderer}"
+      echo "=== cage launch $(date -Is 2>/dev/null || date) renderer=$renderer user=$KIOSK_USER ===" >>"$FAIL_LOG" 2>&1 || true
+      # cage refuses uid 0 -> drop_root=1.
+      # shellcheck disable=SC2086
+      _run 1 cage -s -- $app 2>&1 | kiosk_fail_filter
+      rc=${PIPESTATUS[0]}
+      ;;
     *)
       rc=127
       ;;
@@ -1007,7 +1017,7 @@ hold_error() {
 # --- main ---
 # Chat (stickllm.chat) shares the on-stick browser; local/kiosk are aliases.
 CHAT_MODE=0
-STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.5.7)"
+STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.5.8)"
 if grep -Eqw 'stickllm\.chat' /proc/cmdline 2>/dev/null; then
   CHAT_MODE=1
 elif ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then
@@ -1156,6 +1166,18 @@ for drm in "${drm_list[@]}"; do
   serial_note "STICKLLM_KIOSK_XFCE_FAIL drm=$(basename "$drm")"
 done
 
+# 0.5.8: Xfce failed everywhere -> full-screen browser kiosk (cage), as before 0.5.6.
+if command -v cage >/dev/null 2>&1; then
+  for drm in "${drm_list[@]}"; do
+    for _r in pixman gles2; do
+      fail_note "STICKLLM_KIOSK_CAGE_FALLBACK drm=$drm renderer=$_r"
+      serial_note "STICKLLM_KIOSK_CAGE_FALLBACK drm=$(basename "$drm") renderer=$_r"
+      run_stack_forever "cage+$BROWSER/$_r@$(basename "$drm")" "$drm" "$_r" cage "$BROWSER" \
+        && exit 0
+    done
+  done
+fi
+
 n="$(bump_fails)"
 collect_drm_diag
-hold_error "Xfce/Xorg did not start on ${drm_list[*]} (attempt $n)."
+hold_error "Xfce/Xorg and the browser kiosk (cage) did not start on ${drm_list[*]} (attempt $n)."

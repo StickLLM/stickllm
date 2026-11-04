@@ -134,6 +134,53 @@ ssh_password_line() {
   fi
 }
 
+VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.5.8)"
+
+# 0.5.8: Terminal mode never depends on the loading screen, the kiosk, Xorg,
+# the gateway or llama. Paint the SSH info into the login banner (/etc/issue.d)
+# and hand tty1 to a normal getty login straight away.
+term_fast_path() {
+  local pass="" i
+  clear_tty
+  printf '\n  StickLLM %s - Terminal\n\n  Starting the console...\n' "$VERSION_LABEL" >>"$TTY" 2>/dev/null || true
+  serial_only "STICKLLM_TERM_FAST_PATH"
+  systemctl start --no-block stickllm-ssh.service 2>/dev/null || true
+  # Web UI is optional in Terminal: start it, never wait for it.
+  systemctl start --no-block stickllm-control.service stickllm-ui.service 2>/dev/null || true
+  for i in $(seq 1 30); do
+    pass="$(tr -d '[:space:]' <"$RUN/ssh-password.txt" 2>/dev/null || true)"
+    [[ -n "$pass" ]] && break
+    sleep 1
+  done
+  mkdir -p /etc/issue.d 2>/dev/null || true
+  local issue=/etc/issue.d/50-stickllm-terminal.issue
+  (
+    umask 077
+    {
+      printf '\n  StickLLM %s - Terminal READY\n\n' "$VERSION_LABEL"
+      printf '  LAN IP:    \\4\n'
+      printf '  SSH:       ssh stickllm@\\4\n'
+      printf '  user:      stickllm\n'
+      if [[ -n "$pass" ]]; then
+        printf '  password:  %s\n' "$pass"
+      else
+        printf '  password:  not ready yet (stickllm-ssh.service); reboot to retry\n'
+      fi
+      printf '  Log in below with the same user and password.\n'
+      printf '  Web UI (if it started): http://\\4/   WiFi: stickllm-wifi-setup\n\n'
+    } >"$issue"
+  ) 2>/dev/null || true
+  chmod 600 "$issue" 2>/dev/null || true
+  printf 'TERMINAL\n' >"$RUN/boot-phase.txt" 2>/dev/null || true
+  serial_only "STICKLLM_TERM_READY pass=$([[ -n "$pass" ]] && echo yes || echo no)"
+  # Conflicts=getty@tty1: starting it ends this unit (exit 0, no restart).
+  systemctl start --no-block getty@tty1.service 2>/dev/null || true
+  exit 0
+}
+if [[ "$mode" == "ssh" ]]; then
+  term_fast_path
+fi
+
 PAIR_STATE="none" # none | code | paired | waiting_ui
 PAIR_CODE=""
 SCHEME="http"
@@ -388,12 +435,15 @@ partials = []
 for pattern in ("/mnt/stickllm-data/models/*.partial", "/opt/stickllm/models/*.partial"):
     for p in glob.glob(pattern):
         try:
-            partials.append(os.path.getsize(p))
+            st = os.stat(p)
+            # 0.5.8: a .partial nobody wrote to for 5 min is a dead download.
+            if __import__("time").time() - st.st_mtime < 300:
+                partials.append(st.st_size)
         except OSError:
             pass
 if partials and done < max(partials):
     done = max(partials)
-if state in ("downloading", "starting", "verifying", "failed") or partials:
+if state in ("downloading", "starting", "verifying") or partials:
     if state == "verifying":
         print(f"Downloading model… verifying {name}")
     elif state == "failed":
@@ -427,19 +477,20 @@ detect_phase() {
 
   refresh_model_label
 
-  dl="$(download_phase_msg)"
-  if [[ -n "${dl:-}" ]]; then
-    echo "$dl"
-    return
-  fi
-
-  # Local/Chat: gateway UI is enough — do not block on llama /health.
+  # Local/Chat: gateway UI is enough — never block on llama /health or on a
+  # model download (0.5.8: a stale .partial on DATA kept tty1 on loading forever).
   if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     if [[ "$ui_ok" -eq 1 ]]; then
       echo "READY"
       return
     fi
     echo "STICKLLM UI Loading"
+    return
+  fi
+
+  dl="$(download_phase_msg)"
+  if [[ -n "${dl:-}" ]]; then
+    echo "$dl"
     return
   fi
 
@@ -674,41 +725,100 @@ PY
   fi
 }
 
-# 0.5.7: desktop modes (Chat/Local) get a plain loading screen: version,
-# elapsed timer and only status lines that are true right now. No pair code,
-# no passwords (those are on the desktop, F10 / F9). The model line appears
-# only when stickllm-llama is really loading or really answering.
-VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.5.7)"
-desktop_mode() { [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; }
+# 0.5.8: desktop modes (Chat/Local/Test) get the banner loading screen:
+# version, mm:ss timer and only status lines that are true right now. Passwords
+# stay behind F10 / F9 except in Test (menu 3), which shows SSH like 0.5.6.
+# After FALLBACK_SECS the screen gives up and the old plain text output is used.
+FALLBACK_SECS="${STICKLLM_BOOT_FALLBACK_SECS:-120}"
+PLAIN_FALLBACK=0
+FONT_MODE="$(timeout 15 /usr/local/bin/stickllm-console-font "$TTY" 2>/dev/null || echo ascii)"
+[[ "$FONT_MODE" == unicode* ]] && FONT_MODE=unicode || FONT_MODE=ascii
+desktop_mode() { [[ "$PLAIN_FALLBACK" -eq 0 ]] && [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; }
 model_status_line() {
   local st
   if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 http://127.0.0.1:8080/health 2>/dev/null)" == "200" ]]; then
-    echo "Model:    ready (${MODEL_NAME})"
+    echo "Model ready (${MODEL_NAME})"
     return
   fi
   st="$(systemctl is-active stickllm-llama.service 2>/dev/null || true)"
   case "$st" in
-    active|activating|reloading) echo "Model:    loading (${MODEL_NAME})" ;;
+    active|activating|reloading) echo "Model loading (${MODEL_NAME})" ;;
     *) echo "" ;;
   esac
 }
+BANNER=(
+"███████╗████████╗██╗ ██████╗██╗  ██╗██╗     ██╗     ███╗   ███╗"
+"██╔════╝╚══██╔══╝██║██╔════╝██║ ██╔╝██║     ██║     ████╗ ████║"
+"███████╗   ██║   ██║██║     █████╔╝ ██║     ██║     ██╔████╔██║"
+"╚════██║   ██║   ██║██║     ██╔═██╗ ██║     ██║     ██║╚██╔╝██║"
+"███████║   ██║   ██║╚██████╗██║  ██╗███████╗███████╗██║ ╚═╝ ██║"
+"╚══════╝   ╚═╝   ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚═╝"
+)
+tty_cols() {
+  local c
+  c="$(stty -F "$TTY" size 2>/dev/null | awk '{print $2}')"
+  [[ "${c:-0}" =~ ^[0-9]+$ ]] && (( c > 20 )) || c=80
+  echo "$c"
+}
+center() {
+  # center <text> [colour]; width is counted in characters (UTF-8 aware).
+  local text="$1" colour="${2:-}" cols len pad
+  cols="$(tty_cols)"
+  len="$(printf '%s' "$text" | LC_ALL=C.UTF-8 wc -m)"
+  pad=$(( (cols - len) / 2 )); (( pad < 0 )) && pad=0
+  if [[ -n "$colour" ]]; then
+    say_screen "$(printf '%*s' "$pad" '')"$'\033['"${colour}m${text}"$'\033[0m'
+  else
+    say_screen "$(printf '%*s' "$pad" '')${text}"
+  fi
+}
+glyph() {
+  # ASCII fallback when no console font has the banner glyphs.
+  if [[ "$FONT_MODE" == "unicode" ]]; then printf '%s' "$1"; else
+    printf '%s' "$1" | sed 's/█/#/g; s/[╗╔═║╝╚]/ /g; s/…/.../g; s/✓/+/g; s/·/-/g'
+  fi
+}
+mmss() { printf '%02d:%02d' $(( $1 / 60 )) $(( $1 % 60 )); }
 draw_plain() {
   local elapsed="$1" ip="$2" ui_ok="$3" title="$4"
-  local ml
+  local ml line ok
+  ok="$(glyph '✓')"
   refresh_model_label
   clear_tty
-  say ""
-  say "  StickLLM ${VERSION_LABEL}"
-  say ""
-  say "  ${title}   ${elapsed}s"
-  say ""
-  if [[ "$ui_ok" -eq 1 ]]; then say "  Service:  running"; else say "  Service:  starting"; fi
-  if [[ -n "${ip:-}" ]]; then say "  Network:  ${ip}"; else say "  Network:  no connection yet"; fi
+  say_screen ""
+  say_screen ""
+  for line in "${BANNER[@]}"; do center "$(glyph "$line")" "1;36"; done
+  say_screen ""
+  center "Your apps and private AI, on a stick" "36"
+  center "${VERSION_LABEL}"
+  say_screen ""
+  center "$(glyph "${title} $(mmss "$elapsed")")" "1"
+  say_screen ""
+  if [[ "$ui_ok" -eq 1 ]]; then center "${ok} StickLLM service running"; fi
+  if [[ -n "${ip:-}" ]]; then center "${ok} Network ${ip}"; fi
   ml="$(model_status_line)"
-  [[ -n "$ml" ]] && say "  $ml"
+  [[ -n "$ml" ]] && center "${ok} ${ml}"
   refresh_failed
-  if [[ -n "${last_failed:-}" ]]; then say "  Problem:  $last_failed"; fi
+  if [[ -n "${last_failed:-}" ]]; then center "! Problem: $last_failed"; fi
+  say_screen ""
+  if [[ "$SSH_ON" -eq 1 ]]; then
+    # Test (menu 3): SSH back door on screen, as before 0.5.7.
+    ssh_password_line "${ip:-}"
+    say_screen ""
+  fi
+  center "F10 / F9  show passwords" "2"
+  printf 'loading %s ui=%s ip=%s\n' "$elapsed" "$ui_ok" "${ip:-}" >>"$LOG" 2>/dev/null || true
+}
+
+# Old full-text output (0.5.6 style): READY info, URL, pair box and SSH password.
+boot_fallback() {
+  PLAIN_FALLBACK=1
+  serial_only "STICKLLM_BOOTSTATUS_FALLBACK after=${SECONDS}s ui=${ui_ok} ip=${ip:-none}"
+  printf 'STICKLLM_BOOTSTATUS_FALLBACK %s\n' "$SECONDS" >>"$LOG" 2>/dev/null || true
+  draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
   say ""
+  say "  (Loading screen gave up after ${FALLBACK_SECS}s - plain output shown.)"
+  say "  Log: $LOG   Status: stickllm-status   Console: Ctrl+Alt+F2"
 }
 
 draw() {
@@ -719,7 +829,7 @@ draw() {
   printf '%s\n' "${ip:-}" >"$RUN/lan-ip.txt"
 
   if desktop_mode; then
-    draw_plain "$elapsed" "$ip" "$ui_ok" "Starting…"
+    draw_plain "$elapsed" "$ip" "$ui_ok" "Starting the desktop…"
     emit_health_breadcrumb "$ip" "$ui_ok" "$api_ok" "$phase"
     emit_net_probe "${ip:-}"
     return
@@ -760,7 +870,7 @@ draw_ready() {
   printf '%s\n' "${ip:-}" >"$RUN/lan-ip.txt"
   url_scheme
   if desktop_mode; then
-    draw_plain "$elapsed" "$ip" "$ui_ok" "Ready - opening the desktop…"
+    draw_plain "$elapsed" "$ip" "$ui_ok" "Ready · opening the desktop…"
     emit_health_breadcrumb "$ip" 1 "$api_ok" "READY"
     return
   fi
@@ -928,6 +1038,17 @@ while (( SECONDS < deadline )); do
   if [[ "$ui_ok" -eq 1 ]]; then
     ensure_pair
   fi
+  # 0.5.8 safety net: never sit on the loading screen longer than FALLBACK_SECS.
+  if [[ "$PLAIN_FALLBACK" -eq 0 && "$phase" != "READY" ]] && (( SECONDS >= FALLBACK_SECS )); then
+    boot_fallback
+    if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+      # Desktop modes: leave the text up a moment, then let the kiosk try anyway
+      # (it waits for the UI itself and shows its own error screen on failure).
+      sleep 20
+      handoff_local_chat
+      exit 0
+    fi
+  fi
   if [[ "$phase" == "READY" ]]; then
     if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
       # Local/Test: UI required (detect_phase); model is on-demand via Activate.
@@ -935,7 +1056,7 @@ while (( SECONDS < deadline )); do
       # (No model load at boot — READY arrives too fast to catch otherwise.)
       draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
       ready_drawn=1
-      sleep 2
+      if [[ "$SSH_ON" -eq 1 ]]; then sleep 15; else sleep 2; fi
       handoff_local_chat
       exit 0
     fi

@@ -62,6 +62,12 @@ xfconf
 adwaita-icon-theme
 chromium
 seatd
+# 0.5.8: fallback full-screen kiosk when Xfce fails (cage, MIT, on wlroots MIT)
+cage
+xwayland
+# 0.5.8: Terminus console font for the loading-screen banner (setfont)
+kbd
+console-setup-linux
 libinput-bin
 libinput10
 fonts-dejavu-core

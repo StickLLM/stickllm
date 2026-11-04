@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.8 (2026-11-03)
+
+- Boot: fixed tty1 staying on the loading timer. Chat/Local no longer wait on a
+  model-download phase, and a `.partial` model file untouched for 5 minutes is
+  treated as a dead download in every mode.
+- Boot: the loading screen gives up after 2 minutes and prints the old plain
+  text output (ready info, URL, SSH password when SSH is on); Chat then opens
+  the desktop anyway.
+- Terminal mode no longer depends on the loading screen, kiosk, Xorg, gateway
+  or llama: SSH info goes into the login banner and tty1 gets a login prompt.
+- Test - SSH Enabled (menu 3) shows the SSH password on screen again.
+- Loading screen: StickLLM block banner, tagline, version, mm:ss timer, real
+  status lines and the F10 / F9 hint; Terminus console font (ASCII fallback).
+- Desktop: the full-screen browser kiosk (cage) is back as the fallback when
+  Xfce fails; sway stays removed.
+
 ## 0.5.7 (2026-11-03)
 
 - Manuals: every App Agent manual (`stickllm_appagent/manuals/`) ships in the ISO.
