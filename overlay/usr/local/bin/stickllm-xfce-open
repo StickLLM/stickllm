@@ -37,14 +37,45 @@ dress_desktop() {
     sleep 0.5
   done
   [[ -n "$wid" ]] || return 0
-  # 0.5.9: MWM functions=0 + decorations=0: xfwm4 drops the frame and refuses
-  # minimise/close/move/resize for this window (0.5.8 set decorations only).
-  xprop -id "$wid" -f _MOTIF_WM_HINTS 32c -set _MOTIF_WM_HINTS "0x3, 0x0, 0x0, 0x0, 0x0" 2>/dev/null || true
+  bare_desktop "$wid"
+  wmctrl -i -a "$wid" 2>/dev/null || true
+}
+
+# 0.6.0 (B6): 0.5.9 set the MWM hints first and maximised afterwards. Chromium
+# rewrites _MOTIF_WM_HINTS itself when its window state changes (maximise,
+# restore, frame-type change), so xfwm4 put the title bar back. Now the state
+# changes come first, the hints last, and keep_desktop_bare re-applies them
+# whenever xfwm4 reports a frame again (_NET_FRAME_EXTENTS not all zero).
+bare_desktop() {
+  local wid="$1" sw sh
   read -r sw sh < <(xdotool getdisplaygeometry 2>/dev/null || echo "1920 1080")
   wmctrl -i -r "$wid" -b add,below,skip_taskbar,skip_pager 2>/dev/null || true
-  wmctrl -i -r "$wid" -e "0,0,0,${sw},${sh}" 2>/dev/null || true
   wmctrl -i -r "$wid" -b add,maximized_vert,maximized_horz 2>/dev/null || true
-  wmctrl -i -a "$wid" 2>/dev/null || true
+  wmctrl -i -r "$wid" -e "0,0,0,${sw},${sh}" 2>/dev/null || true
+  sleep 0.3
+  # MWM functions=0 + decorations=0: xfwm4 drops the frame and refuses
+  # minimise/close/move/resize for this window.
+  xprop -id "$wid" -f _MOTIF_WM_HINTS 32c -set _MOTIF_WM_HINTS "0x3, 0x0, 0x0, 0x0, 0x0" 2>/dev/null || true
+}
+
+frame_extents_zero() {
+  local ext
+  ext="$(xprop -id "$1" _NET_FRAME_EXTENTS 2>/dev/null || true)"
+  # Not reported (yet) counts as bare; xfwm4 sets it on every managed window.
+  [[ "$ext" == *"="* ]] || return 0
+  [[ "$(printf '%s' "${ext#*=}" | tr -d ' ,0')" == "" ]]
+}
+
+keep_desktop_bare() {
+  local wid="$1" pid="$2" fixes=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 2
+    xprop -id "$wid" WM_CLASS >/dev/null 2>&1 || return 0
+    frame_extents_zero "$wid" && continue
+    bare_desktop "$wid"
+    fixes=$((fixes + 1))
+    echo "STICKLLM_DESKTOP_FRAME_REAPPLIED n=$fixes" >>"${XDG_RUNTIME_DIR:-/tmp}/stickllm-desktop-frame.log" 2>/dev/null || true
+  done
 }
 
 system_frame_pref() {
@@ -78,8 +109,11 @@ case "$id" in
       "$BROWSER" "${common[@]}" --class=stickllm-desktop --start-maximized --app="$BASE/" &
       pid=$!
       dress_desktop
+      _wid="$(wmctrl -lx 2>/dev/null | awk 'tolower($3) ~ /stickllm-desktop/ {print $1; exit}')"
+      [[ -n "$_wid" ]] && { keep_desktop_bare "$_wid" "$pid" & }
       wait "$pid"
       sleep 2
+      system_frame_pref
     done ;;
   browser)
     bp="${XDG_RUNTIME_DIR:-/tmp}/stickllm-web"
