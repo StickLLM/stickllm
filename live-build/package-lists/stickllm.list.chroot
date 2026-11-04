@@ -30,6 +30,10 @@ libgomp1
 firmware-linux
 firmware-linux-nonfree
 firmware-misc-nonfree
+# 0.6.0 (B2): Polaris (RX 570/580) and other Radeon cards need these blobs or
+# amdgpu fails after taking the console from simpledrm (black screen).
+# firmware-linux-nonfree pulls it in already; listed so it can never drop out.
+firmware-amd-graphics
 firmware-iwlwifi
 firmware-realtek
 firmware-atheros

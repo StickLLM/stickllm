@@ -47,6 +47,17 @@ kiosk_fail_rotate() {
   fi
 }
 
+# 0.6.0 (B7): one timing line per desktop start phase, seconds since boot,
+# so a slow desktop on real hardware shows which step took the time.
+# STICKLLM_KIOSK_T phase=<name> up=<s> kiosk=<s>
+KIOSK_T0="$(cut -d' ' -f1 /proc/uptime 2>/dev/null || echo 0)"
+kiosk_mark() {
+  local up
+  up="$(cut -d' ' -f1 /proc/uptime 2>/dev/null || echo 0)"
+  printf 'STICKLLM_KIOSK_T phase=%s up=%s kiosk=%s\n' "$1" "$up" \
+    "$(awk -v a="$up" -v b="$KIOSK_T0" 'BEGIN{printf "%.1f", a-b}')" >>"$LOG" 2>/dev/null || true
+}
+
 fail_note() {
   printf '%s\n' "$*" >>"$FAIL_LOG" 2>/dev/null || true
   kiosk_fail_rotate
@@ -329,12 +340,16 @@ ensure_nvidia_kms() {
   # nvidia_drm — stopping the model — on every kiosk restart.
   [[ -e "$RUN/kiosk-kms-tried" ]] && return 0
   touch "$RUN/kiosk-kms-tried" 2>/dev/null || true
-  for s in /sys/class/drm/card*-*/status; do
-    [[ -f "$s" ]] || continue
-    if [[ "$(tr -d '[:space:]' <"$s" 2>/dev/null || true)" == "connected" ]]; then
-      has_conn=1
-      break
-    fi
+  # 0.6.0 (B2): only a real KMS card (amdgpu/i915/virtio, not simpledrm or
+  # efifb) with a monitor counts. simpledrm's virtual connector always reads
+  # "connected", so with the monitor on the NVIDIA card (and an RX 570 as
+  # boot VGA) 0.5.9 never enabled NVIDIA KMS and had nothing to show.
+  local _kc
+  for _kc in /dev/dri/card[0-9]; do
+    [[ -e "$_kc" ]] || continue
+    is_weak_drm "$_kc" && continue
+    is_nvidia_path "$_kc" && continue
+    card_connected "$_kc" && { has_conn=1; break; }
   done
   [[ "$has_conn" -eq 1 ]] && return 0
   modeset="$(tr -d '[:space:]' </sys/module/nvidia_drm/parameters/modeset 2>/dev/null || true)"
@@ -791,6 +806,8 @@ write_xorg_conf() {
     echo '# Written by stickllm-kiosk at every desktop start.'
     echo 'Section "ServerFlags"'
     echo '  Option "AutoAddGPU" "false"'
+    # 0.6.0 (B2): never bind the other card (RX 570 + NVIDIA) as a GPU screen.
+    echo '  Option "AutoBindGPU" "false"'
     echo '  Option "DontVTSwitch" "true"'
     echo '  Option "DontZap" "true"'
     echo '  Option "BlankTime" "0"'
@@ -874,9 +891,13 @@ start_xorg() {
       DISPLAY=:0 xhost "+SI:localuser:${KIOSK_USER}" >/dev/null 2>&1 || true
       DISPLAY=:0 xhost "+SI:localuser:root" >/dev/null 2>&1 || true  # stickllm-control window ops
       DISPLAY=:0 xset s off -dpms >/dev/null 2>&1 || true
+      kiosk_mark "xorg-up-$(basename "$drm")"
       return 0
     fi
     kill -0 "$XORG_PID" 2>/dev/null || break
+    # 0.6.0 (B7): a fatal Xorg error (wrong driver for this card) used to
+    # cost the full 30 s before the next driver/card was tried.
+    grep -q "Fatal server error" "$XORG_LOG" 2>/dev/null && break
     sleep 0.5
   done
   fail_note "STICKLLM_KIOSK_XORG_FAIL drm=$drm"
@@ -1058,6 +1079,7 @@ mkdir -p "$RUN"
 prepare_kiosk_user || hold_error "no unprivileged console user"
 touch "$RUN/local-mode"
 serial_note "STICKLLM_KIOSK_START chat=$CHAT_MODE fails=$(fail_count)"
+kiosk_mark start
 collect_drm_diag
 
 if ! xfce_enabled; then
@@ -1087,6 +1109,7 @@ for i in $(seq 1 "$WAIT_UI_SECS"); do
   if [[ "$code" == "200" ]]; then
     ui_ready=1
     serial_note "STICKLLM_KIOSK_UI_READY after=${i}s"
+    kiosk_mark ui-ready
     break
   fi
   if (( i == 1 || i % 10 == 0 )); then
@@ -1106,7 +1129,7 @@ modprobe i915 2>/dev/null || true
 modprobe virtio_gpu 2>/dev/null || true
 # Monitor on 3090: modeset=0 hides connectors — enable KMS before pick.
 ensure_nvidia_kms || fail_note "STICKLLM_KIOSK_NVIDIA_KMS_WARN"
-sleep 1
+kiosk_mark kms
 
 # 0.5.6: no monitor connected (headless server / BMC): do not fail, so systemd
 # does not restart the kiosk in a loop. Wait quietly and start when a monitor
@@ -1143,6 +1166,7 @@ if [[ -z "${DISPLAY_DRM:-}" ]]; then
   hold_error "no /dev/dri/card* with a usable display found — see $FAIL_LOG"
 fi
 fail_note "STICKLLM_KIOSK_DRM_PICK $DISPLAY_DRM"
+kiosk_mark "pick-$(basename "$DISPLAY_DRM")"
 serial_note "STICKLLM_KIOSK_BROWSER $BROWSER $URL drm=$DISPLAY_DRM driver=$(drm_driver_name "$DISPLAY_DRM")"
 
 
