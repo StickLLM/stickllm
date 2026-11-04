@@ -140,39 +140,27 @@ VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm
 # the gateway or llama. Paint the SSH info into the login banner (/etc/issue.d)
 # and hand tty1 to a normal getty login straight away.
 term_fast_path() {
-  local pass="" i
   clear_tty
   printf '\n  StickLLM %s - Terminal\n\n  Starting the console...\n' "$VERSION_LABEL" >>"$TTY" 2>/dev/null || true
   serial_only "STICKLLM_TERM_FAST_PATH"
-  systemctl start --no-block stickllm-ssh.service 2>/dev/null || true
+  # 0.6.0 (B1): no desktop, kiosk or console chat in Terminal mode, ever. The
+  # units' kernel-command-line conditions already say so; the runtime mask
+  # and the cleared allow flags make sure nothing starts them later either.
+  rm -f "$RUN/allow-local-chat" "$RUN/allow-local-chat-fallback" 2>/dev/null || true
+  systemctl mask --runtime stickllm-kiosk.service stickllm-local.service >/dev/null 2>&1 || true
+  systemctl stop --no-block stickllm-kiosk.service stickllm-local.service >/dev/null 2>&1 || true
+  systemctl start --no-block NetworkManager.service stickllm-ssh.service 2>/dev/null || true
   # Web UI is optional in Terminal: start it, never wait for it.
   systemctl start --no-block stickllm-control.service stickllm-ui.service 2>/dev/null || true
-  for i in $(seq 1 30); do
-    pass="$(tr -d '[:space:]' <"$RUN/ssh-password.txt" 2>/dev/null || true)"
-    [[ -n "$pass" ]] && break
-    sleep 1
-  done
-  mkdir -p /etc/issue.d 2>/dev/null || true
-  local issue=/etc/issue.d/50-stickllm-terminal.issue
-  (
-    umask 077
-    {
-      printf '\n  StickLLM %s - Terminal READY\n\n' "$VERSION_LABEL"
-      printf '  LAN IP:    \\4\n'
-      printf '  SSH:       ssh stickllm@\\4\n'
-      printf '  user:      stickllm\n'
-      if [[ -n "$pass" ]]; then
-        printf '  password:  %s\n' "$pass"
-      else
-        printf '  password:  not ready yet (stickllm-ssh.service); reboot to retry\n'
-      fi
-      printf '  Log in below with the same user and password.\n'
-      printf '  Web UI (if it started): http://\\4/   WiFi: stickllm-wifi-setup\n\n'
-    } >"$issue"
-  ) 2>/dev/null || true
-  chmod 600 "$issue" 2>/dev/null || true
+  # 0.6.0 (B1): never wait for the network or the SSH password before the login
+  # prompt. The banner is written now and kept current (real LAN IP, password
+  # once stickllm-ssh sets it) by a transient unit that redraws agetty.
+  /usr/local/bin/stickllm-term-issue --once 2>/dev/null || true
+  systemd-run --no-block --collect --quiet --unit=stickllm-term-issue \
+    -p StandardOutput=null -p StandardError=null \
+    /usr/local/bin/stickllm-term-issue >/dev/null 2>&1 || true
   printf 'TERMINAL\n' >"$RUN/boot-phase.txt" 2>/dev/null || true
-  serial_only "STICKLLM_TERM_READY pass=$([[ -n "$pass" ]] && echo yes || echo no)"
+  serial_only "STICKLLM_TERM_READY"
   # Conflicts=getty@tty1: starting it ends this unit (exit 0, no restart).
   # getty@tty1 has ConditionPathExists=/run/stickllm/allow-getty-tty1.
   : >"$RUN/allow-getty-tty1" 2>/dev/null || true

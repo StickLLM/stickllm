@@ -1,0 +1,80 @@
+#!/bin/bash
+# 0.6.0 (B1): Terminal-mode login banner (/etc/issue.d) with the real LAN IP.
+#
+# 0.5.9 printed agetty's \4, which showed 127.0.0.1 when tty1's getty drew the
+# banner before DHCP finished. This writes the literal LAN IP (stickllm-lan-ip)
+# and the SSH user, then asks agetty to redraw (agetty --reload). Run once with
+# --once (banner now, whatever is known), or with no argument as a short-lived
+# transient unit that keeps the banner current for 10 minutes and whenever the
+# IP changes. The SSH password goes only into the root-only issue file shown
+# on tty1, never into a log or the journal.
+set -u
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+ISSUE="${STICKLLM_TERM_ISSUE:-/etc/issue.d/50-stickllm-terminal.issue}"
+LANIP="${STICKLLM_LAN_IP_BIN:-/usr/local/bin/stickllm-lan-ip}"
+VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.6.0)"
+
+current_ip() {
+  local ip=""
+  if [[ -x "$LANIP" ]]; then
+    ip="$("$LANIP" 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  case "$ip" in 127.*|169.254.*) ip="" ;; esac
+  printf '%s' "$ip"
+}
+
+write_issue() {
+  local ip="$1" pass=""
+  pass="$(tr -d '[:space:]' <"$RUN/ssh-password.txt" 2>/dev/null || true)"
+  mkdir -p "$(dirname "$ISSUE")" 2>/dev/null || true
+  local tmp="$ISSUE.tmp"
+  (
+    umask 077
+    {
+      printf '\n  StickLLM %s - Terminal READY\n\n' "$VERSION_LABEL"
+      if [[ -n "$ip" ]]; then
+        printf '  LAN IP:    %s\n' "$ip"
+        printf '  SSH:       ssh stickllm@%s\n' "$ip"
+      else
+        printf '  LAN IP:    waiting for the network (no cable or WiFi yet)\n'
+        printf '  SSH:       ssh stickllm@<lan-ip>   WiFi: stickllm-wifi-setup\n'
+      fi
+      printf '  user:      stickllm\n'
+      if [[ -n "$pass" ]]; then
+        printf '  password:  %s\n' "$pass"
+      else
+        printf '  password:  being set (stickllm-ssh.service)...\n'
+      fi
+      printf '  Log in below with the same user and password.\n'
+      if [[ -n "$ip" ]]; then
+        printf '  Web UI (if it started): http://%s/\n\n' "$ip"
+      else
+        printf '\n'
+      fi
+    } >"$tmp"
+  ) 2>/dev/null || return 0
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$ISSUE" 2>/dev/null || true
+  [[ -n "$pass" ]] && return 0 || return 1
+}
+
+reload_getty() {
+  command -v agetty >/dev/null 2>&1 && agetty --reload >/dev/null 2>&1 || true
+}
+
+if [[ "${1:-}" == "--once" ]]; then
+  write_issue "$(current_ip)" || true
+  exit 0
+fi
+
+last="" have_pass=0 i
+for i in $(seq 1 300); do
+  ip="$(current_ip)"
+  if write_issue "$ip"; then now_pass=1; else now_pass=0; fi
+  if [[ "$ip" != "$last" || "$now_pass" != "$have_pass" ]]; then
+    reload_getty
+    last="$ip" have_pass="$now_pass"
+  fi
+  sleep 2
+done
+exit 0

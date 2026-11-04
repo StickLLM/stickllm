@@ -101,6 +101,11 @@ if getent passwd user >/dev/null 2>&1; then
 fi
 # live-config's sudo component writes "user ALL=(ALL) NOPASSWD: ALL" on every boot.
 rm -f /lib/live/config/0040-sudo
+# 0.6.0 (B1): live-config's xinit component makes every tty1 login run startx
+# in a loop, which took the Terminal-mode console away. StickLLM's desktop
+# starts only from stickllm-kiosk.service. (overlay ships a placeholder
+# /etc/profile.d/zz-live-config_xinit.sh too, which the component honours.)
+rm -f /lib/live/config/0140-xinit
 
 # Do not auto-start SSH on every boot — only menu 2 Terminal / 3 Test (stickllm.ssh)
 systemctl disable ssh.service 2>/dev/null || true
