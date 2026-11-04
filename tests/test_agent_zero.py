@@ -51,9 +51,9 @@ def test_pin_is_a_real_digest():
     agent = _load(AGENT, "stickllm_agent_pin")
     pin = agent.load_pin(PIN)
     assert pin["image"] == "agent0ai/agent-zero"
-    assert pin["version"] == "v2.14"
+    assert pin["version"] == "v2.15"
     assert pin["amd64_digest"] == (
-        "sha256:307a2ceffc8501ba05a1e7253e8b6e4d656d2e1c3b97f0eb943c18b9c40a30fd"
+        "sha256:fb62c7f081fd6c16d19807c0dc7eb7f9b710ba5de541d0547f8031433916cde2"
     )
     assert agent.image_ref(pin).endswith("@" + pin["amd64_digest"])
 

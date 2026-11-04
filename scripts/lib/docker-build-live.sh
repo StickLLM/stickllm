@@ -142,7 +142,7 @@ grep -q 'base_model_id = "qwen35-4b-q4km"' config/includes.chroot/etc/stickllm/m
 grep -q 'stickllm-llama-start' config/includes.chroot/etc/systemd/system/stickllm-llama.service
 grep -q 'STICKLLM_LLAMA_HOST=127.0.0.1' config/includes.chroot/etc/systemd/system/stickllm-llama.service
 test -f config/includes.chroot/usr/local/share/stickllm/agent-zero.pin
-grep -q 'amd64_digest=sha256:307a2ceffc8501ba05a1e7253e8b6e4d656d2e1c3b97f0eb943c18b9c40a30fd' \
+grep -q 'amd64_digest=sha256:fb62c7f081fd6c16d19807c0dc7eb7f9b710ba5de541d0547f8031433916cde2' \
   config/includes.chroot/usr/local/share/stickllm/agent-zero.pin
 test -f config/includes.chroot/usr/local/bin/stickllm-agent
 test -f config/includes.chroot/etc/systemd/system/stickllm-agent.service
