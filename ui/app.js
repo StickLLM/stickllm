@@ -309,6 +309,24 @@ function syncAgentDesktop(installed, href) {
   }
   icon.href = href;
 }
+// 0.6.0 (A5): one status line for Agent Zero while it installs or loads:
+// the phase (loading from the stick, downloading, checking, starting) and a
+// percentage when the installer reports one.
+function agentProgressLine(s) {
+  if (!s) return "";
+  const pct = Number.isFinite(Number(s.progress)) && s.progress !== null && s.progress !== "" ? Math.round(Number(s.progress)) : null;
+  const tail = pct !== null ? " " + Math.max(0, Math.min(100, pct)) + "%" : "";
+  if (s.state === "installing") {
+    const phase = {
+      loading: "Loading Agent Zero from the stick…",
+      downloading: "Downloading Agent Zero…",
+      checking: "Checking Agent Zero…",
+    }[s.phase] || "Installing Agent Zero…";
+    return phase + tail;
+  }
+  if (s.state === "starting") return "Agent Zero is loading…" + tail;
+  return "";
+}
 async function refreshAgentLink() {
   const label = $("#agentLinkLabel");
   const link = $("#agentLink");
@@ -333,9 +351,9 @@ async function refreshAgentLink() {
     else if (!s.settings_mounted) detail = "Unlock settings on this page";
     else if (s.state === "no_ssd") detail = "Needs a host drive";
     else if (s.needs_install || s.state === "needs_install") detail = "Not installed";
-    else if (s.state === "installing") detail = "Installing";
+    else if (s.state === "installing") detail = agentProgressLine(s) || "Installing";
     else if (s.state === "pull_failed") detail = "Install failed";
-    else if (s.state === "starting") detail = "Starting";
+    else if (s.state === "starting") detail = agentProgressLine(s) || "Starting";
     else if (s.state === "error") detail = (s.message || "Failed to start").replace(/\s+/g, " ").trim() || "Failed to start";
     else if (s.state === "low_space") detail = "Host drive is low on space";
     if (label) label.textContent = "Agent";
@@ -343,7 +361,8 @@ async function refreshAgentLink() {
     if (link) link.title = s.state === "error" ? detail : "";
     const deskIcon = $("#agentDeskIcon");
     if (deskIcon) deskIcon.title = s.state === "error" ? detail : "Agent";
-    const message = s.message || "";
+    const line = agentProgressLine(s);
+    const message = line && s.message && !s.message.includes(line) ? s.message + " — " + line : (s.message || line);
     for (const msg of [$("#agentInstallMsg"), $("#agentCatalogMsg")]) {
       if (msg) msg.textContent = message;
     }
@@ -351,7 +370,7 @@ async function refreshAgentLink() {
     for (const btn of agentInstallButtons()) {
       btn.hidden = !show;
       btn.disabled = s.state === "installing";
-      btn.textContent = s.state === "installing" ? "Installing…" : "Install Agent Zero";
+      btn.textContent = s.state === "installing" ? (agentProgressLine(s) || "Installing…") : (s.bundled ? "Install Agent Zero (from the stick)" : "Install Agent Zero");
     }
     const text = s.state === "error" ? (s.message || detail) : (s.pull_log || "");
     for (const log of [$("#agentPullLog"), $("#agentCatalogPull")]) {

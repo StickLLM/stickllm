@@ -192,3 +192,13 @@ def test_build_bundles_agent_zero_on_the_iso():
     assert "a0_bundle.py pack" in build and "config/includes.binary/stickllm/agent-zero" in build
     assert "/stickllm-out/cache/agent-zero" in build
     assert 'VERSION="${STICKLLM_VERSION:-0.6.0}"' in (ROOT / "scripts/build.sh").read_text()
+
+
+def test_a5_ui_status_line():
+    app = (ROOT / "ui/app.js").read_text()
+    body = app.split("function agentProgressLine", 1)[1].split("\nasync function ", 1)[0]
+    for word in ("Loading Agent Zero from the stick", "Downloading Agent Zero", "Checking Agent Zero",
+                 "Agent Zero is loading", "%"):
+        assert word in body
+    link = app.split("async function refreshAgentLink", 1)[1].split("\nasync function ", 1)[0]
+    assert "agentProgressLine(s)" in link and "s.bundled" in link
