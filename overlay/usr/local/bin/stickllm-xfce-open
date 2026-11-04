@@ -37,7 +37,9 @@ dress_desktop() {
     sleep 0.5
   done
   [[ -n "$wid" ]] || return 0
-  xprop -id "$wid" -f _MOTIF_WM_HINTS 32c -set _MOTIF_WM_HINTS "0x2, 0x0, 0x0, 0x0, 0x0" 2>/dev/null || true
+  # 0.5.9: MWM functions=0 + decorations=0: xfwm4 drops the frame and refuses
+  # minimise/close/move/resize for this window (0.5.8 set decorations only).
+  xprop -id "$wid" -f _MOTIF_WM_HINTS 32c -set _MOTIF_WM_HINTS "0x3, 0x0, 0x0, 0x0, 0x0" 2>/dev/null || true
   read -r sw sh < <(xdotool getdisplaygeometry 2>/dev/null || echo "1920 1080")
   wmctrl -i -r "$wid" -b add,below,skip_taskbar,skip_pager 2>/dev/null || true
   wmctrl -i -r "$wid" -e "0,0,0,${sw},${sh}" 2>/dev/null || true
@@ -45,9 +47,33 @@ dress_desktop() {
   wmctrl -i -a "$wid" 2>/dev/null || true
 }
 
+system_frame_pref() {
+  pgrep -u "$(id -u)" -f -- "--user-data-dir=$PROFILE" >/dev/null 2>&1 && return 0
+  mkdir -p "$PROFILE/Default" 2>/dev/null || return 0
+  python3 - "$PROFILE/Default/Preferences" <<'PY' 2>/dev/null || true
+import json, os, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+    if not isinstance(d, dict):
+        d = {}
+except Exception:
+    d = {}
+d.setdefault("browser", {})["custom_chrome_frame"] = False
+tmp = p + ".stickllm"
+with open(tmp, "w") as f:
+    json.dump(d, f)
+os.replace(tmp, p)
+PY
+}
+
 case "$id" in
   home)
     # Plain BASE/ (no ?shell=xfce): the page uses its desktop layout.
+    # 0.5.9: Chromium draws its own title bar (with minimise/close) on xfwm4
+    # unless "Use system title bar" is set; set it so the WM hints above make
+    # the desktop window borderless with no buttons.
+    system_frame_pref
     while true; do
       "$BROWSER" "${common[@]}" --class=stickllm-desktop --start-maximized --app="$BASE/" &
       pid=$!

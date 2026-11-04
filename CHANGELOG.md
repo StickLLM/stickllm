@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.9 (2026-11-04)
+
+- Desktop (Xorg): NVIDIA ModulePath conf so the nvidia driver loads; if it
+  fails, retry the same card with modesetting. Fallback only picks cards with a
+  connected monitor and prefers boot_vga.
+- Console font: banner check marks render (no missing glyphs in Terminus).
+- Web desktop: Chromium window is borderless with no minimize/close; the Chat
+  window has a cyan ghost frame.
+- GPUs: a model that fits on one card loads on one card (most free VRAM); it is
+  split only when needed (STICKLLM_GPU_SPLIT=always restores the old split).
+- Monitor: every GPU (NVIDIA, AMD via sysfs, onboard) with real lspci names,
+  VRAM, temp, load, power vs limit, fan, clocks, PCIe and which card holds the
+  model; CPU model, threads, uptime; status line; live tok/s and context used.
+- Settings > Advanced: allowed GPUs, pin to one GPU, power presets
+  (eco / long job / default / boost, reset on reboot) through a narrow sudo
+  helper (stickllm-gpu-power); per-model load settings (ctx, -ngl, parallel,
+  -ctk/-ctv, --override-tensor, mmap, mlock, GPU pin).
+- App agent is off by default and moved to Settings > Advanced (experimental);
+  turning it on with no model loaded loads the baked-in Qwen3.5-4B. Solitaire's
+  "Back to Apps" link is gone.
+- Browser: fixed "[Errno 2] ... runuser" when the vault is locked.
+- Settings > Network shows the real IP, interface type and LAN URL (Copy uses
+  it); the SSID box is empty unless a network is saved. Settings > System and
+  About show live GPU/driver/RAM/storage/llama.cpp values instead of samples.
+- Unchanged from 0.5.8: Terminal mode, Test - SSH Enabled password, F10/F9,
+  no sway, cage browser fallback.
+
 ## 0.5.8 (2026-11-03)
 
 - Boot: fixed tty1 staying on the loading timer. Chat/Local no longer wait on a

@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v056" />
-<link rel="stylesheet" href="desktop.css?v=v056" />
+<link rel="stylesheet" href="style.css?v=v059" />
+<link rel="stylesheet" href="desktop.css?v=v059" />
 </head>
 <body>
 <div class="app" id="app">
@@ -82,7 +82,7 @@
       <div class="composerBox">
         <div class="attachments" id="attachments" hidden aria-label="Attachments"></div>
         <textarea id="input" rows="1" placeholder="Message StickLLM" aria-label="Message"></textarea>
-        <div class="appAgentRow" id="appAgentRow" aria-label="App agent">
+        <div class="appAgentRow" id="appAgentRow" aria-label="App agent" hidden>
           <button type="button" class="toggleChip" id="appAgentToggle" aria-pressed="false" title="Load the app agent: chat can then work in your open apps">App agent: off</button>
           <span class="appTarget on" id="appAgentTarget" hidden></span>
           <span class="appAgentPick" id="appAgentPick" hidden>
@@ -243,6 +243,7 @@
         <button data-sec="devices">Devices &amp; Pairing</button>
         <button data-sec="network">Network</button>
         <button data-sec="system">System</button>
+        <button data-sec="advanced">Advanced</button>
         <button data-sec="about">About</button>
       </nav>
       <div class="setBody">
@@ -479,14 +480,14 @@
 <!-- NETWORK -->
 <section class="sec" id="sec-network" data-title="Network" hidden>
   <div class="group">
-    <div class="row"><div><b>LAN address</b><small>Open this on any device on the same network.</small></div><span class="mono">http://…/ <button class="link" id="copyUrl">Copy</button></span></div>
-    <div class="row"><div><b>Status</b><small>WiFi · HomeLAN · 192.168.1.42</small></div><span class="pill ok">Online</span></div>
+    <div class="row"><div><b>LAN address</b><small>Open this on any device on the same network.</small></div><span class="mono"><span id="netUrl">http://…/</span> <button class="link" id="copyUrl">Copy</button></span></div>
+    <div class="row"><div><b>Status</b><small id="netStatus">Reading the network…</small></div><span class="pill" id="netPill">…</span></div>
     <div class="row"><div><b>Offline mode</b><small>Block all outbound traffic. Web lookup and updates are disabled.</small></div><label class="switch"><input type="checkbox" id="offline" disabled title="Coming soon — offline mode not wired"><span></span></label></div>
     <div class="row dim"><div><b>Route web lookup through Tor</b><small>Coming later.</small></div><label class="switch"><input type="checkbox" disabled><span></span></label></div>
   </div>
   <h3>WiFi</h3>
   <div class="row2">
-    <label class="field"><span>Network name (SSID)</span><input id="ssid" placeholder="HomeLAN"></label>
+    <label class="field"><span>Network name (SSID)</span><input id="ssid" placeholder="" autocomplete="off"></label>
     <label class="field"><span>Password</span><input id="wpass" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
   </div>
   <div class="actions"><button class="btn primary" id="wifiBtn">Connect</button></div>
@@ -498,9 +499,9 @@
   <div class="group">
     <div class="row"><div><b>Inference backend</b><small>Auto picks the fastest available.</small></div>
       <div class="seg" id="backendSeg" class="comingSoonSeg" title="Coming soon — backend is auto-selected"><button class="on">Auto</button><button>CUDA</button><button>Vulkan</button><button>CPU</button></div></div>
-    <div class="row"><div><b>GPU</b><small>NVIDIA RTX 4090 · driver 560.35</small></div><span class="mono">24 GB VRAM</span></div>
-    <div class="row"><div><b>Stick storage</b><small>USB DATA partition</small></div><span class="mono">28 GiB free</span></div>
-    <div class="row"><div><b>Memory</b><small>System RAM</small></div><span class="mono">64 GB</span></div>
+    <div class="row"><div><b>GPU</b><small id="sysGpu">—</small></div><span class="mono" id="sysVram">—</span></div>
+    <div class="row"><div><b>Stick storage</b><small>USB DATA partition</small></div><span class="mono" id="sysData">—</span></div>
+    <div class="row"><div><b>Memory</b><small>System RAM</small></div><span class="mono" id="sysRam">—</span></div>
   </div>
   <h3>Agent Zero</h3>
   <div class="group">
@@ -509,13 +510,52 @@
   </div>
   <h3>Updates</h3>
   <div class="group">
-    <div class="row"><div><b>StickLLM (live)</b><small>Updates not available in TEST MODE � F9 or P = new PAIR CODE � Ctrl+Shift+P same � greyed = not wired</small></div><button class="btn sm" id="checkUpd" disabled title="Coming soon">Check for updates</button></div>
+    <div class="row"><div><b>StickLLM (live)</b><small>Updates come as a new stick image. Online updates are not available yet.</small></div><button class="btn sm" id="checkUpd" disabled title="Coming soon">Check for updates</button></div>
   </div>
   <h3>Help</h3>
   <div class="group">
     <div class="row"><div><b>Loading a model</b><small>No model loads at boot. Go to Models, pick one, choose a preset, then Reload.</small></div><button class="btn sm" data-sec-go="models">Open Models</button></div>
     <div class="row"><div><b>Connecting another device</b><small>Open the LAN address and enter the pair code from the stick's screen.</small></div><button class="btn sm" data-sec-go="devices">Open Pairing</button></div>
     <div class="row"><div><b>Terminal access (SSH)</b><small>F9 makes a new pair code. F10 shows the SSH password. Both work from any StickLLM screen.</small></div><button class="btn sm" id="showSsh" type="button">Show SSH password</button></div>
+  </div>
+</section>
+
+<!-- ADVANCED (0.5.9) -->
+<section class="sec" id="sec-advanced" data-title="Advanced" hidden>
+  <p class="muted small">For people who know their hardware. Wrong values can make a model fail to load; clear a field to go back to automatic.</p>
+  <h3>Advanced GPU</h3>
+  <div class="group" id="advGpus"><div class="row"><small>Reading the GPUs…</small></div></div>
+  <div class="row2">
+    <label class="field"><span>Pin models to one GPU</span><select id="advPin"><option value="">Automatic (one card if the model fits, split if it doesn't)</option></select></label>
+  </div>
+  <div class="actions"><button class="btn sm" id="advGpuSave" type="button">Save GPU choices</button><span class="muted small" id="advGpuMsg"></span></div>
+  <p class="muted small">Power presets use the card's own limits (eco, long job, default, boost). Limits reset when the stick reboots.</p>
+  <h3>Model load settings</h3>
+  <div class="row2">
+    <label class="field"><span>Model</span><select id="advModel"></select></label>
+    <label class="field"><span>Context (tokens)</span><input id="advCtx" inputmode="numeric" placeholder="auto"></label>
+  </div>
+  <div class="row2">
+    <label class="field"><span>GPU layers (-ngl)</span><input id="advNgl" inputmode="numeric" placeholder="auto"></label>
+    <label class="field"><span>Parallel slots</span><input id="advPar" inputmode="numeric" placeholder="1"></label>
+  </div>
+  <div class="row2">
+    <label class="field"><span>K cache type (-ctk)</span><select id="advCtk"></select></label>
+    <label class="field"><span>V cache type (-ctv)</span><select id="advCtv"></select></label>
+  </div>
+  <div class="row2">
+    <label class="field"><span>Override tensor (--override-tensor)</span><input id="advOt" class="mono" placeholder="e.g. exps=CPU" autocomplete="off" spellcheck="false"></label>
+    <label class="field"><span>GPU for this model</span><select id="advModelPin"><option value="">Use the GPU setting above</option></select></label>
+  </div>
+  <div class="group">
+    <div class="row"><div><b>Memory-map the model (mmap)</b><small>Off loads the whole file into RAM first.</small></div><label class="switch"><input type="checkbox" id="advMmap" checked><span></span></label></div>
+    <div class="row"><div><b>Lock model in RAM (mlock)</b><small>Stops the system swapping it out.</small></div><label class="switch"><input type="checkbox" id="advMlock"><span></span></label></div>
+  </div>
+  <div class="actions"><button class="btn primary sm" id="advLoadSave" type="button">Save for this model</button><button class="btn sm ghost" id="advLoadClear" type="button">Back to automatic</button><span class="muted small" id="advLoadMsg"></span></div>
+  <p class="muted small">Saved settings apply the next time this model loads (Reload on the Models page).</p>
+  <h3>Experimental</h3>
+  <div class="group">
+    <div class="row"><div><b>App agent</b><small>Lets chat work inside your open apps. Off by default. Turning it on with no model loaded loads Qwen3.5-4B from the stick.</small></div><label class="switch"><input type="checkbox" id="advAppAgent"><span></span></label></div>
   </div>
 </section>
 
@@ -526,8 +566,8 @@
     <h3>StickLLM</h3>
     <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
     <div class="group">
-      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.5.8</span></div>
-      <div class="row"><span>llama.cpp</span><span class="mono">b4521</span></div>
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.5.9</span></div>
+      <div class="row"><span>llama.cpp</span><span class="mono" id="aboutLlama">—</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
     </div>
@@ -654,8 +694,8 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v056"></script>
-<script src="desktop-core.js?v=v056"></script>
-<script src="desktop.js?v=v056"></script>
+<script src="app.js?v=v059"></script>
+<script src="desktop-core.js?v=v059"></script>
+<script src="desktop.js?v=v059"></script>
 </body>
 </html>

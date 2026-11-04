@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import signal
 import struct
 import subprocess
@@ -1000,6 +1001,9 @@ def plan_gpu_fit(
     kv = kv_bpt * ctx
     weights = max(1, int(file_bytes))
     cards = suitable_gpus(gpus, need_bytes=weights + kv + GPU_BUFFER_BYTES)
+    # 0.5.9: one card when the model fits on it (or the pinned card).
+    cards = place_cards(cards, weights + kv + GPU_BUFFER_BYTES,
+                        all_rows=gpus if gpus is not None else nvidia_gpu_rows())
     gpu_count = len(cards)
     devices = ",".join(str(g.get("device") or g["index"]) for g in cards)
     # Proportions follow free VRAM. A card reporting 0 free still gets its total
@@ -1425,7 +1429,17 @@ def appagent_status() -> dict:
     }
 
 
-def appagent_set(on: bool) -> dict:
+def appagent_set(on: bool, autoload: bool = False) -> dict:
+    """0.5.9: with autoload, turning the agent on with no model loaded loads the
+    baked-in Qwen3.5-4B as the chat model first (when it is on the stick)."""
+    loaded_now = None
+    if on and autoload:
+        ok, _ = llama_health_ok()
+        if not ok and not active_model_path() and BAKED_4B.is_file():
+            try:
+                loaded_now = activate_model(BAKED_4B_ID)
+            except Exception as e:  # never block the agent toggle on this
+                loaded_now = {"ok": False, "error": str(e)[:200]}
     r = sh(["systemctl", "start" if on else "stop", APPAGENT_UNIT], timeout=60)
     if on:
         for _ in range(20):
@@ -1436,7 +1450,89 @@ def appagent_set(on: bool) -> dict:
     st["ok"] = bool(r.get("ok", True)) and (st["running"] if on else True)
     if not r.get("ok", True):
         st["error"] = (r.get("stderr") or r.get("error") or "systemctl failed")[-300:]
+    if loaded_now is not None:
+        st["autoloaded"] = BAKED_4B_ID if loaded_now.get("ok") else ""
+        if not loaded_now.get("ok"):
+            st["autoload_error"] = str(loaded_now.get("error") or "load failed")[:200]
     return st
+
+
+def net_info() -> dict:
+    """Settings > Network (0.5.9): real address, interface type, saved SSID."""
+    iface, ip = "", ""
+    r = sh(["ip", "-4", "route", "show", "default"], timeout=5)
+    for line in (r.get("stdout") or "").splitlines():
+        parts = line.split()
+        if "dev" in parts:
+            iface = parts[parts.index("dev") + 1]
+            break
+    r = sh(["ip", "-4", "-o", "addr", "show", "scope", "global"], timeout=5)
+    for line in (r.get("stdout") or "").splitlines():
+        parts = line.split()
+        if len(parts) > 3 and parts[2] == "inet":
+            if not iface or parts[1] == iface:
+                iface = iface or parts[1]
+                ip = parts[3].split("/")[0]
+                break
+    kind = ""
+    if iface:
+        if (Path("/sys/class/net") / iface / "wireless").exists():
+            kind = "WiFi"
+        elif iface.startswith(("usb", "rndis")):
+            kind = "USB tethering"
+        else:
+            kind = "Ethernet"
+    ssid = ""
+    try:
+        for line in (RUN / "wifi.json").read_text(encoding="utf-8").splitlines():
+            if line.startswith("ssid="):
+                ssid = line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return {
+        "iface": iface,
+        "type": kind,
+        "ip": ip,
+        "url": f"http://{ip}/" if ip else "",
+        "ssid": ssid,
+    }
+
+
+def system_info() -> dict:
+    """Settings > System (0.5.9): live values instead of placeholders."""
+    total = 0.0
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                total = float(line.split()[1]) / (1024.0 * 1024.0)
+    except Exception:
+        pass
+    driver = ""
+    if shutil.which("nvidia-smi"):
+        r = sh(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], timeout=8)
+        driver = ((r.get("stdout") or "").splitlines() or [""])[0].strip()
+    free_gb = None
+    try:
+        if MNT.is_dir():
+            du = shutil.disk_usage(MNT)
+            free_gb = round(du.free / (1024 ** 3), 1)
+    except OSError:
+        pass
+    llama = ""
+    for exe in ("/opt/stickllm/bin/llama-server-cpu", "/opt/stickllm/bin/llama-server"):
+        if os.path.isfile(exe):
+            r = sh([exe, "--version"], timeout=8)
+            txt = (r.get("stdout") or "") + (r.get("stderr") or "")
+            m = re.search(r"version:\s*(\d+)\s*\(([0-9a-f]+)\)", txt)
+            if m:
+                llama = f"b{m.group(1)} ({m.group(2)})"
+            break
+    return {
+        "ram_total_gb": round(total, 1),
+        "driver": driver,
+        "data_free_gb": free_gb,
+        "llama_version": llama,
+    }
 
 
 def llama_fewer_layers() -> dict:
@@ -3583,6 +3679,255 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
     return models
 
 
+# --- 0.5.9: per-model load settings, Advanced GPU (allowed cards / pin) and
+# GPU power presets. Saved in the vault when it is open, else for this boot.
+LOAD_CACHE_TYPES = ("f16", "bf16", "f32", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl")
+# --override-tensor is a regex=buffer list. It goes to llama-server as one argv
+# item read from a file (never sourced), so shell metacharacters are inert.
+_OT_RE = re.compile(r"^[A-Za-z0-9_.*+?\[\](){}|\\^$=,:-]{3,400}$")
+
+
+def _prefs_dir() -> Path:
+    d = vault_settings_dir()
+    return d if d is not None else RUN
+
+
+def _gpu_index_list(raw) -> list[int]:
+    if isinstance(raw, str):
+        raw = [x for x in raw.replace(" ", "").split(",") if x]
+    out: list[int] = []
+    for x in raw or []:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= n < 64 and n not in out:
+            out.append(n)
+    return out
+
+
+def _opt_int(raw, lo: int, hi: int, name: str):
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a whole number")
+    if n < lo or n > hi:
+        raise ValueError(f"{name} must be {lo}..{hi}")
+    return n
+
+
+def clean_load_settings(raw: dict) -> dict:
+    """Validated per-model load settings. Raises ValueError on a bad value."""
+    raw = raw if isinstance(raw, dict) else {}
+    out: dict = {}
+    for key, lo, hi in (("ctx", 256, 1048576), ("ngl", 0, 999), ("parallel", 1, 16)):
+        n = _opt_int(raw.get(key), lo, hi, key)
+        if n is not None:
+            out[key] = n
+    for key in ("ctk", "ctv"):
+        v = str(raw.get(key) or "").strip().lower()
+        if v:
+            if v not in LOAD_CACHE_TYPES:
+                raise ValueError(f"{key} must be one of {', '.join(LOAD_CACHE_TYPES)}")
+            out[key] = v
+    ot = str(raw.get("override_tensor") or "").strip()
+    if ot:
+        if "=" not in ot or not _OT_RE.match(ot):
+            raise ValueError("override_tensor must look like pattern=CPU (letters, digits and regex symbols only)")
+        out["override_tensor"] = ot
+    if "mmap" in raw and raw.get("mmap") is not None:
+        out["mmap"] = bool(raw.get("mmap"))
+    if raw.get("mlock"):
+        out["mlock"] = True
+    pin = _opt_int(raw.get("gpu_pin"), 0, 63, "gpu_pin")
+    if pin is not None:
+        out["gpu_pin"] = pin
+    return out
+
+
+def load_settings_all() -> dict:
+    doc = read_json(_prefs_dir() / "load-settings.json")
+    models = doc.get("models")
+    return models if isinstance(models, dict) else {}
+
+
+def load_settings_for(model_id: str) -> dict:
+    try:
+        return clean_load_settings(load_settings_all().get(str(model_id or "")) or {})
+    except ValueError:
+        return {}
+
+
+def save_load_settings(model_id: str, raw: dict) -> dict:
+    model_id = str(model_id or "").strip()
+    if not model_id:
+        return {"ok": False, "error": "id required"}
+    try:
+        clean = clean_load_settings(raw)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    models = load_settings_all()
+    if clean:
+        models[model_id] = clean
+    else:
+        models.pop(model_id, None)
+    path = _prefs_dir() / "load-settings.json"
+    try:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"models": models}, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as e:
+        return {"ok": False, "error": f"could not save: {e}"}
+    return {"ok": True, "id": model_id, "settings": clean,
+            "saved_in": "vault" if vault_settings_dir() is not None else "session",
+            "note": "Used the next time this model loads."}
+
+
+def gpu_prefs() -> dict:
+    doc = read_json(_prefs_dir() / "gpu-prefs.json")
+    pin = doc.get("pin")
+    try:
+        pin = int(pin) if pin is not None and str(pin) != "" else None
+    except (TypeError, ValueError):
+        pin = None
+    return {"allowed": _gpu_index_list(doc.get("allowed")), "pin": pin}
+
+
+def set_gpu_prefs(params: dict) -> dict:
+    allowed = _gpu_index_list(params.get("allowed"))
+    try:
+        pin = _opt_int(params.get("pin"), 0, 63, "pin")
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    if pin is not None and allowed and pin not in allowed:
+        return {"ok": False, "error": "the pinned card must be one of the allowed cards"}
+    path = _prefs_dir() / "gpu-prefs.json"
+    try:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"allowed": allowed, "pin": pin}, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as e:
+        return {"ok": False, "error": f"could not save: {e}"}
+    return {"ok": True, "allowed": allowed, "pin": pin, "note": "Used the next time a model loads."}
+
+
+def _model_env_kv() -> dict:
+    out: dict = {}
+    try:
+        for line in (RUN / "model.env").read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, _, v = line.partition("=")
+                out[k.strip()] = v.strip()
+    except OSError:
+        pass
+    for k in ("STICKLLM_GPU_PIN", "STICKLLM_GPU_ALLOWED", "STICKLLM_GPU_SPLIT"):
+        if k not in out and os.environ.get(k):
+            out[k] = os.environ[k]
+    return out
+
+
+def place_cards(cards: list[dict], need_bytes: int, all_rows: list[dict] | None = None) -> list[dict]:
+    """0.5.9 placement for CUDA: allowed cards, then a pinned card, then ONE card
+    (most free VRAM) when the model fits on it. Split only when it does not fit."""
+    if not cards or any(g.get("backend") == "vulkan" for g in cards):
+        return cards
+    env = _model_env_kv()
+    rows = all_rows if all_rows is not None else cards
+    allowed = _gpu_index_list(env.get("STICKLLM_GPU_ALLOWED") or "")
+    if allowed:
+        kept = [g for g in cards if int(g.get("index") or 0) in allowed]
+        if not kept:
+            kept = [g for g in rows if int(g.get("index") or 0) in allowed]
+        if kept:
+            cards = kept
+    pin_raw = str(env.get("STICKLLM_GPU_PIN") or "").strip()
+    if pin_raw.isdigit():
+        hit = [g for g in rows if int(g.get("index") or 0) == int(pin_raw)]
+        if hit:
+            return hit[:1]
+    if len(cards) > 1 and str(env.get("STICKLLM_GPU_SPLIT") or "") != "always":
+        best = max(cards, key=lambda g: (int(g.get("free_mib") or 0), -int(g.get("index") or 0)))
+        if int(best.get("free_mib") or 0) * 1024 * 1024 >= int(need_bytes):
+            return [best]
+    return cards
+
+
+def gpu_power_rows() -> list[dict]:
+    try:
+        p = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=index,name,power.draw,power.limit,power.default_limit,power.min_limit,power.max_limit",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=6, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    rows = []
+    for line in (p.stdout or "").splitlines() if p.returncode == 0 else []:
+        c = [x.strip() for x in line.split(",")]
+        if len(c) < 7:
+            continue
+
+        def num(s):
+            try:
+                return float(s)
+            except ValueError:
+                return None
+        try:
+            idx = int(c[0])
+        except ValueError:
+            continue
+        row = {"index": idx, "name": c[1], "draw_w": num(c[2]), "limit_w": num(c[3]),
+               "default_w": num(c[4]), "min_w": num(c[5]), "max_w": num(c[6])}
+        row["presets"] = power_presets(row)
+        rows.append(row)
+    return rows
+
+
+def power_presets(row: dict) -> dict:
+    """eco = min+20% of the range, longJob = min+45%, default, boost = max (clamped)."""
+    mn, mx, df = row.get("min_w"), row.get("max_w"), row.get("default_w")
+    if not mn or not mx or mx < mn:
+        return {}
+    df = df if df else mx
+    span = mx - mn
+
+    def clamp(w):
+        return int(round(max(mn, min(mx, w))))
+    return {"eco": clamp(mn + span * 0.2), "longJob": clamp(mn + span * 0.45),
+            "default": clamp(df), "boost": clamp(mx)}
+
+
+def gpu_power_set(params: dict) -> dict:
+    try:
+        idx = int(params.get("index"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "index required"}
+    row = next((r for r in gpu_power_rows() if r["index"] == idx), None)
+    if row is None or not row.get("presets"):
+        return {"ok": False, "error": "this GPU does not report power limits"}
+    preset = str(params.get("preset") or "").strip()
+    if preset:
+        if preset not in row["presets"]:
+            return {"ok": False, "error": "preset must be eco, longJob, default or boost"}
+        want = row["presets"][preset]
+    else:
+        try:
+            want = int(float(params.get("watts")))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "watts or preset required"}
+        want = int(max(row["min_w"], min(row["max_w"], want)))
+    cmd = ["/usr/local/bin/stickllm-gpu-power", str(idx), str(want)]
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n"] + cmd
+    r = sh(cmd, timeout=30)
+    ok = r.get("code", 1) == 0
+    return {"ok": ok, "index": idx, "preset": preset or "custom", "watts": want,
+            "error": "" if ok else (r.get("stderr") or "could not set the power limit").strip()[:200],
+            "note": "Power limits reset on reboot.", "gpus": gpu_power_rows()}
+
+
 def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | None = None) -> dict:
     models = enrich_models()
     m = next((x for x in models if x["id"] == model_id), None)
@@ -3625,6 +3970,9 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
             ctx = int(ctx_size)
         except (TypeError, ValueError):
             return {"ok": False, "error": "ctx_size must be an integer"}
+    load = load_settings_for(model_id)
+    if load.get("ctx"):
+        ctx = int(load["ctx"])  # Settings > Advanced per-model ctx wins
     ctx = max(ctx_lo, min(ctx_hi, ctx))
     kv = KV_TYPES.get(str(kv_type or "f16").strip().lower())
     if kv is None:
@@ -3645,6 +3993,34 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     )
     if mmproj and Path(mmproj).is_file():
         env_txt += f"STICKLLM_MMPROJ={mmproj}\n"
+    # 0.5.9 per-model load settings + Advanced GPU. Every value is validated
+    # (numbers / fixed words), so model.env stays safe to source.
+    gp = gpu_prefs()
+    pin = load.get("gpu_pin", gp.get("pin"))
+    if pin is not None:
+        env_txt += f"STICKLLM_GPU_PIN={int(pin)}\n"
+    if gp.get("allowed"):
+        env_txt += "STICKLLM_GPU_ALLOWED=" + ",".join(str(i) for i in gp["allowed"]) + "\n"
+    if "ngl" in load:
+        env_txt += f"STICKLLM_NGL_USER={int(load['ngl'])}\n"
+    if load.get("parallel"):
+        env_txt += f"STICKLLM_PARALLEL={int(load['parallel'])}\n"
+    for key in ("ctk", "ctv"):
+        if load.get(key) in LOAD_CACHE_TYPES:
+            env_txt += f"STICKLLM_{key.upper()}={load[key]}\n"
+    if load.get("mmap") is False:
+        env_txt += "STICKLLM_NO_MMAP=1\n"
+    if load.get("mlock"):
+        env_txt += "STICKLLM_MLOCK=1\n"
+    ot_file = RUN / "override-tensor.txt"
+    try:
+        if load.get("override_tensor"):
+            ot_file.write_text(load["override_tensor"] + "\n", encoding="utf-8")
+            os.chmod(ot_file, 0o644)
+        else:
+            ot_file.unlink(missing_ok=True)
+    except OSError:
+        pass
     (RUN / "model.env").write_text(env_txt, encoding="utf-8")
     try:
         os.chmod(RUN / "model.env", 0o644)
@@ -3676,6 +4052,7 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     r["ctx_size"] = ctx
     r["ctx_requested"] = ctx
     r["kv_type"] = kv
+    r["load_settings"] = load
     r["running"] = healthy
     r["health"] = health_msg
     r["load_state"] = "running" if healthy else "loading"
@@ -3911,6 +4288,25 @@ def browser_command(bin_path: str, profile: Path, url: str, app: bool, geo: dict
     return cmd
 
 
+def _drop_to_user(user: str) -> list:
+    """0.5.9: argv prefix that runs a command as `user`. Absolute paths: the
+    0.5.8 X11 helper ran with PATH=/usr/local/bin:/usr/bin:/bin, so a bare
+    "runuser" (/usr/sbin) raised "[Errno 2] No such file or directory".
+    Falls back to setpriv (util-linux, /usr/bin)."""
+    for p in ("/usr/sbin/runuser", "/sbin/runuser"):
+        if os.access(p, os.X_OK):
+            return [p, "-u", user, "--"]
+    for p in ("/usr/bin/setpriv", "/bin/setpriv"):
+        if os.access(p, os.X_OK):
+            try:
+                import pwd
+                pw = pwd.getpwnam(user)
+            except KeyError:
+                break
+            return [p, f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups", "--"]
+    raise OSError(2, "no runuser/setpriv to drop privileges")
+
+
 def browser_open(params: dict) -> dict:
     url = str(params.get("url") or "").strip() or BROWSER_START_URL
     if not browser_url_ok(url):
@@ -3950,7 +4346,10 @@ def browser_open(params: dict) -> dict:
         cmd = browser_command(bin_path, profile, url, app, geo, bid)
         if os.geteuid() == 0 and user != "root":
             sh(["chown", "-R", f"{user}:{user}", str(profile)], timeout=20)
-            cmd = ["runuser", "-u", user, "--"] + cmd
+            try:
+                cmd = _drop_to_user(user) + cmd
+            except OSError as e:
+                return {"ok": False, "code": 500, "error": "spawn", "message": str(e)}
         try:
             proc = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
@@ -4268,6 +4667,18 @@ def handle(action: str, params: dict) -> dict:
             except (TypeError, ValueError):
                 return {"ok": False, "error": "ctx_size must be an integer"}
         return activate_model(mid, ctx_arg, params.get("kv_type"))
+    if action == "load_settings_get":
+        mid = str(params.get("id") or "").strip()
+        return {"ok": True, "id": mid, "settings": load_settings_for(mid),
+                "cache_types": list(LOAD_CACHE_TYPES), "gpu": gpu_prefs()}
+    if action == "load_settings_set":
+        return save_load_settings(str(params.get("id") or ""), params.get("settings") or {})
+    if action == "gpu_prefs_get":
+        return {"ok": True, **gpu_prefs(), "gpus": gpu_power_rows(), "inventory": nvidia_gpu_rows()}
+    if action == "gpu_prefs_set":
+        return set_gpu_prefs(params)
+    if action == "gpu_power_set":
+        return gpu_power_set(params)
     if action == "llama_fewer_layers":
         return llama_fewer_layers()
     if action == "model_unload":
@@ -4275,7 +4686,19 @@ def handle(action: str, params: dict) -> dict:
     if action == "appagent_status":
         return appagent_status()
     if action == "appagent_load":
-        return appagent_set(True)
+        return appagent_set(True, autoload=bool(params.get("autoload")))
+    if action == "net_info":
+        return {"ok": True, "net": net_info()}
+    if action == "system_info":
+        inv = gpu_inventory()
+        return {
+            "ok": True,
+            "system": system_info(),
+            "gpu": inv.get("name") or "",
+            "gpu_count": int(inv.get("count") or 0),
+            "vram_gb": round(float(inv.get("vram_gb") or 0), 1),
+            "gpu_backend": inv.get("backend") or "cpu",
+        }
     if action == "appagent_unload":
         return appagent_set(False)
     if action == "model_delete":

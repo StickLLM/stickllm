@@ -1758,9 +1758,15 @@ function appAgentTouch(app) {
   const r = [app].concat(appAgentRecent().filter((a) => a !== app)).slice(0, 4);
   try { localStorage.setItem("stickllm-appagent-recent", JSON.stringify(r)); } catch (_) {}
 }
+function appAgentExperimental() {
+  try { return localStorage.getItem("stickllm-appagent-exp") === "1"; } catch (_) { return false; }
+}
 function renderAppAgentBar() {
   const row = $("#appAgentRow");
   if (!row) return;
+  // 0.5.9: the app agent is experimental and off by default (Settings > Advanced).
+  row.hidden = !(appAgentExperimental() || appAgentOn);
+  if ($("#advAppAgent")) $("#advAppAgent").checked = appAgentOn;
   const tog = $("#appAgentToggle");
   tog.setAttribute("aria-pressed", appAgentOn ? "true" : "false");
   tog.textContent = appAgentOn ? "App agent: on" : "App agent: off";
@@ -1811,9 +1817,10 @@ async function appAgentToggle() {
   tog.disabled = true;
   tog.textContent = appAgentOn ? "Unloading…" : "Loading…";
   try {
-    const j = await control(appAgentOn ? "appagent_unload" : "appagent_load", {});
+    const j = await control(appAgentOn ? "appagent_unload" : "appagent_load", { autoload: true });
     appAgentOn = !!(j && j.running);
-    if (appAgentOn && j && j.model_loaded === false) {
+    if (j && j.autoloaded) toast("Loading Qwen3.5-4B for the app agent…");
+    else if (appAgentOn && j && j.model_loaded === false) {
       toast("App agent loaded. Load a model on the Models page (Qwen3.5-4B is on the stick) before asking an app.");
     }
   } catch (e) {
@@ -2367,6 +2374,7 @@ function openSettings(sec = "general") {
   if (sec === "devices" || sec === "network" || sec === "system" || sec === "about")
     refreshStatus().catch(() => {});
   if (sec === "chats") renderSaved();
+  refreshSecLive(sec);
   if (desk && window.stickDesk.onSettings) window.stickDesk.onSettings(sec);
 }
 function showSec(sec, open = true) {
@@ -2399,6 +2407,8 @@ $$(".setNav [data-sec]").forEach((b) => (b.onclick = () => {
   showSec(b.dataset.sec);
   if (b.dataset.sec === "models" || b.dataset.sec === "downloads") refreshModels().catch((e) => toast(e.message));
   if (b.dataset.sec === "storage") refreshStorage().catch(() => {});
+  if (["devices", "network", "system", "about"].includes(b.dataset.sec)) refreshStatus().catch(() => {});
+  refreshSecLive(b.dataset.sec);
 }));
 $$("[data-sec-go]").forEach((b) => (b.onclick = () => {
   if (deskOn()) { openSettings(b.dataset.secGo); return; }
@@ -4515,8 +4525,156 @@ $("#pairForm").onsubmit = async (e) => {
   } catch (ex) { err.hidden = false; err.textContent = ex.message; }
 };
 
+// ---- 0.5.9: live Settings pages (Network, System) and Settings > Advanced ----
+function refreshSecLive(sec) {
+  if (sec === "network") refreshNetwork().catch(() => {});
+  if (sec === "system" || sec === "about") refreshSystemInfo().catch(() => {});
+  if (sec === "advanced") refreshAdvanced().catch((e) => toast(e.message || String(e)));
+}
+async function refreshNetwork() {
+  if (!(await ensurePaired())) return;
+  const j = await control("net_info");
+  const n = (j && j.net) || {};
+  const url = n.url || location.origin + "/";
+  if ($("#netUrl")) $("#netUrl").textContent = url;
+  const parts = [];
+  if (n.type) parts.push(n.type + (n.iface ? " (" + n.iface + ")" : ""));
+  if (n.type === "WiFi" && n.ssid) parts.push(n.ssid);
+  if (n.ip) parts.push(n.ip);
+  if ($("#netStatus")) $("#netStatus").textContent = parts.length ? parts.join(" · ") : "No network connection";
+  const pill = $("#netPill");
+  if (pill) { pill.textContent = n.ip ? "Connected" : "Offline"; pill.className = "pill" + (n.ip ? " ok" : ""); }
+  // The SSID box stays empty unless a network was saved on this stick.
+  const box = $("#ssid");
+  if (box && !box.value && n.ssid) box.value = n.ssid;
+}
+async function refreshSystemInfo() {
+  if (!(await ensurePaired())) return;
+  const j = await control("system_info");
+  const sy = (j && j.system) || {};
+  if ($("#sysGpu")) {
+    const g = [];
+    if (j.gpu) g.push((j.gpu_count > 1 ? j.gpu_count + " × " : "") + j.gpu);
+    if (sy.driver) g.push("driver " + sy.driver);
+    if (!g.length) g.push(j.gpu_backend === "cpu" ? "No supported GPU (CPU mode)" : (j.gpu_backend || "—"));
+    $("#sysGpu").textContent = g.join(" · ");
+  }
+  if ($("#sysVram")) $("#sysVram").textContent = j.vram_gb ? j.vram_gb + " GB VRAM" : "—";
+  if ($("#sysData")) $("#sysData").textContent = sy.data_free_gb != null ? sy.data_free_gb + " GiB free" : "Not mounted";
+  if ($("#sysRam")) $("#sysRam").textContent = sy.ram_total_gb ? sy.ram_total_gb + " GB" : "—";
+  if ($("#aboutLlama")) $("#aboutLlama").textContent = sy.llama_version || "—";
+}
+let advState = { gpus: [], allowed: [], pin: null, cacheTypes: [] };
+function advNum(v) { const t = String(v ?? "").trim(); return t === "" ? null : t; }
+async function refreshAdvanced() {
+  if (!(await ensurePaired())) return;
+  const g = await control("gpu_prefs_get");
+  advState.gpus = Array.isArray(g.inventory) ? g.inventory : [];
+  advState.power = Array.isArray(g.gpus) ? g.gpus : [];
+  advState.allowed = Array.isArray(g.allowed) ? g.allowed : [];
+  advState.pin = g.pin ?? null;
+  renderAdvGpus();
+  if (!lastCatalog || !lastCatalog.length) await refreshModels().catch(() => {});
+  const sel = $("#advModel");
+  const prev = sel.value;
+  const list = (lastCatalog || []).filter((m) => m && m.installed);
+  sel.innerHTML = list.length
+    ? list.map((m) => `<option value="${esc(m.id)}">${esc(m.name || m.id)}</option>`).join("")
+    : '<option value="">No models on this stick yet</option>';
+  if (prev && list.some((m) => m.id === prev)) sel.value = prev;
+  await loadAdvModel();
+  if ($("#advAppAgent")) $("#advAppAgent").checked = appAgentOn;
+}
+function renderAdvGpus() {
+  const box = $("#advGpus");
+  const rows = advState.gpus;
+  if (!rows.length) { box.innerHTML = '<div class="row"><small>No NVIDIA GPUs found (or the driver is not loaded). These options apply to NVIDIA cards.</small></div>'; }
+  else box.innerHTML = rows.map((r) => {
+    const idx = Number(r.index);
+    const pw = advState.power.find((p) => Number(p.index) === idx) || {};
+    const pre = pw.presets || {};
+    const on = !advState.allowed.length || advState.allowed.includes(idx);
+    const btns = Object.keys(pre).length
+      ? ["eco", "longJob", "default", "boost"].filter((k) => pre[k] != null).map((k) =>
+          `<button type="button" class="btn sm${pw.limit_w && Math.round(pw.limit_w) === pre[k] ? " primary" : ""}" data-advpow="${idx}" data-preset="${k}" title="${pre[k]} W">${k === "longJob" ? "Long job" : k[0].toUpperCase() + k.slice(1)} ${pre[k]} W</button>`).join(" ")
+      : '<small>No power limit control</small>';
+    const mem = r.memory_total_mib || r.total_mib || r.memory_total || "";
+    return `<div class="row"><div><label><input type="checkbox" data-advallow="${idx}"${on ? " checked" : ""}> <b>GPU${idx} · ${esc(r.name || "GPU")}</b></label><small>${mem ? esc(String(Math.round(Number(mem) / 1024))) + " GB · " : ""}${pw.limit_w ? "limit " + Math.round(pw.limit_w) + " W" : ""}${pw.draw_w != null ? " · drawing " + Math.round(pw.draw_w) + " W" : ""}</small></div><span>${btns}</span></div>`;
+  }).join("");
+  const opts = rows.map((r) => `<option value="${Number(r.index)}">GPU${Number(r.index)} · ${esc(r.name || "GPU")}</option>`).join("");
+  $("#advPin").innerHTML = '<option value="">Automatic (one card if the model fits, split if it doesn\'t)</option>' + opts;
+  $("#advPin").value = advState.pin == null ? "" : String(advState.pin);
+  const mp = $("#advModelPin"); const keep = mp.value;
+  mp.innerHTML = '<option value="">Use the GPU setting above</option>' + opts;
+  mp.value = keep;
+}
+async function loadAdvModel() {
+  const id = $("#advModel").value;
+  const j = id ? await control("load_settings_get", { id }) : { settings: {}, cache_types: [] };
+  const st = j.settings || {};
+  advState.cacheTypes = j.cache_types && j.cache_types.length ? j.cache_types : advState.cacheTypes;
+  const ct = '<option value="">auto</option>' + advState.cacheTypes.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  $("#advCtk").innerHTML = ct; $("#advCtv").innerHTML = ct;
+  $("#advCtx").value = st.ctx ?? ""; $("#advNgl").value = st.ngl ?? ""; $("#advPar").value = st.parallel ?? "";
+  $("#advCtk").value = st.ctk || ""; $("#advCtv").value = st.ctv || "";
+  $("#advOt").value = st.override_tensor || "";
+  $("#advMmap").checked = st.mmap !== false; $("#advMlock").checked = !!st.mlock;
+  $("#advModelPin").value = st.gpu_pin == null ? "" : String(st.gpu_pin);
+  $("#advLoadMsg").textContent = Object.keys(st).length ? "Custom settings saved for this model." : "Automatic.";
+}
+async function saveAdvModel(clear) {
+  const id = $("#advModel").value;
+  if (!id) return toast("Pick a model first");
+  const settings = clear ? {} : {
+    ctx: advNum($("#advCtx").value), ngl: advNum($("#advNgl").value), parallel: advNum($("#advPar").value),
+    ctk: $("#advCtk").value, ctv: $("#advCtv").value, override_tensor: $("#advOt").value.trim(),
+    mlock: $("#advMlock").checked, gpu_pin: advNum($("#advModelPin").value),
+  };
+  if (!clear && !$("#advMmap").checked) settings.mmap = false;
+  try {
+    const j = await control("load_settings_set", { id, settings });
+    if (j && j.ok === false) throw new Error(j.error || "Could not save");
+    toast(clear ? "Back to automatic for this model" : "Saved. Reload the model to use it.");
+    await loadAdvModel();
+  } catch (e) { $("#advLoadMsg").textContent = e.message || String(e); }
+}
+if ($("#sec-advanced")) {
+  $("#advModel").onchange = () => loadAdvModel().catch((e) => toast(e.message));
+  $("#advLoadSave").onclick = () => saveAdvModel(false);
+  $("#advLoadClear").onclick = () => saveAdvModel(true);
+  $("#advGpuSave").onclick = async () => {
+    const all = advState.gpus.map((r) => Number(r.index));
+    const allowed = $$("[data-advallow]").filter((b) => b.checked).map((b) => Number(b.dataset.advallow));
+    if (all.length && !allowed.length) return toast("Leave at least one GPU on");
+    const pinV = $("#advPin").value;
+    try {
+      const j = await control("gpu_prefs_set", { allowed: allowed.length === all.length ? [] : allowed, pin: pinV === "" ? null : Number(pinV) });
+      if (j && j.ok === false) throw new Error(j.error || "Could not save");
+      $("#advGpuMsg").textContent = "Saved. Used the next time a model loads.";
+    } catch (e) { $("#advGpuMsg").textContent = e.message || String(e); }
+  };
+  $("#advGpus").addEventListener("click", async (e) => {
+    const b = e.target.closest && e.target.closest("[data-advpow]");
+    if (!b) return;
+    b.disabled = true;
+    try {
+      const j = await control("gpu_power_set", { index: Number(b.dataset.advpow), preset: b.dataset.preset });
+      if (j && j.ok === false) throw new Error(j.error || "Could not set the power limit");
+      if (Array.isArray(j.gpus)) advState.power = j.gpus;
+      toast(`GPU${j.index} power limit ${j.watts} W (resets on reboot)`);
+      renderAdvGpus();
+    } catch (err) { toast(err.message || String(err)); b.disabled = false; }
+  });
+  $("#advAppAgent").onchange = async (e) => {
+    const want = e.target.checked;
+    try { localStorage.setItem("stickllm-appagent-exp", want ? "1" : "0"); } catch (_) {}
+    if (want !== appAgentOn) await appAgentToggle();
+    renderAppAgentBar();
+  };
+}
 $("#copyUrl").onclick = () => {
-  const u = $("#lanUrl2")?.textContent?.trim() || location.origin + "/";
+  const pick = (el) => { const t = el?.textContent?.trim() || ""; return /^https?:\/\/[^…]+$/.test(t) ? t : ""; };
+  const u = pick($("#netUrl")) || pick($("#lanUrl2")) || location.origin + "/";
   navigator.clipboard?.writeText(u).catch(() => {});
   toast("Address copied");
 };

@@ -148,6 +148,11 @@ if [[ ! "${NGL:-}" =~ ^[0-9]+$ ]]; then
   NGL=32
   echo "stickllm-llama-start: offload planner failed; using -ngl 32" >&2
 fi
+# 0.5.9: Settings > Advanced per-model -ngl wins over the fit (not over the
+# "Fewer GPU layers" retry, which writes ngl.env after a crash).
+if [[ "${STICKLLM_NGL_USER:-}" =~ ^[0-9]+$ && -z "${STICKLLM_N_GPU_LAYERS:-}" ]]; then
+  NGL="$STICKLLM_NGL_USER"
+fi
 N_CPU_MOE="${STICKLLM_PLAN_N_CPU_MOE:-0}"
 TENSOR_SPLIT="${STICKLLM_PLAN_TENSOR_SPLIT:-${STICKLLM_TENSOR_SPLIT:-}}"
 GPU_COUNT="${STICKLLM_PLAN_GPU_COUNT:-${STICKLLM_GPU_COUNT:-0}}"
@@ -180,6 +185,13 @@ if [[ "$CTX_MAX" =~ ^[0-9]+$ ]] && (( CTX_MAX >= 256 && CTX > CTX_MAX )); then
   CTX="$CTX_MAX"
 fi
 
+# 0.5.9: the planner puts a model on ONE card when it fits there (most free
+# VRAM, or the pinned card). Show llama only that card; split only otherwise.
+# CUDA_DEVICE_ORDER=PCI_BUS_ID keeps CUDA and nvidia-smi indexes the same.
+if [[ "$BACKEND" == "cuda" && "$GPU_COUNT" == "1" && "${STICKLLM_PLAN_DEVICES:-}" =~ ^[0-9]+$ ]]; then
+  export CUDA_VISIBLE_DEVICES="$STICKLLM_PLAN_DEVICES"
+fi
+
 gpu_extra=()
 if [[ "$GPU_COUNT" =~ ^[0-9]+$ ]] && (( GPU_COUNT > 1 )) && [[ -n "$TENSOR_SPLIT" ]]; then
   gpu_extra+=(--tensor-split "$TENSOR_SPLIT")
@@ -196,6 +208,26 @@ case "${STICKLLM_KV_TYPE:-f16}" in
     kv_extra+=(--cache-type-k "$STICKLLM_KV_TYPE" --cache-type-v "$STICKLLM_KV_TYPE" --flash-attn on)
     ;;
 esac
+# 0.5.9 per-model overrides (validated by stickllm-control before model.env).
+ctk="${STICKLLM_CTK:-}"; ctv="${STICKLLM_CTV:-}"
+if [[ -n "$ctk" || -n "$ctv" ]]; then
+  kv_extra=()
+  [[ -n "$ctk" ]] && kv_extra+=(--cache-type-k "$ctk")
+  [[ -n "$ctv" ]] && kv_extra+=(--cache-type-v "$ctv")
+  if [[ -n "$ctv" && "$ctv" != "f16" && "$ctv" != "f32" && "$ctv" != "bf16" ]]; then
+    kv_extra+=(--flash-attn on)
+  fi
+fi
+if [[ "${STICKLLM_PARALLEL:-}" =~ ^[0-9]+$ ]] && (( STICKLLM_PARALLEL >= 1 )); then
+  kv_extra+=(--parallel "$STICKLLM_PARALLEL")
+fi
+[[ "${STICKLLM_NO_MMAP:-}" == "1" ]] && kv_extra+=(--no-mmap)
+[[ "${STICKLLM_MLOCK:-}" == "1" ]] && kv_extra+=(--mlock)
+ot_extra=()
+if [[ -s "$RUN/override-tensor.txt" ]]; then
+  IFS= read -r ot_val <"$RUN/override-tensor.txt" || true
+  [[ -n "${ot_val:-}" ]] && ot_extra+=(--override-tensor "$ot_val")
+fi
 mm_extra=()
 if [[ -n "${STICKLLM_MMPROJ:-}" && -f "${STICKLLM_MMPROJ}" ]]; then
   mm_extra+=(--mmproj "$STICKLLM_MMPROJ")
@@ -219,6 +251,7 @@ if [[ "$BACKEND" == "cuda" ]] && [[ -x "$CUDA_BIN" ]]; then
       "${gpu_extra[@]}" \
       "${mm_extra[@]}" \
       "${kv_extra[@]}" \
+      "${ot_extra[@]}" \
       --jinja \
       --metrics
   fi
@@ -254,6 +287,7 @@ if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "fallback" ]]; then
       "${gpu_extra[@]}" \
       "${mm_extra[@]}" \
       "${kv_extra[@]}" \
+      "${ot_extra[@]}" \
       --jinja \
       --metrics
   fi

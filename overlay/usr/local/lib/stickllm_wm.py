@@ -24,6 +24,25 @@ class WMError(Exception):
     pass
 
 
+def _drop_to(user: str) -> list:
+    """0.5.9: argv prefix that runs a command as `user`. Absolute paths: the
+    0.5.8 X11 helper ran with PATH=/usr/local/bin:/usr/bin:/bin, so a bare
+    "runuser" (/usr/sbin) raised "[Errno 2] No such file or directory".
+    Falls back to setpriv (util-linux, /usr/bin)."""
+    for p in ("/usr/sbin/runuser", "/sbin/runuser"):
+        if os.access(p, os.X_OK):
+            return [p, "-u", user, "--"]
+    for p in ("/usr/bin/setpriv", "/bin/setpriv"):
+        if os.access(p, os.X_OK):
+            try:
+                import pwd
+                pw = pwd.getpwnam(user)
+            except KeyError:
+                break
+            return [p, f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups", "--"]
+    raise OSError(2, "no runuser/setpriv to drop privileges")
+
+
 class X11:
     """Runs the X11 tools against the kiosk display (DISPLAY=:0)."""
 
@@ -36,8 +55,11 @@ class X11:
     def run(self, *args: str, timeout: float = 5.0) -> str:
         cmd = list(args)
         if self.user and os.geteuid() == 0 and self.user != "root":
-            cmd = ["runuser", "-u", self.user, "--"] + cmd
-        env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "DISPLAY": self.display}
+            try:
+                cmd = _drop_to(self.user) + cmd
+            except OSError as e:
+                raise WMError(str(e)) from e
+        env = {"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "DISPLAY": self.display}
         try:
             r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as e:

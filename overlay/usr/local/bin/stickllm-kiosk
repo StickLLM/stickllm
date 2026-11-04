@@ -146,6 +146,20 @@ is_weak_drm() {
   return 1
 }
 
+# 0.5.9: a DRM card counts for the desktop only when a monitor is connected.
+card_connected() {
+  local base conn
+  base="$(basename "$1")"
+  for conn in /sys/class/drm/"$base"-*/status; do
+    [[ -f "$conn" ]] || continue
+    [[ "$(tr -d '[:space:]' <"$conn" 2>/dev/null || true)" == "connected" ]] && return 0
+  done
+  return 1
+}
+card_boot_vga() {
+  [[ "$(tr -d '[:space:]' <"/sys/class/drm/$(basename "$1")/device/boot_vga" 2>/dev/null || true)" == "1" ]]
+}
+
 has_nvidia_drm() {
   local c path
   for c in /sys/class/drm/card[0-9]; do
@@ -273,7 +287,15 @@ pick_display_drm() {
         ;;
     esac
   done
-  if [[ -n "$connected_igpu" ]]; then pick="$connected_igpu"
+  # 0.5.9: the boot_vga card wins when it has a monitor connected.
+  local connected_bootvga="" _bc
+  for _bc in /dev/dri/card[0-9]; do
+    [[ -e "$_bc" ]] || continue
+    is_weak_drm "$_bc" && continue
+    if card_boot_vga "$_bc" && card_connected "$_bc"; then connected_bootvga="$_bc"; break; fi
+  done
+  if [[ -n "$connected_bootvga" ]]; then pick="$connected_bootvga"
+  elif [[ -n "$connected_igpu" ]]; then pick="$connected_igpu"
   elif [[ -n "$connected_nvidia" ]]; then pick="$connected_nvidia"
   elif [[ -n "$best_igpu" ]]; then pick="$best_igpu"
   elif [[ -n "$console_drm" ]] && ! is_weak_drm "$console_drm"; then pick="$console_drm"
@@ -755,7 +777,7 @@ xfce_enabled() {
 # Xorg config for exactly one GPU (the display card the ladder picked); other
 # GPUs (compute cards) are never added to the X screen.
 write_xorg_conf() {
-  local drm="$1" base slot busid="" drv=modesetting
+  local drm="$1" force_drv="${2:-}" base slot busid="" drv=modesetting
   base="$(basename "$drm")"
   slot="$(basename "$(readlink -f "/sys/class/drm/${base}/device" 2>/dev/null)" 2>/dev/null || true)"
   if [[ "$slot" =~ ^[0-9a-fA-F]{4}:([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-7])$ ]]; then
@@ -764,6 +786,7 @@ write_xorg_conf() {
   if is_nvidia_path "$drm" && [[ -e /usr/lib/xorg/modules/drivers/nvidia_drv.so || -e /usr/lib/nvidia/current/nvidia_drv.so ]]; then
     drv=nvidia
   fi
+  [[ -n "$force_drv" ]] && drv="$force_drv"
   {
     echo '# Written by stickllm-kiosk at every desktop start.'
     echo 'Section "ServerFlags"'
@@ -771,6 +794,13 @@ write_xorg_conf() {
     echo '  Option "DontVTSwitch" "true"'
     echo '  Option "DontZap" "true"'
     echo '  Option "BlankTime" "0"'
+    echo 'EndSection'
+    # 0.5.9: Debian keeps nvidia_drv.so / libglxserver_nvidia.so in
+    # /usr/lib/nvidia/current, which is not in the default ModulePath
+    # (0.5.8: 'Failed to load module "nvidia" (module does not exist)').
+    echo 'Section "Files"'
+    [[ "$drv" == nvidia && -d /usr/lib/nvidia/current ]] && echo '  ModulePath "/usr/lib/nvidia/current"'
+    echo '  ModulePath "/usr/lib/xorg/modules"'
     echo 'EndSection'
     echo 'Section "Device"'
     echo '  Identifier "stickllm-gpu"'
@@ -831,7 +861,7 @@ prepare_xorg_log() {
 # Xorg runs as root (as Xorg.wrap would); only the kiosk user may connect.
 start_xorg() {
   local drm="$1" i
-  write_xorg_conf "$drm"
+  write_xorg_conf "$drm" "${XORG_FORCE_DRV:-}"
   kill_stale_xorg
   prepare_xorg_log
   fail_note "STICKLLM_KIOSK_XORG_START drm=$drm uid=$(id -u) log=$XORG_LOG"
@@ -1017,7 +1047,7 @@ hold_error() {
 # --- main ---
 # Chat (stickllm.chat) shares the on-stick browser; local/kiosk are aliases.
 CHAT_MODE=0
-STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.5.8)"
+STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.5.9)"
 if grep -Eqw 'stickllm\.chat' /proc/cmdline 2>/dev/null; then
   CHAT_MODE=1
 elif ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then
@@ -1136,35 +1166,44 @@ run_stack_forever() {
 
 # Strategy ladder — first long-running success is the product.
 # Include the picked card even when it is NVIDIA (3090-as-display).
+# 0.5.9: fallbacks are only cards with a monitor connected (0.5.8 fell back
+# to an RX 570 with nothing plugged in). Real KMS cards first, then weak ones.
 drm_list=("$DISPLAY_DRM")
 for _c in /dev/dri/card[0-9]; do
   [[ -e "$_c" ]] || continue
   [[ "$_c" == "$DISPLAY_DRM" ]] && continue
-  # Skip other NVIDIA cards when display is already a specific nvidia card.
-  if is_nvidia_path "$_c" && is_nvidia_path "$DISPLAY_DRM"; then
-    continue
-  fi
-  if is_nvidia_path "$_c" && ! is_nvidia_path "$DISPLAY_DRM"; then
-    continue
-  fi
   is_weak_drm "$_c" && continue
+  card_connected "$_c" || { fail_note "STICKLLM_KIOSK_DRM_SKIP_NO_MONITOR $_c"; continue; }
   drm_list+=("$_c")
 done
 for _c in /dev/dri/card[0-9]; do
   [[ -e "$_c" ]] || continue
   [[ "$_c" == "$DISPLAY_DRM" ]] && continue
-  is_nvidia_path "$_c" && continue
   is_weak_drm "$_c" || continue
+  card_connected "$_c" || continue
   drm_list+=("$_c")
 done
+fail_note "STICKLLM_KIOSK_DRM_LIST ${drm_list[*]}"
 
 for drm in "${drm_list[@]}"; do
   # 0.5.7: Xfce on Xorg only, on each usable display card in turn.
+  XORG_FORCE_DRV=""
   run_stack_forever "xfce+$BROWSER@$(basename "$drm")" "$drm" x11 xfce "$BROWSER" \
     && exit 0
   fail_note "STICKLLM_KIOSK_XFCE_FAIL drm=$drm"
   serial_note "STICKLLM_KIOSK_XFCE_FAIL drm=$(basename "$drm")"
+  # 0.5.9: NVIDIA Xorg driver failed -> modesetting on the same card (needs
+  # nvidia-drm modeset=1, set by ensure_nvidia_kms) before any other card.
+  if is_nvidia_path "$drm"; then
+    XORG_FORCE_DRV=modesetting
+    fail_note "STICKLLM_KIOSK_XFCE_NVIDIA_MODESETTING drm=$drm"
+    run_stack_forever "xfce-modesetting+$BROWSER@$(basename "$drm")" "$drm" x11 xfce "$BROWSER" \
+      && exit 0
+    XORG_FORCE_DRV=""
+    fail_note "STICKLLM_KIOSK_XFCE_FAIL drm=$drm driver=modesetting"
+  fi
 done
+XORG_FORCE_DRV=""
 
 # 0.5.8: Xfce failed everywhere -> full-screen browser kiosk (cage), as before 0.5.6.
 if command -v cage >/dev/null 2>&1; then

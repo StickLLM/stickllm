@@ -5,4 +5,4 @@ license: MIT
 pinned: 2026-09-10
 built: parcel build from that commit (package-lock parcel 2.16.4). This directory is the static output plus LICENSE. TypeScript sources and node_modules are not shipped.
 default: Klondike when the URL hash is empty
-note: Built HTML also has the StickLLM title, favicon link, and Back to Apps link.
+note: Built HTML also has the StickLLM title, and favicon link (the Back to Apps link was removed in 0.5.9).
