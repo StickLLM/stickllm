@@ -505,10 +505,6 @@ draw_connect_steps() {
       say "    Phone/LAN:   ${SCHEME}://<lan-ip>/  (PAIR CODE on READY)"
     fi
     say "    Models / Settings in the StickLLM web UI"
-    if [[ "$SSH_ON" -eq 1 ]]; then
-      ssh_password_line "${ip:-}"
-      say "    Keyboard:   Ctrl+Alt+F2 -> stickllm / (same password)"
-    fi
     return
   fi
   say "  How to connect (same LAN; WiFi: Settings or stickllm-wifi-setup):"
@@ -532,7 +528,7 @@ draw_connect_steps() {
   else
     say "    Pair code:  shown on the READY screen (not while loading)"
   fi
-  if [[ "$mode" == "ssh" || "$SSH_ON" -eq 1 ]]; then
+  if [[ "$ready" == "1" ]] && [[ "$mode" == "ssh" || "$SSH_ON" -eq 1 ]]; then
     ssh_password_line "${ip:-}"
     say "    Keyboard:   Ctrl+Alt+F2 -> stickllm / (same password)"
   fi
@@ -678,6 +674,43 @@ PY
   fi
 }
 
+# 0.5.7: desktop modes (Chat/Local) get a plain loading screen: version,
+# elapsed timer and only status lines that are true right now. No pair code,
+# no passwords (those are on the desktop, F10 / F9). The model line appears
+# only when stickllm-llama is really loading or really answering.
+VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.5.7)"
+desktop_mode() { [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; }
+model_status_line() {
+  local st
+  if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 http://127.0.0.1:8080/health 2>/dev/null)" == "200" ]]; then
+    echo "Model:    ready (${MODEL_NAME})"
+    return
+  fi
+  st="$(systemctl is-active stickllm-llama.service 2>/dev/null || true)"
+  case "$st" in
+    active|activating|reloading) echo "Model:    loading (${MODEL_NAME})" ;;
+    *) echo "" ;;
+  esac
+}
+draw_plain() {
+  local elapsed="$1" ip="$2" ui_ok="$3" title="$4"
+  local ml
+  refresh_model_label
+  clear_tty
+  say ""
+  say "  StickLLM ${VERSION_LABEL}"
+  say ""
+  say "  ${title}   ${elapsed}s"
+  say ""
+  if [[ "$ui_ok" -eq 1 ]]; then say "  Service:  running"; else say "  Service:  starting"; fi
+  if [[ -n "${ip:-}" ]]; then say "  Network:  ${ip}"; else say "  Network:  no connection yet"; fi
+  ml="$(model_status_line)"
+  [[ -n "$ml" ]] && say "  $ml"
+  refresh_failed
+  if [[ -n "${last_failed:-}" ]]; then say "  Problem:  $last_failed"; fi
+  say ""
+}
+
 draw() {
   local elapsed="$1" phase="$2" ip="$3" ui_ok="$4" api_ok="$5"
 
@@ -685,6 +718,12 @@ draw() {
   printf '%s\n' "$elapsed" >"$RUN/boot-elapsed.txt"
   printf '%s\n' "${ip:-}" >"$RUN/lan-ip.txt"
 
+  if desktop_mode; then
+    draw_plain "$elapsed" "$ip" "$ui_ok" "Starting…"
+    emit_health_breadcrumb "$ip" "$ui_ok" "$api_ok" "$phase"
+    emit_net_probe "${ip:-}"
+    return
+  fi
   clear_tty
   draw_header "StickLLM - loading"
   say "  Status: $phase"
@@ -720,6 +759,11 @@ draw_ready() {
   printf 'READY\n' >"$RUN/boot-phase.txt"
   printf '%s\n' "${ip:-}" >"$RUN/lan-ip.txt"
   url_scheme
+  if desktop_mode; then
+    draw_plain "$elapsed" "$ip" "$ui_ok" "Ready - opening the desktop…"
+    emit_health_breadcrumb "$ip" 1 "$api_ok" "READY"
+    return
+  fi
   if [[ "$ui_ok" -eq 1 ]]; then
     ensure_pair
   fi
@@ -818,10 +862,12 @@ LAST_FORCE=-999
 paint_loading() {
   local elapsed="$1" phase="$2" ip="$3" ui_ok="$4" api_ok="$5"
   local ssh_sig=""
-  [[ "$SSH_ON" -eq 1 ]] && ssh_sig="$(tr -d '[:space:]' <"$RUN/ssh-password.txt" 2>/dev/null || true)"
-  local sig="${phase}|${ip:-}|${ui_ok}|${api_ok}|${PAIR_STATE:-none}|${PAIR_CODE:-}|${mode}|${SCHEME:-http}|${ssh_sig}"
-  # Full redraw on change, or every ~10s (ISS-002).
-  if [[ "$sig" != "$LAST_SIG" ]] || (( elapsed - LAST_FORCE >= 10 )); then
+  local sig="${phase}|${ip:-}|${ui_ok}|${api_ok}|${mode}|${SCHEME:-http}"
+  # Full redraw on change, or every ~10s (ISS-002); every 2 s on the plain
+  # desktop-mode screen so its timer counts visibly.
+  local every=10
+  desktop_mode && every=2
+  if [[ "$sig" != "$LAST_SIG" ]] || (( elapsed - LAST_FORCE >= every )); then
     LAST_SIG="$sig"
     LAST_FORCE=$elapsed
     draw "$elapsed" "$phase" "$ip" "$ui_ok" "$api_ok"
@@ -889,14 +935,7 @@ while (( SECONDS < deadline )); do
       # (No model load at boot — READY arrives too fast to catch otherwise.)
       draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
       ready_drawn=1
-      if [[ "$SSH_ON" -eq 1 ]]; then
-        # Repaint once mid-linger in case the first paint scrolled off.
-        sleep 12
-        draw_ready "$SECONDS" "${ip:-}" "$ui_ok" "$api_ok"
-        sleep 18
-      else
-        sleep 2
-      fi
+      sleep 2
       handoff_local_chat
       exit 0
     fi
@@ -958,8 +997,8 @@ while (( SECONDS < deadline )); do
     continue
   fi
   paint_loading "$SECONDS" "$phase" "${ip:-}" "$ui_ok" "$api_ok"
-  if [[ "$phase" == "STICKLLM Network Loading" ]]; then
-    sleep 3
+  if [[ "$phase" == "STICKLLM Network Loading" ]] || desktop_mode; then
+    sleep 2
   else
     sleep 10
   fi

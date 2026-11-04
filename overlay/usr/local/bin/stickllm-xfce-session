@@ -3,9 +3,8 @@
 # stickllm-kiosk as the kiosk user on the X server it started.
 # Xfce is the stock Debian packages, unmodified. StickLLM only writes Xfce
 # settings (xfconf XML, panel launchers, kioskrc) and starts the session.
-# Locked down: no terminal (not installed), no application menu, no desktop
-# menu, no log-out button, panel and desktop cannot be customised, session
-# is never saved. When the session ends, stickllm-kiosk starts it again.
+# Locked down: no terminal (not installed), no application menu, no panel,
+# no desktop icons, no log-out button, session is never saved. When the session ends, stickllm-kiosk starts it again.
 set -u
 RCFILE="${XDG_RUNTIME_DIR:-/tmp}/stickllm-xfce-session.rc"
 SHARE=/usr/local/share/stickllm/xfce
@@ -21,116 +20,14 @@ unset WAYLAND_DISPLAY
 cfg="$XDG_CONFIG_HOME/xfce4"
 xml="$cfg/xfconf/xfce-perchannel-xml"
 rm -rf "$cfg/panel" "$xml" "$HOME/.cache/sessions" "${XDG_RUNTIME_DIR:-/tmp}/stickllm-web"
-mkdir -p "$xml" "$cfg/panel"
+mkdir -p "$xml"
 cp -f "$XDGDIR"/xfce4/xfconf/xfce-perchannel-xml/*.xml "$xml/" 2>/dev/null || true
 
-# Panel: StickLLM, Browser, then the StickLLM apps that are installed.
-apps=(files notepad calculator solitaire minesweeper tetris media monitor)
-declare -A label=([files]=Files [notepad]=Notepad [calculator]=Calculator [solitaire]=Solitaire
-  [minesweeper]=Minesweeper [tetris]=Tetris [media]=Media [monitor]=Monitor)
-launcher() { # id plugin-number name icon-id
-  mkdir -p "$cfg/panel/launcher-$2"
-  cat >"$cfg/panel/launcher-$2/$1.desktop" <<DESK
-[Desktop Entry]
-Type=Application
-Version=1.0
-Name=$3
-Comment=Open $3
-Exec=/usr/local/bin/stickllm-xfce-open $1
-Icon=$SHARE/icons/$4.png
-Terminal=false
-StartupNotify=false
-DESK
-}
-ids=(1 2)
-launcher home 1 StickLLM stickllm
-launcher browser 2 Browser browser
-n=3
-plugins=""
-for a in "${apps[@]}"; do
-  [[ -f "$UIROOT/apps/$a/index.html" ]] || continue
-  launcher "$a" "$n" "${label[$a]}" "$a"
-  ids+=("$n"); n=$((n + 1))
-done
-lp=""
-for i in "${ids[@]}"; do
-  item="$(basename "$(ls "$cfg/panel/launcher-$i/"*.desktop)")"
-  lp+="    <property name=\"plugin-$i\" type=\"string\" value=\"launcher\">
-      <property name=\"items\" type=\"array\"><value type=\"string\" value=\"$item\"/></property>
-      <property name=\"show-label\" type=\"bool\" value=\"false\"/>
-    </property>
-"
-done
-idv=""
-for i in "${ids[@]}" 20 21 22 23 24; do idv+="        <value type=\"int\" value=\"$i\"/>
-"; done
-cat >"$xml/xfce4-panel.xml" <<PANEL
-<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xfce4-panel" version="1.0">
-  <property name="configver" type="int" value="2"/>
-  <property name="panels" type="array">
-    <value type="int" value="1"/>
-    <property name="dark-mode" type="bool" value="true"/>
-    <property name="panel-1" type="empty">
-      <property name="position" type="string" value="p=10;x=0;y=0"/>
-      <property name="length" type="uint" value="100"/>
-      <property name="position-locked" type="bool" value="true"/>
-      <property name="size" type="uint" value="44"/>
-      <property name="icon-size" type="uint" value="32"/>
-      <property name="plugin-ids" type="array">
-$idv      </property>
-    </property>
-  </property>
-  <property name="plugins" type="empty">
-$lp    <property name="plugin-20" type="string" value="separator">
-      <property name="style" type="uint" value="0"/>
-    </property>
-    <property name="plugin-21" type="string" value="tasklist">
-      <property name="grouping" type="uint" value="0"/>
-      <property name="show-labels" type="bool" value="true"/>
-      <property name="flat-buttons" type="bool" value="true"/>
-    </property>
-    <property name="plugin-22" type="string" value="separator">
-      <property name="expand" type="bool" value="true"/>
-      <property name="style" type="uint" value="0"/>
-    </property>
-    <property name="plugin-23" type="string" value="systray"/>
-    <property name="plugin-24" type="string" value="clock"/>
-  </property>
-</channel>
-PANEL
-
-# Wallpaper on every connected output (xfdesktop keys by output name).
-bd=""
-while read -r out; do
-  [[ -n "$out" ]] || continue
-  bd+="        <property name=\"monitor$out\" type=\"empty\">
-          <property name=\"workspace0\" type=\"empty\">
-            <property name=\"color-style\" type=\"int\" value=\"0\"/>
-            <property name=\"image-style\" type=\"int\" value=\"5\"/>
-            <property name=\"last-image\" type=\"string\" value=\"$SHARE/wallpaper.png\"/>
-          </property>
-        </property>
-"
-done < <(xrandr --query 2>/dev/null | awk '$2=="connected"{print $1}')
-cat >"$xml/xfce4-desktop.xml" <<DESKXML
-<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xfce4-desktop" version="1.0">
-  <property name="backdrop" type="empty">
-    <property name="screen0" type="empty">
-$bd    </property>
-  </property>
-  <property name="desktop-icons" type="empty">
-    <property name="style" type="int" value="0"/>
-  </property>
-  <property name="desktop-menu" type="empty">
-    <property name="show" type="bool" value="false"/>
-  </property>
-  <property name="windowlist-menu" type="empty">
-    <property name="show" type="bool" value="false"/>
-  </property>
-</channel>
-DESKXML
+# 0.5.7: no xfce4-panel and no xfdesktop (default Xfce clutter). The
+# StickLLM desktop window (stickllm-xfce-open home, autostart) is full screen
+# with its own bottom bar, launcher and settings windows, like 0.5.6 on sway.
+# The root window gets the 0.5.6 desktop colour for the moment before it maps.
+xsetroot -solid '#0f1720' 2>/dev/null || true
 
 start=$(date +%s)
 if command -v dbus-launch >/dev/null 2>&1; then

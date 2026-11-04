@@ -64,7 +64,7 @@ else
 fi
 grep -q '^docker.io$' config/package-lists/stickllm.list.chroot
 grep -q '^chromium$' config/package-lists/stickllm.list.chroot
-grep -q '^cage$' config/package-lists/stickllm.list.chroot
+grep -q '^xfwm4$' config/package-lists/stickllm.list.chroot
 grep -q '^seatd$' config/package-lists/stickllm.list.chroot
 
 mkdir -p config/hooks/normal

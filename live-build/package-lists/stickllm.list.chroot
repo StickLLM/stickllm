@@ -41,18 +41,17 @@ nvidia-kernel-dkms
 nvidia-smi
 libcuda1
 nvidia-persistenced
-# Local-mode kiosk (cage Wayland + Chromium + seatd/libinput)
-cage
-# 0.5.6 desktop: floating windows (Browser, app pop-outs). Stock Debian sway
-# (MIT) + swaybg (MIT) on the same wlroots (MIT) cage uses; configured only via
-# /etc/stickllm/sway/config. Recommends stay off (no foot terminal, no swaylock).
-sway
 # 0.5.6 on-stick desktop: stock Debian Xfce (GPL/LGPL, unmodified, configured
 # only through settings) on Xorg (MIT). No terminal, no application menu, no
-# file manager; Recommends stay off. sway/cage/weston stay as fallbacks.
+# file manager; Recommends stay off. 0.5.7: Xfce is the only desktop (no
+# sway/cage/weston). wmctrl + xdotool + x11-utils (MIT-style) let
+# stickllm-control move/minimise the Browser windows on Xorg.
 xserver-xorg-core
 xserver-xorg-input-libinput
 x11-xserver-utils
+x11-utils
+wmctrl
+xdotool
 dbus-x11
 xfwm4
 xfce4-panel
@@ -65,7 +64,6 @@ chromium
 seatd
 libinput-bin
 libinput10
-xwayland
 fonts-dejavu-core
 # Vulkan (AMD/Intel llama path + Mesa ICD; loader required for llama-server-vulkan)
 mesa-vulkan-drivers

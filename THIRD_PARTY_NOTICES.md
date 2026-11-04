@@ -34,53 +34,33 @@ packages and are not listed here.
 Pinned commits and the edits StickLLM made are in each app's `SOURCES.txt`.
 Files, Calculator, Media and System monitor are StickLLM's own code.
 
-## Desktop compositor (Debian packages, unmodified)
-
-The desktop session (0.5.6) runs on the stock Debian bookworm packages below,
-installed by live-build from the Debian archive exactly as published. StickLLM
-does not modify, patch, fork or rebuild them. It configures sway only through
-its own config file (`/etc/stickllm/sway/config`, started with `sway -c`) and
-talks to it over sway's documented IPC socket from StickLLM's own Python code
-(`/usr/local/lib/stickllm_wm.py`, `stickllm-control`). That code is not linked
-against these packages and copies no code from them. Each package's full
-copyright and licence text ships in the image as
-`/usr/share/doc/<package>/copyright`, as Debian provides.
-
-| Package (Debian bookworm) | Version | Upstream | Licence |
-|---|---|---|---|
-| sway | 1.7-6 | https://github.com/swaywm/sway | Expat (MIT); some protocol XML files MIT-like; `protocols/idle.xml` LGPL-2.1+ (protocol description, unmodified) |
-| swaybg | 1.2.0-1 | https://github.com/swaywm/swaybg | Expat (MIT) / MIT-like |
-| libwlroots10 (wlroots) | 0.15.1-6 | https://gitlab.freedesktop.org/wlroots/wlroots | Expat (MIT); `protocol/idle.xml` LGPL-2.1+; Debian packaging files GPL-2+; one CC0-1.0 file |
-
-`libwlroots10` was already in the image for the fallback compositor (cage).
-sway's other dependencies (Mesa, libglvnd, polkitd, json-c, pango, ...) are
-ordinary Debian packages that were already present or are pulled in unchanged;
-their licence texts are likewise in `/usr/share/doc/<package>/copyright`.
-sway's *recommended* packages (the foot terminal, suckless-tools,
-sway-backgrounds) are **not** installed: the image is built with recommends off.
-
-### Xfce desktop (0.5.6, Debian packages, unmodified)
+## Xfce desktop (0.5.7, Debian packages, unmodified)
 
 On the stick's own screen the desktop is stock Xfce 4.18 on Xorg, installed
 from the Debian bookworm archive exactly as published (recommends off). StickLLM
 does not modify, patch, fork or rebuild Xfce or Xorg. It only writes their
-settings: xfconf XML defaults (`/etc/stickllm/xfce/xdg`), panel launchers and
-an xfdesktop wallpaper written by `stickllm-xfce-session`, an Xfce
-`/etc/xdg/xfce4/kiosk/kioskrc`, and an Xorg config file generated at start by
-`stickllm-kiosk`. StickLLM's apps open in Chromium windows; no StickLLM code is
+settings: xfconf XML defaults (`/etc/stickllm/xfce/xdg`), an Xfce
+`/etc/xdg/xfce4/kiosk/kioskrc`, `/etc/X11/Xwrapper.config`, and an Xorg config
+file generated at start by `stickllm-kiosk`. Browser windows are moved and
+sized by running the stock `wmctrl`, `xdotool` and `xprop` programs from
+StickLLM's own `/usr/local/lib/stickllm_wm.py` (separate processes; nothing
+linked or copied). StickLLM's apps open in Chromium windows; no StickLLM code is
 linked against Xfce or Xorg. Licence texts ship as
 `/usr/share/doc/<package>/copyright`.
 
 | Package (Debian bookworm) | Upstream | Licence |
 |---|---|---|
 | xfwm4, xfce4-panel, xfce4-session, xfce4-settings, xfdesktop4, xfconf (and their libxfce4ui/libxfce4util/garcon/exo libraries) | https://xfce.org | GPL-2+ (programs), LGPL-2+ (libraries) |
-| xserver-xorg-core, xserver-xorg-input-libinput, x11-xserver-utils | https://x.org | MIT/X11 and similar permissive licences |
+| xserver-xorg-core, xserver-xorg-input-libinput, x11-xserver-utils, x11-utils | https://x.org | MIT/X11 and similar permissive licences |
+| wmctrl | https://sites.google.com/site/tstyblo/wmctrl | GPL-2+ |
+| xdotool | https://github.com/jordansissel/xdotool | BSD-3-Clause |
 | dbus-x11 | https://www.freedesktop.org/wiki/Software/dbus/ | AFL-2.1 or GPL-2+ |
 | adwaita-icon-theme | https://gitlab.gnome.org/GNOME/adwaita-icon-theme | LGPL-3 or CC-BY-SA-3.0 |
 
 These are used as unmodified Debian binaries, with their source available from
 the Debian archive (`apt-get source <package>`). Xfce's recommended packages
-(xfce4-terminal, thunar, xfce4-appfinder, ...) are **not** installed.
+(xfce4-terminal, thunar, xfce4-appfinder, ...) are **not** installed. 0.5.7
+removed sway, swaybg, cage, weston and wlroots from the image.
 
 `grim` (MIT) was used only to take screenshots in a test VM; it is not in the
 image's package list.

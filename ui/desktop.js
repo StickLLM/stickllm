@@ -807,7 +807,7 @@
     }).catch((e) => { if (api.toast) api.toast("Browser: " + e.message); });
   }
   // Window ops go to the compositor (stickllm-control browser_window, which
-  // talks to sway). The desktop taskbar height is reserved when maximising.
+  // talks to the X11 window manager via wmctrl). The desktop taskbar height is reserved when maximising.
   function browserOp(id, op) {
     const api = appApi();
     if (!api.control || !id) return Promise.resolve(null);

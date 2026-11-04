@@ -3793,11 +3793,9 @@ def wifi_connect(ssid: str, password: str) -> dict:
 # straight into vault/Downloads while the vault is unlocked, blocked while it
 # is locked, so nothing is ever saved unencrypted on the stick or in RAM.
 # Placement: Wayland lets the compositor, not the client, place windows. The
-# kiosk now runs the stock sway compositor (our config, /etc/stickllm/sway),
-# where these windows float over the desktop; stickllm_wm.py places, moves,
-# resizes, minimises, restores, maximises and focuses them over sway's IPC
-# socket. On the fallback compositors (cage, weston kiosk-shell) every window
-# is full screen and the window ops report "wm_unavailable".
+# 0.5.7: the kiosk runs Xfce on Xorg only; these windows float over the
+# full-screen StickLLM desktop and stickllm_wm.py places, moves, resizes,
+# minimises, restores, maximises and focuses them with wmctrl/xdotool.
 # The gateway only forwards browser_* from the stick itself (loopback).
 BROWSER_ROOT = RUN / "browser"
 BROWSER_MAX = 4
@@ -3841,7 +3839,7 @@ def _wayland_env(user: str) -> dict | None:
         dirs.append(Path(f"/run/user/{pwd.getpwnam(user).pw_uid}"))
     except KeyError:
         pass
-    dirs.append(Path("/run/user/0"))  # weston drm-backend runs as root
+    dirs.append(Path("/run/user/0"))
     for d in dirs:
         try:
             socks = sorted(p for p in d.glob("wayland-*") if not p.name.endswith(".lock") and p.is_socket())
@@ -3882,8 +3880,7 @@ def _browser_reap() -> None:
 
 
 # Chromium draws its own caption buttons unless told to use the system frame.
-# Under sway its minimise and maximise requests are ignored, so a fresh profile
-# starts with the system frame: sway's title bar moves the window and the
+# A fresh profile starts with the system frame (xfwm4 title bar): it moves the window and the
 # taskbar minimises, restores and maximises it. No dead buttons.
 BROWSER_FIRST_PREFS = {"browser": {"custom_chrome_frame": False},
                        "session": {"restore_on_startup": 5}}
@@ -3900,7 +3897,7 @@ def browser_seed_prefs(profile: Path) -> None:
 def browser_command(bin_path: str, profile: Path, url: str, app: bool, geo: dict | None, bid: str) -> list[str]:
     cmd = [
         bin_path,
-        "--ozone-platform=wayland",
+        "--ozone-platform=x11",
         "--use-gl=angle", "--use-angle=swiftshader",
         "--no-first-run", "--no-default-browser-check", "--disable-infobars",
         "--disable-session-crashed-bubble", "--hide-crash-restore-bubble",
@@ -3925,9 +3922,7 @@ def browser_open(params: dict) -> dict:
     if not bin_path:
         return {"ok": False, "code": 503, "error": "no_browser", "message": "Chromium is not installed on this stick."}
     user = _kiosk_user()
-    env_w = _wayland_env(user)
-    if not env_w and Path("/tmp/.X11-unix/X0").is_socket():
-        env_w = {"DISPLAY": ":0"}  # 0.5.6: the Xfce desktop (Xorg :0)
+    env_w = {"DISPLAY": ":0"} if Path("/tmp/.X11-unix/X0").is_socket() else None  # 0.5.7: Xfce on Xorg :0 only
     if not env_w:
         return {"ok": False, "code": 503, "error": "no_display", "message": "The stick's screen is not running."}
     with _BROWSER_LOCK:
@@ -3953,8 +3948,6 @@ def browser_open(params: dict) -> dict:
             **env_w,
         }
         cmd = browser_command(bin_path, profile, url, app, geo, bid)
-        if "DISPLAY" in env_w:
-            cmd = ["--ozone-platform=x11" if c == "--ozone-platform=wayland" else c for c in cmd]
         if os.geteuid() == 0 and user != "root":
             sh(["chown", "-R", f"{user}:{user}", str(profile)], timeout=20)
             cmd = ["runuser", "-u", user, "--"] + cmd
@@ -4013,7 +4006,7 @@ def browser_close(params: dict) -> dict:
 
 
 def _wm():
-    """stickllm_wm.py (our sway IPC client), loaded once; None if missing."""
+    """stickllm_wm.py (our X11 window helper), loaded once; None if missing."""
     mod = getattr(_wm, "_mod", None)
     if mod is not None:
         return mod
@@ -4031,14 +4024,12 @@ def _wm():
 
 
 def _wm_ipc():
-    """Connected sway IPC client for the kiosk session, or None (cage/weston)."""
+    """0.5.7: X11 window helper for the Xfce desktop (Xorg :0), or None."""
     wm = _wm()
     if wm is None:
         return None
-    env_w = _wayland_env(_kiosk_user())
-    dirs = [env_w["XDG_RUNTIME_DIR"]] if env_w else []
     try:
-        return wm.SwayIPC(wm.find_socket(dirs))
+        return wm.X11(":0", _kiosk_user())
     except (wm.WMError, OSError):
         return None
 
@@ -4091,7 +4082,7 @@ BROWSER_WINDOW_OPS = ("place", "minimise", "restore", "maximise", "focus", "togg
 
 
 def browser_window(params: dict) -> dict:
-    """Window op on one of our browser windows through the sway compositor."""
+    """Window op on one of our browser windows through the X11 window helper."""
     bid = str(params.get("id") or "")
     op = str(params.get("op") or "")
     if op not in BROWSER_WINDOW_OPS:
@@ -4109,7 +4100,7 @@ def browser_window(params: dict) -> dict:
     ipc = _wm_ipc()
     if ipc is None:
         return {"ok": False, "code": 200, "error": "wm_unavailable",
-                "message": "This screen runs the full-screen fallback, so browser windows cannot be moved or minimised."}
+                "message": "The desktop is not running, so browser windows cannot be moved or minimised."}
     wm = _wm()
     if wm is None:
         ipc.close()

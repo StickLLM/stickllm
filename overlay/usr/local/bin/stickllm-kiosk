@@ -355,10 +355,9 @@ restore_display_console() {
   local reason="${1:-kiosk-fail}"
   fail_note "STICKLLM_KIOSK_RESTORE_CONSOLE reason=$reason"
   serial_note "STICKLLM_KIOSK_RESTORE_CONSOLE reason=$reason"
-  # Drop DRM master: do not leave cage/weston holding CRTCs off.
-  pkill -x sway 2>/dev/null || true
-  pkill -x cage 2>/dev/null || true
-  pkill -x weston 2>/dev/null || true
+  # Drop DRM master: do not leave an Xorg holding CRTCs off (0.5.7: Xfce only).
+  stop_xorg 2>/dev/null || true
+  kill_stale_xorg 2>/dev/null || true
   pkill -x cog 2>/dev/null || true
   pkill -x chromium 2>/dev/null || true
   pkill -x chromium-browser 2>/dev/null || true
@@ -731,33 +730,22 @@ renderer_order_for_drm() {
   fi
 }
 
-# 0.5.6: sway (stock Debian package, our config) gives the desktop real
-# floating windows. Off with stickllm.compositor=cage on the kernel command
-# line or STICKLLM_KIOSK_SWAY=0; also off if our config file is missing, so
-# sway can never fall back to the distribution config (terminal/exit keys).
-SWAY_CONFIG="${STICKLLM_SWAY_CONFIG:-/etc/stickllm/sway/config}"
-sway_enabled() {
-  [[ "${STICKLLM_KIOSK_SWAY:-1}" != "0" ]] || return 1
-  grep -Eqw 'stickllm\.compositor=(cage|weston)' /proc/cmdline 2>/dev/null && return 1
-  command -v sway >/dev/null 2>&1 || return 1
-  [[ -r "$SWAY_CONFIG" && -x /usr/local/bin/stickllm-sway-session ]] || return 1
-  return 0
-}
-
-# 0.5.6: Xfce (stock Debian packages, settings only) is the on-stick desktop:
-# real windows, a taskbar and our wallpaper. Off with stickllm.compositor=
-# sway|cage|weston on the kernel command line or STICKLLM_KIOSK_XFCE=0; also
-# off if Xorg or the Xfce session pieces are missing. Any failure to start
-# falls back to sway, then cage/weston.
+# 0.5.7: Xfce (stock Debian packages, settings only) on Xorg is the only
+# on-stick desktop (sway, cage and weston are gone). If it cannot start, the
+# console says so and where the log is (hold_error).
 XFCE_XDG="${STICKLLM_XFCE_XDG:-/etc/stickllm/xfce/xdg}"
 XORG_CONF="$RUN/xorg-stickllm.conf"
-XORG_LOG="${STICKLLM_XORG_LOG:-/var/log/stickllm-xorg.log}"
+# 0.5.7: the Xorg log lives in a run dir owned by the kiosk user, and we
+# rotate it ourselves before every start. 0.5.6 used /var/log/stickllm-xorg.log
+# and an earlier Xorg left it root-owned, so the next start died with
+# "Cannot move old log file".
+XORG_LOG_DIR="${STICKLLM_XORG_LOG_DIR:-/run/stickllm/xorg}"
+XORG_LOG="${STICKLLM_XORG_LOG:-$XORG_LOG_DIR/stickllm-xorg.log}"
 XORG_PID=""
 xfce_enabled() {
   [[ "${STICKLLM_KIOSK_XFCE:-1}" != "0" ]] || return 1
-  grep -Eqw 'stickllm\.compositor=(sway|cage|weston)' /proc/cmdline 2>/dev/null && return 1
   local b
-  for b in Xorg xfce4-session xfwm4 xfce4-panel xhost xset; do
+  for b in Xorg xfce4-session xfwm4 xhost xset wmctrl; do
     command -v "$b" >/dev/null 2>&1 || return 1
   done
   [[ -d "$XFCE_XDG" && -x /usr/local/bin/stickllm-xfce-session && -x /usr/local/bin/stickllm-xfce-open ]] || return 1
@@ -812,11 +800,41 @@ stop_xorg() {
 }
 trap 'stop_xorg' EXIT
 
+# Any Xorg on :0 not started by this kiosk run (a previous kiosk process that
+# systemd restarted, or an attempt that hung) holds the VT, the DRM master and
+# the :0 lock; the next start then fails. Kill it and clear the lock first.
+kill_stale_xorg() {
+  local pid
+  for pid in $(pgrep -x Xorg 2>/dev/null; pgrep -x Xorg.real 2>/dev/null; pgrep -f '^/usr/lib/xorg/Xorg' 2>/dev/null); do
+    [[ -n "$XORG_PID" && "$pid" == "$XORG_PID" ]] && continue
+    fail_note "STICKLLM_KIOSK_XORG_STALE pid=$pid"
+    kill "$pid" 2>/dev/null || true
+  done
+  sleep 0.5
+  for pid in $(pgrep -x Xorg 2>/dev/null; pgrep -x Xorg.real 2>/dev/null); do
+    [[ -n "$XORG_PID" && "$pid" == "$XORG_PID" ]] && continue
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+}
+
+prepare_xorg_log() {
+  mkdir -p "$XORG_LOG_DIR" 2>/dev/null || true
+  chown "${KIOSK_USER}:${KIOSK_USER}" "$XORG_LOG_DIR" 2>/dev/null || true
+  chmod 755 "$XORG_LOG_DIR" 2>/dev/null || true
+  if [[ -e "$XORG_LOG" ]]; then
+    mv -f "$XORG_LOG" "$XORG_LOG.old" 2>/dev/null || rm -f "$XORG_LOG" 2>/dev/null || true
+  fi
+  rm -f "$XORG_LOG.old.old" 2>/dev/null || true
+}
+
 # Xorg runs as root (as Xorg.wrap would); only the kiosk user may connect.
 start_xorg() {
   local drm="$1" i
   write_xorg_conf "$drm"
-  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+  kill_stale_xorg
+  prepare_xorg_log
+  fail_note "STICKLLM_KIOSK_XORG_START drm=$drm uid=$(id -u) log=$XORG_LOG"
   Xorg :0 vt1 -keeptty -nolisten tcp -noreset -novtswitch -config "$XORG_CONF" \
     -logfile "$XORG_LOG" >>"$FAIL_LOG" 2>&1 &
   XORG_PID=$!
@@ -824,6 +842,7 @@ start_xorg() {
     if [[ -S /tmp/.X11-unix/X0 ]] && DISPLAY=:0 xset q >/dev/null 2>&1; then
       DISPLAY=:0 xhost - >/dev/null 2>&1 || true
       DISPLAY=:0 xhost "+SI:localuser:${KIOSK_USER}" >/dev/null 2>&1 || true
+      DISPLAY=:0 xhost "+SI:localuser:root" >/dev/null 2>&1 || true  # stickllm-control window ops
       DISPLAY=:0 xset s off -dpms >/dev/null 2>&1 || true
       return 0
     fi
@@ -831,7 +850,7 @@ start_xorg() {
     sleep 0.5
   done
   fail_note "STICKLLM_KIOSK_XORG_FAIL drm=$drm"
-  tail -n 30 "$XORG_LOG" >>"$FAIL_LOG" 2>/dev/null || true
+  tail -n 40 "$XORG_LOG" >>"$FAIL_LOG" 2>/dev/null || true
   stop_xorg
   return 1
 }
@@ -854,7 +873,7 @@ try_launch() {
   chvt 1 2>/dev/null || true
   release_display_for_compositor
   fail_note "STICKLLM_KIOSK_TRY label=$label drm=$drm renderer=$renderer comp=$comp browser=$browser timeout=$run_timeout"
-  paint "  Trying $label…"
+  paint "  Starting the desktop ($label)…"
 
   if [[ "$browser" == "cog" ]]; then
     app="cog -P --enable-mediasource $URL"
@@ -911,7 +930,8 @@ try_launch() {
   case "$comp" in
     xfce)
       # 0.5.6 desktop: stock Xfce on Xorg. A session that ends within 20 s
-      # (or never starts) is a failure, so the ladder moves on to sway.
+      # (or never starts) is a failure; the next display card is tried, then
+      # hold_error explains it on the console.
       _rcf="${XDG_RUNTIME_DIR}/stickllm-xfce-session.rc"
       rm -f "$_rcf"
       echo "=== xfce launch $(date -Is 2>/dev/null || date) drm=$drm user=$KIOSK_USER ===" >>"$FAIL_LOG" 2>&1 || true
@@ -932,118 +952,6 @@ try_launch() {
       else
         rc=72
       fi
-      ;;
-    sway)
-      # 0.5.6 desktop session: stock Debian sway (MIT) with our own config.
-      # Desktop Chromium is the tiled full-screen window; Browser / app
-      # pop-outs float on top. Any failure → rc≠0 → ladder falls back to cage.
-      _rcf="${XDG_RUNTIME_DIR}/stickllm-sway-session.rc"
-      rm -f "$_rcf"
-      {
-        echo "=== sway launch $(date -Is 2>/dev/null || date) renderer=$renderer user=$KIOSK_USER config=$SWAY_CONFIG ==="
-        command -v sway; ls -la /run/seatd.sock /var/run/seatd.sock 2>&1 || true
-      } >>"$FAIL_LOG" 2>&1 || true
-      # --unsupported-gpu: let sway start on the NVIDIA proprietary driver
-      # (pixman renderer) instead of refusing; -c: never read /etc/sway/config.
-      _run 1 sway --unsupported-gpu -c "$SWAY_CONFIG" 2>&1 | kiosk_fail_filter
-      rc=${PIPESTATUS[0]}
-      if [[ "$rc" -eq 0 ]]; then
-        # sway exits 0 when the session ends; the desktop's own result decides.
-        _srow="$(cat "$_rcf" 2>/dev/null || true)"
-        _src="$(sed -n 's/^rc=\([0-9]*\).*/\1/p' <<<"$_srow")"
-        _ssecs="$(sed -n 's/.*secs=\([0-9]*\).*/\1/p' <<<"$_srow")"
-        fail_note "STICKLLM_KIOSK_SWAY_SESSION ${_srow:-no-session-record}"
-        if [[ -z "$_src" ]]; then
-          rc=71  # session never ran (exec failed / config not applied)
-        elif [[ "$_src" -ne 0 && "${_ssecs:-0}" -lt 20 ]]; then
-          rc=70  # desktop browser died at start under sway
-        fi
-      fi
-      ;;
-    cage)
-      {
-        echo "=== cage launch $(date -Is 2>/dev/null || date) renderer=$renderer user=$KIOSK_USER ==="
-        echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR WLR_RENDERER=$WLR_RENDERER WLR_DRM_DEVICES=$WLR_DRM_DEVICES"
-        command -v cage; command -v seatd; ls -la /run/seatd.sock /var/run/seatd.sock 2>&1 || true
-      } >>"$FAIL_LOG" 2>&1 || true
-      # cage refuses uid 0 → drop_root=1. Bookworm cage also needs Xwayland installed.
-      if [[ "$browser" == "cog" ]]; then
-        # stderr must land in kiosk-fail.log for Term-boot diagnosis (deduped, capped)
-        _run 1 cage -s -- cog -P --enable-mediasource "$URL" 2>&1 | kiosk_fail_filter
-        rc=${PIPESTATUS[0]}
-      else
-        # shellcheck disable=SC2086
-        _run 1 cage -s -- $browser \
-          --start-maximized \
-          --ozone-platform=wayland \
-          --use-gl=angle --use-angle=swiftshader \
-          --no-first-run \
-          --disable-infobars \
-          --disable-session-crashed-bubble \
-          --hide-crash-restore-bubble \
-          --check-for-update-interval=31536000 \
-          --user-data-dir="$PROFILE" \
-          --disk-cache-dir="$PROFILE/cache" \
-          "$URL" 2>&1 | kiosk_fail_filter
-        rc=${PIPESTATUS[0]}
-      fi
-      # On fail: retry once with WLR_RENDERER=pixman (explicit product contract).
-      if [[ "$rc" -ne 0 && "$renderer" != "pixman" ]]; then
-        fail_note "STICKLLM_KIOSK_PIXMAN_RETRY label=$label prev_rc=$rc"
-        serial_note "STICKLLM_KIOSK_PIXMAN_RETRY label=$label"
-        export WLR_RENDERER=pixman
-        if [[ "$browser" == "cog" ]]; then
-          _run 1 cage -s -- cog -P --enable-mediasource "$URL" 2>&1 | kiosk_fail_filter
-          rc=${PIPESTATUS[0]}
-        else
-          # shellcheck disable=SC2086
-          _run 1 cage -s -- $browser \
-          --start-maximized \
-          --ozone-platform=wayland \
-          --use-gl=angle --use-angle=swiftshader \
-          --no-first-run \
-          --disable-infobars \
-          --disable-session-crashed-bubble \
-          --hide-crash-restore-bubble \
-          --check-for-update-interval=31536000 \
-            --user-data-dir="$PROFILE" \
-            --disk-cache-dir="$PROFILE/cache" \
-            "$URL" 2>&1 | kiosk_fail_filter
-          rc=${PIPESTATUS[0]}
-        fi
-        label="${label}+pixman-retry"
-      fi
-      ;;
-    weston)
-      # Absolute binary path — kiosk-shell exec is picky about PATH.
-      if [[ "$browser" == "cog" ]]; then
-        _cog_bin="$(command -v cog)"
-        app="${_cog_bin} -P --enable-mediasource ${URL}"
-      else
-        _br_bin="$(command -v "$browser" || true)"
-        [[ -n "$_br_bin" ]] || _br_bin="$browser"
-        app="${_br_bin} --start-maximized --ozone-platform=wayland --use-gl=angle --use-angle=swiftshader --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=${PROFILE} --disk-cache-dir=${PROFILE}/cache ${URL}"
-        # weston itself stays root for drm-backend. The browser must not.
-        if [[ "$KIOSK_USER" != "root" ]]; then
-          app="runuser -u ${KIOSK_USER} --preserve-environment -- env HOME=${KIOSK_HOME} USER=${KIOSK_USER} LOGNAME=${KIOSK_USER} ${app}"
-        fi
-      fi
-      write_weston_ini "$app"
-      chown "${KIOSK_USER}:${KIOSK_USER}" "$WESTON_INI" 2>/dev/null || true
-      # bookworm weston 10: --drm-device=cardN, optional --use-pixman
-      _card_base="$(basename "$drm")"
-      _wargs=(--backend=drm-backend.so --shell=kiosk-shell.so --tty=1 --drm-device="$_card_base" -c "$WESTON_INI")
-      if [[ "$renderer" == "pixman" ]]; then
-        _wargs+=(--use-pixman)
-      fi
-      {
-        echo "=== weston launch $(date -Is 2>/dev/null || date) renderer=$renderer user=$KIOSK_USER ==="
-        echo "ini=$WESTON_INI exec=$app"
-        cat "$WESTON_INI" 2>/dev/null || true
-      } >>"$FAIL_LOG" 2>&1 || true
-      # weston drm-backend as non-root needs logind; stay root (drop_root=0).
-      _run 0 weston "${_wargs[@]}" 2>&1 | kiosk_fail_filter
-      rc=${PIPESTATUS[0]}
       ;;
     *)
       rc=127
@@ -1073,43 +981,24 @@ try_launch() {
 }
 
 hold_error() {
+  # 0.5.7: plain console message. No pair code or passwords on screen.
   local reason="${1:-unknown}"
   restore_display_console "hold_error"
   printf '\033c' >"$TTY" 2>/dev/null || true
   paint "========================================"
-  if grep -Eqw 'stickllm\.chat' /proc/cmdline 2>/dev/null; then
-    paint "  StickLLM Chat - browser deferred"
-  else
-    paint "  StickLLM LOCAL - browser failed"
-  fi
+  paint "  StickLLM ${STICKLLM_VERSION_LABEL}"
   paint "========================================"
   paint ""
-  paint "  $reason"
-  paint "  Target: $URL"
-  if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
-    _ip="$(/usr/local/bin/stickllm-lan-ip 2>/dev/null | tr -d '[:space:]' || true)"
-  else
-    _ip="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./){print $i; exit}}')"
-  fi
-  _pair="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
-  _model="$(tr -d '\r\n' <"$RUN/model-label.txt" 2>/dev/null || true)"
-  [[ -n "$_model" ]] || _model="(loading / see Models)"
-  paint "  Model:     $_model"
-  if [[ -n "$_ip" ]]; then
-    paint "  >>> LAN IP:  $_ip"
-    paint "  How to:      http://${_ip}/  (phone/LAN - enter PAIR CODE)"
-  else
-    paint "  >>> LAN IP:  (waiting - Ethernet or stickllm-wifi-setup)"
-  fi
-  paint "  Local UI:  $URL  (this screen - no pair)"
-  if [[ -n "$_pair" && "$_pair" =~ ^[0-9]{4,8}$ ]]; then
-    paint "  +-------------------------+"
-    paint "  |  PAIR CODE:  $_pair     |"
-    paint "  +-------------------------+"
-  fi
-  paint "  Diag:      $FAIL_LOG"
-  paint "  Retrying browser stack in 45s..."
+  paint "  The desktop couldn't start."
   paint ""
+  paint "  Why:      $reason"
+  paint "  Log:      $FAIL_LOG"
+  paint "  Xorg log: $XORG_LOG"
+  paint ""
+  paint "  StickLLM still runs: open http://<this stick's IP>/ from a phone or PC"
+  paint "  on the LAN. It asks for the pair code: run stickllm-pair over SSH."
+  paint ""
+  paint "  Trying again in 45 s..."
   sleep 45
   exit 1
 }
@@ -1118,6 +1007,7 @@ hold_error() {
 # --- main ---
 # Chat (stickllm.chat) shares the on-stick browser; local/kiosk are aliases.
 CHAT_MODE=0
+STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.5.7)"
 if grep -Eqw 'stickllm\.chat' /proc/cmdline 2>/dev/null; then
   CHAT_MODE=1
 elif ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then
@@ -1130,59 +1020,26 @@ touch "$RUN/local-mode"
 serial_note "STICKLLM_KIOSK_START chat=$CHAT_MODE fails=$(fail_count)"
 collect_drm_diag
 
-if ! command -v cage >/dev/null 2>&1 && ! command -v weston >/dev/null 2>&1 && ! sway_enabled && ! xfce_enabled; then
-  hold_error "neither Xfce, sway, cage nor weston installed"
+if ! xfce_enabled; then
+  hold_error "the Xfce desktop (Xorg, xfce4-session, xfwm4) is not installed"
 fi
 
 BROWSER="$(pick_browser_bin || true)"
-[[ -n "${BROWSER:-}" ]] || hold_error "no cog/chromium installed"
+[[ -n "${BROWSER:-}" && "$BROWSER" != "cog" ]] || hold_error "Chromium is not installed"
 ensure_browser_tabs
 
-# seatd before UI wait so the socket is warm when we launch cage/weston
-ensure_seatd || fail_note "STICKLLM_KIOSK_SEATD_WARN seatd not confirmed"
 
-printf '\033c' >"$TTY" 2>/dev/null || true
-paint "========================================"
-if [[ "$CHAT_MODE" -eq 1 ]]; then
-  paint "  StickLLM Chat — starting browser"
-else
-  paint "  StickLLM LOCAL"
-fi
-paint "========================================"
+# 0.5.7: the boot screen itself is stickllm-bootstatus (timer + real status).
+# The kiosk adds only short plain lines; never the pair code or passwords.
 paint ""
-paint "  On-stick browser → $URL"
-if [[ "$CHAT_MODE" -eq 1 ]]; then
-  # Keep LAN join info visible while the compositor comes up.
-  # Brief wait: WiFi DHCP may land just after READY handoff.
-  if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
-    _ip="$(/usr/local/bin/stickllm-lan-ip --wait 8 2>/dev/null | tr -d '[:space:]' || true)"
-  else
-    _ip="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./){print $i; exit}}')"
-  fi
-  _pair="$(tr -d '\r\n\t ' <"$RUN/pair-code.txt" 2>/dev/null || true)"
-  _model="$(tr -d '\r\n' <"$RUN/model-label.txt" 2>/dev/null || true)"
-  [[ -n "$_model" ]] || _model="(see Models in UI)"
-  paint "  Mode:     Chat (this screen + LAN)"
-  paint "  Model:    $_model"
-  if [[ -n "$_ip" ]]; then
-    paint "  >>> LAN IP:  $_ip"
-    paint "  Browser:     http://${_ip}/  (LAN needs PAIR CODE)"
-  else
-    paint "  >>> LAN IP:  (waiting - Ethernet or stickllm-wifi-setup)"
-  fi
-  [[ -n "$_pair" ]] && paint "  PAIR CODE: $_pair"
-  paint "  Local:    $URL  (this screen — no pair)"
-else
-  paint "  (no pair code)"
-fi
-paint ""
+paint "  Starting the desktop…"
 # Vault unlock is UI-only — never prompt on tty at boot (blocks headless Server/Local).
 # Default session Mode stays Ephemeral until the user unlocks in Settings.
 if [[ -x /usr/local/bin/stickllm-vault-boot ]]; then
   /usr/local/bin/stickllm-vault-boot || true
   serial_note "STICKLLM_VAULT_BOOT status=$(tr -d '[:space:]' <"$RUN/vault-boot.txt" 2>/dev/null || echo unknown) (no tty prompt)"
 fi
-paint "  Waiting for UI HTTP 200…"
+
 ui_ready=0
 code="000"
 for i in $(seq 1 "$WAIT_UI_SECS"); do
@@ -1193,43 +1050,15 @@ for i in $(seq 1 "$WAIT_UI_SECS"); do
     break
   fi
   if (( i == 1 || i % 10 == 0 )); then
-    paint "  Waiting for UI… ${i}s (HTTP ${code})"
+    paint "  Waiting for the StickLLM service… ${i}s"
   fi
   sleep 1
 done
 [[ "$ui_ready" -eq 1 ]] || hold_error "UI never returned HTTP 200 (last=$code)"
 
-# Product = browser chat UI. Nudge llama but do not block on tty for minutes —
-# the page can show model-loading state. Long waits left users stuck on
-# "Waiting for model" then a clear+retry loop when the compositor failed.
-llama_ready=0
-_llama_en="$(systemctl is-enabled stickllm-llama.service 2>&1 || true)"
-_llama_st="$(systemctl status stickllm-llama.service 2>&1 || true)"
-if printf '%s\n%s\n' "$_llama_en" "$_llama_st" | grep -qi masked; then
-  paint "  Model unit masked — opening browser without llama wait."
-  serial_note "STICKLLM_KIOSK_LLAMA_SKIPPED_MASKED"
-else
-  systemctl start --no-block stickllm-llama.service 2>/dev/null || true
-  # Brief poll only (default 8s); never the old 90–120s tty hold.
-  _brief_llama="${STICKLLM_KIOSK_WAIT_LLAMA_SECS:-8}"
-  [[ "$_brief_llama" -gt 20 ]] && _brief_llama=8
-  paint "  Checking model (up to ${_brief_llama}s)…"
-  for i in $(seq 1 "$_brief_llama"); do
-    if [[ "$(http_code "http://127.0.0.1:8080/health")" == "200" ]]; then
-      llama_ready=1
-      serial_note "STICKLLM_KIOSK_LLAMA_READY after=${i}s"
-      break
-    fi
-    sleep 1
-  done
-  if [[ "$llama_ready" -ne 1 ]]; then
-    paint "  Model still loading — opening browser now."
-    serial_note "STICKLLM_KIOSK_LLAMA_WAIT_SHORT_TIMEOUT"
-  fi
-fi
-
-# Re-confirm seatd immediately before compositor launch
-ensure_seatd || fail_note "STICKLLM_KIOSK_SEATD_WARN seatd not confirmed at launch"
+# 0.5.6 started the model here and printed "Model still loading" whether or
+# not it was. 0.5.7: the desktop does not wait on or claim anything about the
+# model; the boot screen and the desktop bar show the real llama state.
 
 # Ensure DRM nodes exist: amdgpu/i915 on stick HDMI; virtio_gpu in QEMU Local proof.
 modprobe amdgpu 2>/dev/null || true
@@ -1267,7 +1096,7 @@ fi
 
 # Restore fbcon so status text is visible while we pick DRM, then release in try_launch.
 restore_display_console "pre-launch"
-paint "  Console restored — selecting display DRM…"
+
 
 DISPLAY_DRM="$(pick_display_drm || true)"
 if [[ -z "${DISPLAY_DRM:-}" ]]; then
@@ -1275,8 +1104,7 @@ if [[ -z "${DISPLAY_DRM:-}" ]]; then
 fi
 fail_note "STICKLLM_KIOSK_DRM_PICK $DISPLAY_DRM"
 serial_note "STICKLLM_KIOSK_BROWSER $BROWSER $URL drm=$DISPLAY_DRM driver=$(drm_driver_name "$DISPLAY_DRM")"
-paint "  Display DRM: $DISPLAY_DRM ($(drm_driver_name "$DISPLAY_DRM"))"
-paint "  Launching browser…"
+
 
 # Keep a working stack forever: rc=0 (clean browser exit) relaunches SAME combo.
 # Do not advance the ladder on success — that caused clear+retry loops.
@@ -1291,7 +1119,7 @@ run_stack_forever() {
     fi
     serial_note "STICKLLM_KIOSK_BROWSER_EXIT_CLEAN relaunch_same label=$label"
     restore_display_console "browser-clean-exit"
-    paint "  Browser exited — relaunching $label…"
+    paint "  Desktop closed — starting it again…"
     sleep 1
   done
 }
@@ -1321,54 +1149,13 @@ for _c in /dev/dri/card[0-9]; do
 done
 
 for drm in "${drm_list[@]}"; do
-  # 0.5.6: Xfce desktop first (X does not use the wlroots renderer list).
-  if xfce_enabled && [[ "$BROWSER" != "cog" ]]; then
-    run_stack_forever "xfce+$BROWSER@$(basename "$drm")" "$drm" x11 xfce "$BROWSER" \
-      && exit 0
-    fail_note "STICKLLM_KIOSK_XFCE_FALLBACK drm=$drm → sway/cage/weston"
-    serial_note "STICKLLM_KIOSK_XFCE_FALLBACK drm=$(basename "$drm")"
-  fi
-  # shellcheck disable=SC2206
-  renderers=( $(renderer_order_for_drm "$drm") )
-  for renderer in "${renderers[@]}"; do
-    # 0.5.6: floating-window desktop first; cage/weston kiosk stay the fallback.
-    if sway_enabled && [[ "$BROWSER" != "cog" ]]; then
-      run_stack_forever "sway+$BROWSER/$renderer@$(basename "$drm")" "$drm" "$renderer" sway "$BROWSER" \
-        && exit 0
-      fail_note "STICKLLM_KIOSK_SWAY_FALLBACK drm=$drm renderer=$renderer → cage/weston"
-      serial_note "STICKLLM_KIOSK_SWAY_FALLBACK renderer=$renderer"
-    fi
-    if command -v cage >/dev/null 2>&1; then
-      run_stack_forever "cage+$BROWSER/$renderer@$(basename "$drm")" "$drm" "$renderer" cage "$BROWSER" \
-        && exit 0
-    fi
-    if command -v weston >/dev/null 2>&1; then
-      run_stack_forever "weston+$BROWSER/$renderer@$(basename "$drm")" "$drm" "$renderer" weston "$BROWSER" \
-        && exit 0
-    fi
-  done
+  # 0.5.7: Xfce on Xorg only, on each usable display card in turn.
+  run_stack_forever "xfce+$BROWSER@$(basename "$drm")" "$drm" x11 xfce "$BROWSER" \
+    && exit 0
+  fail_note "STICKLLM_KIOSK_XFCE_FAIL drm=$drm"
+  serial_note "STICKLLM_KIOSK_XFCE_FAIL drm=$(basename "$drm")"
 done
-
-# If primary browser failed everywhere, try the other engine once per DRM in list.
-alt=""
-if [[ "$BROWSER" == "cog" ]]; then
-  command -v chromium >/dev/null 2>&1 && alt=chromium
-  command -v chromium-browser >/dev/null 2>&1 && alt=chromium-browser
-else
-  command -v cog >/dev/null 2>&1 && alt=cog
-fi
-if [[ -n "$alt" ]]; then
-  for drm in "${drm_list[@]}"; do
-    is_weak_drm "$drm" && continue
-    run_stack_forever "cage+$alt/pixman@$(basename "$drm")" "$drm" pixman cage "$alt" && exit 0
-    run_stack_forever "cage+$alt/gles2@$(basename "$drm")" "$drm" gles2 cage "$alt" && exit 0
-    if command -v weston >/dev/null 2>&1; then
-      run_stack_forever "weston+$alt/pixman@$(basename "$drm")" "$drm" pixman weston "$alt" && exit 0
-    fi
-  done
-fi
 
 n="$(bump_fails)"
 collect_drm_diag
-restore_display_console "all-backends-failed"
-hold_error "All browser backends failed (rc≠0). See $FAIL_LOG (attempt $n)."
+hold_error "Xfce/Xorg did not start on ${drm_list[*]} (attempt $n)."

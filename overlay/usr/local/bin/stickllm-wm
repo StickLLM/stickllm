@@ -1,9 +1,0 @@
-#!/usr/bin/env python3
-"""Window shortcuts / session guard for the StickLLM sway desktop (see stickllm_wm.py)."""
-import importlib.util
-import sys
-
-_spec = importlib.util.spec_from_file_location("stickllm_wm", "/usr/local/lib/stickllm_wm.py")
-_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
-sys.exit(_mod.main(sys.argv))

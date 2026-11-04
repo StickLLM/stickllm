@@ -1,11 +1,14 @@
 #!/bin/bash
-# StickLLM (MIT). Opens one StickLLM page as its own Xfce window.
-#   stickllm-xfce-open home      the StickLLM chat page (maximised)
+# StickLLM (MIT, (c) Nink Inc.). Opens StickLLM windows on the Xfce desktop.
+#   stickllm-xfce-open home      the StickLLM desktop: full screen, below all
+#                                other windows, no frame, no taskbar entry.
+#                                Same page and layout as 0.5.6's sway desktop
+#                                (bottom bar with vault + model, launcher,
+#                                Agent, settings windows). Restarts if closed.
 #   stickllm-xfce-open browser   a normal Chromium window
 #   stickllm-xfce-open <app-id>  a StickLLM web app (/apps/<id>/)
-# All windows share ONE Chromium profile, so the chat page and the app
-# windows are the same browser and origin (the app agent talks to the apps
-# over BroadcastChannel; that only works inside one profile).
+# The desktop and app windows share ONE Chromium profile (same origin; the
+# app agent talks to the apps over BroadcastChannel inside one profile).
 set -u
 BROWSER="${STICKLLM_SESSION_BROWSER:-chromium}"
 BASE="${STICKLLM_SESSION_URL:-http://127.0.0.1/}"
@@ -23,13 +26,36 @@ common=(
   --user-data-dir="$PROFILE"
   --disk-cache-dir="$PROFILE/cache"
 )
+
+# Make the desktop window the backdrop: no frame, full screen, kept below the
+# Browser and app windows, out of Alt+Tab and taskbars; then give it focus.
+dress_desktop() {
+  local wid="" i
+  for i in $(seq 1 120); do
+    wid="$(wmctrl -lx 2>/dev/null | awk 'tolower($3) ~ /stickllm-desktop/ {print $1; exit}')"
+    [[ -n "$wid" ]] && break
+    sleep 0.5
+  done
+  [[ -n "$wid" ]] || return 0
+  xprop -id "$wid" -f _MOTIF_WM_HINTS 32c -set _MOTIF_WM_HINTS "0x2, 0x0, 0x0, 0x0, 0x0" 2>/dev/null || true
+  read -r sw sh < <(xdotool getdisplaygeometry 2>/dev/null || echo "1920 1080")
+  wmctrl -i -r "$wid" -b add,below,skip_taskbar,skip_pager 2>/dev/null || true
+  wmctrl -i -r "$wid" -e "0,0,0,${sw},${sh}" 2>/dev/null || true
+  wmctrl -i -r "$wid" -b add,maximized_vert,maximized_horz 2>/dev/null || true
+  wmctrl -i -a "$wid" 2>/dev/null || true
+}
+
 case "$id" in
   home)
-    exec "$BROWSER" "${common[@]}" --class=stickllm-home --start-maximized --app="$BASE/?shell=xfce" ;;
+    # Plain BASE/ (no ?shell=xfce): the page uses its desktop layout.
+    while true; do
+      "$BROWSER" "${common[@]}" --class=stickllm-desktop --start-maximized --app="$BASE/" &
+      pid=$!
+      dress_desktop
+      wait "$pid"
+      sleep 2
+    done ;;
   browser)
-    # Web browsing gets its own RAM profile (as on the sway desktop): no
-    # cookies or storage shared with the StickLLM pages. Downloads follow the
-    # managed vault-only policy like every Chromium window on the stick.
     bp="${XDG_RUNTIME_DIR:-/tmp}/stickllm-web"
     mkdir -p "$bp/cache" && chmod 700 "$bp"
     web=("${common[@]}")

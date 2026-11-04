@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.7 (2026-11-03)
+
+- Manuals: every App Agent manual (`stickllm_appagent/manuals/`) ships in the ISO.
+- Xfce start fixed: Xorg now logs to `/run/stickllm/xorg/stickllm-xorg.log`
+  (a kiosk-owned run dir, rotated by StickLLM before each start) instead of
+  `/var/log/stickllm-xorg.log`, which an earlier root Xorg left behind and the
+  next start could not move. Stale Xorg servers on :0 are killed before a
+  start and when the console is restored. Only the chosen GPU is in the Xorg
+  config (AutoAddGPU false), AMD-only path unchanged.
+- sway, cage and weston are removed (packages, config, session, fallback
+  ladder). Xfce is the only desktop; if it cannot start, the console says so
+  and shows where the logs are.
+- The Xfce desktop now looks like 0.5.6's sway desktop: the StickLLM desktop
+  page (bottom bar with vault and model, launcher, Agent, settings windows)
+  fills the screen; no Xfce panel or desktop icons. Browser windows are moved,
+  sized, minimised and maximised through wmctrl/xdotool.
+- Cleaner boot screen: version, elapsed timer and only real status lines. The
+  model line shows only while llama is really loading or ready. No pair code
+  or passwords at boot on desktop modes (F10 / F9 on the desktop).
+- Version 0.5.7 (health endpoint, About, ISO name).
+
 ## 0.5.6 (2026-11-03)
 
 Desktop (stick screen)

@@ -127,7 +127,7 @@ def test_browser_open_spawns_chromium_in_ram_profile(monkeypatch, tmp_path):
     monkeypatch.setattr(CTL, "sh", lambda cmd, timeout=600: {"ok": True, "stdout": "downloads=unlocked\n"})
     monkeypatch.setattr(CTL.subprocess, "Popen", popen)
     monkeypatch.setattr(CTL, "_BROWSERS", {})
-    monkeypatch.setattr(CTL, "_wm_ipc", lambda: None)  # cage/weston fallback: no window manager IPC
+    monkeypatch.setattr(CTL, "_wm_ipc", lambda: None)  # desktop not running: no window manager
     r = CTL.browser_open({"url": "http://127.0.0.1:8095/", "title": "Trilium", "app": True,
                           "geometry": {"x": 10, "y": 20, "w": 1000, "h": 700}})
     assert r["ok"] and r["downloads"] == "vault"
