@@ -32,6 +32,22 @@ docker run --rm -v "$PWD/scripts/lib/iso-integrity-check.sh:/check.sh:ro" \
 That check needs `xorriso`; on Windows/Git Bash (no host xorriso) it uses Docker
 automatically — same Docker dependency as the build itself.
 
+## 0.6.0 build notes
+
+- Same commands, same host: Windows with Git Bash + Docker Desktop (Linux
+  containers), never on OneDrive. `build.sh` defaults to 0.6.0.
+- The ISO now carries the pinned Agent Zero image (about 3.2 GB more; use a
+  16 GB stick or larger). Plan for about 50 GB free on the build machine.
+- The first build needs network to fetch the Agent Zero blobs from Docker Hub
+  (registry API, sha256-checked; no `docker pull`). They are cached in
+  `out/cache/agent-zero`, so later builds reuse them offline.
+- `STICKLLM_A0_BUNDLE=0 ./scripts/build.sh` builds without the bundle (the
+  stick then downloads Agent Zero on Install, as in 0.5.x).
+- The build fails if the ISO lacks `/stickllm/agent-zero/bundle.json` when the
+  bundle is on.
+- `firmware-amd-graphics` is installed explicitly; the build warns if the
+  Polaris (RX 570) firmware is missing.
+
 ## ISO filename convention
 
 | Era | Pattern | Example |

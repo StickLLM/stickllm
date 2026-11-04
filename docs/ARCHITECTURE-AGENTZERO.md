@@ -120,3 +120,59 @@ Commits: `c4640f9` (desktop-icon click path, apps cookie, chat-based target),
 Temporary: the planned server connection with per-connection certificates
 (everything HTTPS on one origin) removes the http/https split.
 
+## 0.6.0: Agent Zero is the one agent stack
+
+The chat app is the simple view; the Agent Zero window is the advanced view
+of the same chats, model and speech.
+
+### A1: image on the ISO, loaded offline
+
+- Pin: `overlay/usr/local/share/stickllm/agent-zero.pin` (v2.15, manifest,
+  amd64 and config digests).
+- Build: `scripts/lib/a0_bundle.py pack` fetches the registry blobs (no
+  `docker pull`), checks each sha256 against the pin, and writes a
+  docker-archive tar split in 1 GiB parts (ISO 9660 has a 4 GiB file limit)
+  plus `bundle.json` to `includes.binary/stickllm/agent-zero`. On the stick
+  that is `/run/live/medium/stickllm/agent-zero`, outside the squashfs.
+  Blobs are cached in `out/cache/agent-zero`; `STICKLLM_A0_BUNDLE=0` skips it.
+- Stick: `stickllm-agent` streams the parts (sha-checked again) into
+  `docker load`, then requires the loaded image id to equal `config_digest`,
+  tags it locally and runs the usual smoke test. A missing or bad bundle falls
+  back to the 0.5.x network pull.
+
+### A2: shared chats
+
+See [CHATS.md](CHATS.md).
+
+### A3: speech
+
+`/api/speech/*` use Agent Zero's Whisper (STT) and Kokoro (TTS) through
+`stickllm_a0client.py` while Agent Zero runs and its model is ready; otherwise
+the built-in whisper.cpp and KittenTTS answer, so speech always works.
+
+### A4: model preset
+
+`stickllm-agent sync-model` rewrites Agent Zero's `presets.yaml`,
+`model-config/config.json` and `settings.json` once llama-server reports the
+new model id. It runs after every model activation and at agent start.
+
+### A5: status line
+
+`stickllm-agent` writes `phase` (loading, downloading, checking, installing,
+starting) and `progress` to the agent status file; the UI shows them on the
+Agent link.
+
+### A6: installing apps from Agent Zero
+
+- Agent Zero's `install_app` reaches the gateway only through the existing
+  open-app bridge (Bearer token, loopback). It takes catalog ids only.
+- A starter add-on (`stickllm_addons.APPS`) that is not blocklisted, not in
+  `AGENT_CONFIRM_ADDONS` (ComfyUI, which needs most of the GPU) and whose pin
+  is `verified` installs at once through `addon_start("install", id)`, the
+  same `stickllm-addon-install@<id>.service` the Apps page uses. The screen
+  shows progress; the app gets a desktop icon and opens when ready.
+- Everything else (ONLYOFFICE, ComfyUI, a changed or unverified pin) asks the
+  user to confirm on screen. Blocklisted apps are refused.
+- Nothing is installed inside the Agent Zero container. Agent Zero's own
+  plugins still install inside Agent Zero.
+

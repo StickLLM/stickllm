@@ -22,8 +22,8 @@ Agent Zero window is the advanced view of the same chats and model.
 - Install apps from Agent Zero (A6): "install Node-RED" in Agent Zero installs
   the StickLLM add-on with the same installer as the Apps page (icon, window,
   progress), through the existing desktop bridge; catalog ids only, never
-  inside the Agent Zero container. Verified add-ons start at once; docs,
-  ComfyUI and changed/unverified apps still ask on screen. Agent Zero's own
+  inside the Agent Zero container. Verified add-ons start at once;
+  ONLYOFFICE, ComfyUI and changed or unverified apps still ask on screen. Agent Zero's own
   plugins still install inside Agent Zero.
 - Ephemeral/Vault (B3-B5): switching only changes where chats go; it no
   longer stops the model, add-ons, Agent Zero or Docker. Add-ons that need the
