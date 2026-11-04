@@ -366,6 +366,25 @@ class _UiOpenBus:
             self._cond.notify_all()
         return event
 
+    def publish_install_started(self, app_id: str, name: str, target: str = "", conn: int | None = None) -> dict:
+        """0.6.0 (A6): Agent Zero started an add-on install; that screen shows
+        progress, then the desktop icon, then opens the app window."""
+        event = {
+            "kind": "install_started",
+            "id": app_id,
+            "name": name,
+            "target": target,
+            "conn": conn,
+            "published_at": time.time(),
+        }
+        with self._cond:
+            self._seq += 1
+            event["seq"] = self._seq
+            self._events.append(dict(event))
+            del self._events[:-40]
+            self._cond.notify_all()
+        return event
+
     def publish(
         self,
         app_id: str,
@@ -3391,9 +3410,14 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(200, doc)
 
     # ---------------------------------------------- Agent Zero install/docs
-    # Reached only from the open-app control (Bearer token, loopback). The
-    # install itself is never done here: the screen driving Agent gets an
-    # install_confirm event and the user clicks Install (POST /api/apps/install).
+    # Reached only from the open-app control (Bearer token, loopback; the
+    # container reaches it only through the open-app bridge). 0.6.0 (A6): a
+    # starter add-on (stickllm_addons.APPS, never a blocklisted one) whose pin
+    # is "verified" installs straight away through the Apps page's own
+    # installer (addon_start -> stickllm-addon-install@<id>.service), so it
+    # lands on the desktop with progress, an icon and a window, never inside
+    # the A0 container. Everything else (ONLYOFFICE, a changed or unverified
+    # pin) still asks the screen driving Agent to confirm (install_confirm).
 
     def _agent_catalog_status(self, app_id: str) -> dict:
         names = {}
@@ -3450,6 +3474,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         target, reason = ui_target()
         conn = UI_OPEN.ui_conn_for(target)
+        if self._agent_direct_install(app_id, st["name"], target, conn):
+            return
         if target != "kiosk" and conn is None:
             self._json(
                 409,
@@ -3480,6 +3506,41 @@ class Handler(SimpleHTTPRequestHandler):
                 "Tell them to click Install; do not call install_app again for it." + note,
             },
         )
+
+    def _agent_direct_install(self, app_id: str, name: str, target: str, conn: int | None) -> bool:
+        """0.6.0 (A6). True when the reply was sent (install started or refused)."""
+        try:
+            is_addon = app_id in addons_lib().APPS
+        except Exception:
+            is_addon = False
+        if not is_addon or app_blocked(app_id) or app_id in AGENT_CONFIRM_ADDONS:
+            return False
+        ver = app_verification(app_id, check_upstream=True) or {}
+        if ver.get("status") != "verified":
+            return False  # the on-screen confirm shows the warning
+        code, doc = addon_start("install", app_id)
+        if code != 200 or not doc.get("ok"):
+            self._json(code, {"ok": False, "id": app_id, "error": doc.get("error") or "not_started",
+                              "message": (doc.get("message") or f"{name} was not installed.")
+                              + " Tell the user; do not install it another way."})
+            return True
+        if doc.get("installed"):
+            self._json(200, {"ok": True, "id": app_id, "status": "already_installed",
+                             "message": f"{name} is already installed. Open it with open_app id {app_id}."})
+            return True
+        UI_OPEN.publish_install_started(app_id, name, target=target, conn=conn)
+        screen = "the stick's screen" if target == "kiosk" else "the user's StickLLM tab"
+        self._json(200, {
+            "ok": True,
+            "id": app_id,
+            "status": "installing",
+            "verification": {k: ver.get(k) for k in ("status", "label", "version") if k in ver},
+            "screen": "kiosk" if target == "kiosk" else "browser",
+            "message": f"StickLLM is installing {name} (verified) on the desktop. {screen.capitalize()} shows "
+            "the progress; the app gets a desktop icon and opens by itself when it is ready. "
+            "Tell the user that; do not call install_app again and never install it yourself.",
+        })
+        return True
 
     def _agent_docs(self, req: dict) -> None:
         try:
@@ -3887,7 +3948,7 @@ class Handler(SimpleHTTPRequestHandler):
                     }
                     if event.get("doc"):
                         payload["doc"] = event["doc"]
-                elif kind == "install_confirm":
+                elif kind in ("install_confirm", "install_started"):
                     if app:
                         return
                     want = event.get("conn")
@@ -4378,46 +4439,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _addon_mutate(self, action: str, app_id: str) -> None:
         """Apps page Install/Uninstall for a starter add-on (vault required)."""
-        mod = addons_lib()
-        name = mod.app(app_id)["name"]
-        if not mod.vault_open():
-            self._json(423, {"ok": False, "installed": False, "error": "vault_locked",
-                             "message": mod.VAULT_LOCKED_MESSAGE, "deleted": []})
-            return
-        if action == "install":
-            if mod.is_installed(app_id):
-                self._json(200, {"ok": True, "installed": True, "state": "installed",
-                                 "message": f"{name} is installed.", "deleted": []})
-                return
-            unit = ["systemctl", "start", "--no-block", f"stickllm-addon-install@{app_id}.service"]
-            fallback = ["/usr/local/bin/stickllm-addon", app_id, "install"]
-            message = f"Installing {name}. The image is pulled onto the host drive; its data stays in the vault."
-        else:
-            unit = None
-            fallback = ["/usr/local/bin/stickllm-addon", app_id, "uninstall"]
-            message = f"Removing {name}. Its data in vault/addons/{app_id} is kept."
-        started = False
-        if unit:
-            try:
-                started = subprocess.run(unit, capture_output=True, timeout=15, check=False).returncode == 0
-            except (OSError, subprocess.SubprocessError):
-                started = False
-        if not started:
-            try:
-                subprocess.Popen(fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
-            except OSError:
-                self._json(500, {"ok": False, "installed": False, "error": "Could not start the installer",
-                                 "message": "Nothing was changed.", "deleted": []})
-                return
-        if action == "install":
-            mod.write_status(app_id, "installing")
-            self._json(200, {"ok": True, "started": True, "installed": False, "state": "installing",
-                             "message": message, "deleted": []})
-        else:
-            mod.write_status(app_id, "removing")
-            self._json(200, {"ok": True, "started": True, "installed": False, "state": "removing",
-                             "message": message, "deleted": []})
+        code, doc = addon_start(action, app_id)
+        self._json(code, doc)
 
     def _agent_html(self, code: int, title: str, text: str, extra_headers: dict | None = None,
                     refresh: bool = False) -> None:
@@ -6137,6 +6160,55 @@ _ADDON_KICKS: dict[str, float] = {}
 _ADDON_KICK_LOCK = threading.Lock()
 ADDON_KICK_EVERY = 20.0
 
+
+# 0.6.0 (A6): add-ons Agent Zero may not start installing on its own even when
+# verified. ComfyUI needs most of the GPU (the Apps page shows a VRAM warning),
+# so the user confirms it on screen.
+AGENT_CONFIRM_ADDONS = ("comfyui",)
+
+
+def addon_start(action: str, app_id: str) -> tuple[int, dict]:
+    """Start a starter add-on's install/uninstall unit (vault required).
+
+    One path for the Apps page and (0.6.0, A6) Agent Zero's install_app:
+    stickllm-addon-install@<id>.service, else stickllm-addon <id> install.
+    Returns (HTTP code, JSON reply)."""
+    mod = addons_lib()
+    name = mod.app(app_id)["name"]
+    if not mod.vault_open():
+        return 423, {"ok": False, "installed": False, "error": "vault_locked",
+                     "message": mod.VAULT_LOCKED_MESSAGE, "deleted": []}
+    if action == "install":
+        if mod.is_installed(app_id):
+            return 200, {"ok": True, "installed": True, "state": "installed",
+                         "message": f"{name} is installed.", "deleted": []}
+        unit = ["systemctl", "start", "--no-block", f"stickllm-addon-install@{app_id}.service"]
+        fallback = ["/usr/local/bin/stickllm-addon", app_id, "install"]
+        message = f"Installing {name}. The image is pulled onto the host drive; its data stays in the vault."
+    else:
+        unit = None
+        fallback = ["/usr/local/bin/stickllm-addon", app_id, "uninstall"]
+        message = f"Removing {name}. Its data in vault/addons/{app_id} is kept."
+    started = False
+    if unit:
+        try:
+            started = subprocess.run(unit, capture_output=True, timeout=15, check=False).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            started = False
+    if not started:
+        try:
+            subprocess.Popen(fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except OSError:
+            return 500, {"ok": False, "installed": False, "error": "Could not start the installer",
+                         "message": "Nothing was changed.", "deleted": []}
+    if action == "install":
+        mod.write_status(app_id, "installing")
+        return 200, {"ok": True, "started": True, "installed": False, "state": "installing",
+                     "message": message, "deleted": []}
+    mod.write_status(app_id, "removing")
+    return 200, {"ok": True, "started": True, "installed": False, "state": "removing",
+                 "message": message, "deleted": []}
 
 def addon_ensure_started(app_id: str) -> dict:
     """0.6.0 (B3): an installed add-on that is not running is started (once per

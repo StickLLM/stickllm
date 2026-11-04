@@ -200,9 +200,11 @@ def test_xlsx_escapes_and_docx(tmp_path):
 def test_gateway_wiring():
     assert '"/api/ui/install-request"' in GW and '"/api/ui/docs-agent"' in GW
     assert "def _agent_install_request" in GW and "def _agent_docs" in GW
-    assert 'kind == "install_confirm"' in GW and 'payload["doc"] = event["doc"]' in GW
+    assert 'kind in ("install_confirm", "install_started")' in GW and 'payload["doc"] = event["doc"]' in GW
     assert '"error": "not_installed"' in GW
-    # The agent endpoints never install anything themselves.
+    # The agent endpoints never install through the Apps page's request
+    # handlers. 0.6.0 (A6): a verified add-on starts the same installer unit
+    # (addon_start) directly; Docs and unverified apps still need the confirm.
     body = GW.split("def _agent_install_request", 1)[1].split("def _agent_docs", 1)[0]
     assert "_apps_mutate" not in body and "_addon_mutate" not in body and "_docs_mutate" not in body
     assert body.count("_open_app_control_ok") == 0

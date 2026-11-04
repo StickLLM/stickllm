@@ -6729,6 +6729,11 @@ function startOpenAppEvents() {
       try { data = JSON.parse(ev.data || "{}"); } catch (err) { return; }
       if (data && data.id) openStickApp(String(data.id), typeof data.doc === "string" ? data.doc : "");
     });
+    es.addEventListener("install_started", (ev) => {
+      let data = {};
+      try { data = JSON.parse(ev.data || "{}"); } catch (err) { return; }
+      if (data && data.id) followAgentInstall(String(data.id), String(data.name || data.id));
+    });
     es.addEventListener("install_confirm", (ev) => {
       let data = {};
       try { data = JSON.parse(ev.data || "{}"); } catch (err) { return; }
@@ -6787,6 +6792,38 @@ async function startAddon(id, a) {
   } catch (_) {}
   p.done(name + " is still starting");
   return false;
+}
+// 0.6.0 (A6): Agent Zero's install_app started a verified add-on's install
+// (the Apps page's own stickllm-addon-install@ unit). This screen shows the
+// progress, refreshes the catalog so the desktop icon appears, then opens the
+// app in its own window. Gives up following after 30 min; the Apps page still
+// shows the state.
+const agentInstalls = new Set();
+async function followAgentInstall(id, name) {
+  if (!/^[a-z][a-z-]{0,23}$/.test(id) || agentInstalls.has(id)) return;
+  agentInstalls.add(id);
+  const p = progressToast("Installing " + name + "…");
+  const t0 = Date.now();
+  try {
+    while (Date.now() - t0 < 1800000) {
+      await new Promise((res) => setTimeout(res, 2000));
+      await refreshApps().catch(() => {});
+      const a = catalogApps.get(id);
+      if (a && a.installed) {
+        p.done(name + " is installed");
+        openStickApp(id, "");
+        return;
+      }
+      if (a && a.state && !["installing", "pulling", "starting", "not_installed", ""].includes(a.state)) {
+        p.done(String(a.message || a.label || (name + " did not install")));
+        return;
+      }
+      p.update("Installing " + name + "… " + Math.round((Date.now() - t0) / 1000) + " s");
+    }
+    p.done(name + " is still installing (see Apps)");
+  } finally {
+    agentInstalls.delete(id);
+  }
 }
 async function deskAppUrl(id) {
   if (id === "agent") {

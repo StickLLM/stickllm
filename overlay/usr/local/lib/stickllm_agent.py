@@ -1331,7 +1331,7 @@ def apps_prompt_text() -> str:
     )
     lines.append(
         "Installed catalog apps (docs = ONLYOFFICE, tasks-md, paisa, trilium, node-red, comfyui) "
-        "open with open_app too; install_app asks the user to install one. "
+        "open with open_app too; install_app installs one on the StickLLM desktop. "
         "Make documents with create_spreadsheet / create_document, open them with open_document."
     )
     lines.append(NO_GUI_RULE)
@@ -1491,18 +1491,23 @@ def install_app_tool_prompt() -> str:
     names = "; ".join(f"{k} = {v}" for k, v in CATALOG_APP_NAMES.items())
     return (
         "### install_app\n"
-        "Ask the user to install a StickLLM app. Ids: " + names + ".\n"
-        "Nothing installs until the user clicks Install on their own screen (the StickLLM "
-        "tab they chat from, else the stick's screen). The reply says whether it is already "
-        "installed or waiting for that click. When waiting, tell the user to click Install "
-        "and stop; do not call install_app again for the same app in this task.\n"
+        "Install a StickLLM desktop app with StickLLM's own installer. Use it whenever the "
+        "user asks to install one of these apps (for example \"install Node-RED\" or "
+        "\"install Paisa\"). Ids: " + names + ".\n"
+        "The app installs on the StickLLM desktop, not in your container: the user's screen "
+        "shows the progress, then the app gets a desktop icon and its own window. Verified "
+        "add-ons (not docs or comfyui) start installing at once (reply status installing): tell the user it is "
+        "installing and stop. Anything else waits until the user clicks Install on their own "
+        "screen (status awaiting_user): tell them to click Install and stop. Either way, "
+        "do not call install_app again for the same app in this task.\n"
         "Every app is hash pinned. The reply's verification is verified, changed (upstream "
         "changed: only the last verified version can be installed, the screen offers it) or "
         "unverified (the screen warns first). Tell the user which one it is; never try to "
         "get around the warning or the confirm.\n"
-        "Never install apps yourself with code_execution, apt, pip, docker or podman.\n"
+        "Never install these apps yourself with code_execution, apt, pip, npm, docker or podman. "
+        "Your own Agent Zero plugins are different: they still install inside Agent Zero.\n"
         + TOOL_RETRY_RULE + "\n\n"
-        'Example: {"tool_name":"install_app","tool_args":{"id":"docs"}}\n'
+        'Example: {"tool_name":"install_app","tool_args":{"id":"node-red"}}\n'
     )
 
 
