@@ -94,3 +94,56 @@ def test_a0_client_csrf_flow(monkeypatch):
     assert c.transcribe("AAAA") == " hi "
     assert c.synthesize("hello") == "UklG"
     assert calls[0][1] == "/api/csrf_token"
+
+
+class _FakeAddons:
+    def __init__(self, state="stopped", vault=True, installed=True, running=False):
+        self.saved = {"state": state, "updated": 1}
+        self.vault, self.installed, self.running = vault, installed, running
+
+    def status_document(self, app_id):
+        st = self.saved.get("state")
+        return {"vault_open": self.vault, "installed": self.installed, "running": self.running,
+                "state": "locked" if not self.vault else st, "message": st}
+
+    def read_status(self, app_id):
+        return dict(self.saved)
+
+    def write_status(self, app_id, state, **extra):
+        self.saved = {"state": state, "updated": 2, **extra}
+
+    def app(self, app_id):
+        return {"name": "Node-RED"}
+
+
+def test_launcher_starts_stopped_addon(monkeypatch):
+    gw = _load(GW, "gw_v060_kick")
+    fake = _FakeAddons()
+    runs = []
+    monkeypatch.setattr(gw, "addons_lib", lambda: fake)
+    monkeypatch.setattr(gw.subprocess, "run",
+                        lambda cmd, **k: runs.append(cmd) or type("R", (), {"returncode": 0})())
+    st = gw.addon_ensure_started("node-red")
+    assert runs == [["systemctl", "start", "--no-block", "stickllm-addon@node-red.service"]]
+    assert st["state"] == "starting" and fake.saved["state"] == "starting"
+    gw.addon_ensure_started("node-red")          # throttled: no second start
+    assert len(runs) == 1
+
+
+def test_launcher_never_starts_with_locked_vault(monkeypatch):
+    gw = _load(GW, "gw_v060_kick2")
+    fake = _FakeAddons(vault=False)
+    monkeypatch.setattr(gw, "addons_lib", lambda: fake)
+    monkeypatch.setattr(gw.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("started")))
+    assert gw.addon_ensure_started("node-red")["state"] == "locked"
+
+
+def test_dead_addon_page_reloads_and_ui_starts_first():
+    gw = GW.read_text()
+    down = gw[gw.index("def _addon_down"):gw.index("def _addon_progress_page")]
+    assert "addon_ensure_started(app_id)" in down
+    assert 'http-equiv="refresh" content="2"' in gw
+    js = (ROOT / "ui/app.js").read_text()
+    d = js[js.index("async function deskAppUrl"):]
+    assert "await startAddon(id, a)" in d[:900]
+    assert '"/api/apps/start"' in js

@@ -6764,6 +6764,30 @@ function startOpenAppEvents() {
 // The app URL for a desktop window: a paired LAN browser signs in to an
 // add-on through its one-time open link (Agent: /api/agent/handoff); the
 // kiosk and same-origin pages use the plain URL.
+// 0.6.0 (B3): a stopped add-on is started from the launcher with progress,
+// never opened as a dead page. Gives up waiting after 3 min; the app page
+// itself keeps reloading until the app answers.
+async function startAddon(id, a) {
+  const name = (a && (a.display_name || a.name)) || id;
+  const p = progressToast("Starting " + name + "…");
+  const t0 = Date.now();
+  try {
+    while (Date.now() - t0 < 180000) {
+      const r = await fetch("/api/apps/start", {
+        method: "POST", cache: "no-store",
+        headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ id }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { p.done(j.message || ("Could not start " + name)); return false; }
+      if (j.running) { a.running = true; p.done(name + " is ready"); return true; }
+      if (j.state && !["starting", "installing"].includes(j.state)) { p.done(j.message || (name + " did not start")); return false; }
+      p.update("Starting " + name + "… " + Math.round((Date.now() - t0) / 1000) + " s");
+      await new Promise((res) => setTimeout(res, 1500));
+    }
+  } catch (_) {}
+  p.done(name + " is still starting");
+  return false;
+}
 async function deskAppUrl(id) {
   if (id === "agent") {
     const fallback = ($("#agentLink") && $("#agentLink").href) || "";
@@ -6781,6 +6805,7 @@ async function deskAppUrl(id) {
   }
   const a = catalogApps.get(id);
   if (!a || !a.open_url) return "";
+  if (a.installer === "stickllm-addon" && a.installed && !a.running) await startAddon(id, a);
   if (a.open_link && !detectLocalHost() && token) {
     try {
       const r = await fetch(a.open_link, {

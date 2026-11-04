@@ -4082,6 +4082,40 @@ class Handler(SimpleHTTPRequestHandler):
             host = discover_lan_ip() or "127.0.0.1"
         return f"https://{host}:{spec['tls_port']}/"
 
+    def _addon_start_api(self) -> None:
+        """0.6.0 (B3): the launcher starts a stopped add-on and polls this."""
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 2048:
+            self.close_connection = True
+            self._json(413, {"ok": False, "error": "too_large"})
+            return
+        raw = self.rfile.read(length) if length else b""
+        if not stickllm_ui_client(self.headers) and not self._is_loopback():
+            self._json(403, {"ok": False, "error": "ui_only"})
+            return
+        if not self._is_loopback():
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"ok": False, "error": "pair_required"})
+                return
+        try:
+            req = json.loads(raw.decode("utf-8") or "{}")
+            app_id = str(req.get("id") or "") if isinstance(req, dict) else ""
+            mod = addons_lib()
+            mod.app(app_id)
+        except (ValueError, UnicodeDecodeError):
+            self._json(400, {"ok": False, "error": "bad_json"})
+            return
+        except Exception:
+            self._json(404, {"ok": False, "error": "unknown_app"})
+            return
+        if not mod.vault_open():
+            self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
+            return
+        st = addon_ensure_started(app_id)
+        self._json(200, {"ok": True, "id": app_id, "state": st.get("state"), "running": bool(st.get("running")),
+                         "message": st.get("message"), "waited": st.get("waited", 0)})
+
     def _addon_open_link(self) -> None:
         """Paired StickLLM tab -> one-time link that signs this browser in to
         one app's TLS port (its own HttpOnly cookie)."""
@@ -4116,25 +4150,68 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
             return
         base = self._addon_public_url(app_id)
+        try:
+            st = addon_ensure_started(app_id)
+        except Exception:
+            st = {}
+        extra = {"state": st.get("state"), "running": bool(st.get("running")),
+                 "starting": st.get("state") in ("starting", "installing")}
         if self._is_loopback():
-            self._json(200, {"ok": True, "url": base})
+            self._json(200, {"ok": True, "url": base, **extra})
             return
         ticket = mint_addon_handoff(doc, app_id)
         if not ticket:
             # Pairing is off on this stick: the app port is open to the LAN.
-            self._json(200, {"ok": True, "url": base})
+            self._json(200, {"ok": True, "url": base, **extra})
             return
-        self._json(200, {"ok": True, "url": base + "__stickllm/handoff?t=" + urllib.parse.quote(ticket)})
+        self._json(200, {"ok": True, "url": base + "__stickllm/handoff?t=" + urllib.parse.quote(ticket), **extra})
 
     def _addon_down(self, app_id: str) -> None:
+        """0.6.0 (B3): opening a stopped add-on starts it and shows a page that
+        reloads itself until the app answers, instead of a dead 503."""
         mod = addons_lib()
         name = mod.app(app_id)["name"]
         try:
-            st = mod.status_document(app_id, upstream_up=False)
-            text = f"{name} is not running ({st.get('message') or st.get('state')}). Open StickLLM, then Apps."
+            st = addon_ensure_started(app_id)
         except Exception:
+            st = {}
+        state = str(st.get("state") or "")
+        if state in ("starting", "installing"):
+            waited = int(st.get("waited") or 0)
+            verb = "Installing" if state == "installing" else "Starting"
+            text = f"{verb} {name}… {waited} s. This page opens the app by itself when it is ready."
+            if (self.command or "GET") == "GET":
+                self._addon_progress_page(name, text)
+            else:
+                self._json(503, {"ok": False, "error": state, "message": text})
+            return
+        if st:
+            text = f"{name} is not running ({st.get('message') or state}). Open StickLLM, then Apps."
+        else:
             text = f"{name} is not running. Open StickLLM, then Apps."
         self._addon_page(503, f"{name}: not running", text)
+
+    def _addon_progress_page(self, name: str, text: str) -> None:
+        import html as _html
+
+        body = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            '<meta http-equiv="refresh" content="2">'
+            f"<title>{_html.escape(name)}: starting</title>"
+            "<style>body{font:16px system-ui,sans-serif;display:flex;align-items:center;"
+            "justify-content:center;height:90vh;color:#334155}"
+            ".s{width:18px;height:18px;border:3px solid #cbd5e1;border-top-color:#2563eb;"
+            "border-radius:50%;display:inline-block;margin-right:10px;vertical-align:-4px;"
+            "animation:r 1s linear infinite}@keyframes r{to{transform:rotate(360deg)}}</style>"
+            f'</head><body><p><span class="s"></span>{_html.escape(text)}</p></body></html>'
+        ).encode("utf-8")
+        self.send_response(503)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Retry-After", "2")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_addon(self, method: str) -> None:
         """Paired TLS proxy for one starter add-on on its own port."""
@@ -4928,6 +5005,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/apps/open-link":
             self._addon_open_link()
+            return
+        if path == "/api/apps/start":
+            self._addon_start_api()
             return
         n = int(self.headers.get("Content-Length") or 0)
         if path == "/api/ui/app-reply" and n > 65536:
@@ -6051,6 +6131,58 @@ def start_agent_tls_server() -> int | None:
                 pass
         print(f"stickllm-gateway agent TLS off ({exc})", flush=True)
         return None
+
+
+_ADDON_KICKS: dict[str, float] = {}
+_ADDON_KICK_LOCK = threading.Lock()
+ADDON_KICK_EVERY = 20.0
+
+
+def addon_ensure_started(app_id: str) -> dict:
+    """0.6.0 (B3): an installed add-on that is not running is started (once per
+    20 s per app). Returns its status document plus "waited" seconds while it
+    is starting. Never starts anything while the vault is locked."""
+    mod = addons_lib()
+    st = mod.status_document(app_id)
+    if not st.get("vault_open") or not st.get("installed") or st.get("running"):
+        return st
+    state = str(st.get("state") or "")
+    if state in ("installing", "removing", "install_failed"):
+        return st
+    saved = mod.read_status(app_id)
+    now = time.time()
+    with _ADDON_KICK_LOCK:
+        last = _ADDON_KICKS.get(app_id, 0.0)
+        kick = now - last >= ADDON_KICK_EVERY and (
+            state in ("stopped", "error", "locked")
+            or saved.get("state") in (None, "stopped", "error", "locked")
+            or now - float(saved.get("updated") or 0) > 300
+        )
+        if kick:
+            _ADDON_KICKS[app_id] = now
+    if kick:
+        started = False
+        try:
+            started = subprocess.run(
+                ["systemctl", "start", "--no-block", f"stickllm-addon@{app_id}.service"],
+                capture_output=True, timeout=15, check=False,
+            ).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            started = False
+        if not started:
+            try:
+                subprocess.Popen(["/usr/local/bin/stickllm-addon", app_id, "start"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except OSError:
+                return st
+        mod.write_status(app_id, "starting", started_at=int(now))
+        saved = mod.read_status(app_id)
+        st = dict(st, state="starting", message=f"{mod.app(app_id)['name']} is starting.")
+    if st.get("state") == "starting":
+        t0 = float(saved.get("started_at") or saved.get("updated") or now)
+        st["waited"] = max(0, int(now - t0))
+    return st
 
 
 def start_addon_tls_servers() -> list[int]:

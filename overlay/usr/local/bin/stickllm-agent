@@ -57,7 +57,8 @@ enter_host_mount_ns() {
 }
 
 case "${1:-}" in
-  start|run|stop|install|sync-model) enter_host_mount_ns "$@" ;;
+  start|run|stop|install) enter_host_mount_ns "$@" ;;
+  sync-model) enter_host_mount_ns "$@" ;;
 esac
 
 docker_cli() {
