@@ -47,6 +47,18 @@ PIN_PATH = Path(
 # 12 GiB. The test boot used df's 1K blocks (12*1024*1024). Below this, do not pull.
 MIN_FREE_BYTES = 12 * 1024 * 1024 * 1024
 DOCKER_DIR_NAME = "stickllm-docker"
+# 0.6.0 (A1): the stick's own ext4 data partition (STICKLLM-DATA) can hold
+# the docker data-root, so Agent Zero works without a host SSD.
+DATA_MNT = Path(os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data"))
+# "usb", "ssd" or "auto" (default). Portable: on the settings partition.
+DOCKER_DRIVE_PREF = Path(os.environ.get(
+    "STICKLLM_DOCKER_DRIVE_PREF", str(SETTINGS_MNT / "agent-docker-drive")))
+# Agent Zero image bundled on the ISO (scripts/lib/a0_bundle.py).
+A0_BUNDLE_DIRS = tuple(Path(p) for p in os.environ.get(
+    "STICKLLM_A0_BUNDLE_DIRS",
+    "/run/live/medium/stickllm/agent-zero:/lib/live/mount/medium/stickllm/agent-zero",
+).split(":") if p)
+A0_LOCAL_REPO = "stickllm/agent-zero"
 # llama-server stays on 127.0.0.1:8080. The container reaches it through a
 # relay bound only to this bridge address, not through 0.0.0.0.
 LLAMA_BRIDGE_HOST = "172.30.0.1"
@@ -181,6 +193,19 @@ def image_ref(pin: dict[str, str] | None = None) -> str:
     return f"{data['image']}@{data['amd64_digest']}"
 
 
+def local_tag(pin: dict[str, str] | None = None) -> str:
+    """Tag the stick runs. A bundle load (docker 20.10, classic store) keeps no
+    RepoDigests, so the digest ref alone cannot find a loaded image."""
+    data = pin or load_pin()
+    return f"{A0_LOCAL_REPO}:{data['version']}"
+
+
+def config_digest(pin: dict[str, str] | None = None) -> str:
+    data = pin or load_pin()
+    value = data.get("config_digest") or ""
+    return value if value.startswith("sha256:") and len(value) == 71 else ""
+
+
 def _repo_names(image: str) -> set[str]:
     names = {image}
     short = image
@@ -202,7 +227,7 @@ def image_on_disk(root: Path | None = None, ref: str | None = None) -> bool | No
     data-root, or a layout without that file); callers then ask dockerd.
     """
     if root is None:
-        root = docker_data_root()
+        root = choose_docker_root()
     if root is None:
         return None
     ref = ref or image_ref()
@@ -216,6 +241,14 @@ def image_on_disk(root: Path | None = None, ref: str | None = None) -> bool | No
     if not files:
         return None
     names = _repo_names(image)
+    # A bundle load records only "stickllm/agent-zero:<version>" -> image id
+    # (= config digest). Accept that when it is the pinned config.
+    try:
+        pin = load_pin()
+        tag, cfg = local_tag(pin), config_digest(pin)
+    except (OSError, ValueError):
+        tag, cfg = "", ""
+    tag_names = _repo_names(A0_LOCAL_REPO)
     for path in files:
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
@@ -225,8 +258,14 @@ def image_on_disk(root: Path | None = None, ref: str | None = None) -> bool | No
         if not isinstance(repos, dict):
             continue
         for repo, refs in repos.items():
-            if repo in names and isinstance(refs, dict) and f"{repo}@{digest}" in refs:
+            if not isinstance(refs, dict):
+                continue
+            if repo in names and f"{repo}@{digest}" in refs:
                 return True
+            if cfg and repo in tag_names:
+                want = repo + ":" + tag.rpartition(":")[2]
+                if refs.get(want) == cfg:
+                    return True
     return False
 
 
@@ -445,6 +484,124 @@ def docker_data_root(
         if not _under_vault(dest):
             return dest
     return None
+
+
+def usb_data_mounted(mounts_text: str | None = None) -> bool:
+    root = str(DATA_MNT)
+    for line in _read_mounts(mounts_text).splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == root:
+            return True
+    return False
+
+
+def docker_drive_pref() -> str:
+    try:
+        value = DOCKER_DRIVE_PREF.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return "auto"
+    return value if value in ("usb", "ssd", "auto") else "auto"
+
+
+def choose_docker_root(
+    *,
+    mounts_text: str | None = None,
+    ssd_root: Path | None = None,
+    pref: str | None = None,
+    use_env: bool = True,
+) -> Path | None:
+    """0.6.0 (A1): data-root on the stick's STICKLLM-DATA or on the host SSD.
+
+    Shared by Agent Zero, ONLYOFFICE and the add-ons (one dockerd). An SSD
+    data-root that already holds images is kept in "auto", so 0.5.x images
+    are not stranded. Otherwise "auto" prefers the stick when it has room,
+    so the bundled image loads offline with no host SSD at all.
+    """
+    if use_env and os.environ.get("STICKLLM_DOCKER_DIR", "").strip():
+        return docker_data_root()
+    pref = pref or docker_drive_pref()
+    ssd = ssd_root if ssd_root is not None else docker_data_root(use_env=False)
+    usb = DATA_MNT / DOCKER_DIR_NAME if usb_data_mounted(mounts_text) else None
+    if pref == "ssd" and ssd is not None:
+        return ssd
+    if pref == "usb" and usb is not None:
+        return usb
+    if ssd is not None and (ssd / "image").is_dir():
+        return ssd
+    if usb is not None and ((usb / "image").is_dir() or pull_allowed(free_bytes(DATA_MNT))):
+        return usb
+    return ssd or usb
+
+
+def bundle_info(dirs: tuple[Path, ...] | None = None, pin: dict[str, str] | None = None) -> dict | None:
+    """The ISO's Agent Zero bundle, when it is complete and matches the pin."""
+    try:
+        data = pin or load_pin()
+    except (OSError, ValueError):
+        return None
+    cfg = config_digest(data)
+    for base in dirs if dirs is not None else A0_BUNDLE_DIRS:
+        try:
+            doc = json.loads((base / "bundle.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or doc.get("config_digest") != cfg or not cfg:
+            continue
+        if doc.get("amd64_digest") != data.get("amd64_digest"):
+            continue
+        parts = doc.get("parts") or []
+        ok = bool(parts)
+        for part in parts:
+            path = base / str(part.get("name", ""))
+            try:
+                if path.name != part.get("name") or path.stat().st_size != int(part.get("size", -1)):
+                    ok = False
+            except (OSError, ValueError, TypeError):
+                ok = False
+        if ok:
+            out = dict(doc)
+            out["dir"] = str(base)
+            return out
+    return None
+
+
+def bundle_stream(out, info: dict | None = None, *, status: bool = True) -> int:
+    """Write the bundle tar to ``out`` (docker load's stdin), checking every
+    part's sha256 and reporting % in the agent status. 0 ok, 3 bad bundle."""
+    info = info or bundle_info()
+    if info is None:
+        return 3
+    base = Path(info["dir"])
+    total = sum(int(p["size"]) for p in info["parts"]) or 1
+    done = 0
+    last = 0.0
+    for part in info["parts"]:
+        h = hashlib.sha256()
+        with (base / part["name"]).open("rb") as f:
+            while True:
+                chunk = f.read(4 << 20)
+                if not chunk:
+                    break
+                h.update(chunk)
+                out.write(chunk)
+                done += len(chunk)
+                now = time.monotonic()
+                if status and now - last > 1.0:
+                    last = now
+                    pct = done * 100 // total
+                    write_status("installing", image_present=False, low_space=False,
+                                 phase="loading", progress=pct,
+                                 message=f"Loading Agent Zero from the stick… {pct}%")
+        if "sha256:" + h.hexdigest() != part.get("sha256"):
+            # docker load has not seen the end of the archive yet, so a bad
+            # part makes it fail rather than load a corrupt image.
+            print(f"bundle part {part['name']} failed its sha256 check", file=sys.stderr)
+            return 3
+    out.flush()
+    if status:
+        write_status("installing", image_present=False, low_space=False, phase="loading",
+                     progress=100, message="Loading Agent Zero from the stick… unpacking")
+    return 0
 
 
 # Agent Zero matches these with fnmatch. The loopback patterns are its own
@@ -2247,6 +2404,35 @@ def write_status(state: str, **extra: object) -> dict:
     return doc
 
 
+_PULL_LAYER = re.compile(r"^([0-9a-f]{12}): (Pulling fs layer|Already exists|Pull complete|Waiting|Downloading|Verifying Checksum|Download complete|Extracting)", re.M)
+
+
+def pull_progress(text: str) -> int | None:
+    """Rough % of a non-tty ``docker pull`` from its per-layer lines."""
+    layers: dict[str, str] = {}
+    for layer, what in _PULL_LAYER.findall(text or ""):
+        layers[layer] = what
+    if not layers:
+        return None
+    weight = {"Pulling fs layer": 0, "Waiting": 0, "Downloading": 0.2, "Verifying Checksum": 0.5,
+              "Download complete": 0.6, "Extracting": 0.8, "Pull complete": 1, "Already exists": 1}
+    return int(sum(weight.get(v, 0) for v in layers.values()) * 100 / len(layers))
+
+
+def _progress_value(saved: dict, state: str) -> int | None:
+    if state != "installing":
+        return None
+    try:
+        if saved.get("progress") is not None:
+            return max(0, min(100, int(saved["progress"])))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return pull_progress(PULL_LOG.read_text(encoding="utf-8", errors="replace")[-200000:])
+    except OSError:
+        return None
+
+
 def status_document(
     *,
     vault_open: bool,
@@ -2258,7 +2444,8 @@ def status_document(
     saved = saved if saved is not None else read_status()
     image_present = bool(saved.get("image_present")) and vault_open
     low_space = bool(saved.get("low_space"))
-    ssd = host_ssd_mounted() if mounts is None else bool(mounts)
+    # 0.6.0: the stick's STICKLLM-DATA partition is a valid drive too.
+    ssd = (host_ssd_mounted() or usb_data_mounted()) if mounts is None else bool(mounts)
     installing = saved.get("state") == "installing" and not upstream_up
     pull_failed = saved.get("state") == "pull_failed" and not upstream_up
     if not vault_open:
@@ -2274,7 +2461,8 @@ def status_document(
         message = LOW_SPACE_MESSAGE
         state = "low_space"
     elif installing:
-        message = "Installing Agent Zero"
+        # 0.6.0 (A5): the loader/puller writes its own "… 42%" line.
+        message = str(saved.get("message") or "").strip() or "Installing Agent Zero"
         state = "installing"
     elif pull_failed:
         message = "Agent Zero image pull failed"
@@ -2290,7 +2478,7 @@ def status_document(
         message = NEEDS_INSTALL_MESSAGE
         state = "needs_install"
     elif not upstream_up:
-        message = "Agent is starting"
+        message = "Agent Zero is loading…"
         state = "starting"
     else:
         message = "Agent"
@@ -2317,6 +2505,10 @@ def status_document(
         "low_space": low_space,
         "message": message,
         "pull_log": pull_log_tail() if state in ("installing", "pull_failed") else "",
+        # 0.6.0 (A5): progress for the status line.
+        "phase": str(saved.get("phase") or "") if state == "installing" else "",
+        "progress": _progress_value(saved, state),
+        "bundled": bundle_info() is not None if state in ("needs_install", "pull_failed", "no_ssd") else None,
         "port": AGENT_PORT,
         "gateway_port": AGENT_TLS_PORT,
     }
@@ -3307,14 +3499,14 @@ def main(argv: list[str]) -> int:
     if cmd == "settings-mounted":
         return 0 if settings_mounted() else 3
     if cmd == "docker-dir":
-        path = docker_data_root()
+        path = choose_docker_root()
         if path is None:
             print(SSD_MISSING, file=sys.stderr)
             return 4
         print(path)
         return 0
     if cmd == "pull-allowed":
-        path = docker_data_root()
+        path = choose_docker_root()
         if path is None:
             print(SSD_MISSING, file=sys.stderr)
             return 4
@@ -3361,6 +3553,24 @@ def main(argv: list[str]) -> int:
     if cmd == "image-ref":
         print(image_ref())
         return 0
+    if cmd == "local-tag":
+        print(local_tag())
+        return 0
+    if cmd == "config-digest":
+        cfg = config_digest()
+        print(cfg)
+        return 0 if cfg else 1
+    if cmd == "bundle-info":
+        info = bundle_info()
+        if info is None:
+            return 1
+        print(info["dir"])
+        return 0
+    if cmd == "bundle-stream":
+        try:
+            return bundle_stream(sys.stdout.buffer)
+        except BrokenPipeError:
+            return 3
     if cmd == "prepare-vault":
         prepare_vault_dirs()
         return 0

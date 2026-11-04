@@ -13,9 +13,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PROFILE="amd-rtx3090"
-# Next unshipped line. Override: STICKLLM_VERSION=0.5.8 ./scripts/build.sh
+# Next unshipped line. Override: STICKLLM_VERSION=0.6.0 ./scripts/build.sh
 # Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9 / v0.4.0 / v0.4.1 / v0.4.2 / v0.5.0 / v0.5.1 / v0.5.2).
-VERSION="${STICKLLM_VERSION:-0.5.8}"
+VERSION="${STICKLLM_VERSION:-0.6.0}"
 VERSION_DIR="v${VERSION}"
 ISO_NAME="${STICKLLM_ISO_NAME:-StickLLM-v${VERSION}.iso}"
 OUT_DIR="${STICKLLM_OUT_DIR:-out}"
@@ -74,6 +74,7 @@ echo "Assembling live-build tree on Docker volume ${VOL_WORK}…"
 docker run --rm --privileged --network host \
   -e "STICKLLM_DEBIAN_MIRROR=${STICKLLM_DEBIAN_MIRROR:-}" \
   -e "STICKLLM_DEBIAN_SECURITY_MIRROR=${STICKLLM_DEBIAN_SECURITY_MIRROR:-}" \
+  -e "STICKLLM_A0_BUNDLE=${STICKLLM_A0_BUNDLE:-1}" \
   -v "${ROOT}:/stickllm:ro" \
   -v "${OUT_HOST}:/stickllm-out" \
   -v "${VOL_WORK}:/work" \

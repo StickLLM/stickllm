@@ -1,7 +1,11 @@
-# Official Agent Zero image. Pulled onto the mounted host SSD, next to models.
-# Not baked into the ISO. Digests recorded from registry.docker.io on 2026-11-04
+# Official Agent Zero image. 0.6.0: bundled on the ISO (scripts/lib/a0_bundle.py)
+# and loaded offline into the docker data-root; pulled only if the bundle is missing.
+# Digests recorded from registry.docker.io on 2026-11-04
 # (v2.15, git tag commit ba9b67df0f54ac78106ae85c552ef5d2458f7c9a; was v2.14).
 image=agent0ai/agent-zero
 version=v2.15
 manifest_digest=sha256:05d6ab347bd7db4b6bd5a7d902c9965281ff852ff23f29fffcc1c8919e628bd8
 amd64_digest=sha256:fb62c7f081fd6c16d19807c0dc7eb7f9b710ba5de541d0547f8031433916cde2
+# Image config (= image ID after docker load on the stick's classic store),
+# from the amd64 manifest above (verified 2026-11-04).
+config_digest=sha256:6eca4f3190ab7cafe9b49703dc98f184acddfbd44130f64396213f3f57bcdbd4

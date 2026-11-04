@@ -167,13 +167,58 @@ cmd_image_ready() {
   if image_on_disk; then
     exit 0
   fi
+  # 0.6.0 (A1): the image ships on the ISO. Load it (offline, with progress)
+  # on the first agent start instead of waiting for an Apps-page install.
+  # Never an automatic network pull.
+  if "$PYBIN" "$LIB" docker-may-start 2>/dev/null && "$PYBIN" "$LIB" bundle-info >/dev/null 2>&1 \
+     && ! install_running && command -v systemctl >/dev/null 2>&1; then
+    systemctl start --no-block stickllm-agent-install.service 2>/dev/null || true
+  fi
   exit 1
 }
 
-image_present() {
-  local ref
+# 0.6.0 (A1): the container runs by its local tag. A bundle load keeps no
+# RepoDigests, so the digest ref cannot be inspected after it; an image that
+# was pulled by digest (0.5.x) gets the tag here.
+run_ref() {
+  local tag ref
+  tag="$("$PYBIN" "$LIB" local-tag)"
+  if docker_cli image inspect "$tag" >/dev/null 2>&1; then
+    printf '%s\n' "$tag"
+    return 0
+  fi
   ref="$("$PYBIN" "$LIB" image-ref)"
-  docker_cli image inspect "$ref" >/dev/null 2>&1
+  if docker_cli image inspect "$ref" >/dev/null 2>&1; then
+    docker_cli tag "$ref" "$tag" >/dev/null 2>&1 || { printf '%s\n' "$ref"; return 0; }
+    printf '%s\n' "$tag"
+    return 0
+  fi
+  return 1
+}
+
+image_present() {
+  run_ref >/dev/null
+}
+
+# Load the ISO bundle into dockerd: parts are sha256-checked while streaming,
+# and the loaded image id must equal the pinned config digest.
+load_bundle() {
+  local tag cfg id
+  tag="$("$PYBIN" "$LIB" local-tag)"
+  cfg="$("$PYBIN" "$LIB" config-digest)" || return 1
+  "$PYBIN" "$LIB" write-status --state installing --phase loading --progress 0 --image_present false --low_space false \
+    --message "Loading Agent Zero from the stick…" >/dev/null || true
+  echo "loading the Agent Zero image bundled on the stick" | tee -a "$PULL_LOG"
+  if ! "$PYBIN" "$LIB" bundle-stream | docker_cli load 2>&1 | tee -a "$PULL_LOG"; then
+    echo "bundled image did not load" | tee -a "$PULL_LOG" >&2
+    return 1
+  fi
+  id="$(docker_cli image inspect -f '{{.Id}}' "$tag" 2>/dev/null || true)"
+  if [[ "$id" != "$cfg" ]]; then
+    echo "bundled image id ${id:-missing} is not the pinned ${cfg}" | tee -a "$PULL_LOG" >&2
+    return 1
+  fi
+  return 0
 }
 
 # The new image must answer /bin/sh and contain bash and python3 before the
@@ -392,7 +437,7 @@ cache_embedding() {
     return 1
   fi
   local ref
-  ref="$("$PYBIN" "$LIB" image-ref)"
+  ref="$(run_ref)"
   mkdir -p "${ADDON}/state/.cache"
   local DNS_ARGS=()
   mapfile -t DNS_ARGS < <(dns_args)
@@ -454,20 +499,35 @@ cmd_install() {
   ensure_dockerd agent-install
   # Success or failure, the installer's own hold on dockerd ends with it.
   trap 'release_dockerd agent-install' EXIT
-  local ref previous
+  local ref previous tag loaded=0
   ref="$("$PYBIN" "$LIB" image-ref)"
-  # Remember the image that is already installed. Pull and smoke the pinned
-  # ref before that id is retagged. The previous id is kept and is not removed.
-  previous="$(docker_cli image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)"
+  tag="$("$PYBIN" "$LIB" local-tag)"
+  # Remember the image that is already installed. Load or pull and smoke the
+  # pinned image before that id is retagged. The previous id is kept.
+  previous="$(docker_cli image inspect -f '{{.Id}}' "$tag" 2>/dev/null || docker_cli image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)"
   mkdir -p "$RUN_DIR"
   : >"$PULL_LOG"
-  "$PYBIN" "$LIB" write-status --state installing --image_present false --low_space false >/dev/null || true
-  if ! docker_cli pull "$ref" 2>&1 | tee -a "$PULL_LOG"; then
-    "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
-    echo "agent image pull failed" >&2
-    exit 1
+  # 0.6.0 (A1): offline first. The ISO carries the pinned image.
+  if "$PYBIN" "$LIB" bundle-info >/dev/null 2>&1; then
+    if load_bundle; then
+      loaded=1
+    else
+      echo "falling back to a network pull" | tee -a "$PULL_LOG" >&2
+    fi
   fi
-  if ! smoke_image "$ref"; then
+  if [[ "$loaded" -ne 1 ]]; then
+    "$PYBIN" "$LIB" write-status --state installing --phase downloading --image_present false --low_space false \
+      --message "Downloading Agent Zero (3.2 GB)…" >/dev/null || true
+    if ! docker_cli pull "$ref" 2>&1 | tee -a "$PULL_LOG"; then
+      "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
+      echo "agent image pull failed" >&2
+      exit 1
+    fi
+    docker_cli tag "$ref" "$tag"
+  fi
+  "$PYBIN" "$LIB" write-status --state installing --phase checking --progress 100 --image_present false --low_space false \
+    --message "Checking Agent Zero…" >/dev/null || true
+  if ! smoke_image "$tag"; then
     echo "agent image smoke test failed; previous image left in place" | tee -a "$PULL_LOG" >&2
     "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
     exit 1
@@ -567,7 +627,7 @@ cmd_run_container() {
   ensure_open_app
   ensure_egress
   local ref origins
-  ref="$("$PYBIN" "$LIB" image-ref)"
+  ref="$(run_ref)"
   origins="$("$PYBIN" "$LIB" allowed-origins)"
   "$PYBIN" "$LIB" write-status --state running --image_present true --low_space false >/dev/null || true
   stop_container

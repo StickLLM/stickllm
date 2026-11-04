@@ -195,6 +195,26 @@ python3 /stickllm/scripts/lib/a0_plugins.py bake \
 chown -R root:root "$A0_PLUGINS_OUT"
 test -f "$A0_PLUGINS_OUT/MANIFEST"
 
+# 0.6.0 (A1): the pinned Agent Zero amd64 image goes on the ISO, outside the
+# squashfs (includes.binary -> /run/live/medium/stickllm/agent-zero), as a
+# docker-archive tar of the registry blobs split into 1 GiB parts (ISO 9660
+# cannot hold a 4 GiB file). Every blob is sha256-checked against the pin.
+# Blobs are cached in <out>/cache/agent-zero, so only the first build
+# downloads them (~3.2 GB). STICKLLM_A0_BUNDLE=0 builds without it (the stick
+# then pulls on install, as in 0.5.x).
+if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
+  echo "[stickllm] Agent Zero image bundle…"
+  A0_BUNDLE_OUT=config/includes.binary/stickllm/agent-zero
+  mkdir -p /stickllm-out/cache/agent-zero
+  python3 -u /stickllm/scripts/lib/a0_bundle.py pack \
+    config/includes.chroot/usr/local/share/stickllm/agent-zero.pin \
+    /stickllm-out/cache/agent-zero "$A0_BUNDLE_OUT"
+  test -f "$A0_BUNDLE_OUT/bundle.json"
+  du -sh "$A0_BUNDLE_OUT"
+else
+  echo "[stickllm] STICKLLM_A0_BUNDLE=0: Agent Zero image NOT bundled"
+fi
+
 mkdir -p config/bootloaders/grub-pc config/bootloaders/grub-efi
 # Prefer tracked boot/grub.cfg (LF). Fall back to inline copy if missing.
 if [[ -f /stickllm/boot/grub.cfg ]]; then
@@ -251,6 +271,10 @@ shopt -s nullglob
 for f in /work/*.hybrid.iso /work/*.iso; do
   # Verify on the Docker volume first (source of truth).
   bash /stickllm/scripts/lib/iso-integrity-check.sh "$f"
+  if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
+    xorriso -indev "$f" -find /stickllm/agent-zero -name bundle.json 2>/dev/null | grep -q bundle.json \
+      || { echo "ISO is missing /stickllm/agent-zero/bundle.json" >&2; exit 1; }
+  fi
   cp -f "$f" "/stickllm-out/$(basename "$f")"
   # OneDrive/NTFS bind mounts have truncated hybrids before — fail loud.
   bash /stickllm/scripts/lib/iso-integrity-check.sh "/stickllm-out/$(basename "$f")"
