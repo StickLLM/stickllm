@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.6.0 (2026-11-04)
+
+Agent Zero is the one agent stack: the StickLLM chat is the simple view, the
+Agent Zero window is the advanced view of the same chats and model.
+
+- Agent Zero image on the ISO (A1): the pinned v2.15 amd64 image is packed at
+  build time from sha256-checked registry blobs into a docker-archive split in
+  1 GiB parts (`/stickllm/agent-zero` on the ISO, outside the squashfs).
+  Install loads it offline (`docker load`, then the config digest is checked
+  against the pin); no network is needed. `STICKLLM_A0_BUNDLE=0` builds without
+  it, and the stick then downloads it on Install as in 0.5.x.
+- Shared chats (A2): Agent Zero's chats live in the active chat store (USB or
+  SSD vault) and show in the StickLLM chat list; StickLLM chats open in Agent
+  Zero. 0.5.x Agent Zero chats are moved there once.
+- Speech (A3): the microphone and read-aloud use Agent Zero's Whisper and
+  Kokoro while Agent Zero runs, else the built-in whisper.cpp and KittenTTS.
+- Model (A4): Agent Zero's preset follows the model loaded in StickLLM.
+- Status (A5): the Agent link shows the phase and progress (loading from the
+  stick, downloading, checking, installing, starting).
+- Install apps from Agent Zero (A6): "install Node-RED" in Agent Zero installs
+  the StickLLM add-on with the same installer as the Apps page (icon, window,
+  progress), through the existing desktop bridge; catalog ids only, never
+  inside the Agent Zero container. Verified add-ons start at once; docs,
+  ComfyUI and changed/unverified apps still ask on screen. Agent Zero's own
+  plugins still install inside Agent Zero.
+- Ephemeral/Vault (B3-B5): switching only changes where chats go; it no
+  longer stops the model, add-ons, Agent Zero or Docker. Add-ons that need the
+  vault start again on return to Vault, and the launcher starts a stopped
+  add-on with progress. Chats reappear after Vault -> Ephemeral -> Vault.
+  vault-boot.txt follows the real vault state.
+- Chat storage (B9/B10): chats in the USB settings vault or the SSD vault
+  (both encrypted), with optional newest-wins sync between them.
+- Progress (B8): actions that take over 1 s show a progress toast.
+- Terminal mode (B1): no desktop or X on tty1 (live-config's startx hook and
+  autologin are off), no wait on services before the login prompt, and the
+  console shows the real LAN IP (refreshed when DHCP finishes) instead of
+  127.0.0.1.
+- Displays (B2): with an RX 570 and an NVIDIA card, a monitor on the NVIDIA
+  card is found even when simpledrm is present; the Radeon firmware is always
+  in the image; Xorg never binds the second card.
+- Desktop (B6): the StickLLM desktop window stays borderless on Xfce (the
+  frame is removed after Chromium's own state changes and again if it comes
+  back).
+- Desktop start (B7): a failing Xorg driver no longer costs 30 s before the
+  next one is tried; each start phase is timed in /run/stickllm/kiosk.log
+  (`STICKLLM_KIOSK_T`).
+- Build: the ISO is about 3.2 GB larger (Agent Zero bundle; 16 GB stick or
+  larger). The build machine needs ~50 GB free and network once for the
+  Agent Zero blobs (cached in `out/cache/agent-zero`).
+
 ## 0.5.9 (2026-11-04)
 
 - Agent Zero: upgraded from v2.14 to v2.15 (latest stable, 2026-11-01; tag
