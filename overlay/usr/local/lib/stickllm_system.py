@@ -188,6 +188,180 @@ def disk_block(paths: list[tuple[str, str]] | None = None) -> dict:
     return {"available": True, "volumes": rows}
 
 
+# --- monitor cleanup: every physical drive with live MB/s ------------------
+_LAST_IO: dict[str, tuple[float, int, int]] = {}
+_SKIP_BLOCK = ("loop", "ram", "dm-", "zram", "sr", "fd", "nbd", "md", "mmcblk0boot", "mtd")
+LIVE_MEDIUM = os.environ.get("STICKLLM_LIVE_MEDIUM", "/run/live/medium")
+
+
+def _unescape_mount(raw: str) -> str:
+    return raw.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
+
+
+def _parent_disks(name: str, sys_block: Path) -> list[str]:
+    """Physical disk(s) behind a kernel block name (partition, dm-N, md)."""
+    if (sys_block / name).is_dir() and not name.startswith(("dm-", "md")):
+        return [name]
+    cls = sys_block.parent / "class" / "block" / name
+    part = cls if cls.exists() else None
+    if part is not None and (part / "partition").exists():
+        try:
+            return [os.path.basename(os.path.dirname(os.path.realpath(part)))]
+        except OSError:
+            return []
+    slaves = (sys_block / name / "slaves")
+    out: list[str] = []
+    if slaves.is_dir():
+        for s in sorted(slaves.iterdir()):
+            for d in _parent_disks(s.name, sys_block):
+                if d not in out:
+                    out.append(d)
+    return out
+
+
+def _dev_name(dev: str) -> str:
+    """'/dev/mapper/x' or '/dev/sda1' -> kernel name ('dm-0', 'sda1')."""
+    try:
+        return os.path.basename(os.path.realpath(dev))
+    except OSError:
+        return os.path.basename(dev)
+
+
+def parse_diskstats(text: str) -> dict[str, tuple[int, int]]:
+    """name -> (sectors read, sectors written)."""
+    out: dict[str, tuple[int, int]] = {}
+    for line in (text or "").splitlines():
+        f = line.split()
+        if len(f) >= 10:
+            try:
+                out[f[2]] = (int(f[5]), int(f[9]))
+            except ValueError:
+                continue
+    return out
+
+
+def _models_path() -> str:
+    env = os.environ.get("STICKLLM_MODELS_DIR", "").strip()
+    if env:
+        return env
+    try:
+        doc = json.loads(_read(Path(os.environ.get("STICKLLM_MODELS_DIR_FILE", str(RUN_DIR / "models-dir.json")))) or "{}")
+        if isinstance(doc, dict) and doc.get("path"):
+            return str(doc["path"])
+    except ValueError:
+        pass
+    model = _kv(_read(RUN_DIR / "model.env")).get("STICKLLM_MODEL") or ""
+    return os.path.dirname(model) if model else ""
+
+
+def _mount_for(path: str, mounts: list[tuple[str, str]]) -> str:
+    """Device of the longest mount point that contains path."""
+    best, dev = "", ""
+    if not path:
+        return ""
+    for d, mnt in mounts:
+        if (path == mnt or path.startswith(mnt.rstrip("/") + "/")) and len(mnt) >= len(best):
+            best, dev = mnt, d
+    return dev
+
+
+def drives_block(sys_block: Path | None = None, mounts_text: str | None = None,
+                 diskstats_text: str | None = None, now: float | None = None,
+                 usage=None, vault_mnt: str | None = None, models_path: str | None = None) -> list[dict]:
+    """Every physical drive (USB stick, NVMe, SATA SSD/HDD): model, size,
+    used/free of its mounted filesystems, live read/write MB/s, and which one is
+    the boot stick and which holds the models or the vault."""
+    import time
+    sb = sys_block or Path("/sys/block")
+    if mounts_text is None:
+        mounts_text = _read(Path("/proc/mounts"))
+    if diskstats_text is None:
+        diskstats_text = _read(Path("/proc/diskstats"))
+    now = time.monotonic() if now is None else now
+    usage = usage or shutil.disk_usage
+    vault_mnt = vault_mnt if vault_mnt is not None else os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault")
+    models_path = _models_path() if models_path is None else models_path
+    mounts: list[tuple[str, str]] = []
+    for line in mounts_text.splitlines():
+        f = line.split()
+        if len(f) >= 2 and f[0].startswith("/dev/"):
+            mounts.append((f[0], _unescape_mount(f[1])))
+    stats = parse_diskstats(diskstats_text)
+    try:
+        names = sorted(p.name for p in sb.iterdir())
+    except OSError:
+        names = []
+    disks: dict[str, dict] = {}
+    for name in names:
+        if name.startswith(_SKIP_BLOCK):
+            continue
+        base = sb / name
+        sectors = _int(_read(base / "size").strip())
+        if not sectors:
+            continue
+        model = " ".join((_read(base / "device" / "model") or "").split())
+        vendor = " ".join((_read(base / "device" / "vendor") or "").split())
+        if vendor and model and not model.lower().startswith(vendor.lower()) and vendor.upper() not in ("ATA", "NVME"):
+            model = vendor + " " + model
+        try:
+            real = os.path.realpath(base)
+        except OSError:
+            real = ""
+        rot = _read(base / "queue" / "rotational").strip() == "1"
+        removable = _read(base / "removable").strip() == "1"
+        if "/usb" in real:
+            kind = "USB"
+        elif name.startswith("nvme"):
+            kind = "NVMe"
+        elif name.startswith("mmcblk"):
+            kind = "SD"
+        else:
+            kind = "HDD" if rot else "SSD"
+        disks[name] = {"name": name, "model": model or name, "kind": kind, "removable": removable,
+                       "size": sectors * 512, "mounts": [], "roles": [],
+                       "read_mb_s": None, "write_mb_s": None}
+    seen_dev: set[str] = set()
+    for dev, mnt in mounts:
+        kname = _dev_name(dev)
+        parents = [d for d in _parent_disks(kname, sb) if d in disks]
+        for d in parents:
+            if mnt == LIVE_MEDIUM and "boot" not in disks[d]["roles"]:
+                disks[d]["roles"].append("boot")
+        if not parents or kname in seen_dev:
+            continue  # bind mounts of the same filesystem count once
+        seen_dev.add(kname)
+        try:
+            u = usage(mnt)
+            entry = {"mount": mnt, "total": u.total, "used": u.used, "free": u.free}
+        except OSError:
+            entry = {"mount": mnt}
+        for d in parents:
+            disks[d]["mounts"].append(entry)
+    vault_dev = next((d for d, m in mounts if m == vault_mnt.rstrip("/")), "")
+    for role, dev in (("models", _mount_for(models_path, mounts)), ("vault", vault_dev)):
+        if not dev:
+            continue
+        for d in _parent_disks(_dev_name(dev), sb):
+            if d in disks and role not in disks[d]["roles"]:
+                disks[d]["roles"].append(role)
+    for name, row in disks.items():
+        if name in stats:
+            rd, wr = stats[name]
+            prev = _LAST_IO.get(name)
+            _LAST_IO[name] = (now, rd, wr)
+            if prev and now > prev[0]:
+                dt = now - prev[0]
+                row["read_mb_s"] = round(max(0, rd - prev[1]) * 512 / dt / 1e6, 1)
+                row["write_mb_s"] = round(max(0, wr - prev[2]) * 512 / dt / 1e6, 1)
+        tot = [m for m in row["mounts"] if "total" in m]
+        if tot:
+            row["fs_total"] = sum(m["total"] for m in tot)
+            row["fs_used"] = sum(m["used"] for m in tot)
+            row["fs_free"] = sum(m["free"] for m in tot)
+    order = {"boot": 0, "models": 1, "vault": 2}
+    return sorted(disks.values(), key=lambda r: (min([order[x] for x in r["roles"]] or [9]), r["name"]))
+
+
 def model_block(run_dir: Path | None = None) -> dict:
     run = RUN_DIR if run_dir is None else Path(run_dir)
     env = _kv(_read(run / "model.env"))
@@ -342,9 +516,71 @@ def pci_names() -> dict[str, str]:
                             ("Matrox Electronics Systems Ltd.", "Matrox")):
             if vendor.startswith(long):
                 vendor = short
-        out[_bdf(cells[0])] = f"{vendor} {cells[3]}".strip()
+        dev_name = cells[3]
+        out[_bdf(cells[0])] = (dev_name if dev_name.split(" ")[0] == vendor else f"{vendor} {dev_name}").strip()
     _PCI_NAMES = out
     return out
+
+
+# Small built-in table by PCI vendor:device for cards whose driver or pci.ids
+# gives no useful name (nvidia-smi says "NVIDIA Graphics Device" for the CMP 170HX).
+PCI_ID_NAMES = {
+    "10de:20c2": "NVIDIA CMP 170HX",
+    "10de:2204": "NVIDIA GeForce RTX 3090",
+    "10de:2203": "NVIDIA GeForce RTX 3090 Ti",
+    "10de:2208": "NVIDIA GeForce RTX 3080 Ti",
+    "10de:2206": "NVIDIA GeForce RTX 3080",
+    "10de:2684": "NVIDIA GeForce RTX 4090",
+    "10de:20b0": "NVIDIA A100",
+    "10de:1db4": "NVIDIA Tesla V100",
+    "1002:67df": "AMD Radeon RX 470/480/570/580",
+    "1002:73bf": "AMD Radeon RX 6800/6900",
+    "1002:744c": "AMD Radeon RX 7900",
+    "1a03:2000": "ASPEED Graphics",
+}
+_GENERIC_NAMES = {"", "graphics device", "nvidia graphics device", "nvidia gpu", "amd gpu",
+                  "display adapter", "nvidia device", "amd device", "[n/a]", "n/a"}
+PCI_SYSFS = Path(os.environ.get("STICKLLM_PCI_SYSFS", "/sys/bus/pci/devices"))
+
+
+def _generic(name: str) -> bool:
+    low = " ".join((name or "").lower().split())
+    if low in _GENERIC_NAMES:
+        return True
+    # lspci without pci.ids: "NVIDIA Device 20c2"
+    bits = low.split()
+    return len(bits) >= 2 and bits[-2] == "device" and len(bits[-1]) == 4 and all(c in "0123456789abcdef" for c in bits[-1])
+
+
+def pci_id(bdf: str, root: Path | None = None) -> str:
+    """'10de:20c2' from sysfs, or ''."""
+    base = (root or PCI_SYSFS) / bdf
+    ven = _read(base / "vendor").strip().lower().replace("0x", "")
+    dev = _read(base / "device").strip().lower().replace("0x", "")
+    return f"{ven}:{dev}" if ven and dev else ""
+
+
+def card_name(smi_name: str = "", pci_name: str = "", pid: str = "") -> str:
+    """Best human name: a real nvidia-smi / amdgpu name, then the bracketed
+    lspci text ('GA100 [CMP 170HX]' -> 'NVIDIA CMP 170HX'), then the lspci
+    text, then the built-in table by PCI id."""
+    if smi_name and not _generic(smi_name):
+        return smi_name
+    vendor_word = {"10de": "NVIDIA", "1002": "AMD", "1a03": "ASPEED", "8086": "Intel"}.get((pid or "").split(":")[0], "")
+    if pci_name and not _generic(pci_name):
+        if "[" in pci_name and "]" in pci_name:
+            inner = pci_name[pci_name.rfind("[") + 1:pci_name.rfind("]")].strip()
+            if inner and "/" not in inner.split()[0] and inner.upper() not in ("AMD/ATI",):
+                head = pci_name.split()[0]
+                head = head if head in ("NVIDIA", "AMD", "ASPEED", "Intel", "Matrox") else vendor_word
+                return (head + " " + inner).strip() if not inner.startswith(head) else inner
+            if inner:
+                head = pci_name.split()[0]
+                return (head + " " + inner).strip()
+        return pci_name
+    if pid and pid in PCI_ID_NAMES:
+        return PCI_ID_NAMES[pid]
+    return smi_name or pci_name or (vendor_word + " GPU" if vendor_word else "Display adapter")
 
 
 def _num(raw: str):
@@ -360,26 +596,48 @@ def _int(raw):
     return int(n) if n is not None else None
 
 
-def _llama_bus_ids() -> set[str]:
-    """PCI ids of NVIDIA cards where llama-server holds memory right now."""
-    ids: set[str] = set()
-    for line in _run(["nvidia-smi", "--query-compute-apps=process_name,gpu_bus_id",
-                      "--format=csv,noheader"]).splitlines():
+def parse_compute_apps(text: str, main_pid: int | None = None) -> dict[str, int]:
+    """Bus id -> MiB used by llama-server, from
+    nvidia-smi --query-compute-apps=pid,process_name,gpu_bus_id,used_memory."""
+    out: dict[str, int] = {}
+    for line in (text or "").splitlines():
         cells = [c.strip() for c in line.split(",")]
-        if len(cells) >= 2 and "llama" in cells[0].lower():
-            ids.add(_bdf(cells[1]))
-    return ids
+        if len(cells) < 3:
+            continue
+        pid = _int(cells[0])
+        if not ((main_pid and pid == main_pid) or "llama" in cells[1].lower()):
+            continue
+        bus = _bdf(cells[2])
+        mib = _int(cells[3].split()[0]) if len(cells) > 3 and cells[3] else None
+        out[bus] = out.get(bus, 0) + (mib or 0)
+    return out
 
 
-def _nvidia_rows() -> list[dict]:
+def _llama_main_pid() -> int | None:
+    for line in _run(["systemctl", "show", "stickllm-llama.service", "-p", "MainPID", "--no-pager"], timeout=3).splitlines():
+        if line.startswith("MainPID="):
+            pid = _int(line.split("=", 1)[1])
+            return pid if pid else None
+    return None
+
+
+def _llama_bus_ids() -> dict[str, int]:
+    """PCI ids of NVIDIA cards where llama-server holds memory right now (-> MiB)."""
+    text = _run(["nvidia-smi", "--query-compute-apps=pid,process_name,gpu_bus_id,used_memory",
+                 "--format=csv,noheader,nounits"])
+    return parse_compute_apps(text, _llama_main_pid())
+
+
+def _nvidia_rows(running: bool = True) -> list[dict]:
     if shutil.which("nvidia-smi") is None:
         return []
     names = pci_names()
-    holders = _llama_bus_ids()
-    # No process list (permissions): fall back to the cards the plan used.
+    # 0.5.9 monitor cleanup: a stopped service never "holds the model".
+    holders = _llama_bus_ids() if running else {}
+    # No process list (permissions): fall back to the cards the plan used, only while running.
     plan_idx: set[int] = set()
     runtime = _kv(_read(RUN_DIR / "llama-runtime.env"))
-    if not holders and runtime.get("backend") == "cuda":
+    if running and not holders and runtime.get("backend") == "cuda":
         plan = _kv(_read(RUN_DIR / "llama-plan.env"))
         dev = plan.get("STICKLLM_PLAN_DEVICES") or ""
         if int(plan.get("STICKLLM_PLAN_GPU_COUNT") or 0) > 1:
@@ -392,10 +650,12 @@ def _nvidia_rows() -> list[dict]:
             continue
         bdf = _bdf(c[1])
         used, total = _int(c[3]), _int(c[4])
+        pid = pci_id(bdf)
         rows.append({
-            "vendor": "nvidia", "index": _int(c[0]), "bus": bdf,
-            "name": c[2] or names.get(bdf) or "NVIDIA GPU",
+            "vendor": "nvidia", "index": _int(c[0]), "bus": bdf, "pci_id": pid,
+            "name": card_name(c[2], names.get(bdf, ""), pid),
             "pci_name": names.get(bdf, ""),
+            "model_mib": holders.get(bdf) or None,
             "memory_used_mib": used, "memory_total_mib": total,
             "temperature_c": _int(c[5]), "util_percent": _int(c[6]),
             "power_w": _num(c[7]), "power_limit_w": _num(c[8]), "fan_percent": _int(c[9]),
@@ -435,8 +695,10 @@ def _sysfs_rows(drm: Path | None = None, skip_nvidia: bool = True) -> list[dict]
         if bdf in seen:
             continue
         seen.add(bdf)
+        pid = vendor.replace("0x", "") + ":" + _read(dev / "device").strip().lower().replace("0x", "")
         row: dict = {"vendor": {"0x1002": "amd", "0x8086": "intel", "0x1a03": "aspeed"}.get(vendor, vendor),
-                     "index": None, "bus": bdf, "name": names.get(bdf) or ("AMD GPU" if vendor == "0x1002" else "Display adapter"),
+                     "index": None, "bus": bdf, "pci_id": pid,
+                     "name": card_name(_read(dev / "product_name").strip(), names.get(bdf, ""), pid),
                      "pci_name": names.get(bdf, ""), "holds_model": False,
                      "onboard": _read(dev / "boot_vga").strip() == "1" and vendor not in ("0x1002",)}
         if vendor == "0x1002":
@@ -464,14 +726,19 @@ def _sysfs_rows(drm: Path | None = None, skip_nvidia: bool = True) -> list[dict]
     return rows
 
 
-def gpus_block() -> dict:
-    rows = _nvidia_rows()
+def model_running(model: dict) -> bool:
+    """The llama service is up (or loading) right now."""
+    return bool(model.get("available")) and (bool(model.get("llama_up")) or model.get("service") in ("active", "activating"))
+
+
+def gpus_block(running: bool = True) -> dict:
+    rows = _nvidia_rows(running)
     rows += _sysfs_rows(skip_nvidia=bool(rows))
     # A Vulkan model has no per-process GPU list: mark the AMD card when it is
-    # the only one and llama runs on Vulkan.
+    # the only one and llama runs on Vulkan (only while the service runs).
     runtime = _kv(_read(RUN_DIR / "llama-runtime.env"))
     amd = [r for r in rows if r.get("vendor") == "amd"]
-    if runtime.get("backend") == "vulkan" and len(amd) == 1:
+    if running and runtime.get("backend") == "vulkan" and len(amd) == 1:
         amd[0]["holds_model"] = True
     if not rows:
         return {"available": False, "message": "GPU stats are unavailable"}
@@ -560,6 +827,18 @@ def status_line(model: dict, gpu: dict, live: dict) -> str:
     return " · ".join(bits)
 
 
+def _disk_with_drives(disks) -> dict:
+    out = disk_block(disks)
+    if disks is None:
+        try:
+            out["drives"] = drives_block()
+        except Exception:
+            out["drives"] = []
+        if out["drives"]:
+            out["available"] = True
+    return out
+
+
 def snapshot(
     *,
     stat_text: str | None = None,
@@ -572,13 +851,13 @@ def snapshot(
     include_model: bool = True,
     cpuinfo: str | None = None,
 ) -> dict:
+    model = model_block(run_dir) if include_model else {"available": False, "message": "No model is loaded"}
     if not include_gpu:
         gpu = {"available": False, "message": "GPU stats are unavailable"}
     elif gpu_runner is not None:
         gpu = gpu_block(gpu_runner)
     else:
-        gpu = gpus_block()
-    model = model_block(run_dir) if include_model else {"available": False, "message": "No model is loaded"}
+        gpu = gpus_block(running=model_running(model))
     gpu_count = None
     vram_gb = None
     if include_gpu:
@@ -597,6 +876,6 @@ def snapshot(
         "cpu": cpu_block(stat_text, load_text),
         "memory": memory_block(meminfo),
         "gpu": gpu,
-        "disk": disk_block(disks),
+        "disk": _disk_with_drives(disks),
         "model": model,
     }

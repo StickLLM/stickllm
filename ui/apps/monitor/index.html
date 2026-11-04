@@ -5,22 +5,62 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Monitor — StickLLM</title>
 <style>
-  body{margin:0;background:#0e1214;color:#e4ecee;font:15px/1.45 "Segoe UI",sans-serif}
-  header{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid #263136}
-  header a{color:#2bb5a8;text-decoration:none}
-  main{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;padding:16px}
-  article{background:#13181b;border:1px solid #263136;border-radius:14px;padding:14px}
-  h2{margin:0 0 8px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:#7d8c91}
-  p{margin:4px 0}
-  .big{font-size:28px;font-weight:620}
-  .line{margin-left:auto;color:#9fb0b5;font-size:13px}
-  .tag{color:#2bb5a8;font-size:12px}
-  .dim{color:#7d8c91;font-size:13px}
+  :root{--bg:#0e1214;--card:#13181b;--line:#263136;--ink:#e4ecee;--dim:#7d8c91;--accent:#2bb5a8;--green:#3fbf7f;--amber:#e0a030;--red:#e5534b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.35 "Segoe UI",system-ui,sans-serif}
+  body>header{display:flex;gap:10px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--line)}
+  body>header a{color:var(--accent);text-decoration:none}
+  .line{margin-left:auto;color:#9fb0b5;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  main{display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:8px;padding:8px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0}
+  .k-model{grid-column:span 2}
+  .k-disk,.k-warn{grid-column:1/-1}
+  .k-warn{border-color:var(--amber)}
+  .mini{padding:6px 10px}
+  .ch{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+  h2{margin:0;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);font-weight:600;flex:1;min-width:0}
+  p{margin:2px 0}
+  .clip{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .val{font-size:14px;font-weight:600}
+  .dim{color:var(--dim);font-size:12px}
+  .sub{margin-top:-2px}
+  .state{font-size:12px}
+  .state.running{color:var(--green)}.state.loading{color:var(--amber)}.state.stopped{color:var(--dim)}
+  .badge{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--accent);color:var(--accent);white-space:nowrap}
+  .badge.live{background:rgba(43,181,168,.14);display:inline-block;margin:0 0 3px}
+  .k-cpu .cb,.k-mem .cb{display:flex;gap:8px;align-items:center}
+  .k-cpu .gauges,.k-mem .gauges{margin:0}
+  .ct{min-width:0;flex:1}
+  .gauges{display:flex;gap:4px;justify-content:space-around;margin:0 0 3px}
+  .gauge{display:flex;flex-direction:column;align-items:center;width:52px}
+  .arc{width:52px;height:46px;overflow:visible}
+  .arc path{fill:none;stroke-width:5;stroke-linecap:round}
+  .arc .track{stroke:var(--line)}
+  .gv{font-size:12px;font-weight:600;fill:var(--ink)}
+  .gl{font-size:10px;color:var(--dim);margin-top:-6px;text-transform:uppercase;letter-spacing:.05em}
+  .fill.t-accent{stroke:var(--accent)}.fill.t-green{stroke:var(--green)}.fill.t-amber{stroke:var(--amber)}.fill.t-red{stroke:var(--red)}
+  .gv.t-green{fill:var(--green)}.gv.t-amber{fill:var(--amber)}.gv.t-red{fill:var(--red)}
+  .spark{display:flex;align-items:center;gap:6px;margin-top:4px}
+  .spark svg{flex:1;height:22px;min-width:0;background:rgba(255,255,255,.02);border-radius:4px}
+  .spline{fill:none;stroke:var(--accent);stroke-width:1.4;vector-effect:non-scaling-stroke}
+  .sparea{fill:rgba(43,181,168,.16);stroke:none}
+  .spcap{font-size:10px;color:var(--dim);white-space:nowrap}
+  .drives{display:grid;gap:3px}
+  .drive{display:grid;grid-template-columns:minmax(0,2.4fr) 58px minmax(60px,1fr) minmax(0,1.3fr) 130px;gap:8px;align-items:center}
+  .dname{display:flex;gap:6px;align-items:center;min-width:0;white-space:nowrap;overflow:hidden}
+  .kind{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+  .dsize{text-align:right;font-variant-numeric:tabular-nums}
+  .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  .bar i.t-amber{background:var(--amber)}.bar i.t-red{background:var(--red)}
+  .dfree{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dio{font-size:12px;color:#9fb0b5;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  @media (max-width:520px){.k-model{grid-column:1/-1}.drive{grid-template-columns:minmax(0,1fr) 54px 70px}.dfree,.dio{display:none}}
 </style>
 </head>
 <body>
 <header><a href="/">StickLLM</a><strong>Monitor</strong><span id="statusLine" class="line"></span></header>
-<main id="board"><article><h2>Status</h2><p>Reading the stick…</p></article></main>
-<script src="monitor.js?v=mon059"></script>
+<main id="board"><article class="card"><h2>Status</h2><p>Reading the stick…</p></article></main>
+<script src="monitor.js?v=mon059b"></script>
 </body>
 </html>

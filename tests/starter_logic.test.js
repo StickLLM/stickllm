@@ -47,15 +47,52 @@ function text(title) {
 }
 assert.ok(text("CPU").includes("12.5%"));
 assert.ok(text("CPU").includes("0.10"));
-assert.ok(text("Memory").includes("8.0 GB"));
+assert.ok(text("Memory").includes("8.0 / 32.0 GB"));
 assert.ok(text("Memory").includes("32.0 GB"));
-assert.ok(text("GPU").includes("RTX 3090"));
-assert.ok(text("GPU").includes("1024 / 24576 MiB"));
-assert.ok(text("GPU").includes("42 °C"));
-assert.ok(text("Disk").includes("System"));
-assert.ok(text("Disk").includes("free"));
+const gpuCard = view.cards.find((card) => card.kind === "gpu");
+assert.ok(gpuCard.title.includes("RTX 3090"));
+assert.ok(gpuCard.lines.map((l) => l.text).join("\n").includes("1.0 / 24.0 GB"));
+assert.ok(gpuCard.gauges.some((g) => g.label === "Temp" && g.text === "42°" && g.tone === "green"));
+assert.ok(!gpuCard.badge, "no holds-the-model badge unless the backend says so");
+assert.ok(text("Disks").includes("System"));
+assert.ok(text("Disks").includes("free"));
+assert.strictEqual(monitor.tempTone(65), "green");
+assert.strictEqual(monitor.tempTone(75), "amber");
+assert.strictEqual(monitor.tempTone(88), "red");
+
+// 0.5.9 cleanup: every drive with roles, real names, onboard folded into CPU.
+const full = monitor.parseMonitor({
+  ok: true,
+  cpu: { available: true, percent: 30, load: [1, 1, 1] },
+  memory: { available: true, total: 62.7 * 1024 ** 3, used: 20 * 1024 ** 3, free: 42.7 * 1024 ** 3 },
+  gpu: { available: true, gpus: [
+    { index: 1, name: "NVIDIA CMP 170HX", memory_used_mib: 4, memory_total_mib: 8192, util_percent: 0, temperature_c: 34, holds_model: false },
+    { index: 2, name: "NVIDIA GeForce RTX 3090", memory_used_mib: 13000, memory_total_mib: 24576, util_percent: 50, temperature_c: 78, holds_model: true, model_mib: 12900 },
+    { index: null, name: "ASPEED Graphics Family", onboard: true },
+  ] },
+  disk: { available: true, drives: [
+    { name: "sda", model: "SanDisk", kind: "USB", size: 64e9, roles: ["boot"], fs_total: 50 * 1024 ** 3, fs_used: 10 * 1024 ** 3, fs_free: 40 * 1024 ** 3, read_mb_s: 1.5, write_mb_s: 0 },
+    { name: "nvme0n1", model: "Fanxiang S880", kind: "NVMe", size: 2e12, roles: ["models", "vault"], read_mb_s: 900, write_mb_s: 2 },
+  ] },
+  model: { available: true, name: "Qwen3.5-4B Q4_K_M.gguf", llama_up: true, service: "active" },
+  llama: { available: true, gen_tok_s: 80 },
+});
+const gcards = full.cards.filter((c) => c.kind === "gpu");
+assert.strictEqual(gcards.length, 2);
+assert.strictEqual(gcards[0].title, "GPU1 · CMP 170HX");
+assert.ok(gcards[1].badge.startsWith("Holds the model"));
+assert.ok(gcards[1].gauges.find((g) => g.label === "Temp").tone === "amber");
+const cpuText = full.cards.find((c) => c.kind === "cpu").lines.map((l) => l.text).join("\n");
+assert.ok(cpuText.includes("ASPEED"));
+const disks = full.cards.find((c) => c.kind === "disk").drives;
+assert.deepStrictEqual(disks.map((d) => d.name), ["sda", "nvme0n1"]);
+assert.deepStrictEqual(disks[0].roles, ["Boot stick"]);
+assert.deepStrictEqual(disks[1].roles, ["Models", "Vault"]);
+assert.ok(disks[1].io.includes("R 900.0"));
+assert.strictEqual(full.cards.find((c) => c.kind === "model").spark.key, "toks");
+assert.ok(monitor.arcPath(28, 28, 23, 0.5).startsWith("M"));
 assert.ok(text("Model").includes("qwen"));
-assert.ok(text("Model").includes("The model is not running."));
+assert.ok(text("Model").includes("the model is not running."));
 
 const stopped = monitor.parseMonitor({
   ok: true,
