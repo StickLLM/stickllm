@@ -88,6 +88,17 @@ json_state() {
     vmatch="same"
   fi
   [[ -f "$META_DIR/machine_label" ]] && vlabel="$(head -c 80 "$META_DIR/machine_label" | tr -d '\n' || true)"
+  # 0.6.0 (bug 5): vault-boot.txt used to be written once by the kiosk at
+  # boot and never again, so it said "absent" while the vault was mounted.
+  # Keep it in step with every state change.
+  if [[ -d "$(dirname "$STATE_JSON")" ]]; then
+    local boot_word="absent"
+    case "$status" in
+      unlocked) boot_word="unlocked" ;;
+      *) if [[ -f "$META_DIR/container" || "$usb_settings" != "absent" ]]; then boot_word="deferred-to-ui"; fi ;;
+    esac
+    printf '%s\n' "$boot_word" >"$(dirname "$STATE_JSON")/vault-boot.txt" 2>/dev/null || true
+  fi
   python3 - "$STATE_JSON" "$status" "$note" "$wipe" "$fails" "$MNT_POINT" "$root" "$blob" "$usb_settings" "$vmatch" "$vlabel" <<'PY'
 import json, sys, os
 path, status, note, wipe, fails, mnt, root, blob = sys.argv[1:9]
@@ -1905,7 +1916,9 @@ download_policy() {
   fi
 }
 
+# $1 = "view-only": fix the gateway mount view, do not (re)start add-ons.
 refresh_gateway_vault_view() {
+  local addons="${1:-addons}"
   # stickllm-ui uses ProtectSystem=full (private mount NS). Vault mounts that
   # happen after the unit starts are invisible to stickllm-gateway ismount(),
   # so /api/chats falsely reports "vault locked" while the host mount is fine.
@@ -1915,6 +1928,7 @@ refresh_gateway_vault_view() {
   local pid mapper log="/run/stickllm/vault-ui-refresh.log"
   mkdir -p /run/stickllm 2>/dev/null || true
   download_policy unlocked
+  sync_gateway_settings_view
   pid="$(systemctl show -p MainPID --value stickllm-ui.service 2>/dev/null || true)"
   mapper="$(readlink -f "$MAPPER" 2>/dev/null || echo "$MAPPER")"
   {
@@ -1925,7 +1939,7 @@ refresh_gateway_vault_view() {
     nsenter --mount="/proc/$pid/ns/mnt" -- mkdir -p "$MNT_POINT" 2>/dev/null || true
     if ui_vault_mounted "$pid"; then
       echo "result=already-in-ui-ns" >>"$log" 2>/dev/null || true
-      start_agent_addon
+      [[ "$addons" == view-only ]] || start_agent_addon
       return 0
     fi
     # Mount mapper into UI private NS (same device already open on host).
@@ -1933,7 +1947,7 @@ refresh_gateway_vault_view() {
       || nsenter --mount="/proc/$pid/ns/mnt" -- mount "$mapper" "$MNT_POINT" 2>>"$log"; then
       if ui_vault_mounted "$pid"; then
         echo "result=nsenter-mounted" >>"$log" 2>/dev/null || true
-        start_agent_addon
+        [[ "$addons" == view-only ]] || start_agent_addon
         return 0
       fi
     fi
@@ -1942,7 +1956,7 @@ refresh_gateway_vault_view() {
     echo "result=no-ui-or-unmounted-defer-restart" >>"$log" 2>/dev/null || true
   fi
   schedule_ui_vault_refresh
-  start_agent_addon
+  [[ "$addons" == view-only ]] || start_agent_addon
   return 0
 }
 
@@ -1988,6 +2002,46 @@ drop_gateway_vault_view() {
   if ui_vault_mounted "$pid"; then
     nsenter --mount="/proc/$pid/ns/mnt" -- umount "$MNT_POINT" 2>/dev/null || true
   fi
+  sync_gateway_settings_view
+}
+
+sync_gateway_settings_view() {
+  # 0.6.0 (B9): chats can live on the USB settings partition. Make the UI
+  # mount namespace match the host for /mnt/stickllm-settings too.
+  local pid smnt="${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}"
+  local smap="/dev/mapper/${STICKLLM_SETTINGS_MAPPER:-stickllm-settings}"
+  pid="$(systemctl show -p MainPID --value stickllm-ui.service 2>/dev/null || true)"
+  [[ -n "$pid" && "$pid" != "0" && -r "/proc/$pid/ns/mnt" ]] || return 0
+  local host=no ui=no
+  findmnt -n "$smnt" >/dev/null 2>&1 && host=yes
+  nsenter --mount="/proc/$pid/ns/mnt" -- mountpoint -q "$smnt" 2>/dev/null && ui=yes
+  if [[ "$host" == yes && "$ui" == no && -b "$smap" ]]; then
+    nsenter --mount="/proc/$pid/ns/mnt" -- mkdir -p "$smnt" 2>/dev/null || true
+    nsenter --mount="/proc/$pid/ns/mnt" -- mount "$smap" "$smnt" 2>/dev/null || true
+  elif [[ "$host" == no && "$ui" == yes ]]; then
+    nsenter --mount="/proc/$pid/ns/mnt" -- umount "$smnt" 2>/dev/null || true
+  fi
+  return 0
+}
+
+cmd_ui_refresh() {
+  # 0.6.0: the gateway calls this when the host has the vault mounted but its
+  # own mount namespace does not (stale view). No add-on starts here.
+  need_root
+  sync_gateway_settings_view
+  if is_mounted; then
+    refresh_gateway_vault_view view-only
+  fi
+  echo "ok"
+}
+
+cmd_ensure_addons() {
+  # 0.6.0: Vault mode must bring every installed add-on back. Each start is
+  # idempotent and gated on the vault; nothing is stopped here.
+  need_root
+  is_mounted || die "vault not mounted"
+  start_agent_addon
+  echo "ok"
 }
 
 cmd_ui_mount_status() {
@@ -2806,11 +2860,21 @@ cmd_lock() {
   if [[ -n "$helper" ]]; then
     "$helper" close >/dev/null 2>&1 || true
   fi
-  drop_gateway_vault_view
+  # 0.6.0 (bug 4): unmount the host first and drop the gateway's private view
+  # only after that worked. 0.5.9 dropped the gateway view first; when the host
+  # umount then failed (a process still in the vault) the vault stayed open on
+  # the host while the chat gateway lost it. Control said "unlocked", so no
+  # passcode was asked, and the chat list stayed empty until a reboot.
   if is_mounted; then
     sync || true
-    umount "$MNT_POINT" || die "umount failed — is a process using the vault?"
+    if ! umount "$MNT_POINT"; then
+      # Put everything back the way it was: gateway view and add-ons.
+      refresh_gateway_vault_view
+      json_state unlocked "lock failed: vault busy"
+      die "umount failed — is a process using the vault?"
+    fi
   fi
+  drop_gateway_vault_view
   if mapper_open; then
     cryptsetup close "$MAPPER_NAME" || die "cryptsetup close failed"
   fi
@@ -2957,6 +3021,8 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault unlock
   stickllm-vault lock
   stickllm-vault ui-mount-status     # host vs stickllm-ui mount namespace
+  stickllm-vault ui-refresh          # re-mount the vault into the gateway view
+  stickllm-vault ensure-addons       # start installed add-ons (vault open)
   stickllm-vault move-model <gguf>   # explicit MOVE-MODEL confirm
   stickllm-vault list-movable        # USB models eligible to move
   stickllm-vault set-wipe-after <N>  # 0=off (default); WIPE-OK if N>0
@@ -3004,6 +3070,8 @@ main() {
     unlock) cmd_unlock "$@" ;;
     lock) cmd_lock "$@" ;;
     ui-mount-status|ui-ns) cmd_ui_mount_status ;;
+    ui-refresh) cmd_ui_refresh ;;
+    ensure-addons) cmd_ensure_addons ;;
     move-model) cmd_move_model "$@" ;;
     list-movable) cmd_list_movable "$@" ;;
     set-wipe-after) cmd_set_wipe_after "$@" ;;

@@ -21,6 +21,7 @@ import shutil
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -1896,30 +1897,23 @@ def set_session_mode(mode: str) -> dict:
             else "Ephemeral: do not write to SSD/vault; RAM/USB-DATA only as before."
         ),
     }
-    # Ephemeral → unload model then lock/unmount LUKS. Mode write still succeeds;
-    # report lock errors so UI can surface them.
-    if mode == "ephemeral" and (prev == "vault" or vault_unlocked()):
+    # 0.6.0 (bug B3): the toggle only switches where chats are read and
+    # written. It never stops llama, Docker or add-ons and never unmounts the
+    # vault (0.5.9 ran "stickllm-vault lock" here: slow, stopped every add-on,
+    # and a busy umount left the gateway without a vault view; bug B4).
+    doc["vault_locked"] = False
+    if mode == "vault" and vault_host_mounted():
+        # Restart any vault add-on a 0.5.9 lock or a crash left stopped.
         try:
-            subprocess.run(
-                ["systemctl", "stop", "stickllm-llama.service"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
+            subprocess.Popen(
+                ["/usr/local/bin/stickllm-vault", "ensure-addons"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
-            p = subprocess.run(
-                ["/usr/local/bin/stickllm-vault", "lock"],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-            doc["vault_locked"] = p.returncode == 0
-            if p.returncode != 0:
-                doc["vault_lock_error"] = (p.stderr or p.stdout or "lock failed")[-500:]
-        except Exception as e:
-            doc["vault_locked"] = False
-            doc["vault_lock_error"] = str(e)[:300]
+            doc["addons_restart"] = True
+        except OSError:
+            doc["addons_restart"] = False
     SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     try:
         os.chmod(SESSION_MODE_PATH, 0o644)
@@ -1944,7 +1938,40 @@ def stickllm_version() -> str:
     return "unknown"
 
 
+def vault_host_mounted() -> bool:
+    """True when the vault is mounted in the host (pid 1) mount namespace."""
+    mnt = str(VAULT_MNT)
+    try:
+        with open("/proc/1/mounts", encoding="utf-8", errors="replace") as fh:
+            return any(len(p) >= 2 and p[1] == mnt for p in (l.split() for l in fh))
+    except OSError:
+        return False
+
+
+_LAST_VIEW_REFRESH = [0.0]
+
+
 def vault_unlocked() -> bool:
+    """True when the vault is mounted here. Heals a missing gateway view (B4)."""
+    if _vault_unlocked_here():
+        return True
+    # The host has the vault but this ProtectSystem namespace lost it (late
+    # mount, or a failed lock that dropped the view). Ask stickllm-vault to
+    # bind it in again, at most every 10 s.
+    if vault_host_mounted() and time.time() - _LAST_VIEW_REFRESH[0] > 10:
+        _LAST_VIEW_REFRESH[0] = time.time()
+        try:
+            subprocess.run(
+                ["/usr/local/bin/stickllm-vault", "ui-refresh"],
+                capture_output=True, text=True, timeout=20, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return _vault_unlocked_here()
+    return False
+
+
+def _vault_unlocked_here() -> bool:
     """True when the LUKS vault is mounted in *this* process mount namespace."""
     try:
         if os.path.ismount(str(VAULT_MNT)):
@@ -2006,111 +2033,172 @@ def vault_health() -> dict:
     return doc
 
 
+_CHATS_LIB = None
+SETTINGS_MNT = Path(os.environ.get("STICKLLM_SETTINGS_MNT", "/mnt/stickllm-settings"))
+
+
+def chats_lib():
+    """Shared chat store (stickllm_chats.py): USB/SSD vault, Agent Zero chats, sync."""
+    global _CHATS_LIB
+    if _CHATS_LIB is not None:
+        return _CHATS_LIB
+    path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_chats.py"
+    loader = importlib.machinery.SourceFileLoader("stickllm_chats", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError("stickllm_chats helper is missing")
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    _CHATS_LIB = mod
+    return mod
+
+
+def _store_mounted(path: Path) -> bool:
+    if path == VAULT_MNT:
+        return vault_unlocked()
+    lib = chats_lib()
+    if lib.is_mount(path):
+        return True
+    # Settings partition opened after the UI started: heal the view once.
+    try:
+        with open("/proc/1/mounts", encoding="utf-8", errors="replace") as fh:
+            host = any(len(p) >= 2 and p[1] == str(path) for p in (l.split() for l in fh))
+    except OSError:
+        host = False
+    if host and time.time() - _LAST_VIEW_REFRESH[0] > 10:
+        _LAST_VIEW_REFRESH[0] = time.time()
+        try:
+            subprocess.run(["/usr/local/bin/stickllm-vault", "ui-refresh"],
+                           capture_output=True, text=True, timeout=20, check=False)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return lib.is_mount(path)
+    return False
+
+
+def chat_store_roots() -> dict:
+    return chats_lib().store_roots(VAULT_MNT, SETTINGS_MNT, _store_mounted)
+
+
+def chat_store_info() -> dict:
+    """Which encrypted store holds chats now (Settings > Chat, bug B9)."""
+    lib = chats_lib()
+    roots = chat_store_roots()
+    pref = lib.load_pref(VAULT_MNT, SETTINGS_MNT)
+    store, root, fell_back = lib.active_root(pref, roots)
+    return {
+        "ok": True,
+        "store": pref["store"],
+        "sync": pref["sync"],
+        "active": store,
+        "fallback": fell_back,
+        "available": {k: True for k in roots},
+        "root": str(root) if root else "",
+    }
+
+
+def active_chats_root() -> tuple[Path | None, str | None]:
+    lib = chats_lib()
+    store, root, _ = lib.active_root(lib.load_pref(VAULT_MNT, SETTINGS_MNT), chat_store_roots())
+    return root, store
+
+
 def chats_available() -> tuple[bool, str]:
     if get_session_mode() != "vault":
         return False, "switch Mode to Vault to save chats (ephemeral never writes chats to disk)"
-    if not vault_unlocked():
+    root, _ = active_chats_root()
+    if root is None:
         return False, "vault locked — unlock in Settings → Storage first"
     return True, ""
+
+
+def _chat_sync_bg() -> None:
+    """Optional USB<->SSD sync (bug B10), off the request thread."""
+    info = chat_store_info()
+    if not info.get("sync") or len(info.get("available") or {}) < 2:
+        return
+    def run() -> None:
+        roots = chat_store_roots()
+        if "ssd" in roots and "usb" in roots:
+            try:
+                chats_lib().sync_stores(roots["ssd"], roots["usb"])
+            except Exception as e:  # never chat text in logs
+                print(f"stickllm-gateway: chat sync failed: {e.__class__.__name__}", file=sys.stderr)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _chat_log(msg: str) -> None:
+    print(f"stickllm-gateway: {msg}", file=sys.stderr, flush=True)
 
 
 def list_vault_chats() -> dict:
     ok, err = chats_available()
     if not ok:
         return {"ok": False, "error": err, "chats": []}
-    out = []
-    for p in sorted(CHATS_DIR.glob("*.json")):
-        try:
-            doc = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        out.append(
-            {
-                "id": doc.get("id") or p.stem,
-                "title": doc.get("title") or p.stem,
-                "updated": doc.get("updated") or int(p.stat().st_mtime),
-                "messages": len(doc.get("messages") or []),
-            }
-        )
-    out.sort(key=lambda x: int(x.get("updated") or 0), reverse=True)
-    return {"ok": True, "chats": out}
+    root, store = active_chats_root()
+    res = chats_lib().list_chats(root, _chat_log)
+    _chat_sync_bg()
+    return {"ok": True, "store": store, "chats": res["chats"], "skipped": res["skipped"]}
 
 
 def load_vault_chat(chat_id: str) -> dict:
     ok, err = chats_available()
     if not ok:
         return {"ok": False, "error": err}
-    cid = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
-    if not cid:
-        return {"ok": False, "error": "id required"}
-    path = CHATS_DIR / f"{cid}.json"
-    if not path.is_file():
-        return {"ok": False, "error": "not found"}
+    root, _ = active_chats_root()
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-        doc["ok"] = True
-        return doc
+        return chats_lib().load_chat(root, chat_id)
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": e.__class__.__name__}
 
 
 def save_vault_chat(title: str, messages: list, chat_id: str | None = None) -> dict:
     ok, err = chats_available()
     if not ok:
         return {"ok": False, "error": err}
-    # Never write chats outside the vault mount (encrypted blob only).
-    if not str(CHATS_DIR).startswith(str(VAULT_MNT)):
+    root, store = active_chats_root()
+    # Never write chats outside an encrypted mount.
+    if root is None or not (str(root).startswith(str(VAULT_MNT) + "/") or str(root).startswith(str(SETTINGS_MNT) + "/")):
         return {"ok": False, "error": "refuse: chats path outside vault"}
-    if not os.path.ismount(str(VAULT_MNT)):
+    if not _store_mounted(root.parent):
         return {"ok": False, "error": "vault not mounted — refuse plaintext chat write"}
-    CHATS_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(CHATS_DIR, 0o700)
-    except Exception:
-        pass
-    cid = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
-    if not cid:
-        cid = secrets.token_hex(8)
-    # Strip system prompt noise optional — store user/assistant only + keep system if present
-    clean = []
-    for m in messages or []:
-        if not isinstance(m, dict):
-            continue
-        role = str(m.get("role") or "")
-        content = str(m.get("content") or "")
-        if role in ("user", "assistant", "system") and content:
-            clean.append({"role": role, "content": content[:100_000]})
-    title = (title or "Chat").strip()[:120] or "Chat"
-    doc = {
-        "id": cid,
-        "title": title,
-        "updated": int(time.time()),
-        "messages": clean,
-    }
-    path = CHATS_DIR / f"{cid}.json"
-    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except Exception:
-        pass
-    return {"ok": True, "id": cid, "title": title, "updated": doc["updated"]}
+        return chats_lib().save_chat(root, title, messages, chat_id, store=store or "ssd")
+    except OSError as e:
+        return {"ok": False, "error": f"could not save chat: {e.strerror or e.__class__.__name__}"}
 
 
 def delete_vault_chat(chat_id: str) -> dict:
     ok, err = chats_available()
     if not ok:
         return {"ok": False, "error": err}
-    cid = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id or "")[:64]
-    if not cid:
-        return {"ok": False, "error": "id required"}
-    path = CHATS_DIR / f"{cid}.json"
-    if path.is_file():
-        path.unlink()
-    # Converted files live beside the chat, only inside the vault mount.
-    folder = CHATS_DIR / cid
-    if folder.is_dir() and str(folder).startswith(str(CHATS_DIR)):
-        shutil.rmtree(folder, ignore_errors=True)
-    return {"ok": True, "deleted": cid}
+    root, _ = active_chats_root()
+    res = chats_lib().delete_chat(root, chat_id)
+    if res.get("ok"):
+        res["deleted"] = res["id"]
+    return res
+
+
+def set_chat_store(store: str, sync: bool) -> dict:
+    roots = chat_store_roots()
+    res = chats_lib().save_pref(str(store or ""), bool(sync), roots, VAULT_MNT, SETTINGS_MNT)
+    if not res.get("ok"):
+        return res
+    if sync and "ssd" in roots and "usb" in roots:
+        try:
+            res["sync_result"] = chats_lib().sync_stores(roots["ssd"], roots["usb"])
+        except OSError as e:
+            res["sync_error"] = e.__class__.__name__
+    # Agent Zero binds the active store's agent-zero folder at start: rebind.
+    if _agent_port_open(5099):
+        try:
+            subprocess.Popen(["systemctl", "try-restart", "--no-block", "stickllm-agent.service"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            res["agent_restart"] = True
+        except OSError:
+            pass
+    res.update({k: v for k, v in chat_store_info().items() if k not in ("ok",)})
+    return res
 
 
 _CONVERT_MOD = None
@@ -2139,19 +2227,20 @@ def _safe_chat_id(chat_id: str) -> str:
 
 def persist_attachment(chat_id: str, name: str, raw: bytes, plain: str) -> None:
     """Write the upload only when the encrypted vault is mounted. Never /tmp."""
-    if get_session_mode() != "vault" or not vault_unlocked():
-        return
-    if not os.path.ismount(str(VAULT_MNT)):
+    if get_session_mode() != "vault":
         return
     cid = _safe_chat_id(chat_id)
     if not cid:
         return
-    dest = CHATS_DIR / cid / "files"
-    if not str(dest).startswith(str(VAULT_MNT)):
+    root, _ = active_chats_root()
+    if root is None:
+        return
+    dest = root / cid / "files"
+    if not (str(dest).startswith(str(VAULT_MNT)) or str(dest).startswith(str(SETTINGS_MNT))):
         return
     dest.mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(CHATS_DIR / cid, 0o700)
+        os.chmod(root / cid, 0o700)
         os.chmod(dest, 0o700)
     except Exception:
         pass
@@ -2233,6 +2322,46 @@ def speech_mod():
     loader.exec_module(mod)
     _SPEECH_MOD = mod
     return mod
+
+
+_A0CLIENT_LIB = None
+
+
+def a0client():
+    """Agent Zero API client (Whisper STT / Kokoro TTS), 0.6.0 A3."""
+    global _A0CLIENT_LIB
+    if _A0CLIENT_LIB is None:
+        path = Path(__file__).resolve().parent.parent / "lib" / "stickllm_a0client.py"
+        loader = importlib.machinery.SourceFileLoader("stickllm_a0client", str(path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        if spec is None:
+            raise RuntimeError("stickllm_a0client helper is missing")
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        _A0CLIENT_LIB = mod
+    return _A0CLIENT_LIB.CLIENT
+
+
+def a0_speech(kind: str, value: str) -> dict | None:
+    """Use Agent Zero's speech when A0 runs and its model is ready.
+
+    Returns None to mean "use the built-in engine" (A0 off, plugin disabled,
+    model not downloaded, or any error)."""
+    if not _agent_port_open(5099):
+        return None
+    try:
+        client = a0client()
+        if kind == "stt":
+            if not client.plugin_ready("_whisper_stt"):
+                return None
+            return {"ok": True, "text": client.transcribe(value), "engine": "agent-zero"}
+        if not client.plugin_ready("_kokoro_tts"):
+            return None
+        return {"ok": True, "audio_base64": client.synthesize(value), "engine": "agent-zero"}
+    except Exception as e:
+        print(f"stickllm-gateway: Agent Zero {kind} unavailable ({e.__class__.__name__}); using built-in speech",
+              file=sys.stderr, flush=True)
+        return None
 
 
 def run_speech(command: str, payload: bytes) -> dict:
@@ -4691,6 +4820,13 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._json(200, list_vault_chats())
             return
+        if path == "/api/chat-store":
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required"})
+                return
+            self._json(200, chat_store_info())
+            return
         if path.startswith("/api/chats/"):
             doc, ok = self._auth()
             if doc.get("require_pair") and not ok:
@@ -5135,6 +5271,18 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(code, result)
             return
 
+        if path == "/api/chat-store":
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"error": "ui_only"})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok:
+                self._json(401, {"error": "pair_required"})
+                return
+            result = set_chat_store(str(req.get("store") or ""), bool(req.get("sync")))
+            self._json(200 if result.get("ok") else 400, result)
+            return
+
         if path == "/api/chats":
             if not stickllm_ui_client(self.headers):
                 self._json(403, {"error": "ui_only"})
@@ -5394,10 +5542,14 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 self._json(400, {"ok": False, "error": "The recording could not be read."})
                 return
+            a0 = a0_speech("stt", base64.b64encode(audio).decode("ascii")) if audio else None
+            if a0:
+                self._json(200, {"ok": True, "text": str(a0.get("text") or ""), "engine": "agent-zero"})
+                return
             result = run_speech("stt", audio)
             log_stt_stats(result)
             if result.get("ok"):
-                self._json(200, {"ok": True, "text": str(result.get("text") or "")})
+                self._json(200, {"ok": True, "text": str(result.get("text") or ""), "engine": "built-in"})
             else:
                 self._json(400, {"ok": False, "error": result.get("error") or "Speech recognition failed."})
             return
@@ -5406,10 +5558,15 @@ class Handler(SimpleHTTPRequestHandler):
             if self._speech_block():
                 return
             voice = str(req.get("voice") or "Bella")
-            body = json.dumps({"text": str(req.get("text") or ""), "voice": voice}).encode("utf-8")
+            text = str(req.get("text") or "")
+            a0 = a0_speech("tts", text) if text.strip() and not req.get("builtin") else None
+            if a0:
+                self._json(200, {"ok": True, "audio_base64": a0["audio_base64"], "mime": "audio/wav", "engine": "agent-zero"})
+                return
+            body = json.dumps({"text": text, "voice": voice}).encode("utf-8")
             result = run_speech("tts", body)
             if result.get("ok") and result.get("audio_base64"):
-                self._json(200, {"ok": True, "audio_base64": result["audio_base64"], "mime": "audio/wav"})
+                self._json(200, {"ok": True, "audio_base64": result["audio_base64"], "mime": "audio/wav", "engine": "built-in"})
             else:
                 self._json(400, {"ok": False, "error": result.get("error") or "Text to speech failed."})
             return

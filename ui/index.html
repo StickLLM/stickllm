@@ -458,6 +458,10 @@
     <div class="row"><div><b>Where chats live</b><small id="chatWhere">Ephemeral: in memory only, gone at reboot.</small></div>
       <div class="seg" id="modeSeg3"><button data-mode="ephemeral" class="on">Ephemeral</button><button data-mode="vault">Vault</button></div></div>
     <div class="row"><div><b>Save current chat to vault</b><small>Vault mode saves automatically after each reply.</small></div><button class="btn sm" id="saveChat">Save now</button></div>
+    <div class="row"><div><b>Vault for chats</b><small id="chatStoreNote">Both choices are encrypted with your vault passcode.</small></div>
+      <div class="seg" id="chatStoreSeg"><button type="button" data-store="ssd" class="on">Host SSD</button><button type="button" data-store="usb">USB stick</button></div></div>
+    <div class="row"><div><b>Keep both vaults in sync</b><small>Copies chats between the USB stick and the host SSD both ways; the newest copy wins. Runs while both are unlocked.</small></div>
+      <label class="switch"><input type="checkbox" id="chatSync" aria-label="Sync chats between USB and SSD vaults"><span></span></label></div>
   </div>
   <div class="secTools"><h3>Saved in vault</h3><span class="grow"></span><button class="btn sm" id="exportAll" disabled title="Coming soon">Export all (.json)</button><button class="btn sm danger ghost" id="deleteAll" disabled title="Coming soon">Delete all…</button></div>
   <div class="group" id="savedChats"></div>

@@ -864,7 +864,31 @@ async function control(action, params = {}) {
 let tt;
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  t.classList.remove("busy");
   clearTimeout(tt); tt = setTimeout(() => (t.hidden = true), 2800);
+}
+
+// 0.6.0 (B8): anything that can take over a second shows progress. The
+// spinner appears after 1 s and stays until done(); update() changes the text
+// (for example "Starting Node-RED… 40%").
+function progressToast(msg) {
+  let text = msg, finished = false;
+  const show = () => {
+    if (finished) return;
+    const t = $("#toast"); if (!t) return;
+    t.textContent = text; t.classList.add("busy"); t.hidden = false;
+    clearTimeout(tt);
+  };
+  const timer = setTimeout(show, 1000);
+  return {
+    update(m) { text = m; const t = $("#toast"); if (t && t.classList.contains("busy")) t.textContent = m; },
+    done(m) {
+      finished = true; clearTimeout(timer);
+      const t = $("#toast");
+      if (t) t.classList.remove("busy");
+      if (m) toast(m); else if (t && !t.hidden) { clearTimeout(tt); tt = setTimeout(() => (t.hidden = true), 300); }
+    },
+  };
 }
 
 function setTheme(t) {
@@ -889,7 +913,9 @@ function applyModeUi(m) {
     ? "Chats are saved in your encrypted vault."
     : "Nothing is written to disk. Chats are lost at reboot.";
   $("#chatWhere").textContent = m === "vault"
-    ? "Vault: saved encrypted on the host SSD."
+    ? (state.chatStore === "usb"  // 0.6.0 B9: from /api/chat-store
+      ? "Vault: saved encrypted on this USB stick."
+      : "Vault: saved encrypted on the host SSD.")
     : "Ephemeral: in memory only, gone at reboot.";
   const note = $("#composerNote");
   if (micState === "idle" && note) {
@@ -900,6 +926,60 @@ function applyModeUi(m) {
   const heroP = $("#thread .empty p");
   if (heroP) heroP.textContent = heroModeLine(m);
 }
+
+// 0.6.0 (B9/B10): pick the USB or SSD vault for chats; optional sync.
+function paintChatStore(j) {
+  const store = j.active || j.store || "ssd";
+  state.chatStore = store;
+  $$("#chatStoreSeg [data-store]").forEach((b) => {
+    const on = b.dataset.store === (j.store || store);
+    b.classList.toggle("on", on);
+    b.disabled = !(j.available && j.available[b.dataset.store]);
+    b.title = b.disabled ? "Unlock this vault first" : "";
+  });
+  const sync = $("#chatSync");
+  if (sync) {
+    sync.checked = !!j.sync;
+    sync.disabled = !(j.available && j.available.ssd && j.available.usb);
+  }
+  const note = $("#chatStoreNote");
+  if (note) {
+    note.textContent = j.fallback
+      ? `The ${j.store === "usb" ? "USB" : "SSD"} vault is locked, so chats use the ${store === "usb" ? "USB" : "SSD"} vault for now.`
+      : "Both choices are encrypted with your vault passcode.";
+  }
+  applyModeUi(sessionMode);
+}
+async function refreshChatStore() {
+  const r = await fetch("/api/chat-store", { cache: "no-store", headers: authHeaders() });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok !== false) paintChatStore(j);
+  return j;
+}
+async function setChatStore(store, sync) {
+  const t = progressToast("Switching chat vault…");
+  try {
+    const r = await fetch("/api/chat-store", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ store, sync: !!sync }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`);
+    paintChatStore(j);
+    const synced = j.sync_result ? ` · synced ${j.sync_result.copied} chat(s)` : "";
+    t.done((store === "usb" ? "Chats now saved on the USB stick" : "Chats now saved on the host SSD") + synced);
+    if (sessionMode === "vault") loadVaultChats().catch(() => {});
+  } catch (e) {
+    t.done("Chat vault: " + e.message);
+    refreshChatStore().catch(() => {});
+  }
+}
+$$("#chatStoreSeg [data-store]").forEach((b) => (b.onclick = () => setChatStore(b.dataset.store, $("#chatSync")?.checked)));
+if ($("#chatSync")) $("#chatSync").onchange = (e) => {
+  const cur = $("#chatStoreSeg [data-store].on")?.dataset.store || state.chatStore || "ssd";
+  setChatStore(cur, e.target.checked);
+};
 
 async function setSessionMode(m) {
   const next = m === "vault" ? "vault" : "ephemeral";
@@ -937,12 +1017,14 @@ async function setSessionMode(m) {
     if (!r.ok || j.ok === false) throw new Error(j.error || j.message || `HTTP ${r.status}`);
     applyModeUi(next);
     if (next === "ephemeral") {
-      // Leaving Vault mode locks the vault server-side: same clear as a lock.
-      if (prev === "vault" || state.vaultOpen) clearOnLock();
-      state.vaultOpen = false;
-      setVaultChrome(false);
+      // 0.6.0 (B3): Ephemeral only changes where chats go. The vault stays
+      // unlocked, the model and add-ons keep running. A saved chat that is on
+      // screen is left alone in the vault; new chats stay in memory.
+      if (state.current && !state.ephemeral.includes(state.current)) newChat();
     }
-    toast(next === "vault" ? "Vault mode" : "Ephemeral mode");
+    toast(next === "vault"
+      ? (j.addons_restart ? "Vault mode · starting your apps" : "Vault mode")
+      : "Ephemeral mode · new chats stay in memory");
     renderConvs();
     if (next === "vault") loadVaultChats().catch(() => {});
   } catch (e) {
@@ -2373,7 +2455,7 @@ function openSettings(sec = "general") {
   if (sec === "storage") refreshStorage().catch((e) => toast(e.message));
   if (sec === "devices" || sec === "network" || sec === "system" || sec === "about")
     refreshStatus().catch(() => {});
-  if (sec === "chats") renderSaved();
+  if (sec === "chats") { renderSaved(); refreshChatStore().catch(() => {}); }
   refreshSecLive(sec);
   if (desk && window.stickDesk.onSettings) window.stickDesk.onSettings(sec);
 }

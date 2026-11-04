@@ -21,7 +21,12 @@ if findmnt -n "$MNT" >/dev/null 2>&1; then
   echo "unlocked" >"$RUN/vault-boot.txt"
   exit 0
 fi
-if [[ -f "$META/container" ]]; then
+# 0.6.0 (bug 5): USB DATA may mount after this runs, so look at both meta
+# dirs and the settings-partition marker. stickllm-vault rewrites this file
+# on every unlock and lock, so a later unlock is never reported as "absent".
+if [[ -f "$META/container" || -f "$DATA_MNT/vault-meta/container" \
+      || -f /var/lib/stickllm/vault-meta/container \
+      || -f "$DATA_MNT/stickllm-settings-part.json" ]]; then
   # Configured but locked — leave for UI unlock; do not block boot.
   echo "deferred-to-ui" >"$RUN/vault-boot.txt"
   exit 0
