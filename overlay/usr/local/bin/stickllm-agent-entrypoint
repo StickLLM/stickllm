@@ -76,20 +76,8 @@ for searx in /etc/searxng/settings.yml /per/etc/searxng/settings.yml; do
   fi
 done
 
-# Plugins are locked (read-only /a0/usr/plugins). Drop the upstream skills that
-# teach installing, creating, or publishing plugins before /git/agent-zero is
-# copied into /a0. The container is recreated on every start.
-for skill in a0-manage-plugin a0-create-plugin; do
-  rm -rf "/git/agent-zero/skills/${skill}" "/a0/skills/${skill}"
-done
-
-# v0.5.4: no third-party plugins at all, and no plugin manager. Remove the
-# built-in installer (Plugin Hub, ZIP/Git install), scanner and validator so
-# no path offers them, including the console browser that opens the loopback
-# UI directly (http://127.0.0.1:5099, not through the gateway deny list).
-for plug in _plugin_installer _plugin_scan _plugin_validator; do
-  rm -rf "/git/agent-zero/plugins/${plug}" "/a0/plugins/${plug}"
-done
+# v0.5.9 (Nink): all Agent Zero plugins are unlocked. The plugin skills and
+# the built-in installer, scanner and validator are no longer removed.
 
 mkdir -p /a0/usr/workdir /a0/usr/memory /a0/usr/logs /a0/usr/.cache
 

@@ -2,6 +2,15 @@
 
 ## 0.5.9 (2026-11-04)
 
+- Agent Zero: upgraded from v2.14 to v2.15 (latest stable, 2026-11-01; tag
+  commit ba9b67df0f54; manifest sha256:05d6ab34…28bd8, amd64
+  sha256:fb62c7f0…6cde2). An SSD that still has v2.14 shows "Agent Zero is not
+  installed yet" until v2.15 is pulled (Install). Ports, the service and the
+  llama_cpp provider pointing at the local llama-server are unchanged.
+- Agent Zero plugins: all of them are unlocked (the v0.5.4 ban and allowlist
+  lock are lifted). The plugin dir is writable and kept across restarts, the
+  built-in installer, scanner, validator and plugin skills stay, and the Agent
+  proxy no longer refuses plugin APIs.
 - Desktop (Xorg): NVIDIA ModulePath conf so the nvidia driver loads; if it
   fails, retry the same card with modesetting. Fallback only picks cards with a
   connected monitor and prefers boot_vga.

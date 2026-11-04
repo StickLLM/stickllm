@@ -185,21 +185,15 @@ test -f config/includes.chroot/usr/local/share/stickllm/verified.json
 test -f config/includes.chroot/usr/local/lib/stickllm_verify.py
 python3 -B /stickllm/scripts/pins.py verify
 
-# Agent Zero plugins: none at all since v0.5.4. The allowlist must stay empty
-# (any entry stops the build); bake still runs so the image gets an empty
-# MANIFEST and the runtime has nothing to load. Never fetched at runtime.
+# Agent Zero plugins: v0.5.9 lifts the v0.5.4 ban. Allowlisted plugins are
+# baked at their pinned commit; users may install more inside Agent Zero.
 A0_PLUGINS_OUT=config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins
 test -f config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow
-if [ -n "$(python3 /stickllm/scripts/lib/a0_plugins.py check config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow)" ]; then
-  echo "Agent Zero plugins are not allowed (v0.5.4): agent-zero-plugins.allow must be empty" >&2
-  exit 1
-fi
 python3 /stickllm/scripts/lib/a0_plugins.py bake \
   config/includes.chroot/usr/local/share/stickllm/agent-zero-plugins.allow \
   "$A0_PLUGINS_OUT"
 chown -R root:root "$A0_PLUGINS_OUT"
 test -f "$A0_PLUGINS_OUT/MANIFEST"
-test ! -s "$A0_PLUGINS_OUT/MANIFEST"
 
 mkdir -p config/bootloaders/grub-pc config/bootloaders/grub-efi
 # Prefer tracked boot/grub.cfg (LF). Fall back to inline copy if missing.

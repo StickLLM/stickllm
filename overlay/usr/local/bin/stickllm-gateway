@@ -4252,7 +4252,8 @@ class Handler(SimpleHTTPRequestHandler):
     def _relay_http(self, method: str, upstream: str, query: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
-        # Plugins are locked: no installer, Plugin Hub, scan, delete, or
+        # v0.5.9: plugins are unlocked (agent_request_denied returns "").
+        # Locked mode: no installer, Plugin Hub, scan, delete, or
         # execute-script calls reach Agent Zero through this proxy.
         if agent_lib().agent_request_denied(method, upstream, body):
             self._json(

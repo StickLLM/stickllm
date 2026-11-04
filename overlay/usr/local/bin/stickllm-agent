@@ -622,7 +622,7 @@ cmd_run_container() {
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/prompts:/a0/usr/prompts" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/instruments:/a0/usr/instruments" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/skills:/a0/usr/skills" \
-    -v "${ADDON}/plugins:/a0/usr/plugins:ro" \
+    -v "${ADDON}/plugins:/a0/usr/plugins" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/model-config:/a0/usr/plugins/_model_config" \
     -v "${ADDON}/plugin-data/_goal/goals:/a0/usr/plugins/_goal/goals" \
     -v "${ADDON}/plugin-data/_orchestrator/data:/a0/usr/plugins/_orchestrator/data" \

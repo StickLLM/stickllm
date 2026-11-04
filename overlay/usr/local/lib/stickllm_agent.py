@@ -140,7 +140,7 @@ APPS_PLAYABLE_NOTE = (
 OPEN_APP_RULE = (
     "When the user says open/start/show an app, use open_app, not the browser tool."
 )
-# Pinned agent0ai/agent-zero v2.14 lists this chat provider in
+# Pinned agent0ai/agent-zero v2.15 (same as v2.14) lists this chat provider in
 # conf/model_providers.yaml. It speaks OpenAI /v1 through litellm hosted_vllm.
 LOCAL_PROVIDER = "llama_cpp"
 # A stuck model call must fail into the Agent Zero chat instead of spinning.
@@ -1462,7 +1462,7 @@ class OpenApp(Tool):
 
 
 def ensure_open_app_plugin(root: Path | None = None) -> None:
-    """Write the v2.14 plugin into the assembled plugin dir. No token is stored here.
+    """Write the v2.14+ plugin into the assembled plugin dir. No token is stored here.
 
     The assembled dir (ADDON/plugins) is mounted read-only at /a0/usr/plugins.
     """
@@ -2798,7 +2798,9 @@ def prepare_vault_dirs() -> None:
 
 
 # --- Agent Zero plugin lockdown -------------------------------------------
-# /a0/usr/plugins is assembled on the host on every start and mounted
+# v0.5.9: PLUGINS_UNLOCKED below lifts this lockdown (writable, persistent
+# plugin dir, installer kept, no proxy deny). The old notes describe the
+# locked mode. /a0/usr/plugins is assembled on the host on every start and mounted
 # read-only. It holds only: our own stickllm_apps plugin, data-only files for
 # Agent Zero's built-in plugins, and empty mountpoints. Third-party plugins
 # are gone since v0.5.4 (THIRD_PARTY_PLUGINS, empty allowlist), and the
@@ -2824,14 +2826,17 @@ BUILTIN_DATA_FILES = ("config.json", ".toggle-0", ".toggle-1")
 # read-write mount; plugin.yaml must sit at the read-only plugin root, so a
 # file dropped here cannot become a plugin.
 BUILTIN_DATA_DIRS = (("_goal", "goals"), ("_orchestrator", "data"))
-# Built-in plugins switched off (the installer is always_enabled upstream, so
-# the gateway also denies its API; see agent_request_denied).
-DISABLED_BUILTINS = ("_plugin_scan",)
+# v0.5.9 (Nink): every Agent Zero plugin is unlocked. The plugin dir is
+# writable and persistent, the installer/scan/validator stay, Plugin Hub
+# installs survive a restart, and the proxy no longer denies plugin APIs.
+PLUGINS_UNLOCKED = True
+# Built-in plugins switched off. Empty while PLUGINS_UNLOCKED.
+DISABLED_BUILTINS: tuple[str, ...] = () if PLUGINS_UNLOCKED else ("_plugin_scan",)
 MODEL_CONFIG_FILES = ("config.json", "presets.yaml", ".toggle-0", ".toggle-1")
 # Other user code paths Agent Zero loads. Mounted as empty read-only dirs.
 USR_CODE_DIRS = ("api", "extensions")
 # Upstream skills that teach the agent to install, create, or publish plugins.
-HIDDEN_SKILLS = ("a0-manage-plugin", "a0-create-plugin")
+HIDDEN_SKILLS: tuple[str, ...] = () if PLUGINS_UNLOCKED else ("a0-manage-plugin", "a0-create-plugin")
 
 
 def read_plugin_allowlist(path: Path | None = None) -> dict[str, dict]:
@@ -2999,14 +3004,14 @@ def _copy_plugin_tree(src: Path, dest: Path) -> None:
             os.chmod(target, 0o644)
 
 
-# v0.5.4 (Nink): no third-party Agent Zero plugins on any path. Even if a
-# baked copy or an allowlist line shows up, nothing but stickllm_apps loads.
-THIRD_PARTY_PLUGINS = False
+# v0.5.4 banned third-party plugins; v0.5.9 (Nink) lifts the ban. Baked,
+# allowlisted plugins load again, and user-installed ones persist.
+THIRD_PARTY_PLUGINS = PLUGINS_UNLOCKED
 
 
 def baked_plugins() -> dict[str, Path]:
     """Allowlisted plugins baked into the ISO whose pin and hash still match.
-    Always empty while THIRD_PARTY_PLUGINS is False."""
+    Always empty while THIRD_PARTY_PLUGINS is False or the allowlist is empty."""
     if not THIRD_PARTY_PLUGINS:
         return {}
     allow = read_plugin_allowlist()
@@ -3036,8 +3041,43 @@ def baked_plugins() -> dict[str, Path]:
     return out
 
 
+def _carry_user_plugins(stage: Path) -> list[str]:
+    """PLUGINS_UNLOCKED: keep what Agent Zero wrote into the live plugins dir
+    (Plugin Hub installs, toggles, config) across the rebuild. Moves, never
+    deletes. stickllm_apps is always regenerated; mountpoints stay empty."""
+    kept: list[str] = []
+    if not PLUGINS_RO.is_dir() or PLUGINS_RO.is_symlink():
+        return kept
+    _make_writable(PLUGINS_RO)
+    mounts = {("_model_config", "")} | {(p, s) for p, s in BUILTIN_DATA_DIRS}
+    for entry in sorted(PLUGINS_RO.iterdir()):
+        name = entry.name
+        if name in OWN_PLUGINS or name == ".gitkeep" or name == "_model_config":
+            continue
+        dest = stage / name
+        if not dest.exists():
+            shutil.move(str(entry), str(dest))
+            kept.append(name)
+            continue
+        if not (entry.is_dir() and not entry.is_symlink() and dest.is_dir()):
+            continue
+        for child in sorted(entry.iterdir()):
+            if (name, child.name) in mounts:
+                continue
+            target = dest / child.name
+            if target.is_dir() and not target.is_symlink():
+                _make_writable(target)
+                shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+            shutil.move(str(child), str(target))
+        kept.append(name)
+    return kept
+
+
 def assemble_plugins() -> Path:
-    """Rebuild ADDON/plugins (mounted read-only at /a0/usr/plugins)."""
+    """Rebuild ADDON/plugins (mounted at /a0/usr/plugins; read-write since
+    v0.5.9 when PLUGINS_UNLOCKED, read-only before)."""
     if not vault_mounted():
         raise SystemExit("vault locked")
     ADDON.mkdir(parents=True, exist_ok=True)
@@ -3074,11 +3114,17 @@ def assemble_plugins() -> Path:
     for plug, sub in BUILTIN_DATA_DIRS:
         (stage / plug / sub).mkdir(parents=True, exist_ok=True)
         (PLUGIN_DATA / plug / sub).mkdir(parents=True, exist_ok=True)
+    if PLUGINS_UNLOCKED:
+        _carry_user_plugins(stage)
     EMPTY_RO.mkdir(parents=True, exist_ok=True)
     for entry in list(EMPTY_RO.iterdir()):
         _quarantine(entry, "empty-ro", time.strftime("%Y%m%d-%H%M%S"))
     for path in [stage, *stage.rglob("*")]:
-        if path.is_dir():
+        if path.is_symlink():
+            continue
+        if PLUGINS_UNLOCKED:
+            os.chmod(path, 0o755 if path.is_dir() else 0o644)
+        elif path.is_dir():
             os.chmod(path, 0o555)
         else:
             os.chmod(path, 0o444)
@@ -3157,6 +3203,8 @@ def _norm_proxy_path(path: str) -> str:
 
 def agent_request_denied(method: str, path: str, body: bytes | None = None) -> str:
     """Reason string when the Agent proxy must refuse this request, else ''."""
+    if PLUGINS_UNLOCKED:
+        return ""
     norm = _norm_proxy_path(path)
     probe = norm if norm.endswith("/") else norm + "/"
     for prefix in PLUGIN_DENY_PREFIXES:
