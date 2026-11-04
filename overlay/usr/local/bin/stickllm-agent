@@ -7,6 +7,7 @@ set -euo pipefail
 
 PYBIN="$(command -v python3 || command -v python || true)"
 LIB="${STICKLLM_AGENT_LIB:-/usr/local/lib/stickllm_agent.py}"
+CHATS_LIB="${STICKLLM_CHATS_LIB:-/usr/local/lib/stickllm_chats.py}"
 VAULT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
 ADDON="${VAULT}/addons/agent-zero"
 SOCK="/run/stickllm/agent-docker.sock"
@@ -56,7 +57,7 @@ enter_host_mount_ns() {
 }
 
 case "${1:-}" in
-  start|run|stop|install) enter_host_mount_ns "$@" ;;
+  start|run|stop|install|sync-model) enter_host_mount_ns "$@" ;;
 esac
 
 docker_cli() {
@@ -402,6 +403,7 @@ cache_embedding() {
     -e HF_HOME=/a0/usr/.cache/huggingface \
     -e SENTENCE_TRANSFORMERS_HOME=/a0/usr/.cache/sentence-transformers \
     -v "${ADDON}/state:/a0/usr" \
+    "${CHATS_ARGS[@]}" \
     --entrypoint /opt/venv-a0/bin/python3 \
     "$ref" -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")'
 }
@@ -534,6 +536,17 @@ cmd_run_container() {
     exit 0
   fi
   "$PYBIN" "$LIB" prepare-portable
+  # llama may still be loading: finish the preset once it reports its id.
+  ( "$PYBIN" "$LIB" sync-model 600 >/dev/null 2>&1 & ) || true
+  # 0.6.0 (A2): one chat list. A0's usr/chats is the "agent-zero" folder of
+  # the active encrypted chat store (SSD vault or USB settings vault). Chats
+  # A0 kept in its private state/chats move there once.
+  local CHATS_ARGS=() shared_chats
+  if shared_chats="$("$PYBIN" "$CHATS_LIB" a0-chats-dir "${ADDON}/state/chats" 2>/dev/null)" && [[ -d "$shared_chats" ]]; then
+    CHATS_ARGS=(-v "${shared_chats}:/a0/usr/chats")
+  else
+    echo "stickllm-agent: shared chat folder unavailable; Agent Zero keeps its own chats" >&2
+  fi
   # Read-only /a0/usr/plugins: our plugin + allowlisted plugins baked into the
   # ISO. Anything else in the old plugins dir goes to vault quarantine.
   if ! "$PYBIN" "$LIB" assemble-plugins; then
@@ -613,6 +626,7 @@ cmd_run_container() {
     -e A0_SET_workdir_path=/a0/usr/workdir \
     --tmpfs /tmp:rw,nosuid,nodev,size=256m \
     -v "${ADDON}/state:/a0/usr" \
+    "${CHATS_ARGS[@]}" \
     -v "${ADDON}/work:/a0/usr/workdir" \
     -v "${ADDON}/memory:/a0/usr/memory" \
     -v "${ADDON}/logs:/a0/usr/logs" \
@@ -678,8 +692,13 @@ cmd_start() {
   cmd_run
 }
 
+cmd_sync_model() {
+  # 0.6.0 (bug 14): point A0's Default preset at the loaded llama model.
+  "$PYBIN" "$LIB" sync-model "${1:-300}"
+}
+
 usage() {
-  echo "usage: stickllm-agent {gate|start|run|stop|install|image-ready}" >&2
+  echo "usage: stickllm-agent {gate|start|run|stop|install|image-ready|sync-model}" >&2
   exit 1
 }
 
@@ -690,5 +709,6 @@ case "${1:-}" in
   stop) cmd_stop ;;
   install) cmd_install ;;
   image-ready) cmd_image_ready ;;
+  sync-model) shift; cmd_sync_model "$@" ;;
   *) usage ;;
 esac

@@ -2790,6 +2790,73 @@ def prepare_portable(model_name: str | None = None) -> None:
     _sync_plugin_model_config(root, model)
 
 
+def llama_model_ready_id() -> str:
+    """Model id only when llama-server answers /v1/models (no path fallback)."""
+    for url in (f"http://127.0.0.1:{LLAMA_BRIDGE_PORT}/v1/models", f"{LLAMA_BASE}/models"):
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        found = model_id_from_list(payload, "")
+        if found:
+            return found
+    return ""
+
+
+def sync_model(wait: float = 300.0, poll: float = 2.0, model_name: str | None = None) -> dict:
+    """0.6.0 (bug 14): keep A0's "Default" preset on the loaded model.
+
+    Called in the background after every model change (stickllm-control
+    activate_model) and at agent start. Waits for llama-server to report the
+    new id, then rewrites presets.yaml, model-config/config.json and the
+    model keys of settings.json on the settings partition. The api base stays
+    http://172.30.0.1:8080/v1. Agent Zero reads these files per call, so a
+    running agent picks the new name up without a restart.
+    """
+    if not settings_mounted():
+        return {"ok": False, "error": "settings partition is not mounted"}
+    model = (model_name or "").strip()
+    deadline = time.time() + max(0.0, wait)
+    while not model:
+        model = llama_model_ready_id()
+        if model or time.time() >= deadline:
+            break
+        time.sleep(poll)
+    if not model:
+        return {"ok": False, "error": "llama-server did not report a model"}
+    root = PORTABLE
+    (root / "model-config").mkdir(parents=True, exist_ok=True)
+    preset = root / "model-config" / "presets.yaml"
+    text = preset_text(model)
+    changed = False
+    try:
+        old = preset.read_text(encoding="utf-8")
+    except OSError:
+        old = ""
+    if old != text:
+        preset.write_text(text, encoding="utf-8")
+        os.chmod(preset, 0o600)
+        changed = True
+    _sync_plugin_model_config(root, model)
+    settings = root / "settings.json"
+    try:
+        current = json.loads(settings.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        current = None
+    if isinstance(current, dict):
+        merged = merge_model_settings(current, model)
+        if merged != current:
+            _write_settings(settings, merged)
+            changed = True
+    out = {"ok": True, "model": model, "changed": changed, "ts": int(time.time())}
+    try:
+        Path("/run/stickllm/agent-model-sync.json").write_text(json.dumps(out) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return out
+
+
 def prepare_vault_dirs() -> None:
     if not docker_may_start():
         raise SystemExit("vault locked")
@@ -3300,6 +3367,16 @@ def main(argv: list[str]) -> int:
     if cmd == "prepare-portable":
         prepare_portable()
         return 0
+    if cmd == "sync-model":
+        wait = 300.0
+        if len(argv) > 2:
+            try:
+                wait = float(argv[2])
+            except ValueError:
+                pass
+        res = sync_model(wait)
+        print(json.dumps(res))
+        return 0 if res.get("ok") else 3
     if cmd == "assemble-plugins":
         assemble_plugins()
         names = assembled_plugin_names()
