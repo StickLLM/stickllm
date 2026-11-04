@@ -164,7 +164,9 @@
           size: size(d.size),
           roles: (d.roles || []).map((r) => ROLE_TEXT[r] || r),
           used_pct: used,
+          busy_pct: n(d.busy_percent) ? d.busy_percent : null,
           usage: n(d.fs_total) ? gbt(d.fs_free) + " free of " + gbt(d.fs_total) : "not mounted",
+          space: n(d.fs_total) ? gbt(d.fs_used) + " used · " + gbt(d.fs_free) + " free · " + gbt(d.fs_total) : "Not mounted",
           io: io.length ? io.join("  ") + " MB/s" : "",
         };
       });
@@ -176,18 +178,39 @@
       size: n(vol.total) ? gb(vol.total) : "",
       roles: [],
       used_pct: pct(vol.used != null ? vol.used : vol.total - vol.free, vol.total),
+      busy_pct: null,
       usage: vol.available ? gb(vol.free) + " free of " + gb(vol.total) : "unavailable",
+      space: vol.available ? gb(vol.free) + " free of " + gb(vol.total) : "unavailable",
       io: "",
     }));
   }
 
-  function diskCard(disk) {
+  // Round 2: one tile per physical disk, same size as a GPU tile.
+  function diskCards(disk) {
     const row = disk || {};
-    if (!row.available) return { title: "Disks", kind: "disk", lines: [{ text: row.message || "Disk stats are unavailable" }], drives: [] };
-    const drives = driveRows(row);
-    const lines = drives.map((d) => d.name + (d.model ? " " + d.model : "") + "  " + d.size + "  " + d.usage + (d.roles.length ? "  [" + d.roles.join(", ") + "]" : ""));
-    return { title: "Disks", kind: "disk", drives, lines: lines.length ? lines.map((text) => ({ text })) : [{ text: "Disk stats are unavailable" }] };
+    const drives = row.available ? driveRows(row) : [];
+    if (!drives.length) return [{ title: "Disk", kind: "disk", lines: [{ text: row.message || "Disk stats are unavailable" }] }];
+    return drives.map((d) => {
+      const gauges = [];
+      if (n(d.used_pct)) gauges.push({ label: "Space", pct: d.used_pct, text: Math.round(d.used_pct) + "%", tone: loadTone(d.used_pct) });
+      if (n(d.busy_pct)) gauges.push({ label: "Util", pct: d.busy_pct, text: Math.round(d.busy_pct) + "%", tone: loadTone(d.busy_pct) });
+      const lines = [];
+      if (d.model) lines.push({ cls: "dim clip", text: d.model, tip: d.model });
+      lines.push({ cls: "clip", text: d.space });
+      if (d.io) lines.push({ cls: "clip", text: d.io });
+      return {
+        title: (d.kind ? d.kind + " · " : "") + d.name + (d.size ? " · " + d.size : ""),
+        kind: "disk",
+        tags: d.roles,
+        gauges,
+        lines,
+        drive: d,
+        spark: n(d.busy_pct) ? { key: "disk:" + d.name, value: d.busy_pct, max: 100, unit: "%" } : null,
+      };
+    });
   }
+
+  function ctxK(v) { return v >= 1024 && v % 1024 === 0 ? v / 1024 + "K" : Math.round(v / 1000) + "K"; }
 
   function modelCard(model, live) {
     const row = model || {};
@@ -196,22 +219,26 @@
     const running = !!row.llama_up;
     const loading = !running && (row.service === "active" || row.service === "activating");
     const state = running ? "running" : loading ? "loading" : "stopped";
-    if (row.name) lines.push({ cls: "val clip", text: String(row.name).replace(/\.gguf$/i, "") });
+    const fullName = row.name ? String(row.name).replace(/\.gguf$/i, "") : "";
+    if (fullName) lines.push({ cls: "val clip", text: fullName, tip: fullName });
     lines.push({ cls: "state " + state, text: running ? "Running" : loading ? "Loading…" : "Stopped · the model is not running." });
     const l = live || {};
     let spark = null;
+    const gauges = [];
     if (running && l.available) {
+      const ctxPct = n(l.ctx_used) && n(l.n_ctx) && l.n_ctx > 0 ? (100 * l.ctx_used) / l.n_ctx : n(l.ctx_used_ratio) ? 100 * l.ctx_used_ratio : null;
+      if (ctxPct != null) gauges.push({ label: "Context", pct: ctxPct, text: Math.round(ctxPct) + "%", tone: loadTone(ctxPct) });
       const t = [];
       if (n(l.gen_tok_s)) t.push(l.gen_tok_s + " tok/s gen");
       if (n(l.prompt_tok_s)) t.push(l.prompt_tok_s + " prompt");
       if (t.length) lines.push({ cls: "val", text: t.join(" · ") });
-      if (n(l.ctx_used) && n(l.n_ctx)) lines.push({ cls: "dim", text: "Context " + l.ctx_used.toLocaleString() + " / " + l.n_ctx.toLocaleString() });
+      if (n(l.ctx_used) && n(l.n_ctx)) lines.push({ cls: "dim clip", text: "Context " + l.ctx_used.toLocaleString() + " / " + l.n_ctx.toLocaleString() + " (" + ctxK(l.n_ctx) + ")" });
       else if (n(l.ctx_used_ratio)) lines.push({ cls: "dim", text: "Context " + Math.round(l.ctx_used_ratio * 100) + "% used" });
-      else if (n(l.n_ctx)) lines.push({ cls: "dim", text: "Context size " + l.n_ctx.toLocaleString() });
+      else if (n(l.n_ctx)) lines.push({ cls: "dim", text: "Context size " + l.n_ctx.toLocaleString() + " (" + ctxK(l.n_ctx) + ")" });
       spark = { key: "toks", value: n(l.gen_tok_s) ? l.gen_tok_s : 0, max: null, unit: " tok/s" };
     }
     if (row.service) lines.push({ cls: "dim", text: "Service " + row.service });
-    return { title: "Model", kind: "model", state, lines, spark };
+    return { title: "Model", tip: fullName || undefined, kind: "model", state, gauges, lines, spark };
   }
 
   function parseMonitor(doc) {
@@ -229,7 +256,7 @@
     if (minis.length) cpu.lines.push({ cls: "dim clip", text: "Display: " + minis.map((c) => c.title).join(", ") });
     return {
       status: typeof doc.status_line === "string" ? doc.status_line : "",
-      cards: cards.concat([modelCard(doc.model, doc.llama), cpu, memCard(doc.memory)], gpus.filter((c) => !c.mini), [diskCard(doc.disk)]),
+      cards: cards.concat([modelCard(doc.model, doc.llama), cpu, memCard(doc.memory)], gpus.filter((c) => !c.mini), diskCards(doc.disk)),
     };
   }
 
@@ -315,30 +342,6 @@
     return e;
   }
 
-  function driveTable(drives) {
-    const list = el("div", "drives");
-    drives.forEach((d) => {
-      const r = el("div", "drive");
-      const name = el("div", "dname");
-      name.appendChild(el("strong", "", d.name));
-      if (d.kind) name.appendChild(el("span", "kind", d.kind));
-      if (d.model) name.appendChild(el("span", "dim clip", d.model));
-      d.roles.forEach((role) => name.appendChild(el("span", "badge", role)));
-      r.appendChild(name);
-      r.appendChild(el("span", "dsize", d.size));
-      const bar = el("div", "bar");
-      const fill = el("i", "t-" + loadTone(d.used_pct));
-      fill.style.width = (n(d.used_pct) ? d.used_pct.toFixed(0) : 0) + "%";
-      bar.appendChild(fill);
-      bar.title = d.usage;
-      r.appendChild(bar);
-      r.appendChild(el("span", "dim dfree", d.usage));
-      r.appendChild(el("span", "dio", d.io));
-      list.appendChild(r);
-    });
-    return list;
-  }
-
   function card(item) {
     const art = el("article", "card k-" + (item.kind || "x") + (item.mini ? " mini" : "") + (item.state ? " s-" + item.state : ""));
     const head = el("header", "ch");
@@ -346,7 +349,12 @@
     if (item.tip) h.title = item.tip;
     head.appendChild(h);
     art.appendChild(head);
-    if (item.badge) art.appendChild(el("span", "badge live", item.badge));
+    if (item.badge || (item.tags && item.tags.length)) {
+      const tags = el("div", "tags");
+      if (item.badge) tags.appendChild(el("span", "badge live", item.badge));
+      (item.tags || []).forEach((t) => tags.appendChild(el("span", "badge", t)));
+      art.appendChild(tags);
+    }
     const body = el("div", "cb");
     if (item.gauges && item.gauges.length) {
       const row = el("div", "gauges");
@@ -354,10 +362,11 @@
       body.appendChild(row);
     }
     const text = el("div", "ct");
-    if (item.kind === "disk" && item.drives && item.drives.length) text.appendChild(driveTable(item.drives));
-    else (item.lines || []).forEach((line) => {
+    (item.lines || []).forEach((line) => {
       if (line.cls === "hide") return;
-      text.appendChild(el("p", line.cls || "", line.text));
+      const pEl = el("p", line.cls || "", line.text);
+      if (line.tip) pEl.title = line.tip;
+      text.appendChild(pEl);
     });
     body.appendChild(text);
     art.appendChild(body);

@@ -54,8 +54,9 @@ assert.ok(gpuCard.title.includes("RTX 3090"));
 assert.ok(gpuCard.lines.map((l) => l.text).join("\n").includes("1.0 / 24.0 GB"));
 assert.ok(gpuCard.gauges.some((g) => g.label === "Temp" && g.text === "42°" && g.tone === "green"));
 assert.ok(!gpuCard.badge, "no holds-the-model badge unless the backend says so");
-assert.ok(text("Disks").includes("System"));
-assert.ok(text("Disks").includes("free"));
+const volTile = view.cards.find((card) => card.kind === "disk");
+assert.ok(volTile.title.includes("System"));
+assert.ok(volTile.lines.map((l) => l.text).join("\n").includes("free"));
 assert.strictEqual(monitor.tempTone(65), "green");
 assert.strictEqual(monitor.tempTone(75), "amber");
 assert.strictEqual(monitor.tempTone(88), "red");
@@ -71,11 +72,11 @@ const full = monitor.parseMonitor({
     { index: null, name: "ASPEED Graphics Family", onboard: true },
   ] },
   disk: { available: true, drives: [
-    { name: "sda", model: "SanDisk", kind: "USB", size: 64e9, roles: ["boot"], fs_total: 50 * 1024 ** 3, fs_used: 10 * 1024 ** 3, fs_free: 40 * 1024 ** 3, read_mb_s: 1.5, write_mb_s: 0 },
+    { name: "sda", model: "SanDisk", kind: "USB", size: 64e9, roles: ["boot"], fs_total: 50 * 1024 ** 3, fs_used: 10 * 1024 ** 3, fs_free: 40 * 1024 ** 3, read_mb_s: 1.5, write_mb_s: 0, busy_percent: 12.5 },
     { name: "nvme0n1", model: "Fanxiang S880", kind: "NVMe", size: 2e12, roles: ["models", "vault"], read_mb_s: 900, write_mb_s: 2 },
   ] },
-  model: { available: true, name: "Qwen3.5-4B Q4_K_M.gguf", llama_up: true, service: "active" },
-  llama: { available: true, gen_tok_s: 80 },
+  model: { available: true, name: "Huihui-Qwen3.8-27B-abliterated-UD-DW-Q4_K_M.gguf", llama_up: true, service: "active" },
+  llama: { available: true, gen_tok_s: 80, ctx_used: 16384, n_ctx: 65536 },
 });
 const gcards = full.cards.filter((c) => c.kind === "gpu");
 assert.strictEqual(gcards.length, 2);
@@ -84,12 +85,24 @@ assert.ok(gcards[1].badge.startsWith("Holds the model"));
 assert.ok(gcards[1].gauges.find((g) => g.label === "Temp").tone === "amber");
 const cpuText = full.cards.find((c) => c.kind === "cpu").lines.map((l) => l.text).join("\n");
 assert.ok(cpuText.includes("ASPEED"));
-const disks = full.cards.find((c) => c.kind === "disk").drives;
-assert.deepStrictEqual(disks.map((d) => d.name), ["sda", "nvme0n1"]);
-assert.deepStrictEqual(disks[0].roles, ["Boot stick"]);
-assert.deepStrictEqual(disks[1].roles, ["Models", "Vault"]);
-assert.ok(disks[1].io.includes("R 900.0"));
-assert.strictEqual(full.cards.find((c) => c.kind === "model").spark.key, "toks");
+// Round 2: one uniform tile per disk with Space + Util gauges and role tags.
+const diskTiles = full.cards.filter((c) => c.kind === "disk");
+assert.deepStrictEqual(diskTiles.map((c) => c.drive.name), ["sda", "nvme0n1"]);
+assert.ok(diskTiles[0].title.startsWith("USB · sda"));
+assert.deepStrictEqual(diskTiles[0].tags, ["Boot stick"]);
+assert.deepStrictEqual(diskTiles[1].tags, ["Models", "Vault"]);
+assert.deepStrictEqual(diskTiles[0].gauges.map((g) => g.label), ["Space", "Util"]);
+assert.strictEqual(diskTiles[0].gauges[0].text, "20%");
+assert.strictEqual(diskTiles[0].gauges[1].text, "13%");
+assert.ok(diskTiles[0].lines.some((l) => l.text.includes("free")));
+assert.ok(diskTiles[1].lines.some((l) => l.text.includes("R 900.0")));
+const mcard = full.cards.find((c) => c.kind === "model");
+assert.strictEqual(mcard.spark.key, "toks");
+assert.strictEqual(mcard.tip, "Huihui-Qwen3.8-27B-abliterated-UD-DW-Q4_K_M");
+assert.ok(mcard.lines[0].cls.includes("clip") && mcard.lines[0].tip === mcard.tip);
+assert.ok(mcard.lines.some((l) => l.text.includes("16,384 / 65,536 (64K)")));
+assert.strictEqual(mcard.gauges[0].text, "25%");
+assert.ok(!full.cards.some((c) => c.title === "Disks"), "no wide disk table any more");
 assert.ok(monitor.arcPath(28, 28, 23, 0.5).startsWith("M"));
 assert.ok(text("Model").includes("qwen"));
 assert.ok(text("Model").includes("the model is not running."));

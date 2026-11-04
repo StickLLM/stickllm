@@ -108,7 +108,7 @@ def test_drives_list_all_with_roles_and_io(tmp_path):
     m._dev_name = lambda dev: os.path.basename(dev)
     m._LAST_IO.clear()
     stats1 = "8 0 sda 1 0 0 0 1 0 0 0 0 0 0\n259 0 nvme0n1 1 0 0 0 1 0 0 0 0 0 0\n"
-    stats2 = "8 0 sda 1 0 2000 0 1 0 0 0 0 0 0\n259 0 nvme0n1 1 0 2000000 0 1 0 4000 0 0 0 0\n"
+    stats2 = "8 0 sda 1 0 2000 0 1 0 0 0 0 0 0\n259 0 nvme0n1 1 0 2000000 0 1 0 4000 0 0 1500 0\n"
     kw = dict(sys_block=sb, mounts_text=mounts, usage=usage, vault_mnt="/var/lib/stickllm/vault",
               models_path="/mnt/stickllm-host/stickllm/models")
     m.drives_block(diskstats_text=stats1, now=100.0, **kw)
@@ -123,3 +123,56 @@ def test_drives_list_all_with_roles_and_io(tmp_path):
     assert by["nvme0n1"]["read_mb_s"] == round(2000000 * 512 / 2 / 1e6, 1)
     assert by["sda"]["read_mb_s"] == round(2000 * 512 / 2 / 1e6, 1)
     assert by["nvme0n1"]["size"] == 3907029168 * 512
+    # utilisation: io_ticks delta 1500 ms over a 2 s sample = 75 % busy
+    assert by["nvme0n1"]["busy_percent"] == 75.0
+    assert by["sda"]["busy_percent"] == 0.0
+    assert by["sdb"]["busy_percent"] is None  # no diskstats line
+
+
+def test_parse_diskstats_io_ticks_and_busy_cap():
+    m = _load()
+    st = m.parse_diskstats("8 0 sda 1 0 10 0 1 0 20 0 0 777 0\n8 1 sdb 1 0 10 0 1 0 20\n")
+    assert st["sda"] == (10, 20, 777)
+    assert st["sdb"] == (10, 20, None)  # short (old kernel) line: no busy %
+
+
+def test_n_ctx_is_server_ctx_not_sum_of_slots():
+    m = _load()
+    # llama-server --ctx-size 65536 --parallel 4 with a unified KV cache: every
+    # slot reports the full 65536, the old sum made it 262144.
+    slots = [{"id": i, "n_ctx": 65536, "n_past": 0} for i in range(4)]
+    props = {"default_generation_settings": {"n_ctx": 65536}, "total_slots": 4}
+    assert m.server_n_ctx(props, slots) == 65536
+    assert m.server_n_ctx(None, slots) == 65536            # /props missing: max, not sum
+    assert m.server_n_ctx({"default_generation_settings": {}}, [{"n_ctx": 16384}] * 4) == 16384
+    assert m.server_n_ctx({"n_ctx": 32768}, None) == 32768  # older top-level shape
+    assert m.server_n_ctx(None, None) is None
+
+
+def test_llama_live_uses_props_n_ctx(monkeypatch):
+    m = _load()
+    import io, json as _json
+    bodies = {
+        "/metrics": "llamacpp:predicted_tokens_seconds 42.5\n",
+        "/slots": _json.dumps([{"id": i, "n_ctx": 65536, "n_past": 1000} for i in range(4)]),
+        "/props": _json.dumps({"default_generation_settings": {"n_ctx": 65536}}),
+    }
+
+    class R(io.BytesIO):
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(url, timeout=None):
+        u = url if isinstance(url, str) else url.full_url
+        for k, v in bodies.items():
+            if u.endswith(k):
+                return R(v.encode())
+        raise OSError("nope")
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", fake_open)
+    out = m.llama_live(8080)
+    assert out["n_ctx"] == 65536
+    assert out["ctx_used"] == 4000 and out["gen_tok_s"] == 42.5

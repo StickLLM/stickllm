@@ -11,11 +11,11 @@
   body>header{display:flex;gap:10px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--line)}
   body>header a{color:var(--accent);text-decoration:none}
   .line{margin-left:auto;color:#9fb0b5;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  main{display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:8px;padding:8px;align-items:start}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0}
-  .k-model{grid-column:span 2}
-  .k-disk,.k-warn{grid-column:1/-1}
-  .k-warn{border-color:var(--amber)}
+  /* Round 2: uniform tiles, every block the size of a GPU tile (4 per row at 1280, 2 at 760). */
+  main{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;padding:8px;align-items:stretch}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0;display:flex;flex-direction:column;overflow:hidden;min-height:184px}
+  .card .spark{margin-top:auto;padding-top:4px}
+  .k-warn{grid-column:1/-1;min-height:0;border-color:var(--amber)}
   .mini{padding:6px 10px}
   .ch{display:flex;align-items:center;gap:6px;margin-bottom:4px}
   h2{margin:0;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);font-weight:600;flex:1;min-width:0}
@@ -27,13 +27,12 @@
   .state{font-size:12px}
   .state.running{color:var(--green)}.state.loading{color:var(--amber)}.state.stopped{color:var(--dim)}
   .badge{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--accent);color:var(--accent);white-space:nowrap}
-  .badge.live{background:rgba(43,181,168,.14);display:inline-block;margin:0 0 3px}
-  .k-cpu .cb,.k-mem .cb{display:flex;gap:8px;align-items:center}
-  .k-cpu .gauges,.k-mem .gauges{margin:0}
+  .badge.live{background:rgba(43,181,168,.14)}
+  .tags{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 3px}
   .ct{min-width:0;flex:1}
   .gauges{display:flex;gap:4px;justify-content:space-around;margin:0 0 3px}
-  .gauge{display:flex;flex-direction:column;align-items:center;width:52px}
-  .arc{width:52px;height:46px;overflow:visible}
+  .gauge{display:flex;flex-direction:column;align-items:center;width:60px}
+  .arc{width:60px;height:52px;overflow:visible}
   .arc path{fill:none;stroke-width:5;stroke-linecap:round}
   .arc .track{stroke:var(--line)}
   .gv{font-size:12px;font-weight:600;fill:var(--ink)}
@@ -45,22 +44,12 @@
   .spline{fill:none;stroke:var(--accent);stroke-width:1.4;vector-effect:non-scaling-stroke}
   .sparea{fill:rgba(43,181,168,.16);stroke:none}
   .spcap{font-size:10px;color:var(--dim);white-space:nowrap}
-  .drives{display:grid;gap:3px}
-  .drive{display:grid;grid-template-columns:minmax(0,2.4fr) 58px minmax(60px,1fr) minmax(0,1.3fr) 130px;gap:8px;align-items:center}
-  .dname{display:flex;gap:6px;align-items:center;min-width:0;white-space:nowrap;overflow:hidden}
-  .kind{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 4px}
-  .dsize{text-align:right;font-variant-numeric:tabular-nums}
-  .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
-  .bar i{display:block;height:100%;background:var(--accent)}
-  .bar i.t-amber{background:var(--amber)}.bar i.t-red{background:var(--red)}
-  .dfree{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .dio{font-size:12px;color:#9fb0b5;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-  @media (max-width:520px){.k-model{grid-column:1/-1}.drive{grid-template-columns:minmax(0,1fr) 54px 70px}.dfree,.dio{display:none}}
+  @media (max-width:540px){main{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <header><a href="/">StickLLM</a><strong>Monitor</strong><span id="statusLine" class="line"></span></header>
 <main id="board"><article class="card"><h2>Status</h2><p>Reading the stick…</p></article></main>
-<script src="monitor.js?v=mon059b"></script>
+<script src="monitor.js?v=mon059c"></script>
 </body>
 </html>

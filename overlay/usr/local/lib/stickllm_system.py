@@ -189,7 +189,7 @@ def disk_block(paths: list[tuple[str, str]] | None = None) -> dict:
 
 
 # --- monitor cleanup: every physical drive with live MB/s ------------------
-_LAST_IO: dict[str, tuple[float, int, int]] = {}
+_LAST_IO: dict[str, tuple] = {}
 _SKIP_BLOCK = ("loop", "ram", "dm-", "zram", "sr", "fd", "nbd", "md", "mmcblk0boot", "mtd")
 LIVE_MEDIUM = os.environ.get("STICKLLM_LIVE_MEDIUM", "/run/live/medium")
 
@@ -227,14 +227,15 @@ def _dev_name(dev: str) -> str:
         return os.path.basename(dev)
 
 
-def parse_diskstats(text: str) -> dict[str, tuple[int, int]]:
-    """name -> (sectors read, sectors written)."""
-    out: dict[str, tuple[int, int]] = {}
+def parse_diskstats(text: str) -> dict[str, tuple]:
+    """name -> (sectors read, sectors written, io_ticks ms or None)."""
+    out: dict[str, tuple] = {}
     for line in (text or "").splitlines():
         f = line.split()
         if len(f) >= 10:
             try:
-                out[f[2]] = (int(f[5]), int(f[9]))
+                ticks = int(f[12]) if len(f) >= 13 else None
+                out[f[2]] = (int(f[5]), int(f[9]), ticks)
             except ValueError:
                 continue
     return out
@@ -319,7 +320,7 @@ def drives_block(sys_block: Path | None = None, mounts_text: str | None = None,
             kind = "HDD" if rot else "SSD"
         disks[name] = {"name": name, "model": model or name, "kind": kind, "removable": removable,
                        "size": sectors * 512, "mounts": [], "roles": [],
-                       "read_mb_s": None, "write_mb_s": None}
+                       "read_mb_s": None, "write_mb_s": None, "busy_percent": None}
     seen_dev: set[str] = set()
     for dev, mnt in mounts:
         kname = _dev_name(dev)
@@ -346,13 +347,17 @@ def drives_block(sys_block: Path | None = None, mounts_text: str | None = None,
                 disks[d]["roles"].append(role)
     for name, row in disks.items():
         if name in stats:
-            rd, wr = stats[name]
+            rd, wr, ticks = stats[name]
             prev = _LAST_IO.get(name)
-            _LAST_IO[name] = (now, rd, wr)
+            _LAST_IO[name] = (now, rd, wr, ticks)
             if prev and now > prev[0]:
                 dt = now - prev[0]
                 row["read_mb_s"] = round(max(0, rd - prev[1]) * 512 / dt / 1e6, 1)
                 row["write_mb_s"] = round(max(0, wr - prev[2]) * 512 / dt / 1e6, 1)
+                # Utilisation: share of wall time the device had I/O in flight
+                # (io_ticks ms delta over the sample interval), like iostat %util.
+                if ticks is not None and len(prev) > 3 and prev[3] is not None:
+                    row["busy_percent"] = round(min(100.0, max(0, ticks - prev[3]) / (dt * 1000.0) * 100.0), 1)
         tot = [m for m in row["mounts"] if "total" in m]
         if tot:
             row["fs_total"] = sum(m["total"] for m in tot)
@@ -755,6 +760,29 @@ def cpu_info() -> dict:
     return {"model": model, "threads": os.cpu_count() or 0, "uptime_s": int(up) if up is not None else None}
 
 
+def server_n_ctx(props, slots) -> int | None:
+    """The running server's context size (--ctx-size), not the model's trained
+    context: /props default_generation_settings.n_ctx, then the largest /slots
+    n_ctx (with a unified KV cache every slot reports the full size, so a sum
+    over parallel slots overstates it 4x), then a top-level /props n_ctx."""
+    if isinstance(props, dict):
+        dgs = props.get("default_generation_settings")
+        if isinstance(dgs, dict):
+            n = _int(dgs.get("n_ctx"))
+            if n:
+                return n
+    if isinstance(slots, list):
+        vals = [_int(s.get("n_ctx")) for s in slots if isinstance(s, dict)]
+        vals = [v for v in vals if v]
+        if vals:
+            return max(vals)
+    if isinstance(props, dict):
+        n = _int(props.get("n_ctx"))
+        if n:
+            return n
+    return None
+
+
 def llama_live(port: int = 8080) -> dict:
     """Prompt / gen tok/s and context use from llama-server --metrics and /slots."""
     import urllib.request
@@ -786,9 +814,17 @@ def llama_live(port: int = 8080) -> dict:
             slots = json.loads(resp.read().decode() or "[]")
     except Exception:
         slots = None
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/props", timeout=1) as resp:
+            props = json.loads(resp.read().decode() or "{}")
+    except Exception:
+        props = None
+    n_ctx = server_n_ctx(props, slots)
+    if n_ctx:
+        out["available"] = True
+        out["n_ctx"] = n_ctx
     if isinstance(slots, list) and slots:
         out["available"] = True
-        out["n_ctx"] = sum(int(s.get("n_ctx") or 0) for s in slots if isinstance(s, dict)) or None
         used = 0
         known = False
         for s in slots:
