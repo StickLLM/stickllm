@@ -1,0 +1,12 @@
+[Unit]
+Description=StickLLM persist journal snapshot to STICKLLM-DATA
+After=local-fs.target stickllm-bootstatus.service
+ConditionPathIsMountPoint=/mnt/stickllm-data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/stickllm-journal-persist
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,43 @@
+#!/bin/bash
+# StickLLM 0.6.3 (best effort): if amdgpu init fails (ring test / hw_init),
+# record the PCI slot and ask the kernel to skip that GPU on the next boot
+# via modprobe softdep / bind-blacklist under STICKLLM-DATA.
+# Never touches working GPUs. Documented in docs/gpu-skip.md.
+set -euo pipefail
+DATA="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+STATE_DIR="$DATA/gpu-skip"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+# Apply previously recorded skips (unbind / driver_override)
+if [[ -f "$STATE_DIR/skip-pci.txt" ]]; then
+  while read -r pci; do
+    [[ -z "$pci" || "$pci" =~ ^# ]] && continue
+    # PCI addr like 0000:02:00.0
+    if [[ -e "/sys/bus/pci/devices/$pci/driver/unbind" ]]; then
+      echo "$pci" >"/sys/bus/pci/devices/$pci/driver/unbind" 2>/dev/null || true
+    fi
+    if [[ -e "/sys/bus/pci/devices/$pci/driver_override" ]]; then
+      echo "vfio-pci" >"/sys/bus/pci/devices/$pci/driver_override" 2>/dev/null || true
+    fi
+    echo "stickllm-gpu-skip: applied skip for $pci" >&2
+  done <"$STATE_DIR/skip-pci.txt"
+fi
+
+# Detect fresh failures in this boot's dmesg
+# Examples: "amdgpu 0000:02:00.0: [drm:amdgpu_ring_test_helper] *ERROR* ring gfx test failed (-110)"
+mapfile -t fails < <(dmesg 2>/dev/null | grep -E 'amdgpu [0-9a-f:.]+.*(ring .* test failed|hw_init.*failed|fatal error)' | tail -n 20 || true)
+for line in "${fails[@]:-}"; do
+  pci=$(echo "$line" | grep -oE 'amdgpu [0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | head -1 | awk '{print $2}')
+  [[ -z "$pci" ]] && continue
+  if [[ -d "$STATE_DIR" ]]; then
+    touch "$STATE_DIR/skip-pci.txt"
+    grep -qxF "$pci" "$STATE_DIR/skip-pci.txt" 2>/dev/null || echo "$pci" >>"$STATE_DIR/skip-pci.txt"
+    echo "$line" >>"$STATE_DIR/last-failure.txt"
+    echo "stickllm-gpu-skip: recorded $pci for next-boot skip" >&2
+    # Try unbind now so the rest of boot can continue
+    if [[ -e "/sys/bus/pci/devices/$pci/driver/unbind" ]]; then
+      echo "$pci" >"/sys/bus/pci/devices/$pci/driver/unbind" 2>/dev/null || true
+    fi
+  fi
+done
+exit 0

@@ -1,0 +1,18 @@
+#!/bin/bash
+# Copy recent journal to STICKLLM-DATA so hangs are readable after reboot.
+set -euo pipefail
+DATA="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+DEST="$DATA/logs"
+if ! findmnt -n "$DATA" >/dev/null 2>&1; then
+  exit 0
+fi
+mkdir -p "$DEST" || exit 0
+# Snapshot current journal (best-effort; ignore permission noise)
+journalctl -b -n 5000 --no-pager >"$DEST/journal-current.txt" 2>/dev/null || true
+# Keep last boot too if available
+journalctl -b -1 -n 5000 --no-pager >"$DEST/journal-previous.txt" 2>/dev/null || true
+# Kernel ring specifically (amdgpu failures show here)
+dmesg -T >"$DEST/dmesg-current.txt" 2>/dev/null || true
+# Rotate lightly
+ls -1t "$DEST"/journal-*.txt 2>/dev/null | tail -n +6 | xargs -r rm -f || true
+chmod -R a+rX "$DEST" 2>/dev/null || true

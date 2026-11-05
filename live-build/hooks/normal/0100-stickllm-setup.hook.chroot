@@ -137,6 +137,10 @@ systemctl mask docker.service 2>/dev/null || true
 systemctl mask docker.socket 2>/dev/null || true
 systemctl enable stickllm-agent.service || true
 systemctl enable stickllm-files.service || true
+# 0.6.3: persist journal snapshots to STICKLLM-DATA; skip GPUs whose amdgpu init fails
+systemctl enable stickllm-journal-persist.service || true
+systemctl enable stickllm-journal-persist.timer || true
+systemctl enable stickllm-gpu-skip.service || true
 # 0.5.6: nothing auto-loads. The app agent and its (shared chat) model are loaded by
 # the user, so neither app agent unit is enabled at boot.
 systemctl disable stickllm-appagent.service 2>/dev/null || true

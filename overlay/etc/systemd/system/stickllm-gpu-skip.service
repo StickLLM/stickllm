@@ -1,0 +1,14 @@
+[Unit]
+Description=StickLLM skip GPUs whose amdgpu init failed
+DefaultDependencies=no
+After=systemd-modules-load.service local-fs.target
+Before=display-manager.service stickllm-kiosk.service graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/stickllm-gpu-skip
+RemainAfterExit=yes
+TimeoutStartSec=20
+
+[Install]
+WantedBy=multi-user.target
