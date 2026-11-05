@@ -731,11 +731,10 @@
     return wb;
   }
 
-  function chatSpec() {
+  function chatSpec(ag) {
     // 0.6.3: main Chat window loads Agent Zero (same URL as the old Agent app).
     // StickLLM #app stays for Settings/Models panel mounts only.
-    const api = appApi();
-    const ag = api.deskAgent ? api.deskAgent() : { installed: false, running: false };
+    ag = ag || (appApi().deskAgent ? appApi().deskAgent() : { installed: false, running: false });
     if (ag.installed && ag.running) {
       return {
         id: CHAT, title: "Chat", w: 1180, h: 800, pinned: true,
@@ -776,11 +775,31 @@
     if (id === CHAT) {
       try { if (api.ensureAgentZeroStarted) api.ensureAgentZeroStarted(); } catch (e) {}
       const cur = wm.get(CHAT);
-      const ag = api.deskAgent ? api.deskAgent() : {};
-      if (cur && cur.agentPanel && ag.installed && ag.running) wm.close(CHAT, true);
-      const w = wm.open(chatSpec());
-      if (w && !(ag.installed && ag.running)) w.agentPanel = true;
-      return w;
+      const openChatWith = (ag) => {
+        if (cur && cur.agentPanel && ag.installed && ag.running) wm.close(CHAT, true);
+        const w = wm.open(chatSpec(ag));
+        if (w && !(ag.installed && ag.running)) {
+          w.agentPanel = true;
+          startChatAgentPoll();
+        }
+        return w;
+      };
+      const ag0 = api.deskAgent ? api.deskAgent() : {};
+      // Paired LAN: status may still be empty on first click — refresh before Install panel.
+      if (!(ag0.installed && ag0.running) && api.refreshAgentLink) {
+        Promise.resolve(api.refreshAgentLink()).then(() => {
+          const ag = api.deskAgent ? api.deskAgent() : ag0;
+          if (wm && wm.has(CHAT) && wm.get(CHAT) && wm.get(CHAT).agentPanel && ag.installed && ag.running) {
+            wm.close(CHAT, true);
+            wm.open(chatSpec(ag));
+            stopChatAgentPoll();
+          } else if (!wm || !wm.has(CHAT)) openChatWith(ag);
+          else renderAgentPanel(ag);
+        }).catch(() => openChatWith(ag0));
+        if (cur && cur.agentPanel) { renderAgentPanel(ag0); return cur; }
+        return openChatWith(ag0);
+      }
+      return openChatWith(ag0);
     }
     if (id === "settings") {
       const w = wm.open(mountSpec("settings", ui.settings));
@@ -823,30 +842,36 @@
   function agentWinIsPanel() { const w = wm && wm.get("agent"); return !!(w && w.agentPanel); }
   function openAgent() {
     const api = appApi();
-    const ag = api.deskAgent ? api.deskAgent() : { installed: false };
-    const cur = wm.get("agent");
-    if (ag.installed && ag.running) {
+    const go = (ag) => {
+      const cur = wm.get("agent");
+      if (ag.installed && ag.running) {
+        stopAgentPoll();
+        if (cur && cur.agentPanel) wm.close("agent", true);
+        return wm.open({ id: "agent", title: "Agent", w: SYS.agent.w, h: SYS.agent.h, url: urlFor("agent"), popOut: () => openOutside("agent") });
+      }
+      renderAgentPanel(ag);
+      const w = wm.open(mountSpec("agent", ui.agentPanel));
+      if (w) w.agentPanel = true;
       stopAgentPoll();
-      if (cur && cur.agentPanel) wm.close("agent", true);
-      return wm.open({ id: "agent", title: "Agent", w: SYS.agent.w, h: SYS.agent.h, url: urlFor("agent"), popOut: () => openOutside("agent") });
-    }
-    renderAgentPanel(ag);
-    const w = wm.open(mountSpec("agent", ui.agentPanel));
-    if (w) w.agentPanel = true;
-    stopAgentPoll();
-    const tick = () => {
-      if (!wm || !wm.has("agent") || !agentWinIsPanel()) { stopAgentPoll(); return; }
-      if (!api.refreshAgentLink) return;
-      Promise.resolve(api.refreshAgentLink()).then(() => {
-        const now = api.deskAgent ? api.deskAgent() : ag;
-        if (!agentWinIsPanel()) return;
-        if (now.installed && now.running) openAgent();
-        else renderAgentPanel(now);
-      }).catch(() => {});
+      const tick = () => {
+        if (!wm || !wm.has("agent") || !agentWinIsPanel()) { stopAgentPoll(); return; }
+        if (!api.refreshAgentLink) return;
+        Promise.resolve(api.refreshAgentLink()).then(() => {
+          const now = api.deskAgent ? api.deskAgent() : ag;
+          if (!agentWinIsPanel()) return;
+          if (now.installed && now.running) openAgent();
+          else renderAgentPanel(now);
+        }).catch(() => {});
+      };
+      tick();
+      agentPoll = setInterval(tick, 1500);
+      return w;
     };
-    tick();
-    agentPoll = setInterval(tick, 1500);
-    return w;
+    const ag0 = api.deskAgent ? api.deskAgent() : { installed: false };
+    if (!(ag0.installed && ag0.running) && api.refreshAgentLink) {
+      Promise.resolve(api.refreshAgentLink()).then(() => go(api.deskAgent ? api.deskAgent() : ag0)).catch(() => go(ag0));
+    }
+    return go(ag0);
   }
   function renderAgentPanel(ag) {
     const p = ui && ui.agentPanel;
@@ -871,14 +896,28 @@
     const inst = p.querySelector(".apInstall");
     const retry = p.querySelector(".apRetry");
     if (inst) {
-      inst.hidden = !!ag.installed && !ag.needsInstall;
+      const showInstall = !!ag.needsInstall && !ag.installed;
+      const showOpen = !!ag.installed && !ag.running && !ag.needsInstall;
+      inst.hidden = !(showInstall || showOpen);
       inst.disabled = !!ag.busy;
       inst.classList.toggle("busy", !!ag.busy);
-      inst.textContent = ag.busy ? "Installing…" : "Install Agent Zero";
+      if (showOpen) {
+        inst.textContent = ag.busy ? "Starting…" : "Open Agent Zero";
+        inst.onclick = () => {
+          const api2 = appApi();
+          if (api2.ensureAgentZeroStarted) Promise.resolve(api2.ensureAgentZeroStarted()).catch(() => {});
+          openOutside("agent");
+          startChatAgentPoll();
+        };
+      } else {
+        inst.textContent = ag.busy ? "Installing…" : "Install Agent Zero";
+        inst.onclick = null; // rely on buildPanels listener; clear Open override
+        if (ui.agentInstallClick) inst.onclick = ui.agentInstallClick;
+      }
     }
     if (retry) {
-      retry.hidden = !ag.installed || ag.needsInstall;
-      retry.disabled = st === "installing";
+      retry.hidden = !ag.installed || !!ag.needsInstall || !!ag.running;
+      retry.disabled = st === "installing" || st === "starting";
     }
   }
   // The Browser is a real Chrome window on the stick's screen (kiosk),
@@ -1006,13 +1045,20 @@
     // Agent window while Agent Zero is not installed.
     const ag = el("div", "deskPanel deskAgentPanel");
     ag.innerHTML = '<div class="apCard"><img src="agent-zero.png?v=desk4" alt=""><h2>Agent</h2><p>Agent Zero works on tasks for you with the local model. The program installs to the StickLLM data drive (/mnt/stickllm-data/stickllm-docker); its chats, memory and settings stay in your encrypted vault.</p><p class="apState" aria-live="polite"></p><div class="apBar" hidden><i></i></div><div class="apActs"><button type="button" class="btn primary apInstall">Install Agent Zero</button><button type="button" class="btn apRetry" hidden>Retry</button><button type="button" class="btn ghost apStore">Open App Store</button></div></div>';
-    ag.querySelector(".apInstall").addEventListener("click", (e) => {
+    const apInstallBtn = ag.querySelector(".apInstall");
+    function agentInstallClick(e) {
       const api = appApi();
       const b = e.currentTarget;
+      if ((b.textContent || "").indexOf("Open Agent") >= 0) return; // Open handler set in renderAgentPanel
       b.disabled = true; b.classList.add("busy"); b.textContent = "Installing…";
       if (api.installAgent) Promise.resolve(api.installAgent()).catch(() => {});
-      setTimeout(() => { if (wm && wm.has("agent")) openAgent(); }, 1500);
-    });
+      setTimeout(() => {
+        if (wm && wm.has(CHAT) && wm.get(CHAT) && wm.get(CHAT).agentPanel) startChatAgentPoll();
+        else if (wm && wm.has("agent")) openAgent();
+      }, 1500);
+    }
+    apInstallBtn.addEventListener("click", agentInstallClick);
+    ui.agentInstallClick = agentInstallClick;
     ag.querySelector(".apRetry").addEventListener("click", (e) => {
       const api = appApi();
       const b = e.currentTarget;

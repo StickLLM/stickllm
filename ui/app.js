@@ -4946,11 +4946,75 @@ function formatPairCode(code) {
   const c = String(code || "").trim();
   return c.length === 6 ? c.slice(0, 3) + " " + c.slice(3) : c;
 }
+
+/** Sticky pair-code prompt on the stick: stays until dismiss or truthful expiry. */
+const PAIR_CODE_UI_TTL_MS = 900 * 1000; // matches gateway PAIR_CODE_TTL_SECS
+let pairCodeBanner = { code: "", expAt: 0, timer: null };
+function dismissPairCodeBanner() {
+  if (pairCodeBanner.timer) { clearInterval(pairCodeBanner.timer); pairCodeBanner.timer = null; }
+  pairCodeBanner.code = ""; pairCodeBanner.expAt = 0;
+  const el = $("#pairCodeBanner");
+  if (el) { el.hidden = true; el.setAttribute("hidden", ""); }
+}
+function ensurePairCodeBanner() {
+  let el = $("#pairCodeBanner");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "pairCodeBanner";
+  el.className = "pairCodeBanner";
+  el.hidden = true;
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-live", "polite");
+  el.innerHTML = '<div class="pcbInner"><div class="pcbHead"><b>Pair code</b>'
+    + '<button type="button" class="pcbX" aria-label="Dismiss">\u00d7</button></div>'
+    + '<p class="pcbHint">Enter this code on the LAN browser. It stays until you dismiss it or it expires.</p>'
+    + '<div class="pcbCode mono" id="pairCodeBannerDigits"></div>'
+    + '<div class="pcbMeta"><span id="pairCodeBannerExp"></span>'
+    + '<button type="button" class="btn sm pcbDismiss">Dismiss</button></div></div>';
+  document.body.appendChild(el);
+  el.querySelector(".pcbX").onclick = dismissPairCodeBanner;
+  el.querySelector(".pcbDismiss").onclick = dismissPairCodeBanner;
+  return el;
+}
+function showStickyPairCode(code, opts) {
+  if (!detectLocalHost()) return;
+  const digits = pairDigits(code);
+  if (!digits) return;
+  opts = opts || {};
+  const el = ensurePairCodeBanner();
+  const same = pairCodeBanner.code === digits && pairCodeBanner.expAt > Date.now();
+  pairCodeBanner.code = digits;
+  if (!same) pairCodeBanner.expAt = Date.now() + (opts.ttlMs || PAIR_CODE_UI_TTL_MS);
+  if ($("#pairCodeShow")) $("#pairCodeShow").textContent = formatPairCode(digits);
+  const dig = $("#pairCodeBannerDigits");
+  if (dig) dig.textContent = formatPairCode(digits);
+  el.hidden = false; el.removeAttribute("hidden");
+  const tick = () => {
+    const left = Math.max(0, pairCodeBanner.expAt - Date.now());
+    const exp = $("#pairCodeBannerExp");
+    if (exp) {
+      if (left <= 0) exp.textContent = "Expired — press F9 or New code for another.";
+      else {
+        const s = Math.ceil(left / 1000);
+        const m = Math.floor(s / 60), r = s % 60;
+        exp.textContent = "Expires in " + m + ":" + String(r).padStart(2, "0");
+      }
+    }
+    if (left <= 0) {
+      if (pairCodeBanner.timer) { clearInterval(pairCodeBanner.timer); pairCodeBanner.timer = null; }
+      // Keep digits visible but mark expired; user must dismiss or remint.
+    }
+  };
+  tick();
+  if (pairCodeBanner.timer) clearInterval(pairCodeBanner.timer);
+  pairCodeBanner.timer = setInterval(tick, 1000);
+}
 function showPairCodeOnStick(code) {
   const c = String(code || "").trim();
   // The pair code is only ever painted on the stick's own screen.
   if (!detectLocalHost() || !/^\d{4,8}$/.test(c)) return;
   if ($("#pairCodeShow")) $("#pairCodeShow").textContent = formatPairCode(c);
+  showStickyPairCode(c);
   pushSystemMsg(
     `New PAIR CODE: ${c} — open the LAN URL on phone/desktop and enter this code. Previous paired browsers were unpaired.`
   );
@@ -4992,6 +5056,7 @@ function handlePairRequest(c) {
   if (digits) {
     openSettings("devices");
     paintF9PairCode(c);
+    showStickyPairCode(digits);
     pushSystemMsg(`PAIR CODE: ${digits} — a browser${who} asked to pair. Enter this code there.`);
     toast("Pair code " + formatPairCode(digits));
   } else {
@@ -5012,6 +5077,7 @@ function announceRemintFromConnect(connect) {
   if (!rid || rid === lastRemintId) return;
   if (!digits) return;
   lastRemintId = rid;
+  showStickyPairCode(digits);
   pushSystemMsg(
     `New PAIR CODE: ${digits} — open the LAN URL on phone/desktop and enter this code. Previous paired browsers were unpaired.`
   );
@@ -7838,12 +7904,21 @@ function deskCatalog() {
 function deskAgent() {
   const link = $("#agentLink");
   const s = agentLastStatus || {};
-  return { installed: !!(link && !link.hidden) || agentIsInstalled(s), href: (link && link.href) || agentPageUrl(s),
+  const seed = !!(s.preinstalled || s.image_present || (s.drive && s.drive.seed_ready));
+  const installed = !!(link && !link.hidden) || agentIsInstalled(s) || seed
+    || s.state === "stopped" || s.state === "running" || s.state === "starting";
+  // Prefer API running flag; never require a non-existent "upstream" field.
+  const running = !!(s.running || s.state === "running");
+  // Only true Install when the gateway says so — not when status is still empty.
+  const needsInstall = !!(s.needs_install || s.state === "needs_install" || s.state === "pull_failed")
+    && !seed && !running && s.state !== "stopped" && s.state !== "starting";
+  return { installed: installed, href: (link && link.href) || agentPageUrl(s),
     state: ($("#agentLinkState") && $("#agentLinkState").textContent) || "",
-    status: s.state || "", running: s.state === "running" && s.upstream !== false,
+    status: s.state || "", running: running,
     message: agentProgressLine(s) || s.message || "", progress: s.progress, step: s.step, steps: s.steps,
-    needsInstall: !!(s.needs_install || s.state === "needs_install" || s.state === "pull_failed"),
-    busy: s.state === "installing" };
+    needsInstall: needsInstall,
+    busy: s.state === "installing" || s.state === "starting",
+    preinstalled: seed };
 }
 window.stickApp = Object.freeze({
   openSettings, closeSettings, showSec, lockVault, showApps, toast,
