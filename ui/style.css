@@ -679,3 +679,12 @@ input.secret { -webkit-text-security: disc; }
 /* 0.6.1 (item 24) */
 .dkFrameFallback{position:absolute;left:8px;bottom:8px;z-index:3;display:flex;gap:6px;align-items:center;padding:6px 8px;border-radius:8px;background:rgba(15,23,42,.92);color:#fff;font-size:12px}
 .a0Examples{margin:4px 14px 10px 30px;padding:0;font-size:13px;line-height:1.6}
+
+/* 0.6.1-hotfix: persistent error box (stays until dismissed) */
+.errBox{position:fixed;top:18px;left:50%;transform:translateX(-50%);width:min(560px,92vw);background:var(--bg,#fff);color:var(--ink,#111);border:2px solid #d33;border-radius:12px;padding:12px 14px;z-index:90;box-shadow:0 10px 30px rgba(0,0,0,.35);font-size:14px}
+.errBox[hidden]{display:none}
+.errBox .ebHead{display:flex;justify-content:space-between;align-items:center;color:#d33}
+.errBox .ebX{background:none;border:0;font-size:20px;cursor:pointer;color:inherit}
+.errBox .ebMsg{margin:8px 0}
+.errBox pre{white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto;font-size:12px;background:rgba(127,127,127,.12);padding:6px;border-radius:6px}
+.errBox .ebActs{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}

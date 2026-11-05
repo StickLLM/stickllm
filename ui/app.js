@@ -882,6 +882,45 @@ async function control(action, params = {}) {
   return j;
 }
 
+// 0.6.1-hotfix: errors stay on screen until dismissed (toasts vanish in 2.8 s).
+function plainError(raw) {
+  const s = String(raw || "").replace(/^stickllm-vault:\s*/gm, "").trim();
+  if (/refusing StickLLM live USB \/ STICKLLM-DATA/i.test(s))
+    return "This folder is on the StickLLM drive itself. To keep the vault here, use \u201cStore vault on this drive\u2026\u201d (or pick the folder again and confirm STICK-DATA), then Create vault.";
+  if (/passcodes? (do not|don't) match/i.test(s)) return "The two passcodes don't match.";
+  if (/at least 8/i.test(s)) return "The passcode must be at least 8 characters.";
+  if (/not writable|read-only/i.test(s)) return "StickLLM can't write to that folder. Pick another folder or drive.";
+  if (/Pair required|no longer paired/i.test(s)) return "This browser is no longer paired with the stick. Pair again and retry.";
+  return s.split("\n")[0] || "Something went wrong.";
+}
+function showError(err, title) {
+  title = title || (err && err.title);
+  const raw = (err && err.message) ? err.message : String(err || "");
+  let box = document.getElementById("errBox");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "errBox"; box.className = "errBox"; box.setAttribute("role", "alert");
+    box.innerHTML = '<div class="ebHead"><b class="ebTitle"></b><button type="button" class="ebX" aria-label="Dismiss">\u00d7</button></div>' +
+      '<p class="ebMsg"></p><details><summary>Details</summary><pre class="ebRaw"></pre></details>' +
+      '<div class="ebActs"><button type="button" class="btn sm ebCopy">Copy details</button><button type="button" class="btn sm ghost ebOk">Dismiss</button></div>';
+    document.body.appendChild(box);
+    const hide = () => { box.hidden = true; };
+    box.querySelector(".ebX").onclick = hide; box.querySelector(".ebOk").onclick = hide;
+    box.querySelector(".ebCopy").onclick = async () => {
+      const t = box.dataset.details || "";
+      try { await navigator.clipboard.writeText(t); }
+      catch (_) { const ta = document.createElement("textarea"); ta.value = t; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); } catch (_e) {} ta.remove(); }
+      box.querySelector(".ebCopy").textContent = "Copied";
+      setTimeout(() => { box.querySelector(".ebCopy").textContent = "Copy details"; }, 1500);
+    };
+  }
+  box.querySelector(".ebTitle").textContent = title || "Something went wrong";
+  box.querySelector(".ebMsg").textContent = plainError(raw);
+  box.querySelector(".ebRaw").textContent = raw;
+  box.dataset.details = `${title || "Error"}\n${new Date().toISOString()}\n${raw}`;
+  box.hidden = false;
+  try { console.error("[StickLLM]", title || "", raw); } catch (_) {}
+}
 let tt;
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.hidden = false;
@@ -1198,7 +1237,7 @@ async function lockVault() {
     const res = await control("vault_lock");
     toast(res.ok !== false ? "Vault locked" : ("Lock failed: " + (res.error || "unknown")));
     setVaultChrome(false);
-  } catch (e) { toast("Lock failed: " + e.message); }
+  } catch (e) { showError(e, "Lock failed"); }
   finally { vaultLocking = false; vaultEpoch += 1; }
   try {
     await fetch("/api/session-mode", {
@@ -2554,7 +2593,7 @@ function openSettings(sec = "general") {
   if (mobile()) toggleNav(false);
   showSec(sec, !mobile() || sec !== "__nav");
   if (sec === "models" || sec === "downloads") refreshModels().catch((e) => toast(e.message));
-  if (sec === "storage") refreshStorage().catch((e) => toast(e.message));
+  if (sec === "storage") refreshStorage().catch((e) => showError(e, "Storage"));
   if (sec === "devices" || sec === "network" || sec === "system" || sec === "about")
     refreshStatus().catch(() => {});
   if (sec === "chats") { renderSaved(); refreshChatStore().catch(() => {}); }
@@ -3757,7 +3796,7 @@ async function retryFewerLayers() {
     loadActivateSettled = true;
     startLoadPoll();
   } catch (e) {
-    toast(e.message);
+    showError(e);
   }
 }
 if ($("#fewerLayers")) $("#fewerLayers").onclick = () => retryFewerLayers();
@@ -3803,7 +3842,7 @@ async function downloadMmproj(id) {
     renderModelsList();
     if (!res.already) startDlPoll();
     toast(res.note || (res.already ? "This model's mmproj is already next to it" : "Downloading this model's mmproj"));
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 }
 async function doModelDownload(m, extra) {
   try {
@@ -3824,7 +3863,7 @@ async function doModelDownload(m, extra) {
     renderModelsList();
     startDlPoll();
     toast(res.note || (res.started ? "Download started" : "Added to the download queue"));
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 }
 let ablCb = null;
 function askAblAck(cb) {
@@ -3858,7 +3897,7 @@ function askDeleteModel(m) {
         if (selectedModelId === m.id) selectedModelId = null;
         toast(`Deleted ${label}`);
         await refreshModels();
-      } catch (e) { toast(e.message); }
+      } catch (e) { showError(e); }
     },
   });
 }
@@ -3941,6 +3980,10 @@ async function refreshDrivesLive() {
     }
     box.innerHTML = html;
     $$("#drives [data-path]").forEach((el) => (el.onclick = () => {
+      if (sd && (el.dataset.path === "/mnt/stickllm-data" || el.dataset.path.startsWith("/mnt/stickllm-data/"))) {
+        const sb = document.querySelector("[data-stickdata]");
+        if (sb && !sb.disabled) { sb.click(); return; }
+      }
       vaultPickerMount = el.dataset.path;
       vaultBrowsePath = el.dataset.path;
       $("#vaultPath").value = el.dataset.path;
@@ -3977,7 +4020,7 @@ async function refreshDrivesLive() {
         refreshModels().catch(() => {});  // 0.6.1 (item 20): models on the new mount
         const mp = res.mount_path || "";
         toast(res.already_mounted ? (`Already mounted${mp ? " at " + mp : ""}`) : (`Mounted${mp ? " at " + mp : ""}`));
-      } catch (err) { toast("Mount failed: " + (err.message || err)); }
+      } catch (err) { showError(err, "Mount failed"); }
     }));
   } catch (e) {
     $("#drives").innerHTML = `<div class="row"><small>${esc(e.message)}</small></div>`;
@@ -4192,11 +4235,11 @@ async function searchForVault({ inPicker = false } = {}) {
           await control("vault_attach", { path: folder });
           $("#vcSub").textContent = blob; $("#vaultPath").value = folder;
           toast("Attached — unlock with passcode"); $("#vaultPass").focus();
-        } catch (e) { toast(e.message); }
+        } catch (e) { showError(e); }
       };
     }
     toast(`Found ${list.length} vault file(s)`);
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 }
 async function searchForModels({ inPicker = false } = {}) {
   try {
@@ -4278,13 +4321,13 @@ async function searchForModels({ inPicker = false } = {}) {
     }
     if (jump && $("#picker") && !$("#picker").hidden) await browseLive(jump).catch(() => {});
     toast(hits.length ? (res.note || `Found ${hits.length} library(ies)`) : (res.note || "No models found"));
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 }
 $("#fpUp").onclick = async () => {
   try {
     const cur = await control("vault_list_dirs", { path: vaultBrowsePath });
     if (cur.parent) await browseLive(cur.parent);
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 };
 $("#fpCancel").onclick = () => ($("#picker").hidden = true);
 $("#fpClose").onclick = () => ($("#picker").hidden = true);
@@ -4301,7 +4344,7 @@ $("#fpOk").onclick = async () => {
       if ($("#modelDir")) $("#modelDir").textContent = res.path || path;
       toast("Models will download to " + (res.path || path));
       await refreshModels().catch(() => {});
-    } catch (e) { toast(e.message); }
+    } catch (e) { showError(e); }
     pickerPurpose = "vault";
     return;
   }
@@ -4315,7 +4358,7 @@ $("#fpOk").onclick = async () => {
       toast("Vault attached — enter passcode to unlock");
       $("#vaultPass").focus();
       await refreshStorage();
-    } catch (e) { toast(e.message); }
+    } catch (e) { showError(e); }
   } else {
     $("#vaultPath").value = path;
     toast("Folder selected for vault create");
@@ -4330,7 +4373,7 @@ $("#fpNew").onclick = async () => {
     if (!res.ok) throw new Error(res.error || "mkdir failed");
     await browseLive(res.path || vaultBrowsePath);
     toast("Folder created");
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 };
 $("#fpBackB").onclick = null; $("#fpFwd").onclick = null;
 
@@ -4419,14 +4462,23 @@ $("#unlockForm").onsubmit = async (e) => {
       return;
     }
     unlockMessage("Unlock failed: " + raw);
-    toast("Unlock failed: " + raw);
+    showError(raw, "Unlock failed");
   } finally {
     vaultUnlocking = false;
   }
 };
 
 $("#createVault").onclick = () => {
-  const path = ($("#vaultPath").value || "").trim();
+  let path = ($("#vaultPath").value || "").trim().replace(/\/+$/, "");
+  if (path === "/mnt/stickllm-data") { path = "/mnt/stickllm-data/vault"; $("#vaultPath").value = path; }
+  if (path.startsWith("/mnt/stickllm-data/") && !vaultStickData) {
+    return confirmBox({
+      title: "Store vault on this drive?",
+      text: "The vault becomes an encrypted file on this drive's STICKLLM-DATA partition. Reflashing the drive deletes it; keep your recovery phrase.",
+      word: "STICK-DATA", ok: "Use this drive",
+      cb: () => { vaultStickData = true; $("#createVault").click(); },
+    });
+  }
   const size = String($("#vaultSize").value || "32");
   const p1 = $("#np1").value, p2 = $("#np2").value;
   if (!path) return toast("Choose a folder first");
@@ -4438,14 +4490,14 @@ $("#createVault").onclick = () => {
     word: "CREATE-VAULT", ok: "Create vault",
     cb: async () => {
       try {
-        const onStickData = vaultStickData && path.startsWith("/mnt/stickllm-data/");
+        const onStickData = vaultStickData && path.startsWith("/mnt/stickllm-data/");  // path normalised above
         const res = await control("vault_setup", {
           path, size_gb: size, confirm: "CREATE-VAULT",
           recovery_confirm: "SHOW-ONCE", passcode: p1, passcode2: p2, space_confirm: "SPACE-OK",
           ...(onStickData ? { stick_data_confirm: "STICK-DATA" } : {}),
         });
         $("#np1").value = $("#np2").value = "";
-        if (!res.ok) throw new Error(res.error || res.stderr || "setup failed");
+        if (!res.ok) { const er = new Error(res.error || res.stderr || "setup failed"); er.title = "Could not create vault"; throw er; }
         const phrase = res.recovery_phrase || "(no phrase in response — check stick logs)";
         confirmBox({
           title: "Save your recovery phrase",
@@ -4459,7 +4511,7 @@ $("#createVault").onclick = () => {
             await refreshStorage();
           },
         });
-      } catch (e) { toast(e.message); }
+      } catch (e) { showError(e); }
     },
   });
 };
@@ -4472,14 +4524,14 @@ $("#growBtn").onclick = () => {
         const res = await control("vault_grow", { add_gb: gb, confirm: "GROW-VAULT" });
         if (!res.ok) throw new Error(res.error || "grow failed");
         toast("Vault grown"); await refreshStorage();
-      } catch (e) { toast(e.message); }
+      } catch (e) { showError(e); }
     },
   });
 };
 $("#wipeBtn").onclick = () => {
   const n = String($("#wipeN").value || "0");
   if (n === "0") {
-    control("vault_set_wipe", { n: "0", confirm: "OFF" }).then(() => toast("Wipe-after-N off")).catch((e) => toast(e.message));
+    control("vault_set_wipe", { n: "0", confirm: "OFF" }).then(() => toast("Wipe-after-N off")).catch((e) => showError(e));
     return;
   }
   confirmBox({
@@ -4490,7 +4542,7 @@ $("#wipeBtn").onclick = () => {
       try {
         await control("vault_set_wipe", { n, confirm: "WIPE-OK" });
         toast(`Wipe after ${n} tries enabled`);
-      } catch (e) { toast(e.message); }
+      } catch (e) { showError(e); }
     },
   });
 };
@@ -4518,7 +4570,7 @@ async function refreshMovableLive() {
           try {
             await control("vault_move_model", { path: m.path, confirm: "MOVE-MODEL" });
             toast("Moved"); await refreshMovableLive();
-          } catch (e) { toast(e.message); }
+          } catch (e) { showError(e); }
         },
       });
     }));
@@ -4551,7 +4603,7 @@ async function openVaultChat(id) {
     }
     leaveApps();
     state.current = c; renderThread(); renderConvs(); closeSettings();
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 }
 async function saveCurrentChat(quiet) {
   if (sessionMode !== "vault" || !state.vaultOpen) {
@@ -4607,10 +4659,10 @@ function renderSaved() {
   ).join("");
   $$("[data-oc]").forEach((b) => (b.onclick = () => openVaultChat(b.dataset.oc)));
   $$("[data-dc]").forEach((b) => (b.onclick = () => {
-    deleteVaultChat(b.dataset.dc).catch((e) => toast(e.message));
+    deleteVaultChat(b.dataset.dc).catch((e) => showError(e));
   }));
 }
-$("#saveChat").onclick = () => saveCurrentChat(false).catch((e) => toast(e.message));
+$("#saveChat").onclick = () => saveCurrentChat(false).catch((e) => showError(e));
 
 function detectLocalHost() {
   const h = String(location.hostname || "").toLowerCase();
@@ -4732,7 +4784,7 @@ async function issuePairHotkey() {
       toast("Look at the stick screen for the new PAIR CODE");
     }
     await refreshStatus();
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 }
 async function issueSshHotkey() {
   // F10 from any StickLLM screen. The server only returns the password to this UI.
@@ -4755,7 +4807,7 @@ async function issueSshHotkey() {
       pushSystemMsg("SSH is off on this boot. Reboot → GRUB → 2 Terminal or 3 Test - SSH Enabled to get a password.");
       toast("SSH disabled on this boot");
     }
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 }
 $("#remint").onclick = () => { issuePairHotkey(); };
 /** LAN browsers: no code, no New code. Both live on the kiosk only. */
@@ -4950,7 +5002,7 @@ async function saveAdvModel(clear) {
   } catch (e) { $("#advLoadMsg").textContent = e.message || String(e); }
 }
 if ($("#sec-advanced")) {
-  $("#advModel").onchange = () => loadAdvModel().catch((e) => toast(e.message));
+  $("#advModel").onchange = () => loadAdvModel().catch((e) => showError(e));
   $("#advLoadSave").onclick = () => saveAdvModel(false);
   $("#advLoadClear").onclick = () => saveAdvModel(true);
   $("#advGpuSave").onclick = async () => {
@@ -4974,7 +5026,7 @@ if ($("#sec-advanced")) {
       if (Array.isArray(j.gpus)) advState.power = j.gpus;
       toast(`GPU${j.index} power limit ${j.watts} W (resets on reboot)`);
       renderAdvGpus();
-    } catch (err) { toast(err.message || String(err)); b.disabled = false; }
+    } catch (err) { showError(err); b.disabled = false; }
   });
   $("#advAppAgent").onchange = async (e) => {
     const want = e.target.checked;
@@ -5007,7 +5059,7 @@ $("#wifiBtn").onclick = async () => {
       const j = await control("net_info").catch(() => null);
       if (j && j.net && j.net.ip) { res.net = j.net; await refreshNetwork().catch(() => {}); break; }
     }
-  } catch (e) { $("#wpass").value = ""; toast(e.message); }
+  } catch (e) { $("#wpass").value = ""; showError(e); }
 };
 // 0.6.1: WiFi scan list (tap a network to fill the name).
 if ($("#wifiScan")) $("#wifiScan").onclick = async () => {
@@ -5043,7 +5095,7 @@ if ($("#wifiScan")) $("#wifiScan").onclick = async () => {
       };
       list.appendChild(b);
     });
-  } catch (e) { toast(e.message); }
+  } catch (e) { showError(e); }
 };
 
 async function refreshStatus() {
@@ -5432,7 +5484,7 @@ async function convertDocFile(chip, file) {
   } catch (e) {
     chip.status = "failed";
     chip.error = e.message;
-    toast(e.message);
+    showError(e);
   }
   renderAttach();
 }
@@ -5464,7 +5516,7 @@ async function addAnyFiles(list) {
         state.attach.push({ kind: "image", ...img, size: file.size, status: "ready" });
         added += 1;
         renderAttach();
-      } catch (e) { toast(e.message); }
+      } catch (e) { showError(e); }
       continue;
     }
     const chip = {
