@@ -988,7 +988,7 @@ def test_apps_prompt_names_url_ids(tmp_path):
     assert rule in skill
     assert "Use open_app / app_state / app_act for StickLLM apps." in skill
     assert "At most 30 actions, then summarise." in skill
-    assert "URL ids are minesweeper, solitaire, tetris" in skill
+    assert "Ids: minesweeper, solitaire, tetris" in skill  # 0.6.1: list built from the app list
     assert agent.APPS_PLAYABLE_NOTE in skill
     assert '{"move":"t3->f1"}' in skill
     assert '{"draw":true}' in skill

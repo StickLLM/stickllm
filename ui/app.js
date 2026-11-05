@@ -6871,6 +6871,16 @@ function cueHiddenTab(id) {
   }
   return true;
 }
+function openAgentUrl(url, title) {
+  if (!/^https?:\/\//i.test(url)) return false;
+  const local = /^http:\/\/127\.0\.0\.1(?::\d+)?\/browser-pages\//.test(url);
+  const desk = window.stickDesk;
+  if (detectLocalHost() && desk && desk.openBrowser) { desk.openBrowser(url, title || "Agent Zero"); return true; }
+  if (local) { toast("Agent Zero opened a page on the StickLLM screen; it can only be shown there."); return false; }
+  const w = window.open(url, "_blank", "noopener");
+  if (!w) toast("Agent Zero wants to open " + url + " — allow pop-ups for StickLLM.");
+  return !!w;
+}
 function openStickApp(id, doc) {
   if (!/^[a-z][a-z-]{0,23}$/.test(id)) return false;
   if (doc) pendingDoc[id] = String(doc); else delete pendingDoc[id];
@@ -6907,16 +6917,6 @@ function openStickApp(id, doc) {
 }
 // 0.6.1 (item 22): Agent Zero's open_url / open_file show a page in the
 // user's browser (the kiosk browser window, or a new tab on a LAN browser).
-function openAgentUrl(url, title) {
-  if (!/^https?:\/\//i.test(url)) return false;
-  const local = /^http:\/\/127\.0\.0\.1(?::\d+)?\/browser-pages\//.test(url);
-  const desk = window.stickDesk;
-  if (detectLocalHost() && desk && desk.openBrowser) { desk.openBrowser(url, title || "Agent Zero"); return true; }
-  if (local) { toast("Agent Zero opened a page on the StickLLM screen; it can only be shown there."); return false; }
-  const w = window.open(url, "_blank", "noopener");
-  if (!w) toast("Agent Zero wants to open " + url + " — allow pop-ups for StickLLM.");
-  return !!w;
-}
 // Agent Zero install_app: the gateway asks this screen; nothing installs
 // until the user clicks Install here (the normal /api/apps/install).
 let agentInstallId = "";
