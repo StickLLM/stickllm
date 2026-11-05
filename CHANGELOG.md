@@ -1,4 +1,5 @@
 ## 0.6.3 - 2026-11-05
+- Agent Zero is an OS-installed docker graph at /opt/stickllm/docker (in filesystem.squashfs); no ISO tar installer; DATA attaches RO layer diffs (no first-boot bulk copy)
 - Agent Zero runnable endpoint: RO-bind squashfs layer diffs into DATA docker root (no first-boot full seed copy); Move to SSD materializes explicitly
 
 - First-time setup wizard (network, storage, vault, starter model, tour); re-runnable from Settings.

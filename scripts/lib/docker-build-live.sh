@@ -218,10 +218,10 @@ if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
   # 0.6.3: bake a docker data-root seed into squashfs so A0 runs preinstalled
   # from the USB with no Install step. Tar parts stay in cache for rebuilds.
   if [[ "${STICKLLM_A0_SEED:-1}" != "0" ]]; then
-    echo "[stickllm] building Agent Zero docker-seed (preinstalled on stick)"
+    echo "[stickllm] installing Agent Zero docker graph into OS image (/opt/stickllm/docker)"
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io rsync >/dev/null
-    A0_SEED_OUT=config/includes.chroot/opt/stickllm/docker-seed
+    A0_SEED_OUT=config/includes.chroot/opt/stickllm/docker
     rm -rf "$A0_SEED_OUT"
     A0_SEED_WORK=/work/stickllm-a0-seed-work \
   bash /stickllm/scripts/lib/a0_seed.sh \
@@ -234,11 +234,11 @@ if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
       rm -rf config/includes.chroot/usr/local/share/stickllm/agent-zero-minilm
       cp -a "$A0_BUNDLE_OUT/minilm" config/includes.chroot/usr/local/share/stickllm/agent-zero-minilm
     fi
-    # Drop large tar parts from the ISO9660 layer (seed lives in squashfs).
+    # Layers live only under /opt/stickllm/docker inside filesystem.squashfs.
+    # Do not ship a standalone A0 tar/bundle installer on ISO9660.
     find "$A0_BUNDLE_OUT" -name 'agent-zero.tar.part-*' -delete
-    printf '%s\n' '{"format":1,"seed":"/opt/stickllm/docker-seed","note":"image preinstalled via squashfs seed"}' \
-      > "$A0_BUNDLE_OUT/bundle.json"
-    du -sh "$A0_SEED_OUT" "$A0_BUNDLE_OUT"
+    rm -rf "$A0_BUNDLE_OUT"
+    du -sh "$A0_SEED_OUT"
   fi
   du -sh "$A0_BUNDLE_OUT"
 else
@@ -301,9 +301,8 @@ shopt -s nullglob
 for f in /work/*.hybrid.iso /work/*.iso; do
   # Verify on the Docker volume first (source of truth).
   bash /stickllm/scripts/lib/iso-integrity-check.sh "$f"
-  if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
-    xorriso -indev "$f" -find /stickllm/agent-zero -name bundle.json 2>/dev/null | grep -q bundle.json \
-      || { echo "ISO is missing /stickllm/agent-zero/bundle.json" >&2; exit 1; }
+  if [[ "${STICKLLM_A0_SEED:-1}" != "0" ]]; then
+    echo "[stickllm] A0 docker graph expected in filesystem.squashfs at /opt/stickllm/docker"
   fi
   cp -f "$f" "/stickllm-out/$(basename "$f")"
   # OneDrive/NTFS bind mounts have truncated hybrids before — fail loud.

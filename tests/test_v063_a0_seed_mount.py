@@ -53,7 +53,7 @@ def test_ensure_seeded_binds_diffs_not_copy(tmp_path, monkeypatch):
     (layer / "diff" / "file").write_text("bulk", encoding="utf-8")
     (layer / "link").write_text("meta", encoding="utf-8")
     (seed / "overlay2" / "l").mkdir(parents=True)
-    (seed / "stickllm-seed.json").write_text(
+    (seed / "stickllm-docker.json").write_text(
         json.dumps({
             "format": 1,
             "kind": "docker-data-root",
@@ -119,3 +119,24 @@ def test_move_ssd_uses_materialize(monkeypatch, tmp_path):
     res = mod.move_agent_root("ssd")
     assert res["ok"] is True
     assert calls and calls[0].name == "stickllm-docker"
+
+
+def test_installed_path_is_os_docker_not_separate_squash():
+    src = (ROOT / "scripts/lib/docker-build-live.sh").read_text(encoding="utf-8")
+    assert "includes.chroot/opt/stickllm/docker" in src
+    assert "includes.chroot/opt/stickllm/docker-seed" not in src
+    assert 'rm -rf "$A0_BUNDLE_OUT"' in src
+
+
+def test_agent_image_ready_has_no_bundle_install_fallback():
+    sh = (ROOT / "overlay/usr/local/bin/stickllm-agent").read_text(encoding="utf-8")
+    # Between cmd_image_ready and the next major cmd, no install unit kick
+    chunk = sh.split("cmd_image_ready()")[1].split("run_ref()")[0]
+    assert "Legacy: split-tar bundle" not in chunk
+    assert "stickllm-agent-install.service" not in chunk
+
+
+def test_default_installed_dir_is_opt_stickllm_docker():
+    mod = _load()
+    assert mod.SEED_DIR.as_posix().endswith("/opt/stickllm/docker")
+

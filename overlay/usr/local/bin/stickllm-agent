@@ -1,7 +1,8 @@
 #!/bin/bash
 # Start Agent Zero only after the server vault is mounted.
-# 0.6.3: Agent Zero ships preinstalled (docker-seed in squashfs). Default
-# data-root is the stick DATA partition; optional Move to SSD copies it.
+# 0.6.3: Agent Zero is an OS-installed docker graph at /opt/stickllm/docker
+# (ordinary dirs in filesystem.squashfs). Writable root on STICKLLM-DATA;
+# optional Move to SSD materializes a full copy there.
 # It is not stored in the vault.
 # Do not print API keys, vault passcodes, or chat text.
 set -euo pipefail
@@ -25,7 +26,7 @@ NETWORK="stickllm-agent"
 ENTRY="/usr/local/bin/stickllm-agent-entrypoint"
 DOCKER_DIR=""
 
-# 0.6.3: attach squashfs docker-seed (RO layer binds) at the data-root (preinstalled).
+# Attach /opt/stickllm/docker layer diffs (RO) at the writable data-root.
 a0_ensure_seed() {
   "$PYBIN" "$LIB" write-status --state starting --phase preparing --progress 5 \
     --message "Starting Agent Zero…" --image_present false 2>/dev/null || true
@@ -172,7 +173,7 @@ needs_install() {
 # ExecCondition for stickllm-agent.service: skip the unit (no ExecStop, no
 # dockerd) while the image is not installed. Exit 1 = skip.
 cmd_image_ready() {
-  # 0.6.3: attach seed at the USB data-root (no full copy), then the image is ready.
+  # Attach installed graph at USB data-root (no full copy / no docker load).
   if "$PYBIN" "$LIB" docker-may-start 2>/dev/null; then
     resolve_docker_dir 2>/dev/null || true
     a0_ensure_seed
@@ -180,11 +181,7 @@ cmd_image_ready() {
   if image_on_disk; then
     exit 0
   fi
-  # Legacy: split-tar bundle still loadable via install unit (fallback).
-  if "$PYBIN" "$LIB" docker-may-start 2>/dev/null && "$PYBIN" "$LIB" bundle-info >/dev/null 2>&1 \
-     && ! install_running && command -v systemctl >/dev/null 2>&1; then
-    systemctl start --no-block stickllm-agent-install.service 2>/dev/null || true
-  fi
+  # No standalone ISO tar/bundle installer — do not docker load.
   exit 1
 }
 
@@ -469,7 +466,7 @@ cmd_install() {
     exit 0
   fi
   a0_ensure_seed
-  # 0.6.3: seed already provided the image — skip load/pull, go to start.
+  # 0.6.3: OS-installed graph — never docker load/import; start only.
   if image_on_disk; then
     "$PYBIN" "$LIB" write-status --state starting --phase creating --progress 60 \
       --image_present true --low_space false \
@@ -486,6 +483,10 @@ cmd_install() {
     cmd_run_container
     exit 0
   fi
+  echo "stickllm-agent: Agent Zero missing from OS install (/opt/stickllm/docker)" >&2
+  "$PYBIN" "$LIB" write-status --state needs_install --image_present false \
+    --message "Agent Zero is not installed in this image." >/dev/null || true
+  exit 1
   ensure_dockerd agent-install
   # Success or failure, the installer's own hold on dockerd ends with it.
   trap 'release_dockerd agent-install' EXIT

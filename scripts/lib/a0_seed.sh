@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build a docker data-root that already contains the pinned Agent Zero image.
-# Used at ISO build time so the stick ships A0 installed (no docker load on first run).
+# Build the OS-installed docker data-root containing the pinned Agent Zero image.
+# Ordinary dirs under /opt/stickllm/docker inside filesystem.squashfs.
+# Build-time docker load only; runtime must not docker load/import.
 # Usage: a0_seed.sh <pin-file> <bundle-dir-with-parts> <out-seed-dir>
 set -euo pipefail
 PIN="${1:?pin}"
@@ -111,8 +112,8 @@ doc = {
   "config_digest": meta.get("config_digest"),
   "amd64_digest": meta.get("amd64_digest"),
 }
-(out / "stickllm-seed.json").write_text(json.dumps(doc, indent=1) + "\n")
-print("a0_seed: wrote", out / "stickllm-seed.json", flush=True)
+(out / "stickllm-docker.json").write_text(json.dumps(doc, indent=1) + "\n")
+print("a0_seed: wrote", out / "stickllm-docker.json", flush=True)
 PY
 
 SEED_BYTES=$(du -sb "$OUT" | awk '{print $1}')

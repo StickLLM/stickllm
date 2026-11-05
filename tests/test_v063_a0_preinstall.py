@@ -35,7 +35,7 @@ def test_seed_ready_and_ensure_seeded(tmp_path, monkeypatch):
     (layer / "diff" / "bulk").write_text("BIG", encoding="utf-8")
     (layer / "link").write_text("meta", encoding="utf-8")
     (seed / "overlay2" / "l").mkdir(parents=True)
-    (seed / "stickllm-seed.json").write_text(json.dumps({
+    (seed / "stickllm-docker.json").write_text(json.dumps({
         "format": 1,
         "config_digest": "sha256:" + "a" * 64,
         "amd64_digest": "sha256:" + "b" * 64,
@@ -133,7 +133,7 @@ def test_agent_sh_seeds_before_start():
 def test_build_bakes_docker_seed():
     build = BUILD.read_text(encoding="utf-8")
     assert "a0_seed.sh" in build
-    assert "/opt/stickllm/docker-seed" in build
+    assert "/opt/stickllm/docker" in build
     assert (ROOT / "scripts/lib/a0_seed.sh").is_file()
 
 

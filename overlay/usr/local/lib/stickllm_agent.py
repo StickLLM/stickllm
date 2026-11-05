@@ -54,7 +54,8 @@ DATA_MNT = Path(os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data"))
 DOCKER_DRIVE_PREF = Path(os.environ.get(
     "STICKLLM_DOCKER_DRIVE_PREF", str(SETTINGS_MNT / "agent-docker-drive")))
 SEED_DIR = Path(os.environ.get(
-    "STICKLLM_A0_SEED_DIR", "/opt/stickllm/docker-seed"))
+    "STICKLLM_A0_DOCKER_DIR",
+    os.environ.get("STICKLLM_A0_SEED_DIR", "/opt/stickllm/docker")))
 MOVE_STATUS = Path(os.environ.get(
     "STICKLLM_A0_MOVE_STATUS", "/run/stickllm/a0-move.json"))
 # Agent Zero image bundled on the ISO (scripts/lib/a0_bundle.py).
@@ -510,18 +511,30 @@ def docker_drive_pref() -> str:
 
 
 def seed_meta() -> dict | None:
-    """squashfs docker-seed metadata when the seed graph is present."""
-    try:
-        doc = json.loads((SEED_DIR / "stickllm-seed.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(doc, dict) or not (SEED_DIR / "image").is_dir():
-        return None
-    return doc
+    """Metadata for the OS-installed docker graph in filesystem.squashfs.
+
+    Ordinary directories at SEED_DIR (/opt/stickllm/docker) — not a separate A0
+    squashfs file and not an ISO tar installer.
+    """
+    for name in ("stickllm-docker.json", "stickllm-seed.json"):
+        path = SEED_DIR / name
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and (SEED_DIR / "image").is_dir():
+            return doc
+    return None
+
 
 
 def seed_ready() -> bool:
     return seed_meta() is not None
+
+
+def installed_graph_ready() -> bool:
+    """True when the OS-installed A0 docker graph is present."""
+    return seed_ready()
 
 
 def seed_matches_pin(pin: dict | None = None) -> bool:
@@ -594,13 +607,12 @@ def _copy_tree_small(src: Path, dst: Path) -> None:
 
 
 def ensure_seeded(root: Path | None = None) -> dict:
-    """Attach squashfs docker-seed at the runnable data-root without a full copy.
+    """Attach the OS-installed A0 docker graph at the writable data-root.
 
-    Layout (verified with dockerd overlay2 + alpine):
-      - Copy small metadata (image/, top-level mutable dirs) onto DATA/SSD root.
-      - For each overlay2/<id>/diff: bind-mount RO from SEED_DIR (bulk layers stay on squashfs).
-      - overlay2/l is a writable symlink farm recreated from the seed.
-    Never rsync/cp the whole seed into DATA. Returns copied=False always.
+    Layer content exists once under SEED_DIR (/opt/stickllm/docker) as ordinary
+    files inside the whole-OS filesystem.squashfs. Writable USB/SSD data-root
+    gets small metadata plus RO binds of overlay2/*/diff. Never full-copies
+    layers onto DATA; never docker load/import at runtime. copied=False.
     """
     root = root or choose_docker_root()
     out: dict = {
@@ -650,8 +662,11 @@ def ensure_seeded(root: Path | None = None) -> dict:
             if item.is_file() and not (root / item.name).exists():
                 shutil.copy2(item, root / item.name)
         # Keep seed marker for operators (tiny).
-        if (seed / "stickllm-seed.json").is_file():
-            shutil.copy2(seed / "stickllm-seed.json", root / "stickllm-seed.json")
+        marker = seed / "stickllm-docker.json"
+        if not marker.is_file():
+            marker = seed / "stickllm-seed.json"
+        if marker.is_file():
+            shutil.copy2(marker, root / marker.name)
         overlay_dst = root / "overlay2"
         overlay_dst.mkdir(parents=True, exist_ok=True)
         seed_overlay = seed / "overlay2"
@@ -700,7 +715,7 @@ def ensure_seeded(root: Path | None = None) -> dict:
 
 
 def materialize_seed(root: Path) -> dict:
-    """Full seed -> root copy. Only for explicit Move to SSD (user-triggered)."""
+    """Copy installed docker graph onto root. Only for explicit Move to SSD."""
     out: dict = {"ok": False, "root": str(root), "copied": False}
     if not seed_ready():
         out["error"] = "no_seed"
