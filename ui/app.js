@@ -3089,6 +3089,16 @@ function renderModelsList() {
     return;
   }
   let rows = source.filter(modelVisible);
+  const cantIds = new Set();
+  for (const m of rows) {
+    const nm = String(m.name || m.id || "");
+    const sz = Number(m.approx_size_gb || m.size_gb || 0);
+    if (m.cant_load || (sz > 0 && sz < 0.1) || /vocab|mtp|nextn|expert|mmproj|qwen4exp/i.test(nm)) {
+      cantIds.add(m.id || m.path || m.name);
+    }
+  }
+  state._cantLoadRows = rows.filter((m) => cantIds.has(m.id || m.path || m.name));
+  rows = rows.filter((m) => !cantIds.has(m.id || m.path || m.name));
   const order = { gpu: 0, offload: 1, no: 2 };
   // 0.5.6: installed models always come first (then the chosen sort).
   const have = (m) => Number(!m.installed);
@@ -3198,6 +3208,15 @@ function renderModelsList() {
     selectedModelId = b.dataset.delf;
     askDeleteModel(findModel(b.dataset.delf));
   }));
+  const cant = state._cantLoadRows || [];
+  if (cant.length && state.mtab === "local") {
+    const box = document.createElement("div");
+    box.className = "cant-load-group";
+    box.innerHTML = "<details><summary>Can't load on this system (" + cant.length + ")</summary>" +
+      cant.map((m) => "<div class=\"model muted small\"><b>" + esc(m.name || m.id || "") + "</b> — " + esc(m.cant_load_reason || m.arch_warning || "unsupported or not a full model") + "</div>").join("") +
+      "</details>";
+    $("#modelList")?.appendChild(box);
+  }
   syncModelActions();
 }
 function syncModelActions() {
@@ -4102,12 +4121,29 @@ $("#delModel").onclick = () => {
   askDeleteModel(lastCatalog.find((x) => x.id === selectedModelId));
 };
 
+
+function showVaultCreating(on) {
+  let el = $("#vaultCreatingOverlay");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "vaultCreatingOverlay";
+    el.innerHTML = '<div class="vault-creating-card"><div class="spin" aria-hidden="true"></div><div><strong>Creating vault, please wait…</strong><div class="muted small">This can take a few minutes on a USB stick.</div></div></div>';
+    document.body.appendChild(el);
+  }
+  el.classList.toggle("show", !!on);
+  el.setAttribute("aria-hidden", on ? "false" : "true");
+  ["#createVault", "#pickCreate", "#np1", "#np2"].forEach((sel) => {
+    const n = $(sel); if (n) n.disabled = !!on;
+  });
+}
+
 async function refreshStorage() {
   if (!(await ensurePaired())) return;
   const ep = vaultEpoch;
-  const st = await control("status");
+  const st = await control("status_light");
   if (ep !== vaultEpoch || vaultBusy()) return; // stale: the vault changed meanwhile
   const v = st.vault || {};
+  try { refreshActiveVaultUI(v); } catch (_) {}
   const open = vaultIsOpen(v);
   setVaultChrome(open, vaultIsAbsent(v));
   if ($("#vcSub")) {
@@ -4131,29 +4167,34 @@ async function refreshDrivesLive() {
     const mountable = Array.isArray(res.mountable) ? res.mountable : [];
     const blocked = Array.isArray(res.blocked_disks) ? res.blocked_disks : [];
     const box = $("#drives");
-    // 0.6.1 (items 12/28): no internal drive -> offer this drive's STICKLLM-DATA.
+    // 0.6.3: STICKLLM-DATA is first-class — one card only (no confirm gate / duplicate).
     const sd = res.stick_data;
-    const sdHtml = (sd && sd.no_internal_drive)
-      ? `<div class="drive"><div class="dh"><b>This drive (STICKLLM-DATA)</b></div>
-        <small class="mono">${esc(sd.path)}</small>
-        <small>${esc(String(sd.free_gb))} GiB free · ${sd.enough ? "no internal drive found" : "not enough space (need 2 GiB)"}</small>
-        <div><button class="btn sm" data-stickdata="${esc(sd.path)}" type="button" ${sd.enough ? "" : "disabled"}>Store vault on this drive…</button></div></div>`
-      : "";
+    const sdHtml = "";
+    const stickPaths = new Set();
+    if (sd && sd.path) stickPaths.add(String(sd.path).replace(/\/+$/, ""));
+    stickPaths.add("/mnt/stickllm-data");
     if (!sel.length && !mountable.length && !blocked.length && !sdHtml) {
       box.innerHTML = '<div class="row"><small>No browsable mounts and no STICKLLM-DATA partition. Use “Use free space on the stick” below, or plug in a drive and mount it.</small></div>';
       return;
     }
     let html = sdHtml;
+    const seenMount = new Set();
     for (const d of sel) {
       const path = d.mount_path || d.path || "";
+      const norm = String(path).replace(/\/+$/, "");
+      if (!path || seenMount.has(norm)) continue;
+      if (norm === "/mnt/stickllm-settings" || norm.includes("stickllm-settings")) continue;
+      seenMount.add(norm);
+      const isStick = stickPaths.has(norm) || d.kind === "usb_stick" || /STICKLLM-DATA/i.test(String(d.label || ""));
+      const label = isStick ? "StickLLM stick" : (d.label || path);
       const free = d.free_gb != null
         ? `${d.free_gb} GiB free`
         : (d.avail ? `${d.avail} free` : "");
       const warn = d.warn ? `<small class="muted">${esc(d.warn)}</small>` : "";
       html += `<button class="drive" data-path="${esc(path)}" type="button">
-        <div class="dh"><b>${esc(d.label || path)}</b></div>
+        <div class="dh"><b>${esc(label)}</b></div>
         <small class="mono">${esc(path)}</small>
-        <small>${esc(free)} · ${esc(d.kind || d.fstype || d.fs || "")}</small>
+        <small>${esc(free)} · ${esc(isStick ? "STICKLLM-DATA" : (d.kind || d.fstype || d.fs || ""))}</small>
         ${warn}
         <div><span class="pill ok">mounted</span></div></button>`;
     }
@@ -4223,16 +4264,37 @@ async function refreshDrivesLive() {
     $("#drives").innerHTML = `<div class="row"><small>${esc(e.message)}</small></div>`;
   }
 }
-function renderPickerSide() {
+async function renderPickerSide() {
   const side = $("#fpSide");
   if (!side) return;
   const cur = vaultBrowsePath || "—";
+  let drivesHtml = "";
+  try {
+    const res = await control("vault_devices");
+    const devices = Array.isArray(res.devices) ? res.devices : [];
+    const sel = Array.isArray(res.selectable) ? res.selectable : devices.filter((d) => d && d.selectable);
+    const seen = new Set();
+    for (const d of sel) {
+      const path = d.mount_path || d.path || "";
+      const norm = String(path).replace(/\/+$/, "");
+      if (!path || seen.has(norm)) continue;
+      if (norm === "/mnt/stickllm-settings" || norm.includes("stickllm-settings") || norm.startsWith("/dev/mapper/")) continue;
+      seen.add(norm);
+      const isStick = norm === "/mnt/stickllm-data" || d.kind === "usb_stick" || /STICKLLM-DATA/i.test(String(d.label || ""));
+      const free = d.free_gb != null ? d.free_gb + " GiB free" : "";
+      drivesHtml += `<button class="fpDrive" type="button" data-fpdrive="${esc(path)}"><span><b>${esc(isStick ? "StickLLM stick" : (d.label || path))}</b><small>${esc(free)}</small></span></button>`;
+    }
+  } catch (_) {}
   side.innerHTML =
-    '<div class="fpSideLab">Search</div>' +
+    '<div class="fpSideLab">Available drives</div>' + (drivesHtml || '<small class="muted">No mounted data drives</small>') +
+    '<div class="fpSideLab" style="margin-top:12px">Search</div>' +
     '<button class="fpDrive" type="button" id="fpSideSearchVault"><span><b>Search for vault</b><small>stickllm-vault.img on mounts</small></span></button>' +
     '<button class="fpDrive" type="button" id="fpSideSearchModels"><span><b>Search for models</b><small>.gguf folders on this volume</small></span></button>' +
     '<div class="fpSideLab" style="margin-top:12px">Current</div>' +
     '<div class="row"><small class="mono">' + esc(cur) + "</small></div>";
+  side.querySelectorAll("[data-fpdrive]").forEach((b) => {
+    b.onclick = () => openLivePicker(b.dataset.fpdrive);
+  });
   const sv = $("#fpSideSearchVault");
   const sm = $("#fpSideSearchModels");
   if (sv) sv.onclick = () => searchForVault({ inPicker: true });
@@ -4255,7 +4317,7 @@ async function browseLive(path) {
     $("#fpBackB").disabled = true; $("#fpFwd").disabled = true;
     $("#fpCrumbs").innerHTML = `<button class="crumbBtn" type="button">${esc(vaultBrowsePath)}</button>`;
     setFpCols();
-    renderPickerSide();
+    await renderPickerSide();
     const dirs = res.dirs || res.entries || [];
     const files = res.files || [];
     let rows = "";
@@ -4601,8 +4663,10 @@ if ($("#fpSearchModels")) $("#fpSearchModels").onclick = () => searchForModels({
 async function openFolderPicker(purpose, title) {
   pickerPurpose = purpose || "vault";
   const start = ($("#modelDir")?.textContent || "").trim();
-  const fallback = ($("#vaultPath").value || vaultBrowsePath || "").trim();
-  const path = (purpose === "models_dir" && start.startsWith("/")) ? start : (fallback || start);
+  let fallback = ($("#vaultPath").value || vaultBrowsePath || "").trim();
+  if (fallback.startsWith("/mnt/stickllm-settings") || fallback.includes("stickllm-settings")) fallback = "";
+  if (fallback.startsWith("/dev/mapper/")) fallback = "";
+  const path = (purpose === "models_dir" && start.startsWith("/") && !start.includes("stickllm-settings")) ? start : (fallback || start);
   const applyTitle = () => {
     if ($("#fpTitle")) $("#fpTitle").textContent = title || (purpose === "models_dir" ? "Choose models folder" : "Choose folder / vault");
   };
@@ -4612,9 +4676,15 @@ async function openFolderPicker(purpose, title) {
     return;
   }
   await refreshDrivesLive();
-  const first = $("#drives [data-path]");
-  if (first) {
-    await openLivePicker(first.dataset.path);
+  let pick = null;
+  const buttons = Array.from($$("#drives [data-path]"));
+  // Prefer host SSD/HDD, then StickLLM DATA; never settings/crypt.
+  pick = buttons.find((b) => {
+    const p = b.dataset.path || "";
+    return p && !p.includes("stickllm-settings") && !p.startsWith("/dev/mapper/") && p !== "/mnt/stickllm-data";
+  }) || buttons.find((b) => (b.dataset.path || "").startsWith("/mnt/stickllm-data")) || buttons[0];
+  if (pick) {
+    await openLivePicker(pick.dataset.path);
     applyTitle();
   } else toast("Mount a drive or claim stick DATA first");
 }
@@ -4678,9 +4748,10 @@ $("#createVault").onclick = () => {
   confirmBox({
     title: "Create vault?",
     text: `Creates a ${size} GiB encrypted file in ${path}. Never formats your drive.`,
-    word: "CREATE-VAULT", ok: "Create vault",
+    ok: "Create vault", check: "I understand this creates an encrypted vault file (never formats the drive).",
     cb: async () => {
       try {
+        showVaultCreating(true);
         const onStickData = path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/");
         const res = await control("vault_setup", {
           path, size_gb: size, confirm: "CREATE-VAULT",
@@ -4688,6 +4759,7 @@ $("#createVault").onclick = () => {
           ...(onStickData ? { stick_data_confirm: "STICK-DATA" } : {}),
         });
         $("#np1").value = $("#np2").value = "";
+        showVaultCreating(false);
         if (!res.ok) { const er = new Error(res.error || res.stderr || "setup failed"); er.title = "Could not create vault"; throw er; }
         const phrase = res.recovery_phrase || "(no phrase in response — check stick logs)";
         confirmBox({
@@ -4702,7 +4774,7 @@ $("#createVault").onclick = () => {
             await refreshStorage();
           },
         });
-      } catch (e) { showError(e); }
+      } catch (e) { showVaultCreating(false); showError(e); }
     },
   });
 };
@@ -5265,7 +5337,7 @@ if ($("#wifiScan")) $("#wifiScan").onclick = async () => {
       const p = document.createElement("p");
       p.className = "muted small";
       p.style.padding = "8px 12px";
-      p.textContent = j.ok ? "No networks found. For a hidden network tick “Hidden network” and type its name." : (j.error || "Scan failed");
+      p.textContent = j.ok ? "No networks found. Type the network name above (works for hidden SSIDs too)." : (j.error || "Scan failed");
       list.appendChild(p);
       return;
     }
@@ -5281,7 +5353,6 @@ if ($("#wifiScan")) $("#wifiScan").onclick = async () => {
       b.append(name, sig);
       b.onclick = () => {
         $("#ssid").value = n.ssid;
-        if ($("#wifiHidden")) $("#wifiHidden").checked = false;
         (n.secure ? $("#wpass") : $("#wifiBtn")).focus();
       };
       list.appendChild(b);
@@ -5289,9 +5360,241 @@ if ($("#wifiScan")) $("#wifiScan").onclick = async () => {
   } catch (e) { showError(e); }
 };
 
+
+/* ---- 0.6.3 first-time setup wizard ---- */
+const SETUP_KEY = "stickllm.setup.v063";
+function setupDone() { try { return localStorage.getItem(SETUP_KEY) === "1"; } catch (_) { return false; } }
+function markSetupDone() { try { localStorage.setItem(SETUP_KEY, "1"); } catch (_) {} }
+
+async function openSetupWizard(opts) {
+  const force = !!(opts && opts.force);
+  if (!force && setupDone()) return;
+  let step = 0;
+  const state = {
+    drive: null,
+    vaultPath: "",
+    modelsPath: "",
+    dockerPath: "",
+    pass1: "",
+    pass2: "",
+    ssid: "",
+    wpass: "",
+  };
+  let overlay = $("#setupWizard");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "setupWizard";
+    overlay.innerHTML = `
+<div class="setup-card" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+  <h2 id="setupTitle">Welcome to StickLLM</h2>
+  <div id="setupBody"></div>
+  <div class="setup-actions">
+    <button type="button" id="setupBack" class="ghost">Back</button>
+    <button type="button" id="setupSkip" class="ghost">Skip</button>
+    <button type="button" id="setupNext" class="primary">Continue</button>
+  </div>
+  <p id="setupErr" class="err persistent" hidden></p>
+</div>`;
+    document.body.appendChild(overlay);
+  }
+  overlay.classList.add("show");
+  const body = $("#setupBody");
+  const err = $("#setupErr");
+  const showErr = (m) => { if (!m) { err.hidden = true; err.textContent = ""; return; } err.hidden = false; err.textContent = m; };
+  const targets = await control("storage_targets").catch(() => ({ drives: [], unmounted: [] }));
+  const drives = (targets && targets.drives) || [];
+  const unmounted = (targets && targets.unmounted) || [];
+  // Prefill: SSD if found else stick
+  state.drive = drives.find((d) => d.kind === "ssd") || drives.find((d) => d.kind === "stick") || drives[0] || null;
+  if (state.drive) {
+    state.vaultPath = state.drive.suggested_vault || (state.drive.path + "/vault");
+    state.modelsPath = state.drive.suggested_models || (state.drive.path + "/models");
+    state.dockerPath = state.drive.suggested_docker || (state.drive.path + "/stickllm-docker");
+  }
+
+  function render() {
+    showErr("");
+    $("#setupBack").disabled = step <= 0;
+    $("#setupSkip").textContent = step >= 4 ? "Close" : "Skip";
+    $("#setupNext").textContent = step >= 4 ? "Finish" : "Continue";
+    if (step === 0) {
+      $("#setupTitle").textContent = "Network";
+      body.innerHTML = `
+<p class="muted">Connect to Wi‑Fi or plug in a cable. You can type a hidden network name.</p>
+<label class="field"><span>Network name (SSID)</span><input id="wizSsid" autocomplete="off"></label>
+<label class="field"><span>Password</span><input id="wizWpass" type="password" autocomplete="off"></label>
+<div id="wizWifiList" class="wifi-list" hidden></div>
+<button type="button" id="wizScan" class="ghost">Scan for networks</button>
+<button type="button" id="wizJoin" class="ghost">Join Wi‑Fi</button>`;
+      $("#wizSsid").value = state.ssid;
+      $("#wizWpass").value = state.wpass;
+      $("#wizScan").onclick = async () => {
+        try {
+          const j = await control("wifi_scan");
+          const list = $("#wizWifiList"); list.hidden = false; list.textContent = "";
+          ((j && j.networks) || []).forEach((n) => {
+            const b = document.createElement("button"); b.type = "button";
+            b.textContent = n.ssid + (n.secure ? " 🔒" : "") + " " + n.signal + "%";
+            b.onclick = () => { $("#wizSsid").value = n.ssid; };
+            list.appendChild(b);
+          });
+        } catch (e) { showErr(String(e.message || e)); }
+      };
+      $("#wizJoin").onclick = async () => {
+        state.ssid = $("#wizSsid").value.trim(); state.wpass = $("#wizWpass").value;
+        try {
+          await control("wifi_join", { ssid: state.ssid, password: state.wpass });
+          toast("Joining Wi‑Fi…");
+        } catch (e) { showErr(String(e.message || e)); }
+      };
+    } else if (step === 1) {
+      $("#setupTitle").textContent = "Storage";
+      const rows = drives.map((d) => {
+        const sel = state.drive && state.drive.id === d.id;
+        return `<button type="button" class="drive-pick${sel ? " selected" : ""}" data-id="${d.id}">
+<strong>${d.label}</strong> · ${d.free_gb != null ? d.free_gb + " GB free" : ""}
+<div class="muted small">${d.path}</div></button>`;
+      }).join("") || `<p class="muted">No mounted data drives found yet.</p>`;
+      const um = unmounted.map((u) =>
+        `<button type="button" class="drive-pick" data-mount="${u.device}" data-mp="${u.suggested_mount}">
+Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (never formats)</div></button>`
+      ).join("");
+      body.innerHTML = `
+<p>Choose where to keep the vault, models, and Agent Zero. Prefers an internal SSD when one is available; the stick works fine alone.</p>
+<div class="drive-list">${rows}${um}</div>
+<label class="field"><span>Vault folder</span><input id="wizVault"></label>
+<label class="field"><span>Models / downloads folder</span><input id="wizModels"></label>
+<label class="field"><span>Agent Zero / Docker folder</span><input id="wizDocker"></label>`;
+      $("#wizVault").value = state.vaultPath;
+      $("#wizModels").value = state.modelsPath;
+      $("#wizDocker").value = state.dockerPath;
+      body.querySelectorAll(".drive-pick[data-id]").forEach((b) => {
+        b.onclick = () => {
+          state.drive = drives.find((d) => d.id === b.dataset.id);
+          if (state.drive) {
+            state.vaultPath = state.drive.suggested_vault;
+            state.modelsPath = state.drive.suggested_models;
+            state.dockerPath = state.drive.suggested_docker;
+            render();
+          }
+        };
+      });
+      body.querySelectorAll(".drive-pick[data-mount]").forEach((b) => {
+        b.onclick = async () => {
+          try {
+            const r = await control("mount_host_partition", { device: b.dataset.mount, path: b.dataset.mp });
+            if (!r.ok) throw new Error(r.error || "mount failed");
+            toast("Mounted " + b.dataset.mount);
+            overlay.classList.remove("show");
+            openSetupWizard({ force: true });
+          } catch (e) { showErr(String(e.message || e)); }
+        };
+      });
+    } else if (step === 2) {
+      $("#setupTitle").textContent = "Vault passcode";
+      body.innerHTML = `
+<p>Encrypt chats and settings. Models can live beside the vault on the same drive.</p>
+<label class="field"><span>Passcode (8+ characters)</span><input id="wizP1" type="password"></label>
+<label class="field"><span>Confirm passcode</span><input id="wizP2" type="password"></label>
+<p class="muted small">Vault path: <code id="wizVaultShow"></code></p>`;
+      $("#wizVaultShow").textContent = state.vaultPath || "(choose storage first)";
+      $("#wizP1").value = state.pass1; $("#wizP2").value = state.pass2;
+    } else if (step === 3) {
+      $("#setupTitle").textContent = "Starter model";
+      body.innerHTML = `
+<p>You can download a starter model after setup from Models. Downloads go to:</p>
+<p><code>${state.modelsPath || "(models folder)"}</code></p>
+<p class="muted">Skip for now if you are offline — the baked-in small model still works.</p>`;
+    } else {
+      $("#setupTitle").textContent = "You're ready";
+      body.innerHTML = `
+<ul class="setup-tour">
+<li>Chat is the easy front door; Agent Zero is the advanced agent.</li>
+<li>Open <strong>Settings → Storage</strong> any time to change folders or re-run this wizard.</li>
+<li>System monitor and Models refresh from the stick — give USB a moment after big downloads.</li>
+</ul>`;
+    }
+  }
+
+  $("#setupBack").onclick = () => { if (step > 0) { step -= 1; render(); } };
+  $("#setupSkip").onclick = () => {
+    if (step >= 4) { markSetupDone(); overlay.classList.remove("show"); return; }
+    step += 1; render();
+  };
+  $("#setupNext").onclick = async () => {
+    showErr("");
+    try {
+      if (step === 0) {
+        state.ssid = ($("#wizSsid")?.value || "").trim();
+        state.wpass = $("#wizWpass")?.value || "";
+      }
+      if (step === 1) {
+        state.vaultPath = ($("#wizVault")?.value || "").trim();
+        state.modelsPath = ($("#wizModels")?.value || "").trim();
+        state.dockerPath = ($("#wizDocker")?.value || "").trim();
+        if (!state.vaultPath || !state.modelsPath) throw new Error("Choose vault and models folders");
+        if (state.modelsPath) {
+          const r = await control("set_models_dir", { path: state.modelsPath });
+          if (r && r.ok === false) throw new Error(r.error || "Could not set models folder");
+        }
+        if ($("#vaultPath")) $("#vaultPath").value = state.vaultPath;
+      }
+      if (step === 2) {
+        state.pass1 = $("#wizP1")?.value || "";
+        state.pass2 = $("#wizP2")?.value || "";
+        if (state.pass1.length < 8) throw new Error("Passcode must be at least 8 characters");
+        if (state.pass1 !== state.pass2) throw new Error("Passcodes don't match");
+        const path = state.vaultPath.replace(/\/+$/, "");
+        const onStick = path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/");
+        showVaultCreating(true);
+        try {
+          const res = await control("vault_setup", {
+            path, size_gb: "32", confirm: "CREATE-VAULT",
+            recovery_confirm: "SHOW-ONCE", passcode: state.pass1, passcode2: state.pass2,
+            space_confirm: "SPACE-OK",
+            ...(onStick ? { stick_data_confirm: "STICK-DATA" } : {}),
+          });
+          showVaultCreating(false);
+          if (!res.ok) throw new Error(res.error || res.stderr || "vault setup failed");
+          const phrase = res.recovery_phrase || "";
+          if (phrase) {
+            await new Promise((resolve) => {
+              confirmBox({
+                title: "Save your recovery phrase",
+                text: "This is the only time it's shown. Write it down.",
+                extra: phrase, ok: "I saved it",
+                check: "I wrote down the recovery phrase.",
+                cb: resolve,
+              });
+            });
+          }
+        } catch (e) {
+          showVaultCreating(false);
+          throw e;
+        }
+      }
+      if (step >= 4) {
+        markSetupDone();
+        overlay.classList.remove("show");
+        try { await refreshStorage(); } catch (_) {}
+        return;
+      }
+      step += 1;
+      render();
+    } catch (e) {
+      showErr(String(e.message || e));
+    }
+  };
+  render();
+}
+
+
 async function refreshStatus() {
   // A refresh must not paint Loading until this browser is paired.
   if (!browserPaired) return;
+  if (!$("#setupWizard")?.classList.contains("show") && !setupDone() && (isLocalMode || detectLocalHost())) {
+    openSetupWizard().catch(() => {});
+  }
   const ep = vaultEpoch;
   const vaultFresh = () => ep === vaultEpoch && !vaultBusy();
   try {
@@ -7564,3 +7867,49 @@ window.stickApp = Object.freeze({
   });
   load();
 })();
+
+if ($("#setupWizardBtn")) $("#setupWizardBtn").onclick = () => openSetupWizard({ force: true });
+
+
+async function refreshActiveVaultUI(v) {
+  const pathEl = $("#activeVaultPath");
+  if (!pathEl) return;
+  const root = (v && (v.root || v.path || v.mount || v.blob)) || "";
+  const st = (v && (v.status || v.state)) || "";
+  pathEl.textContent = root ? (String(root) + (st ? " · " + st : "")) : "No vault unlocked";
+}
+async function loadVaultChoices() {
+  const box = $("#vaultChoices");
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = "<small>Searching…</small>";
+  try {
+    const res = await control("vault_search", {});
+    const hits = Array.isArray(res.hits) ? res.hits : (Array.isArray(res.vaults) ? res.vaults : (Array.isArray(res.results) ? res.results : []));
+    if (!hits.length) {
+      box.innerHTML = "<small class=\"muted\">No vault files found. Use Choose… under Create, or Search for vault.</small>";
+      return;
+    }
+    box.innerHTML = hits.map((h) => {
+      const p = h.path || h.blob || h;
+      return `<button class="drive-pick" type="button" data-vaultpick="${esc(String(p))}"><b>${esc(String(p))}</b><small>${esc(h.label || h.kind || "")}</small></button>`;
+    }).join("");
+    box.querySelectorAll("[data-vaultpick]").forEach((b) => {
+      b.onclick = async () => {
+        const path = b.dataset.vaultpick;
+        if ($("#vaultPath")) $("#vaultPath").value = path.replace(/\/stickllm-vault\.img$/, "").replace(/\/$/, "");
+        try {
+          await control("vault_bind", { path });
+        } catch (_) {
+          try { await control("vault_use", { path }); } catch (e2) { showError(e2, "Could not select vault"); return; }
+        }
+        toast("Vault selected — unlock with your passcode");
+        box.hidden = true;
+        try { await refreshStorage(); } catch (_) {}
+      };
+    });
+  } catch (e) {
+    box.innerHTML = "<small class=\"muted\">Search unavailable — use Search for vault below.</small>";
+  }
+}
+if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices();

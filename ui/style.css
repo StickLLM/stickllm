@@ -708,3 +708,27 @@ input.secret { -webkit-text-security: disc; }
 .toastItem.warn{border-left:4px solid #e0a020}
 .toastX{background:transparent;border:0;color:inherit;font-size:18px;line-height:1;cursor:pointer;padding:0 2px;opacity:.75}
 .toastX:hover{opacity:1}
+
+
+/* ---- 0.6.3 setup wizard + vault creating ---- */
+#setupWizard, #vaultCreatingOverlay {
+  position: fixed; inset: 0; z-index: 9999; display: none;
+  align-items: center; justify-content: center;
+  background: rgba(0,0,0,.55); padding: 16px;
+}
+#setupWizard.show, #vaultCreatingOverlay.show { display: flex; }
+.setup-card, .vault-creating-card {
+  background: var(--panel, #1b1f2a); color: var(--fg, #eee);
+  border-radius: 12px; padding: 20px 22px; max-width: 560px; width: min(560px, 96vw);
+  box-shadow: 0 12px 40px rgba(0,0,0,.45); display: flex; flex-direction: column; gap: 12px;
+}
+.vault-creating-card { flex-direction: row; align-items: center; gap: 14px; }
+.setup-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.drive-list { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow: auto; }
+.drive-pick { text-align: left; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); color: inherit; cursor: pointer; }
+.drive-pick.selected, .drive-pick:hover { border-color: #3aa0ff; background: rgba(58,160,255,.12); }
+.cant-load-group { margin: 12px 8px; padding: 8px 10px; border-top: 1px solid rgba(255,255,255,.1); }
+.cant-load-group summary { cursor: pointer; color: #c9a227; }
+#setupErr.persistent { color: #ff8e8e; white-space: pre-wrap; }
+.spin { width: 22px; height: 22px; border: 2px solid rgba(255,255,255,.25); border-top-color: #3aa0ff; border-radius: 50%; animation: stickllmspin 0.8s linear infinite; }
+@keyframes stickllmspin { to { transform: rotate(360deg); } }

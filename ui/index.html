@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v062hf1" />
-<link rel="stylesheet" href="desktop.css?v=v062" />
+<link rel="stylesheet" href="style.css?v=v063" />
+<link rel="stylesheet" href="desktop.css?v=v063" />
 </head>
 <body>
 <div class="app" id="app">
@@ -426,7 +426,12 @@
   <div class="secTools"><h3>Vault location</h3></div>
   <div class="row card"><div><b>Open an existing vault</b><small>Browse to a <span class="mono">stickllm-vault.img</span>. Vault files are detected automatically.</small></div><button class="btn sm primary" id="pickVault">Choose…</button></div>
 
-  <details class="adv">
+  <div class="card" id="activeVaultBox" style="margin:8px 0">
+      <div class="row"><div><b>Active vault</b><small id="activeVaultPath" class="mono">—</small></div>
+        <button class="btn sm" id="switchVaultBtn" type="button">Choose vault…</button></div>
+      <div id="vaultChoices" class="drive-list" hidden></div>
+    </div>
+<details class="adv">
     <summary>Create a new vault file</summary>
     <div class="advBody">
       <p class="muted small" id="ctHint" style="margin-top:12px">Creates <span class="mono">stickllm-vault.img</span> in the selected folder. Nothing else on the drive is touched.</p>
@@ -436,7 +441,10 @@
         <label class="field"><span>Passcode (min 8)</span><input type="text" id="np1" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
         <label class="field"><span>Confirm passcode</span><input type="text" id="np2" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
       </div>
-      <button class="btn primary" id="createVault">Create vault…</button>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="btn" id="setupWizardBtn" type="button">First-time setup…</button>
+        <button class="btn primary" id="createVault">Create vault…</button>
+      </div>
     </div>
   </details>
 
@@ -497,7 +505,7 @@
     <label class="field"><span>Network name (SSID)</span><input id="ssid" placeholder="" autocomplete="off"></label>
     <label class="field"><span>Password</span><input id="wpass" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
   </div>
-  <label class="check1"><input type="checkbox" id="wifiHidden"> Hidden network (not in the list; type its exact name)</label>
+  <p class="muted small" id="wifiSsidHint">Pick a network from the list, or type a name (including hidden SSIDs).</p>
   <div class="actions"><button class="btn" id="wifiScan">Scan</button><button class="btn primary" id="wifiBtn">Connect</button></div>
   <div class="wifiList" id="wifiList" role="listbox" aria-label="Nearby WiFi networks" hidden></div>
   <p class="muted small">No network yet? Run <span class="mono">stickllm-wifi-setup</span> in the stick's terminal. A WiFi access point mode is coming later.</p>
@@ -585,7 +593,7 @@
     <h3>StickLLM</h3>
     <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
     <div class="group">
-      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.2</span></div>
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.3</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono" id="aboutLlama">—</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
@@ -713,8 +721,8 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v062hf1"></script>
-<script src="desktop-core.js?v=v062"></script>
-<script src="desktop.js?v=v062"></script>
+<script src="app.js?v=v063"></script>
+<script src="desktop-core.js?v=v063"></script>
+<script src="desktop.js?v=v063"></script>
 </body>
 </html>
