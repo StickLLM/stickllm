@@ -5078,6 +5078,27 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(400, {"error": "bad json"})
             return
 
+        if path == "/api/system/power":
+            # 0.6.1: kiosk Power off / Restart. Stick screen only (loopback +
+            # StickLLM UI header); the UI asks for confirmation first.
+            if not (self._is_loopback() and stickllm_ui_client(self.headers)):
+                self._json(403, {"ok": False, "error": "stick_screen_only",
+                                 "message": "Power off is only available on the stick's own screen."})
+                return
+            action = str((req or {}).get("action") or "") if isinstance(req, dict) else ""
+            if action not in ("poweroff", "reboot") or not (isinstance(req, dict) and req.get("confirm") is True):
+                self._json(400, {"ok": False, "error": "bad_request"})
+                return
+            try:
+                subprocess.Popen(["/bin/sh", "-c", f"sleep 2; systemctl {action}"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except OSError as e:
+                self._json(500, {"ok": False, "error": str(e)})
+                return
+            self._json(200, {"ok": True, "action": action})
+            return
+
         if path == "/api/browser-page":
             doc, ok = self._auth()
             if doc.get("require_pair") and not ok:

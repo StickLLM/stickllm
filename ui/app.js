@@ -3133,7 +3133,9 @@ function paintCtxVal() {
   const v = +$("#ctx").value;
   $("#ctxVal").textContent = v.toLocaleString();
   const note = $("#ctxNote");
-  if (note) note.hidden = v >= LLAMA_CTX_FLOOR;
+  // 0.6.1: visibility, not hidden, so dragging never reflows the panel (the
+  // note popping in/out under SwiftShader left a white/checkered box).
+  if (note) { note.hidden = false; note.style.visibility = v >= LLAMA_CTX_FLOOR ? "hidden" : "visible"; }
 }
 function syncPresetHighlight() {
   const t = tuneNow();
@@ -3176,8 +3178,13 @@ function applyPreset(name) {
   saveTune();
   renderModelsList();
 }
-$("#ctx").addEventListener("input", () => { paintCtxVal(); syncPresetHighlight(); saveTune(); });
-$("#ctx").addEventListener("change", () => renderModelsList());
+// 0.6.1: one repaint per frame while dragging; save + re-fit on release.
+let ctxRaf = 0;
+$("#ctx").addEventListener("input", () => {
+  if (ctxRaf) return;
+  ctxRaf = requestAnimationFrame(() => { ctxRaf = 0; paintCtxVal(); syncPresetHighlight(); });
+});
+$("#ctx").addEventListener("change", () => { paintCtxVal(); syncPresetHighlight(); saveTune(); renderModelsList(); });
 $$("#presets button").forEach((b) => (b.onclick = () => {
   applyPreset(b.dataset.preset);
   toast("Preset " + (b.querySelector("b")?.textContent || b.dataset.preset) + " · applies on next Load");

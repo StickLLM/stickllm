@@ -96,7 +96,8 @@ def test_gateway_sampling_passthrough():
 
 def test_ui_presets_follow_knobs():
     assert "function syncPresetHighlight()" in APP
-    assert re.search(r'\$\("#ctx"\)\.addEventListener\("input", \(\) => \{ paintCtxVal\(\); syncPresetHighlight\(\)', APP)
+    # 0.6.1: input is rAF-throttled; the handler still repaints + re-highlights.
+    assert re.search(r'\$\("#ctx"\)\.addEventListener\("input", \(\) => \{\s*if \(ctxRaf\) return;\s*ctxRaf = requestAnimationFrame\(\(\) => \{ ctxRaf = 0; paintCtxVal\(\); syncPresetHighlight\(\)', APP)
     assert 'kv_type: { f16: "f16", q8: "q8_0", q4: "q4_0" }[state.kv]' in APP
     assert "temperature: 0.7," not in APP
     assert "base.top_p = t.top_p" in APP and "base.repeat_penalty" in APP

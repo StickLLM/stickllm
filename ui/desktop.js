@@ -243,6 +243,8 @@
     footBtn("settings", "Settings", SVG.gear);
     footBtn("lock", "Lock vault", SVG.lockShut).hidden = true;
     footBtn("classic", "Classic layout", SVG.classic);
+    // 0.6.1: Power off (stick screen only; asks first).
+    footBtn("power", "Power off", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v9"/><path d="M6.3 7.5a8 8 0 1 0 11.4 0"/></svg>').hidden = !isLocal();
     launcher.addEventListener("click", (e) => {
       const it = e.target.closest(".launchItem");
       if (it) { toggleLauncher(false); openApp(it.dataset.app); return; }
@@ -346,6 +348,22 @@
     else if (act === "lock") { if (appApi().lockVault) appApi().lockVault(); }
     else if (act === "apps") openApp("store");
     else if (act === "classic") { core.writeOverride(store, "classic"); syncLayoutSeg(); evaluate(); }
+    else if (act === "power") powerOff();
+  }
+  // 0.6.1: kiosk Power off with confirm. The gateway only accepts it from the
+  // stick's own screen (loopback) and only with confirm:true.
+  function powerOff() {
+    if (!isLocal()) return;
+    if (!window.confirm("Power off this computer now?\n\nUnsaved work in open apps is lost. Your vault, chats and models are kept.")) return;
+    const api = appApi();
+    if (api.toast) api.toast("Powering off\u2026");
+    fetch("/api/system/power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-StickLLM-Client": "ui" },
+      body: JSON.stringify({ action: "poweroff", confirm: true }),
+    }).then((r) => r.json().catch(() => ({}))).then((j) => {
+      if (!j || !j.ok) { if (api.toast) api.toast((j && j.message) || "Power off failed"); }
+    }).catch((e) => { if (api.toast) api.toast("Power off failed: " + e.message); });
   }
 
   // ---------- tray ----------

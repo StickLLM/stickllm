@@ -20,5 +20,8 @@
     <property name="cycle_minimum" type="bool" value="false"/>
     <property name="mousewheel_rollup" type="bool" value="false"/>
     <property name="double_click_action" type="string" value="maximize"/>
+    <!-- 0.6.1: no title bar on maximised windows (desktop + browser). Confirmed
+         on hardware 2026-11-04: frame extents 0,0,0,0. -->
+    <property name="titleless_maximize" type="bool" value="true"/>
   </property>
 </channel>
