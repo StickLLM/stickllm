@@ -263,6 +263,21 @@ def merge_vault_run(r: dict) -> dict:
     return r
 
 
+
+def _path_is_dir(path) -> bool:
+    """True if path is a directory; False on missing OR I/O errors (flaky USB)."""
+    try:
+        return Path(path).is_dir()
+    except OSError:
+        return False
+
+
+def _path_exists(path) -> bool:
+    try:
+        return Path(path).exists()
+    except OSError:
+        return False
+
 def model_dirs() -> list[Path]:
     """Directories scanned for Load / installed list (not download targets)."""
     dirs: list[Path] = []
@@ -277,19 +292,20 @@ def model_dirs() -> list[Path]:
     if session_mode() == "vault":
         vault_mnt = Path("/var/lib/stickllm/vault")
         vault_models = vault_mnt / "models"
-        if vault_models.is_dir() and os.path.ismount(str(vault_mnt)):
+        if _path_is_dir(vault_models) and os.path.ismount(str(vault_mnt)):
             if vault_models not in dirs:
                 dirs.append(vault_models)
         for d in vault_clear_models_dirs():
             if d not in dirs:
                 dirs.append(d)
     # USB DATA models: ephemeral listing/download; also visible as fallback.
+    # 0.6.2 hotfix: flaky USB can raise EIO on is_dir — never crash status.
     if session_mode() != "vault":
         data = MNT / "models"
-        if data.is_dir() and data not in dirs:
+        if _path_is_dir(data) and data not in dirs:
             dirs.append(data)
     baked = Path("/opt/stickllm/models")
-    if baked.is_dir() and baked not in dirs:
+    if _path_is_dir(baked) and baked not in dirs:
         dirs.append(baked)
     return dirs
 
@@ -4812,7 +4828,7 @@ def handle(action: str, params: dict) -> dict:
         dl_dir = vault_download_models_dir()
         if session_mode() != "vault" and dl_dir is None:
             data_models = MNT / "models"
-            dl_dir = data_models if data_models.is_dir() or MNT.is_dir() else None
+            dl_dir = data_models if _path_is_dir(data_models) or _path_is_dir(MNT) else None
         preferred = get_preferred_models_dir()
         return {
             "ok": True,
@@ -5167,6 +5183,11 @@ def vault_action(cmd: str, params: dict) -> dict:
                     "contains stickllm-vault.img (or the .img path itself)."
                 ),
             }
+        # 0.6.2 hotfix: unlock/use on STICKLLM-DATA is first-class (same as setup).
+        env = os.environ.copy()
+        _p = os.path.normpath(path)
+        if _p == str(MNT) or _p.startswith(str(MNT) + "/") or str(params.get("stick_data_confirm") or "") == "STICK-DATA":
+            env["STICKLLM_VAULT_ALLOW_STICK_DATA"] = "STICK-DATA"
         try:
             p = subprocess.run(
                 [script, "use", path],
@@ -5174,6 +5195,7 @@ def vault_action(cmd: str, params: dict) -> dict:
                 text=True,
                 timeout=60,
                 check=False,
+                env=env,
             )
             r = {
                 "ok": p.returncode == 0,
@@ -5217,6 +5239,9 @@ def vault_action(cmd: str, params: dict) -> dict:
             if _looks_like_block_device(bind_path):
                 return {"ok": False, "error": "refusing block device path for unlock bind"}
             try:
+                _bp = os.path.normpath(bind_path)
+                if _bp == str(MNT) or _bp.startswith(str(MNT) + "/") or str(params.get("stick_data_confirm") or "") == "STICK-DATA":
+                    env["STICKLLM_VAULT_ALLOW_STICK_DATA"] = "STICK-DATA"
                 b = subprocess.run(
                     [script, "use", bind_path],
                     capture_output=True,
@@ -5462,7 +5487,13 @@ class Handler(BaseHTTPRequestHandler):
         params = req.get("params") or {}
         if not isinstance(params, dict):
             params = {}
-        result = handle(action, params)
+        try:
+            result = handle(action, params)
+        except Exception as e:
+            # 0.6.2 hotfix: never drop the TCP connection on a probe failure
+            # (e.g. EIO on flaky STICKLLM-DATA). UI needs a JSON body.
+            sys.stderr.write(f"stickllm-control handle({action!r}) crashed: {e!r}\n")
+            result = {"ok": False, "error": f"control error: {e}"}
         self._send(200 if result.get("ok", True) or "code" in result else 500, result)
 
 
