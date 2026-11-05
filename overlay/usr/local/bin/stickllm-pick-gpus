@@ -41,6 +41,7 @@ write_env() {
       printf 'STICKLLM_VULKAN_DEVICE=%s\n' "${STICKLLM_VULKAN_DEVICE:-}"
       printf 'STICKLLM_VULKAN_GPUS=%s\n' "${STICKLLM_VULKAN_GPUS:-}"
       printf 'STICKLLM_VULKAN_PCI=%s\n' "${STICKLLM_VULKAN_PCI:-}"
+      printf 'STICKLLM_VULKAN_NAMES=%s\n' "${STICKLLM_VULKAN_NAMES:-}"
       printf 'STICKLLM_VULKAN_LINK=%s\n' "${STICKLLM_VULKAN_LINK:-}"
       printf 'STICKLLM_VRAM_TOTAL_MIB=%s\n' "${STICKLLM_VRAM_TOTAL_MIB:-0}"
       printf 'GGML_BACKEND_DIR=%s\n' "$LIB_VK"
@@ -137,7 +138,10 @@ has_amd_or_intel_gpu() {
 DRM_ROOT="${STICKLLM_DRM_ROOT:-/sys/class/drm}"
 VULKANINFO="${STICKLLM_VULKANINFO:-vulkaninfo}"
 VK_MIN_FREE_MIB="${STICKLLM_VK_MIN_FREE_MIB:-3000}"
+# 0.6.2: a PCI address set by the user (e.g. 10:00.0) wins over the ranking.
+VK_USER_PCI="${STICKLLM_VULKAN_PCI:-}"
 STICKLLM_VULKAN_GPUS=""
+STICKLLM_VULKAN_NAMES=""
 STICKLLM_VULKAN_DEVICE=""
 STICKLLM_VULKAN_PCI=""
 STICKLLM_VULKAN_LINK=""
@@ -275,6 +279,7 @@ probe_vulkan_gpus() {
     (( tot > 0 )) || continue
     free=$((tot - used)); (( free < 0 )) && free=0
     rows+="${rows:+,}${idx}:${tot}:${free}:${w}:${s}"
+    STICKLLM_VULKAN_NAMES+="${STICKLLM_VULKAN_NAMES:+,}${idx}=${pci_s:-?}=${c:-?}"
     echo "stickllm-pick-gpus: Vulkan${idx} ${c:-?} pci=${pci_s:-?} link=x${w}@${s}MT/s total=${tot}MiB used=${used}MiB free=${free}MiB (${src})" >&2
     if [[ -n "${ld_free[$idx]:-}" && "$src" != vulkaninfo ]]; then
       local diff=$(( ld_free[idx] - free )); (( diff < 0 )) && diff=$(( -diff ))
@@ -283,6 +288,10 @@ probe_vulkan_gpus() {
       fi
     fi
     ok=0; (( free >= VK_MIN_FREE_MIB )) && ok=1
+    if [[ -n "$VK_USER_PCI" && -n "$pci_s" && "$pci_s" == *"$VK_USER_PCI" ]]; then
+      ok=2
+      echo "stickllm-pick-gpus: Vulkan${idx} pinned by STICKLLM_VULKAN_PCI=${VK_USER_PCI}" >&2
+    fi
     # Rank: enough free VRAM, then PCIe bandwidth (width x MT/s), then free VRAM.
     key="$(printf '%d %012d %08d' "$ok" $(( w * s )) "$free")"
     if [[ -z "$best_key" || "$key" > "$best_key" ]]; then

@@ -182,28 +182,41 @@ else
 MAP="$(python3 - "$CATALOG" "$ID" <<'PY'
 import json, re, sys
 path, want = sys.argv[1], sys.argv[2]
-text = open(path, encoding="utf-8").read()
 models = []
-for b in re.split(r"\n\[\[model\]\]\n", text)[1:]:
-    def g(key, default=None):
-        m = re.search(rf"^{key}\s*=\s*(.+)$", b, re.M)
-        if not m:
-            return default
-        raw = m.group(1).strip()
-        if raw.startswith("["):
-            return re.findall(r'"([^"]*)"', raw)
-        return raw.strip('"')
-    mid = g("id")
+rows = None
+try:
+    import tomllib  # 0.6.2: real TOML (multi-line arrays, trailing commas)
+    with open(path, "rb") as fh:
+        rows = tomllib.load(fh).get("model") or []
+except Exception:
+    rows = None
+if rows is None:
+    rows = []
+    text = open(path, encoding="utf-8").read()
+    for b in re.split(r"\n\[\[model\]\]\n", text)[1:]:
+        row = {}
+        for m in re.finditer(r"^(\w+)\s*=\s*(\[[^\]]*\]|.+)$", b, re.M | re.S):
+            raw = m.group(2).strip()
+            row[m.group(1)] = re.findall(r'"([^"]*)"', raw) if raw.startswith("[") else raw.strip('"')
+        rows.append(row)
+def as_list(v):
+    if isinstance(v, str):
+        return [v] if v else []
+    return [str(x) for x in (v or [])]
+for r in rows:
+    if not isinstance(r, dict):
+        continue
+    mid = str(r.get("id") or "")
     if not mid:
         continue
     models.append({
         "id": mid,
-        "name": g("name", mid),
-        "hf_repo": g("hf_repo", "") or "",
-        "hf_files": g("hf_files", []) or [],
-        "sha256": [s.lower() for s in (g("sha256", []) or [])],
-        "approx_size_gb": float(g("approx_size_gb", "0") or 0),
-        "quality_rank": int(float(g("quality_rank", "0") or 0)),
+        "name": str(r.get("name") or mid),
+        "hf_repo": str(r.get("hf_repo") or ""),
+        "hf_files": as_list(r.get("hf_files")),
+        "sha256": [s.lower() for s in as_list(r.get("sha256"))],
+        "approx_size_gb": float(r.get("approx_size_gb") or 0),
+        "quality_rank": int(float(r.get("quality_rank") or 0)),
     })
 pick = None
 if want:
@@ -245,6 +258,18 @@ if [[ -z "$REPO" ]]; then
 fi
 
 FILES="$(echo "$MAP" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["hf_files"]))')"
+if [[ -z "${FILES//[[:space:]]/}" ]]; then
+  # 0.6.2: never report "done" for a model with no files (queue loop bug).
+  echo "No files resolved for $ID in the catalog — nothing to download."
+  python3 - "$PROGRESS_JSON" "$ID" "$NAME" <<'PY'
+import json, sys, time
+p, mid, name = sys.argv[1:4]
+open(p, "w", encoding="utf-8").write(json.dumps({"state": "failed", "id": mid, "name": name, "file": "",
+    "percent": None, "bytes_done": 0, "bytes_total": 0, "note": "no files resolved",
+    "started": int(time.time()), "updated": int(time.time())}) + "\n")
+PY
+  exit 4
+fi
 HASHES="$(echo "$MAP" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["sha256"]))')"
 
 TOTAL_BYTES="$(echo "$MAP" | python3 -c 'import json,sys; print(int(float(json.load(sys.stdin).get("approx_size_gb") or 0)*(1024**3)))')"
@@ -261,6 +286,8 @@ done_i, total_i = int(done or 0), int(total or 0)
 pct = None
 if total_i > 0:
     pct = max(0.0, min(99.9, round(100.0 * done_i / total_i, 1)))
+if state == "done":
+    pct = 100.0
 now = int(time.time())
 started = now
 try:
@@ -430,6 +457,7 @@ PY
     if [[ -z "$expect" ]]; then
       echo "No catalog hash for $f — saved sha256 $got"
     fi
+    write_progress "moving" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "moving into the models folder"
     mv "$TMP" "$DEST"
     chmod 644 "$DEST"
     SZ="$(stat -c%s "$DEST" 2>/dev/null || echo 0)"
@@ -446,8 +474,8 @@ if [[ -n "$FIRST" ]]; then
   echo "Load when ready: Models → radio select → context slider → Activate"
 fi
 
-write_progress "done" "" "$TOTAL_BYTES" "$TOTAL_BYTES" "complete"
+[[ "$BYTES_BEFORE" -gt 0 ]] || BYTES_BEFORE="$TOTAL_BYTES"
+# 0.6.2: "done" stays until the queue/UI has read it (no idle reset).
+write_progress "done" "$FIRST" "$BYTES_BEFORE" "$BYTES_BEFORE" "complete"
 echo "Downloaded and verified. Activate from the Models page to load."
 stickllm-status || true
-sleep 2
-write_progress "idle" "" 0 0 ""

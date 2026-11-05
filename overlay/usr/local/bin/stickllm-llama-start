@@ -23,11 +23,20 @@ if [[ "${1:-}" == "--capture-fail" ]]; then
   printf '%s\n' "$n" >"$RUN_CAP/llama-fail-count" 2>/dev/null || true
   err="$(
     journalctl -u stickllm-llama -n 80 --no-pager -o cat 2>/dev/null \
-      | grep -Ei 'cuda|cublas|out of memory|ggml_cuda|failed to allocate|unable to allocate|error|fatal|cannot' \
+      | grep -Ei 'cuda|cublas|out of memory|ggml_cuda|failed to allocate|unable to allocate|error|fatal|cannot|segfault|segmentation fault|core.dump|dumped core|status=11|SIGSEGV|unknown model architecture' \
       | grep -Eiv 'password|STICKLLM_SSH_PASS|backend registered|stickllm-cuda-register' \
       | tail -n 1 \
       || true
   )"
+  if [[ -z "${err:-}" ]]; then
+    # 0.6.2: a crash with no matching log line still gets a plain message.
+    arch="$(head -n1 "$RUN_CAP/model-arch.txt" 2>/dev/null | tr -cd 'A-Za-z0-9_.-' || true)"
+    code="${EXIT_STATUS:-${EXIT_CODE:-?}}"
+    err="llama-server exited (code ${code}) while loading $(basename -- "${STICKLLM_MODEL:-model}")"
+    [[ -n "$arch" ]] && err="${err}; this build may not support arch ${arch}"
+  elif [[ -n "$(head -n1 "$RUN_CAP/model-arch.txt" 2>/dev/null)" ]] && grep -Eqi 'segfault|segmentation|core|status=11|SIGSEGV|unknown model architecture' <<<"$err"; then
+    err="${err} (this build may not support arch $(head -n1 "$RUN_CAP/model-arch.txt" | tr -cd 'A-Za-z0-9_.-'))"
+  fi
   if [[ -n "${err:-}" ]]; then
     printf '%s\n' "$err" >"$RUN_CAP/llama-fail.txt" 2>/dev/null || true
     chmod 644 "$RUN_CAP/llama-fail.txt" 2>/dev/null || true

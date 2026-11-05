@@ -685,6 +685,28 @@ def read_gguf_meta(path: str | Path, max_keys: int = 256) -> dict:
     return out
 
 
+# 0.6.2: llama.cpp stays pinned at fcac190. Architectures it may not load
+# (experimental / multi-token-prediction variants) are labelled, not blocked.
+EXPERIMENTAL_ARCH_RE = re.compile(r"(exp|mtp|qwen4)", re.I)
+
+
+def gguf_arch_warning(arch: str) -> str:
+    arch = (arch or "").strip()
+    if arch and EXPERIMENTAL_ARCH_RE.search(arch):
+        return (f"Experimental architecture '{arch}': this StickLLM build "
+                "(llama.cpp fcac190) may not support it and the load can fail.")
+    return ""
+
+
+def split_first_part(path: str) -> str:
+    """0.6.2: a split GGUF always loads from part 00001."""
+    m = re.match(r"^(?P<stem>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$", path, re.I)
+    if not m or m.group("idx") == "00001":
+        return path
+    first = f"{m.group('stem')}-00001-of-{m.group('total')}.gguf"
+    return first if Path(first).is_file() else path
+
+
 def gguf_arch_dims(meta: dict) -> dict:
     """Pull architecture dims used for KV-cache sizing from GGUF metadata."""
     arch = str(meta.get("general.architecture") or "").strip()
@@ -804,6 +826,12 @@ def vulkan_gpu_rows(env_path: Path | None = None) -> list[dict]:
     if vals.get("STICKLLM_BACKEND") != "vulkan":
         return []
     rows: list[dict] = []
+    # 0.6.2: show cards by PCI address and link, never "VulkanN".
+    pcis: dict[int, str] = {}
+    for item in (vals.get("STICKLLM_VULKAN_NAMES") or "").split(","):
+        bits = item.split("=")
+        if len(bits) >= 2 and bits[0].strip().isdigit() and bits[1] not in ("", "?"):
+            pcis[int(bits[0])] = bits[1].strip()
     for item in (vals.get("STICKLLM_VULKAN_GPUS") or "").split(","):
         parts = item.strip().split(":")
         if len(parts) not in (3, 5):
@@ -818,7 +846,8 @@ def vulkan_gpu_rows(env_path: Path | None = None) -> list[dict]:
             {
                 "index": idx,
                 "device": f"Vulkan{idx}",
-                "name": f"Vulkan{idx}",
+                "name": vk_display_name(idx, pcis.get(idx, ""), width, total),
+                "pci": pcis.get(idx, ""),
                 "total_mib": total,
                 "free_mib": max(0, free),
                 "used_mib": max(0, total - free),
@@ -828,6 +857,17 @@ def vulkan_gpu_rows(env_path: Path | None = None) -> list[dict]:
             }
         )
     return rows
+
+
+def vk_display_name(idx: int, pci: str, width: int, total_mib: int) -> str:
+    """'AMD GPU 10:00.0 · 8 GB · PCIe x16' (falls back to 'GPU N')."""
+    short = re.sub(r"^0000:", "", pci or "")
+    bits = [f"AMD GPU {short}" if short else f"GPU {idx + 1}"]
+    if total_mib:
+        bits.append(f"{round(total_mib / 1024)} GB")
+    if width:
+        bits.append(f"PCIe x{width}")
+    return " · ".join(bits)
 
 
 def _vk_link(g: dict) -> int:
@@ -856,8 +896,13 @@ def suitable_gpus(rows: list[dict] | None = None, need_bytes: int | None = None)
             best = max(roomy, key=lambda g: (_vk_link(g), int(g.get("free_mib") or 0),
                                              -int(g.get("index") or 0)))
         else:
-            best = max(ok, key=lambda g: (int(g.get("free_mib") or 0), _vk_link(g),
-                                          -int(g.get("index") or 0)))
+            # 0.6.2: nothing holds the whole plan. Cards with about the same free
+            # VRAM (within 20%) are ranked by PCIe link first, so an x1 riser /
+            # display card never beats the x16 slot on a few MiB.
+            top = max(int(g.get("free_mib") or 0) for g in ok)
+            close = [g for g in ok if int(g.get("free_mib") or 0) >= top * 0.8]
+            best = max(close, key=lambda g: (_vk_link(g), int(g.get("free_mib") or 0),
+                                             -int(g.get("index") or 0)))
         return [best]
     return [g for g in rows if int(g.get("total_mib") or 0) >= GPU_SUITABLE_MIB]
 
@@ -1000,10 +1045,30 @@ def plan_gpu_fit(
     kv_bpt = kv_bytes_per_token(dims, n_layer, file_bytes)
     kv = kv_bpt * ctx
     weights = max(1, int(file_bytes))
+    all_rows = gpus if gpus is not None else nvidia_gpu_rows()
     cards = suitable_gpus(gpus, need_bytes=weights + kv + GPU_BUFFER_BYTES)
     # 0.5.9: one card when the model fits on it (or the pinned card).
-    cards = place_cards(cards, weights + kv + GPU_BUFFER_BYTES,
-                        all_rows=gpus if gpus is not None else nvidia_gpu_rows())
+    cards = place_cards(cards, weights + kv + GPU_BUFFER_BYTES, all_rows=all_rows)
+    ctx_shrunk_from = 0
+
+    def _free_bytes(cs: list[dict]) -> int:
+        return sum(int(g.get("free_mib") or 0) or int(g.get("total_mib") or 0) for g in cs) * 1024 * 1024
+
+    # 0.6.2: shrink the context before falling back to a partial offload.
+    # A smaller KV cache that keeps every layer on the GPU is far faster than
+    # spilling layers to RAM. Never below 4096 tokens; never with a manual -ngl.
+    if (ngl_override is None and cards and kv_bpt > 0
+            and weights + kv + GPU_BUFFER_BYTES > _free_bytes(cards)):
+        floor_ctx = min(ctx, 4096)
+        small = suitable_gpus(gpus, need_bytes=weights + kv_bpt * floor_ctx + GPU_BUFFER_BYTES)
+        small = place_cards(small, weights + kv_bpt * floor_ctx + GPU_BUFFER_BYTES, all_rows=all_rows)
+        room = _free_bytes(small) - weights - GPU_BUFFER_BYTES if small else 0
+        fit_ctx = (int(room // kv_bpt) // 1024) * 1024 if room > 0 else 0
+        if fit_ctx >= floor_ctx and fit_ctx < ctx:
+            ctx_shrunk_from = ctx
+            ctx = fit_ctx
+            kv = kv_bpt * ctx
+            cards = small
     gpu_count = len(cards)
     devices = ",".join(str(g.get("device") or g["index"]) for g in cards)
     # Proportions follow free VRAM. A card reporting 0 free still gets its total
@@ -1119,10 +1184,12 @@ def plan_gpu_fit(
         "gpu_count": gpu_count,
         "devices": devices,
         "tensor_split": tensor_split,
-        "caption": caption,
+        "caption": caption + (f"; context reduced to {ctx} to keep the model on the GPU"
+                              if ctx_shrunk_from else ""),
+        "ctx_shrunk_from": int(ctx_shrunk_from),
         "tok_s": tok_s,
         "ctx": ctx,
-        "ctx_max": ctx_max,
+        "ctx_max": ctx if ctx_shrunk_from else ctx_max,
         "vram_free_mib": int(free_sum),
         "need_mib": int(need / (1024 * 1024)),
         "budget_mib": int(budget / (1024 * 1024)),
@@ -2450,7 +2517,28 @@ def _final_path(job: dict) -> Path:
     return Path(str(job.get("dest") or "")) / _job_base(job)
 
 
+def _job_parts(job: dict) -> list[Path]:
+    """0.6.2: every file of a split GGUF (catalog jobs list them all)."""
+    dest = Path(str(job.get("dest") or ""))
+    files = [str(f) for f in (job.get("files") or []) if str(f)]
+    if len(files) > 1:
+        return [dest / Path(f).name for f in files]
+    return [_final_path(job)]
+
+
 def _bytes_on_disk(job: dict) -> int:
+    parts = _job_parts(job)
+    if len(parts) > 1:
+        total = 0
+        for part in parts:
+            for cand in (part, Path(str(part) + ".partial")):
+                try:
+                    if cand.is_file():
+                        total += cand.stat().st_size
+                        break
+                except OSError:
+                    pass
+        return total
     final = _final_path(job)
     partial = Path(str(final) + ".partial")
     try:
@@ -2471,6 +2559,15 @@ def _job_remaining(job: dict) -> int:
 
 
 def _job_complete(job: dict) -> bool:
+    parts = _job_parts(job)
+    if len(parts) > 1:
+        # All parts present (each was sha256-checked before the move).
+        try:
+            return all(p.is_file() and not Path(str(p) + ".partial").exists() for p in parts)
+        except OSError:
+            return False
+    if not _job_base(job):
+        return False
     final = _final_path(job)
     try:
         if not final.is_file():
@@ -2923,6 +3020,7 @@ def _build_download_job(params: dict) -> dict:
         "name": match.get("name") or mid,
         "repo": match.get("hf_repo") or "",
         "file": files[0],
+        "files": list(files),
         "sha256": "",
         "bytes": nbytes,
         "dest": str(dest),
@@ -3651,6 +3749,8 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
             "fits": fits,
             "fit_note": fit_note,
             "ram_warning": ram_warning,
+            "arch": str(meta.get("general.architecture") or ""),
+            "arch_warning": gguf_arch_warning(str(meta.get("general.architecture") or "")),
             "path": first,
             "vram_gb": round(vram_gb, 1),
             "ram_gb": round(ram_gb, 1),
@@ -3971,9 +4071,17 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
             "ok": False,
             "error": f"needs {m['min_vram_gb']} GB VRAM; this host has ~{m['vram_gb']} GB",
         }
-    path = m.get("path") or m.get("local_path") or ""
+    path = split_first_part(m.get("path") or m.get("local_path") or "")
     if not path or not Path(path).is_file():
         return {"ok": False, "error": "model file missing"}
+    try:
+        arch = str(read_gguf_meta(path).get("general.architecture") or "")
+    except Exception:
+        arch = ""
+    try:
+        (RUN / "model-arch.txt").write_text(arch + "\n", encoding="utf-8")
+    except OSError:
+        pass
     ctx_lo = int(m.get("ctx_min") or 2048)
     ctx_hi = int(m.get("ctx_max") or 8192)
     if ctx_size is None:

@@ -3125,7 +3125,7 @@ function renderModelsList() {
       </div>
       <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${visionTag(m, id)}${isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">GGUF</span></div>
       <div class="mcFoot">
-        <span class="fit ${fit.cls}" title="Needs ~${fit.need.toFixed(1)} GB">${fit.label}</span>${m.ram_warning && fit.k !== "no" ? `<span class="pill warn" title="${esc(m.ram_warning)}">low RAM</span>` : ""}
+        <span class="fit ${fit.cls}" title="Needs ~${fit.need.toFixed(1)} GB">${fit.label}</span>${m.ram_warning && fit.k !== "no" ? `<span class="pill warn" title="${esc(m.ram_warning)}">low RAM</span>` : ""}${m.arch_warning ? `<span class="pill warn" title="${esc(m.arch_warning)}">experimental</span>` : ""}
         <span class="grow"></span>${actions}
       </div>
     </article>`;

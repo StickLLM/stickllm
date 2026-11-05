@@ -2,6 +2,11 @@
 # Ensure NVIDIA character devices (esp. nvidia-uvm) exist before llama.cpp CUDA init.
 set -euo pipefail
 
+# 0.6.2: nothing to do (and no modprobe noise) without an NVIDIA (10de) device.
+if ! grep -qsi '^0x10de$' /sys/bus/pci/devices/*/vendor; then
+  exit 0
+fi
+
 # Debian DKMS ships nvidia-current-*.ko; load those explicitly, then aliases.
 for m in \
   nvidia-current nvidia \
