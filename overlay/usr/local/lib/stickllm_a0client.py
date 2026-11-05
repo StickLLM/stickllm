@@ -132,5 +132,62 @@ class A0Client:
             audio = audio.split(",", 1)[-1]
         return audio
 
+    # 0.6.2 (A6): StickLLM chat routes a message to Agent Zero and shows its
+    # steps and final answer inline. A0 serves its handlers under /api/<name>
+    # (older images used /<name>); try both.
+    def _post_any(self, name: str, body: dict, timeout: float) -> dict:
+        last: Exception | None = None
+        for path in (f"/api/{name}", f"/{name}"):
+            try:
+                return self.post(path, body, timeout=timeout)
+            except A0Error as e:
+                last = e
+                if "http 404" not in str(e) and "http 405" not in str(e):
+                    raise
+        raise last or A0Error("not found")
+
+    def ask(self, text: str, context: str = "") -> dict:
+        doc = self._post_any("message_async", {"text": text, "context": context or ""}, timeout=30)
+        return {"context": str(doc.get("context") or context or "")}
+
+    def poll(self, context: str, log_from: int = 0) -> dict:
+        doc = self._post_any("poll", {"context": context, "log_from": int(log_from or 0),
+                                      "notifications_from": 0, "timezone": "UTC"}, timeout=15)
+        steps = []
+        final = ""
+        for item in doc.get("logs") or []:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("type") or "")
+            heading = str(item.get("heading") or "")[:300]
+            content = str(item.get("content") or "")
+            if kind == "response":
+                final = content
+            if kind in ("user",):
+                continue
+            steps.append({"no": item.get("no"), "type": kind, "heading": heading,
+                          "content": content[:4000]})
+        return {
+            "steps": steps,
+            "final": final[:20000],
+            "log_version": doc.get("log_version"),
+            "next": int(doc.get("log_version") or 0) if doc.get("log_version") is not None else None,
+            "busy": bool(doc.get("log_progress_active")),
+            "paused": bool(doc.get("paused")),
+        }
+
+    def pause(self, context: str) -> None:
+        self._post_any("pause", {"context": context, "paused": True}, timeout=10)
+
+
+def repeat_loop(texts: list[str], window: int = 3) -> bool:
+    """True when the last ``window`` agent thoughts are the same (a small
+    model stuck repeating itself)."""
+    norm = [" ".join(str(t or "").lower().split())[:400] for t in texts if str(t or "").strip()]
+    if len(norm) < window:
+        return False
+    tail = norm[-window:]
+    return len(set(tail)) == 1
+
 
 CLIENT = A0Client()

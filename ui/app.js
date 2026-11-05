@@ -309,33 +309,43 @@ function syncAgentDesktop(installed, href) {
   }
   icon.href = href;
 }
-// 0.6.0 (A5): one status line for Agent Zero while it installs or loads:
-// the phase (loading from the stick, downloading, checking, starting) and a
-// percentage when the installer reports one.
+// 0.6.0 (A5): one status line for Agent Zero while it installs or loads.
+// 0.6.2 (A4): "Step X of 6: <name>… N%" across the whole install (load,
+// unpack, check, create, start, health); 100% only when A0 answers.
+let agentLastStatus = null;
+let agentInstallWatch = false;   // this page started an install: switch to Open when ready
+let agentReadyToasted = false;
 function agentProgressLine(s) {
   if (!s) return "";
   const pct = Number.isFinite(Number(s.progress)) && s.progress !== null && s.progress !== "" ? Math.round(Number(s.progress)) : null;
-  const tail = pct !== null ? " " + Math.max(0, Math.min(100, pct)) + "%" : "";
-  if (s.state === "installing") {
-    const phase = {
-      loading: "Loading Agent Zero from the stick…",
-      downloading: "Downloading Agent Zero…",
-      checking: "Checking Agent Zero…",
-    }[s.phase] || "Installing Agent Zero…";
-    return phase + tail;
-  }
-  if (s.state === "starting") return "Agent Zero is loading…" + tail;
-  return "";
+  const tail = pct !== null ? " " + Math.max(0, Math.min(99, pct)) + "%" : "";
+  if (s.state !== "installing" && s.state !== "starting") return "";
+  const who = s.state === "starting" ? "Starting Agent Zero" : "Installing Agent Zero";
+  if (s.step && s.steps) return `${who} — step ${s.step} of ${s.steps}: ${s.step_name || s.phase || ""}…${tail}`;
+  const phase = {
+    loading: "Loading Agent Zero from the stick…",
+    downloading: "Downloading Agent Zero…",
+    checking: "Checking Agent Zero…",
+  }[s.phase] || (s.state === "starting" ? "Agent Zero is starting…" : "Installing Agent Zero…");
+  return phase + tail;
+}
+function setBtnBusy(btn, busy, text) {
+  if (!btn) return;
+  btn.classList.toggle("busy", !!busy);
+  btn.disabled = !!busy;
+  btn.setAttribute("aria-busy", busy ? "true" : "false");
+  if (text != null) btn.textContent = text;
 }
 async function refreshAgentLink() {
   const label = $("#agentLinkLabel");
   const link = $("#agentLink");
-  if (!label && !link && !$("#agentCatalogInstall")) return;
+  if (!label && !link && !$("#agentCatalogInstall") && !window.stickDesk) return;
   try {
     const r = await fetch("/api/agent/status", { cache: "no-store", headers: authHeaders() });
     if (r.status === 401 && !detectLocalHost() && pairUiState !== "unpaired") { ensurePaired().catch(() => {}); return; }
     if (!r.ok) return;
     const s = await r.json();
+    agentLastStatus = s;
     const installed = agentIsInstalled(s);
     const href = agentPageUrl(s);
     agentZeroNote = agentZeroStatusNote(installed, s);
@@ -364,23 +374,43 @@ async function refreshAgentLink() {
     const deskIcon = $("#agentDeskIcon");
     if (deskIcon) deskIcon.title = s.state === "error" ? detail : "Agent";
     const line = agentProgressLine(s);
-    const message = line && s.message && !s.message.includes(line) ? s.message + " — " + line : (s.message || line);
+    const message = line || s.message || "";
     for (const msg of [$("#agentInstallMsg"), $("#agentCatalogMsg")]) {
       if (msg) msg.textContent = message;
     }
-    const show = !!(s.needs_install || s.state === "installing" || s.state === "pull_failed");
+    const busy = s.state === "installing" || (agentInstallWatch && s.state === "starting");
+    const ready = s.state === "running" && agentInstallWatch;
+    const show = !!(s.needs_install || busy || s.state === "pull_failed" || ready);
     for (const btn of agentInstallButtons()) {
       btn.hidden = !show;
-      btn.disabled = s.state === "installing";
-      btn.textContent = s.state === "installing" ? (agentProgressLine(s) || "Installing…") : (s.bundled ? "Install Agent Zero (from the stick)" : "Install Agent Zero");
+      if (ready) {
+        setBtnBusy(btn, false, "Open Agent Zero");
+        btn.onclick = () => { agentInstallWatch = false; btn.onclick = () => installAgent(); refreshAgentLink(); a0OpenFull(); };
+      } else if (busy) setBtnBusy(btn, true, "Installing…");
+      else setBtnBusy(btn, false, s.bundled ? "Install Agent Zero (from the stick)" : "Install Agent Zero");
     }
+    if (ready && !agentReadyToasted) { agentReadyToasted = true; toast("Agent Zero is ready — Open Agent Zero"); }
+    if (s.state === "error" || s.state === "pull_failed") agentInstallWatch = false;
     const text = s.state === "error" ? (s.message || detail) : (s.pull_log || "");
     for (const log of [$("#agentPullLog"), $("#agentCatalogPull")]) {
       if (!log) continue;
       log.hidden = !text;
       log.textContent = text;
     }
+    try { window.dispatchEvent(new CustomEvent("stickllm:agent-status", { detail: s })); } catch (_) {}
   } catch (e) { /* status is optional until the gateway is current */ }
+}
+// 0.6.2 (A4): poll every 1.5 s while an install/start is in flight.
+let agentFastTimer = null;
+function agentFastPoll() {
+  if (agentFastTimer) return;
+  agentFastTimer = setInterval(() => {
+    const s = agentLastStatus;
+    if (s && s.state !== "installing" && s.state !== "starting" && !(agentInstallWatch && !s.state)) {
+      clearInterval(agentFastTimer); agentFastTimer = null;
+    }
+    refreshAgentLink();
+  }, 1500);
 }
 async function installAgent(extra) {
   const row = $("#agentCatalogRow");
@@ -392,10 +422,8 @@ async function installAgent(extra) {
       if (warn) toast(warn);
     }
   } catch (e) { /* a missing reading does not block install */ }
-  for (const btn of agentInstallButtons()) {
-    btn.disabled = true;
-    btn.textContent = "Installing…";
-  }
+  for (const btn of agentInstallButtons()) setBtnBusy(btn, true, "Installing…");
+  agentInstallWatch = true; agentReadyToasted = false;
   try {
     const r = await fetch("/api/agent/install", {
       method: "POST",
@@ -404,14 +432,18 @@ async function installAgent(extra) {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok && verifyGate(j, (more) => installAgent(Object.assign({}, extra || {}, more)))) {
-      for (const btn of agentInstallButtons()) { btn.disabled = false; btn.textContent = "Install Agent Zero"; }
+      for (const btn of agentInstallButtons()) setBtnBusy(btn, false, "Install Agent Zero");
+      agentInstallWatch = false;
       return;
     }
     if (!r.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
     toast(j.message || "Installing Agent Zero");
   } catch (e) {
-    toast("Install failed: " + e.message);
+    agentInstallWatch = false;
+    for (const btn of agentInstallButtons()) setBtnBusy(btn, false, "Install Agent Zero");
+    showError(e, "Could not install Agent Zero");
   }
+  agentFastPoll();
   refreshAgentLink();
 }
 for (const btn of agentInstallButtons()) btn.onclick = () => installAgent();
@@ -886,7 +918,7 @@ async function control(action, params = {}) {
 function plainError(raw) {
   const s = String(raw || "").replace(/^stickllm-vault:\s*/gm, "").trim();
   if (/refusing StickLLM live USB \/ STICKLLM-DATA/i.test(s))
-    return "This folder is on the StickLLM drive itself. To keep the vault here, use \u201cStore vault on this drive\u2026\u201d (or pick the folder again and confirm STICK-DATA), then Create vault.";
+    return "This folder is on the StickLLM drive itself. To keep the vault here, use \u201cStore vault on this drive\u2026\u201d (or pick the folder again and click Use this drive), then Create vault.";
   if (/passcodes? (do not|don't) match/i.test(s)) return "The two passcodes don't match.";
   if (/at least 8/i.test(s)) return "The passcode must be at least 8 characters.";
   if (/not writable|read-only/i.test(s)) return "StickLLM can't write to that folder. Pick another folder or drive.";
@@ -1284,7 +1316,10 @@ function msgHtml(m, i) {
   const think = m.r === "ai" && !m.pending ? [m.think, parts.think].filter(Boolean).join("\n\n") : "";
   const why = think ? `<details class="reasoning"><summary>Show reasoning</summary>${md(think)}</details>` : "";
   const wait = `<span class="typing"><i></i><i></i><i></i></span>${m.thinking ? '<span class="thinkNote">Thinking…</span>' : ""}`;
-  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${pics}${m.pending ? wait : why + md(parts.answer)}${warn}${src}${speak}${undo}</div></div>`;
+  // 0.6.2 (A6): Agent Zero's steps inline, link to the full window.
+  const a0 = a0Html(m);
+  const a0Link = m.a0 && !m.pending ? '<div class="msgTools"><a href="#agent" class="a0Full">Open the full Agent Zero window</a></div>' : "";
+  return `<div class="msg ${cls}"><div class="av">${av}</div><div class="body">${pics}${m.pending ? a0 + wait : why + a0 + md(parts.answer)}${warn}${src}${speak}${undo}${a0Link}</div></div>`;
 }
 function renderThread(opts) {
   if (!(opts && opts.keepSpeech) && typeof stopSpeak === "function") stopSpeak();
@@ -2282,8 +2317,48 @@ function openFastPath(raw) {
   if (typeof appTabLink === "function" && appTabLink(id)) return openStickApp(id, "");
   return false;
 }
-// 0.6.1 (item 23, partial): with the Agent Zero toggle on, the message goes
-// to Agent Zero: its window opens and the text is put on the clipboard.
+// 0.6.2 (A6): with the Agent Zero toggle on, the message goes to Agent Zero
+// through the gateway (/api/agent/ask + /api/agent/poll). Its steps show
+// inline (collapsed) and its final answer becomes the reply, with a link to
+// the full Agent window. Falls back to the 0.6.1 clipboard hand-off when A0
+// is not running.
+let a0Busy = false;
+const A0_LOOP_HINT = "Agent Zero seems stuck repeating the same step. Small models often loop: load a bigger model (14B or more) for agent work.";
+function a0Clip(t, n) { t = String(t || ""); return t.length > n ? t.slice(0, n) + "…" : t; }
+function a0StepRows(steps) {
+  return steps.map((st) => {
+    let body = "";
+    try {
+      const j = JSON.parse(st.content);
+      if (j && typeof j === "object") body = j.thoughts ? [].concat(j.thoughts).join(" ") : (j.tool_name ? "tool: " + j.tool_name : "");
+    } catch (_) { body = st.type === "response" ? "" : st.content; }
+    return { h: a0Clip(st.heading || st.type || "step", 160), b: a0Clip(body, 300) };
+  });
+}
+function a0Html(m) {
+  if (!m.a0) return "";
+  const rows = m.a0.steps || [];
+  const list = rows.length
+    ? `<details class="a0Steps"${m.pending ? " open" : ""}><summary>Agent Zero steps (${rows.length})</summary><ol>${rows.map((r) => `<li><b>${esc(r.h)}</b>${r.b ? " — " + esc(r.b) : ""}</li>`).join("")}</ol></details>`
+    : "";
+  return `<div class="a0Run">${m.a0.status ? `<div class="a0Status">${esc(m.a0.status)}</div>` : ""}${list}</div>`;
+}
+function a0Thoughts(steps) {
+  const out = [];
+  for (const st of steps) {
+    if (st.type !== "agent") continue;
+    let t = st.content;
+    try { const j = JSON.parse(st.content); if (j && j.thoughts) t = [].concat(j.thoughts).join(" ") + "|" + (j.tool_name || ""); } catch (_) {}
+    out.push(String(t || "").toLowerCase().replace(/\s+/g, " ").slice(0, 400));
+  }
+  return out;
+}
+function a0Looping(steps) {
+  const t = a0Thoughts(steps).filter(Boolean);
+  if (t.length < 3) return false;
+  const tail = t.slice(-3);
+  return tail[0] === tail[1] && tail[1] === tail[2];
+}
 async function handOffToAgentZero(text) {
   let copied = false;
   try { await navigator.clipboard.writeText(text); copied = true; } catch (_) {}
@@ -2294,6 +2369,88 @@ async function handOffToAgentZero(text) {
     : copied ? "Opening Agent Zero… your message is on the clipboard: paste it there (Ctrl+V). Progress shows in the Agent Zero window."
     : "Opening Agent Zero… paste your message there. Progress shows in the Agent Zero window.");
 }
+async function a0Post(action, body) {
+  const r = await fetch("/api/agent/" + action, {
+    method: "POST", cache: "no-store", credentials: "same-origin",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body || {}),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.ok) { const e = new Error(j.message || j.error || ("Agent Zero answered " + r.status)); e.status = r.status; throw e; }
+  return j;
+}
+function a0OpenFull() {
+  const desk = window.stickDesk;
+  if (desk && desk.handles && desk.handles("agent")) return desk.openApp("agent");
+  const a = $("#agentLink"); if (a && a.href) window.open(a.href, a.target || "_blank");
+}
+async function sendToAgentZero(text) {
+  if (a0Busy) { toast("Agent Zero is still working on the last message."); return; }
+  if (!agentZeroInstalled) return handOffToAgentZero(text);
+  if (!state.current) {
+    const chat = { id: Date.now(), title: text.slice(0, 40), msgs: [] };
+    state.ephemeral.unshift(chat); state.current = chat;
+  }
+  const c = state.current;
+  c.msgs.push({ r: "user", t: text });
+  const pend = { r: "ai", pending: true, t: "", a0: { status: "Agent Zero is working…", steps: [] } };
+  c.msgs.push(pend);
+  renderThread(); renderConvs();
+  a0Busy = true;
+  const steps = new Map();
+  let ctx = c.a0ctx || "";
+  let from = 0, final = "", idle = 0, loopWarned = false;
+  const started = Date.now();
+  const paint = (head) => {
+    const list = [...steps.values()].sort((x, y) => (x.no || 0) - (y.no || 0));
+    pend.a0.status = head || "";
+    pend.a0.steps = a0StepRows(list.filter((x) => x.type !== "response"));
+    pend.t = final || "";
+    if (loopWarned) pend.warn = A0_LOOP_HINT;
+    renderThread();
+    return list;
+  };
+  try {
+    const a = await a0Post("ask", { text, context: ctx });
+    ctx = a.context || ctx; c.a0ctx = ctx;
+    for (;;) {
+      await new Promise((res) => setTimeout(res, 1500));
+      let p;
+      try { p = await a0Post("poll", { context: ctx, from }); }
+      catch (e) { if (++idle > 20) throw e; continue; }
+      idle = 0;
+      for (const st of p.steps || []) steps.set(st.no != null ? st.no : steps.size, st);
+      if (p.next != null) from = p.next;
+      if (p.final) final = p.final;
+      const secs = Math.round((Date.now() - started) / 1000);
+      const list = paint(final ? "" : "Agent Zero is working… (" + secs + " s, " + steps.size + " steps)");
+      if (!loopWarned && a0Looping(list)) { loopWarned = true; toast(A0_LOOP_HINT, "warn"); paint(""); }
+      if (final && !p.busy) break;
+      if (Date.now() - started > 30 * 60 * 1000) { pend.warn = "Agent Zero is still working after 30 minutes; see the Agent window."; break; }
+    }
+    paint("");
+    if (!final) pend.t = "Agent Zero finished without a final answer. See the Agent window.";
+  } catch (e) {
+    if (e.status === 503 || e.status === 401) {
+      pend.a0.status = ""; pend.t = "**Agent Zero:** " + (e.message || "not running");
+      pend.warn = "Your message is on the clipboard; the Agent window opens so you can paste it.";
+      handOffToAgentZero(text);
+    } else {
+      pend.a0.status = ""; pend.t = "**Agent Zero:** " + (e.message || e);
+      pend.warn = "Agent Zero did not finish. Open the Agent window for details.";
+    }
+  } finally {
+    pend.pending = false;
+    a0Busy = false;
+    renderThread(); renderConvs();
+  }
+}
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest('a[href="#agent"]');
+  if (!a) return;
+  e.preventDefault();
+  a0OpenFull();
+});
 async function send() {
   {
     const raw = $("#input").value;
@@ -2306,7 +2463,7 @@ async function send() {
     if (state.a0 && raw.trim() && !state.attach.length) {
       $("#input").value = "";
       autosize();
-      return handOffToAgentZero(raw.trim());
+      return sendToAgentZero(raw.trim());
     }
   }
   {
@@ -2643,16 +2800,27 @@ $("#setBack").onclick = () => $(".modal:not(.small):not(.fp)")?.classList.remove
 $("#settings").onclick = (e) => { if (e.target.id === "settings") closeSettings(); };
 
 let cfCb;
-function confirmBox({ title, text, word, ok = "Delete", extra, cb }) {
-  $("#cfTitle").textContent = title; $("#cfText").textContent = text; $("#cfWord").textContent = word;
-  // 0.6.1: no `word` = plain notice (no typed confirmation needed).
-  const fld = $("#cfInput").closest(".field"); if (fld) fld.hidden = !word;
-  $("#cfOk").textContent = ok; $("#cfOk").disabled = !!word; $("#cfInput").value = "";
+// 0.6.2: no typed magic words anywhere. A plain confirm is two buttons; a
+// destructive one (delete, wipe, recovery phrase) adds a checkbox that
+// enables the button. `word` is kept only to mark those (see CF_CHECK).
+const CF_CHECK = {
+  "ARE YOU SURE": "I understand these files are deleted for good",
+  "WIPE-OK": "I understand wrong passcodes can destroy the vault",
+  "SAVED": "I have written down the recovery phrase",
+  "REMOVE": "",
+};
+function confirmBox({ title, text, word, check, ok = "Delete", extra, cb }) {
+  $("#cfTitle").textContent = title; $("#cfText").textContent = text;
+  const label = check || (word && CF_CHECK[word]) || "";
+  const row = $("#cfCheckRow");
+  if (row) row.hidden = !label;
+  if ($("#cfCheckLabel")) $("#cfCheckLabel").textContent = label;
+  if ($("#cfCheck")) $("#cfCheck").checked = false;
+  $("#cfOk").textContent = ok; $("#cfOk").disabled = !!label;
   $("#cfExtra").hidden = !extra; $("#cfExtra").textContent = extra || "";
-  cfCb = cb; $("#confirm").hidden = false; setTimeout(() => (word ? $("#cfInput") : $("#cfOk")).focus(), 20);
+  cfCb = cb; $("#confirm").hidden = false; setTimeout(() => (label ? $("#cfCheck") : $("#cfOk")).focus(), 20);
 }
-$("#cfInput").oninput = () => ($("#cfOk").disabled = $("#cfInput").value.trim() !== $("#cfWord").textContent);
-$("#cfInput").onkeydown = (e) => { if (e.key === "Enter" && !$("#cfOk").disabled) $("#cfOk").click(); };
+if ($("#cfCheck")) $("#cfCheck").onchange = () => ($("#cfOk").disabled = !$("#cfCheck").checked);
 $("#cfCancel").onclick = () => ($("#confirm").hidden = true);
 $("#cfOk").onclick = () => { $("#confirm").hidden = true; cfCb?.(); };
 
@@ -7206,13 +7374,18 @@ function deskCatalog() {
 }
 function deskAgent() {
   const link = $("#agentLink");
-  return { installed: !!(link && !link.hidden), href: (link && link.href) || "",
-    state: ($("#agentLinkState") && $("#agentLinkState").textContent) || "" };
+  const s = agentLastStatus || {};
+  return { installed: !!(link && !link.hidden) || agentIsInstalled(s), href: (link && link.href) || agentPageUrl(s),
+    state: ($("#agentLinkState") && $("#agentLinkState").textContent) || "",
+    status: s.state || "", running: s.state === "running" && s.upstream !== false,
+    message: agentProgressLine(s) || s.message || "", progress: s.progress, step: s.step, steps: s.steps,
+    needsInstall: !!(s.needs_install || s.state === "needs_install" || s.state === "pull_failed"),
+    busy: s.state === "installing" };
 }
 window.stickApp = Object.freeze({
   openSettings, closeSettings, showSec, lockVault, showApps, toast,
   setSessionMode, focusVaultUnlock, refreshApps, refreshAgentLink, refreshModels, installAgent,
-  deskAppUrl, deskCatalog, deskAgent, control,
+  deskAppUrl, deskCatalog, deskAgent, control, agentFastPoll, authHeaders,
   sessionMode: () => state.mode, vaultOpen: () => !!state.vaultOpen,
 });
 })();

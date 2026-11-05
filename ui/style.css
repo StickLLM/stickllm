@@ -688,3 +688,16 @@ input.secret { -webkit-text-security: disc; }
 .errBox .ebMsg{margin:8px 0}
 .errBox pre{white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto;font-size:12px;background:rgba(127,127,127,.12);padding:6px;border-radius:6px}
 .errBox .ebActs{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+/* 0.6.2 (A4): long-action buttons show a spinner while they work */
+.btn.busy{position:relative;cursor:progress;opacity:.85}
+.btn.busy::before{content:"";display:inline-block;width:.9em;height:.9em;margin-right:.5em;vertical-align:-.12em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:btnSpin .8s linear infinite}
+@keyframes btnSpin{to{transform:rotate(360deg)}}
+/* 0.6.2 (A6): Agent Zero steps inline in chat */
+.a0Run{margin:2px 0 8px}
+.a0Run .a0Status{color:var(--muted);font-size:13px;margin-bottom:4px}
+.a0Run .a0Steps summary{cursor:pointer;color:var(--muted);font-size:13px}
+.a0Run .a0Steps ol{margin:6px 0 0 18px;padding:0;font-size:13px;max-height:260px;overflow:auto}
+.a0Run .a0Steps li{margin:2px 0;word-break:break-word}
+.msg .a0Full{font-size:13px}
+.cfCheck{display:flex;gap:8px;align-items:center;margin:10px 0;cursor:pointer}
+@keyframes apIndet{0%{transform:translateX(-100%)}100%{transform:translateX(340%)}}

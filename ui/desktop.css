@@ -213,3 +213,7 @@ body.deskMode .vpKeys{color:var(--muted);font-size:11.5px}
 body.deskMode .taskMenu{position:fixed;z-index:40;min-width:160px;padding:4px;border-radius:10px;background:var(--panel,#16202a);border:1px solid var(--line,rgba(255,255,255,.12));box-shadow:0 10px 30px rgba(0,0,0,.35);display:flex;flex-direction:column}
 body.deskMode .taskMenuItem{all:unset;cursor:pointer;padding:8px 12px;border-radius:7px;font-size:13px;color:var(--ink)}
 body.deskMode .taskMenuItem:hover,body.deskMode .taskMenuItem:focus-visible{background:var(--accent-soft)}
+/* 0.6.2 (A3): Agent window start progress */
+body.deskMode .apCard .apBar{height:8px;border-radius:4px;background:var(--line,#334155);overflow:hidden;margin:10px auto;max-width:320px;position:relative}
+body.deskMode .apCard .apBar i{display:block;height:100%;width:5%;background:var(--accent,#3b82f6);transition:width .6s ease}
+body.deskMode .apCard .apBar.indet i{width:30%!important;animation:apIndet 1.4s ease-in-out infinite}

@@ -786,30 +786,72 @@
     }
     return null;
   }
+  // 0.6.2 (A3): the Agent window shows Agent Zero's page only once it
+  // answers. While it installs or starts the window shows "Starting… step X
+  // of 6", a bar and Retry, polls every 1.5 s and switches by itself; it
+  // never shows a "refused to connect" page.
+  let agentPoll = null;
+  function stopAgentPoll() { if (agentPoll) { clearInterval(agentPoll); agentPoll = null; } }
+  function agentWinIsPanel() { const w = wm && wm.get("agent"); return !!(w && w.agentPanel); }
   function openAgent() {
     const api = appApi();
     const ag = api.deskAgent ? api.deskAgent() : { installed: false };
     const cur = wm.get("agent");
-    if (ag.installed) {
+    if (ag.installed && ag.running) {
+      stopAgentPoll();
       if (cur && cur.agentPanel) wm.close("agent", true);
       return wm.open({ id: "agent", title: "Agent", w: SYS.agent.w, h: SYS.agent.h, url: urlFor("agent"), popOut: () => openOutside("agent") });
     }
     renderAgentPanel(ag);
     const w = wm.open(mountSpec("agent", ui.agentPanel));
     if (w) w.agentPanel = true;
-    if (api.refreshAgentLink) Promise.resolve(api.refreshAgentLink()).then(() => {
-      if (!wm) return;
-      const now = api.deskAgent ? api.deskAgent() : ag;
-      const w2 = wm.get("agent");
-      if (now.installed && w2 && w2.agentPanel) openAgent();
-      else renderAgentPanel(now);
-    }).catch(() => {});
+    stopAgentPoll();
+    const tick = () => {
+      if (!wm || !wm.has("agent") || !agentWinIsPanel()) { stopAgentPoll(); return; }
+      if (!api.refreshAgentLink) return;
+      Promise.resolve(api.refreshAgentLink()).then(() => {
+        const now = api.deskAgent ? api.deskAgent() : ag;
+        if (!agentWinIsPanel()) return;
+        if (now.installed && now.running) openAgent();
+        else renderAgentPanel(now);
+      }).catch(() => {});
+    };
+    tick();
+    agentPoll = setInterval(tick, 1500);
     return w;
   }
   function renderAgentPanel(ag) {
     const p = ui && ui.agentPanel;
     if (!p) return;
-    p.querySelector(".apState").textContent = (ag && ag.state) || "Agent Zero is not installed yet.";
+    ag = ag || {};
+    const st = String(ag.status || "");
+    const working = st === "installing" || st === "starting" || (ag.installed && !ag.running && st !== "error" && st !== "pull_failed");
+    const pct = Number.isFinite(Number(ag.progress)) && ag.progress !== null && ag.progress !== "" ? Math.max(0, Math.min(99, Math.round(Number(ag.progress)))) : null;
+    let line;
+    if (working) line = ag.message || (ag.step ? "Starting… step " + ag.step + " of " + (ag.steps || 6) : "Starting Agent Zero…");
+    else if (st === "error" || st === "pull_failed") line = ag.message || "Agent Zero did not start.";
+    else if (!ag.installed) line = ag.state && ag.state !== "Not installed" ? ag.state : "Agent Zero is not installed yet.";
+    else line = ag.message || ag.state || "";
+    p.querySelector(".apState").textContent = line;
+    const bar = p.querySelector(".apBar");
+    if (bar) {
+      bar.hidden = !working;
+      const fill = bar.querySelector("i");
+      if (fill) fill.style.width = (pct !== null ? pct : 5) + "%";
+      bar.classList.toggle("indet", pct === null);
+    }
+    const inst = p.querySelector(".apInstall");
+    const retry = p.querySelector(".apRetry");
+    if (inst) {
+      inst.hidden = !!ag.installed && !ag.needsInstall;
+      inst.disabled = !!ag.busy;
+      inst.classList.toggle("busy", !!ag.busy);
+      inst.textContent = ag.busy ? "Installing…" : "Install Agent Zero";
+    }
+    if (retry) {
+      retry.hidden = !ag.installed || ag.needsInstall;
+      retry.disabled = st === "installing";
+    }
   }
   // The Browser is a real Chrome window on the stick's screen (kiosk),
   // placed over the desktop like the other windows (stickllm-control). On a
@@ -930,11 +972,23 @@
     ui.store = st;
     // Agent window while Agent Zero is not installed.
     const ag = el("div", "deskPanel deskAgentPanel");
-    ag.innerHTML = '<div class="apCard"><img src="agent-zero.png?v=desk4" alt=""><h2>Agent</h2><p>Agent Zero works on tasks for you with the local model. It installs onto the vault.</p><p class="apState"></p><div class="apActs"><button type="button" class="btn primary apInstall">Install Agent Zero</button><button type="button" class="btn ghost apStore">Open App Store</button></div></div>';
-    ag.querySelector(".apInstall").addEventListener("click", () => {
+    ag.innerHTML = '<div class="apCard"><img src="agent-zero.png?v=desk4" alt=""><h2>Agent</h2><p>Agent Zero works on tasks for you with the local model. The program installs to the StickLLM data drive (/mnt/stickllm-data/stickllm-docker); its chats, memory and settings stay in your encrypted vault.</p><p class="apState" aria-live="polite"></p><div class="apBar" hidden><i></i></div><div class="apActs"><button type="button" class="btn primary apInstall">Install Agent Zero</button><button type="button" class="btn apRetry" hidden>Retry</button><button type="button" class="btn ghost apStore">Open App Store</button></div></div>';
+    ag.querySelector(".apInstall").addEventListener("click", (e) => {
       const api = appApi();
+      const b = e.currentTarget;
+      b.disabled = true; b.classList.add("busy"); b.textContent = "Installing…";
       if (api.installAgent) Promise.resolve(api.installAgent()).catch(() => {});
       setTimeout(() => { if (wm && wm.has("agent")) openAgent(); }, 1500);
+    });
+    ag.querySelector(".apRetry").addEventListener("click", (e) => {
+      const api = appApi();
+      const b = e.currentTarget;
+      b.disabled = true; b.classList.add("busy"); b.textContent = "Retrying…";
+      fetch("/api/agent/start", { method: "POST", cache: "no-store", credentials: "same-origin",
+        headers: api.authHeaders ? api.authHeaders({ "Content-Type": "application/json" }) : { "Content-Type": "application/json" }, body: "{}" })
+        .then((r) => r.json().catch(() => ({})).then((j) => { if (!r.ok && api.toast) api.toast(j.message || "Could not restart Agent Zero"); }))
+        .catch(() => {})
+        .finally(() => setTimeout(() => { b.disabled = false; b.classList.remove("busy"); b.textContent = "Retry"; if (wm && wm.has("agent")) openAgent(); }, 1500));
     });
     ag.querySelector(".apStore").addEventListener("click", () => openApp("store"));
     ui.hold.appendChild(ag);

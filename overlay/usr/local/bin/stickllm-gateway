@@ -2925,6 +2925,72 @@ class Handler(SimpleHTTPRequestHandler):
         fallback = discover_lan_ip() or "127.0.0.1"
         return mod.stickllm_home_url(self.headers.get("Host") or "", fallback)
 
+    def _agent_restart(self) -> None:
+        """0.6.2 (A3): the Agent window's Retry. Restarts the A0 service
+        (keeps the installed image; never re-loads the bundle)."""
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(min(n, 4096))
+        if self._agent_refused():
+            return
+        if not vault_unlocked():
+            msg = vault_needed_message("Unlock vault to use Agent")
+            self._json(403, {"ok": False, "error": msg, "message": msg, "code": "vault_needed"})
+            return
+        try:
+            subprocess.run(["systemctl", "reset-failed", "stickllm-agent.service"],
+                           capture_output=True, timeout=10, check=False)
+            r = subprocess.run(["systemctl", "restart", "--no-block", "stickllm-agent.service"],
+                               capture_output=True, text=True, timeout=15, check=False)
+            ok = r.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if not ok:
+            self._json(500, {"ok": False, "error": "restart_failed", "message": "Could not restart Agent Zero."})
+            return
+        self._json(200, {"ok": True, "message": "Restarting Agent Zero…"})
+
+    def _agent_chat(self, action: str) -> None:
+        """0.6.2 (A6): chat -> Agent Zero. ask starts a task, poll returns its
+        steps and the final answer, stop pauses it. Loopback A0 API only."""
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(min(n, 64 * 1024)) if n else b""
+        if self._agent_refused():
+            return
+        try:
+            req = json.loads(raw.decode("utf-8") or "{}") if raw else {}
+        except (UnicodeDecodeError, ValueError):
+            req = {}
+        if not isinstance(req, dict):
+            self._json(400, {"ok": False, "error": "bad_json"})
+            return
+        if not _agent_port_open(5099):
+            self._json(503, {"ok": False, "error": "agent_not_running",
+                             "message": "Agent Zero is not running yet. Open the Agent window to start it."})
+            return
+        ctx = str(req.get("context") or "")[:128]
+        try:
+            client = a0client()
+            if action == "ask":
+                text = str(req.get("text") or "").strip()
+                if not text:
+                    self._json(400, {"ok": False, "error": "empty"})
+                    return
+                out = client.ask(text[:20000], ctx)
+            elif action == "poll":
+                if not ctx:
+                    self._json(400, {"ok": False, "error": "no_context"})
+                    return
+                out = client.poll(ctx, int(req.get("from") or 0))
+            else:
+                client.pause(ctx)
+                out = {}
+        except Exception as e:
+            self._json(502, {"ok": False, "error": "agent_error", "message": f"Agent Zero did not answer ({e.__class__.__name__}: {e})"[:300]})
+            return
+        out["ok"] = True
+        self._json(200, out)
+
     def _agent_handoff_mint(self) -> None:
         """Paired StickLLM tab -> one-time link that signs this browser in to :5443."""
         length = int(self.headers.get("Content-Length") or 0)
@@ -5059,6 +5125,12 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/agent/handoff":
             self._agent_handoff_mint()
+            return
+        if path == "/api/agent/start":
+            self._agent_restart()
+            return
+        if path in ("/api/agent/ask", "/api/agent/poll", "/api/agent/stop"):
+            self._agent_chat(path.rsplit("/", 1)[-1])
             return
         if path == "/api/agent/plugins":
             # 0.6.1 (item 25): Settings > Agent Zero > Unlock all plugins.

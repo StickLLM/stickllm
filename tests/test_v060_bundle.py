@@ -124,7 +124,8 @@ def test_bundle_stream_checks_parts_and_reports_progress(tmp_path, monkeypatch):
     assert a.bundle_stream(sink, info) == 0
     assert sink.getvalue() == b"".join((medium / p["name"]).read_bytes() for p in doc["parts"])
     st = json.loads((tmp_path / "status.json").read_text())
-    assert st["state"] == "installing" and st["progress"] == 100
+    # 0.6.2 (A4): loading is step 1 of 6 (0-55% of the whole install bar).
+    assert st["state"] == "installing" and st["progress"] == 55 and st.get("step") == 2
     last = medium / doc["parts"][-1]["name"]
     data = last.read_bytes()
     last.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))  # same size, wrong hash
@@ -198,7 +199,7 @@ def test_a5_ui_status_line():
     app = (ROOT / "ui/app.js").read_text()
     body = app.split("function agentProgressLine", 1)[1].split("\nasync function ", 1)[0]
     for word in ("Loading Agent Zero from the stick", "Downloading Agent Zero", "Checking Agent Zero",
-                 "Agent Zero is loading", "%"):
+                 "Agent Zero is starting", "step ${s.step} of ${s.steps}", "%"):
         assert word in body
     link = app.split("async function refreshAgentLink", 1)[1].split("\nasync function ", 1)[0]
     assert "agentProgressLine(s)" in link and "s.bundled" in link
