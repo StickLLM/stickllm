@@ -862,7 +862,14 @@ def vulkan_gpu_rows(env_path: Path | None = None) -> list[dict]:
 def vk_display_name(idx: int, pci: str, width: int, total_mib: int) -> str:
     """'AMD GPU 10:00.0 · 8 GB · PCIe x16' (falls back to 'GPU N')."""
     short = re.sub(r"^0000:", "", pci or "")
-    bits = [f"AMD GPU {short}" if short else f"GPU {idx + 1}"]
+    vendor = "GPU"
+    if pci:
+        try:
+            vid = Path(f"/sys/bus/pci/devices/{pci if pci.count(':') == 2 else '0000:' + pci}/vendor").read_text(encoding="utf-8").strip().lower()
+            vendor = {"0x1002": "AMD GPU", "0x8086": "Intel GPU", "0x10de": "NVIDIA GPU"}.get(vid, "GPU")
+        except OSError:
+            vendor = "AMD GPU"
+    bits = [f"{vendor} {short}" if short else f"GPU {idx + 1}"]
     if total_mib:
         bits.append(f"{round(total_mib / 1024)} GB")
     if width:

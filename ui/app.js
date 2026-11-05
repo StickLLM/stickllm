@@ -954,10 +954,39 @@ function showError(err, title) {
   try { console.error("[StickLLM]", title || "", raw); } catch (_) {}
 }
 let tt;
-function toast(msg) {
-  const t = $("#toast"); t.textContent = msg; t.hidden = false;
-  t.classList.remove("busy");
-  clearTimeout(tt); tt = setTimeout(() => (t.hidden = true), 2800);
+// 0.6.2: toasts stack (newest at the bottom), each has a close X, and a new
+// one never replaces an older message (so a warning cannot hide an error).
+// Errors use showError()'s persistent box.
+function toast(msg, opts) {
+  opts = opts || {};
+  let stack = document.getElementById("toastStack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.id = "toastStack"; stack.className = "toastStack";
+    stack.setAttribute("role", "status"); stack.setAttribute("aria-live", "polite");
+    document.body.appendChild(stack);
+  }
+  const text = String(msg == null ? "" : msg);
+  const dup = Array.from(stack.children).find((n) => n.dataset.msg === text);
+  if (dup) dup.remove();
+  const item = document.createElement("div");
+  item.className = "toastItem" + (opts.warn || /^(warning|could not|couldn't|failed|error)/i.test(text) ? " warn" : "");
+  item.dataset.msg = text;
+  const span = document.createElement("span"); span.textContent = text;
+  const x = document.createElement("button");
+  x.type = "button"; x.className = "toastX"; x.setAttribute("aria-label", "Close"); x.textContent = "\u00d7";
+  const close = () => { clearTimeout(item._t); item.remove(); };
+  x.onclick = close;
+  item.append(span, x);
+  stack.appendChild(item);
+  while (stack.children.length > 4) stack.firstElementChild.remove();
+  const ms = opts.ms || (item.classList.contains("warn") ? 8000 : Math.max(2800, Math.min(8000, text.length * 60)));
+  item._t = setTimeout(close, ms);
+  item.onmouseenter = () => clearTimeout(item._t);
+  item.onmouseleave = () => { item._t = setTimeout(close, 2500); };
+  // The single #toast slot is for progress/open-app only; drop a finished one.
+  const t = $("#toast");
+  if (t && !t.classList.contains("busy") && !t.querySelector("button")) { clearTimeout(tt); t.hidden = true; }
 }
 
 // 0.6.0 (B8): anything that can take over a second shows progress. The
@@ -5119,7 +5148,7 @@ async function refreshAdvanced() {
 function renderAdvGpus() {
   const box = $("#advGpus");
   const rows = advState.gpus;
-  if (!rows.length) { box.innerHTML = '<div class="row"><small>No NVIDIA GPUs found (or the driver is not loaded). These options apply to NVIDIA cards.</small></div>'; }
+  if (!rows.length) { box.innerHTML = '<div class="row"><small>Power and clock options are for NVIDIA cards. AMD and Intel cards run through Vulkan and need no setup here; they show in the Detected line on the Models page.</small></div>'; }
   else box.innerHTML = rows.map((r) => {
     const idx = Number(r.index);
     const pw = advState.power.find((p) => Number(p.index) === idx) || {};

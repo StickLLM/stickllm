@@ -701,3 +701,10 @@ input.secret { -webkit-text-security: disc; }
 .msg .a0Full{font-size:13px}
 .cfCheck{display:flex;gap:8px;align-items:center;margin:10px 0;cursor:pointer}
 @keyframes apIndet{0%{transform:translateX(-100%)}100%{transform:translateX(340%)}}
+
+/* 0.6.2: stacked toasts with a close X */
+.toastStack{position:fixed;bottom:64px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;align-items:center;z-index:81;pointer-events:none;max-width:min(92vw,560px)}
+.toastItem{pointer-events:auto;display:flex;align-items:flex-start;gap:10px;background:var(--ink);color:var(--bg);padding:8px 10px 8px 14px;border-radius:10px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.toastItem.warn{border-left:4px solid #e0a020}
+.toastX{background:transparent;border:0;color:inherit;font-size:18px;line-height:1;cursor:pointer;padding:0 2px;opacity:.75}
+.toastX:hover{opacity:1}

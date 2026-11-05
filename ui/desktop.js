@@ -201,7 +201,13 @@
         browserOp(b.dataset.ext, "toggle");
         return;
       }
-      if (b && wm) wm.taskbarClick(b.dataset.app);
+      if (b && wm) {
+        // 0.6.2: a Chrome window sits above the whole desktop page, so a
+        // "focused" app window behind it is not really in front. Raise it
+        // (minimise the browser windows) instead of minimising it.
+        if (browserCovers()) { yieldBrowser(); wm.focus(b.dataset.app); }
+        else wm.taskbarClick(b.dataset.app);
+      }
     });
     // Right-click a browser button: Restore / Minimise / Maximise / Close.
     tasks.addEventListener("contextmenu", (e) => {
@@ -755,6 +761,8 @@
   }
   function openApp(id) {
     if (!on || !wm) return null;
+    // 0.6.2: opening/raising an app must bring it above any Chrome window.
+    if (browserCovers()) yieldBrowser();
     const api = appApi();
     if (id === CHAT) return wm.open(chatSpec());
     if (id === "settings") {
@@ -893,6 +901,11 @@
       setTimeout(pollBrowser, 600);
       return res;
     }).catch(() => { pollBrowser(); return null; });
+  }
+  // 0.6.2: Chrome windows are real X windows above the desktop page.
+  function browserCovers() { return browserWins.some((x) => x && !x.minimised); }
+  function yieldBrowser() {
+    browserWins.filter((x) => x && !x.minimised).forEach((x) => { x.minimised = true; browserOp(x.id, "minimise"); });
   }
   let browserMenu = null;
   function hideBrowserMenu() {
