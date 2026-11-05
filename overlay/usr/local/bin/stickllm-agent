@@ -25,7 +25,7 @@ NETWORK="stickllm-agent"
 ENTRY="/usr/local/bin/stickllm-agent-entrypoint"
 DOCKER_DIR=""
 
-# 0.6.3: copy squashfs docker-seed into the chosen data-root (preinstalled).
+# 0.6.3: attach squashfs docker-seed (RO layer binds) at the data-root (preinstalled).
 a0_ensure_seed() {
   "$PYBIN" "$LIB" write-status --state starting --phase preparing --progress 5 \
     --message "Starting Agent Zero…" --image_present false 2>/dev/null || true
@@ -172,7 +172,7 @@ needs_install() {
 # ExecCondition for stickllm-agent.service: skip the unit (no ExecStop, no
 # dockerd) while the image is not installed. Exit 1 = skip.
 cmd_image_ready() {
-  # 0.6.3: seed the USB data-root from squashfs, then the image is "installed".
+  # 0.6.3: attach seed at the USB data-root (no full copy), then the image is ready.
   if "$PYBIN" "$LIB" docker-may-start 2>/dev/null; then
     resolve_docker_dir 2>/dev/null || true
     a0_ensure_seed
