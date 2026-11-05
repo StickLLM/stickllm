@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.6.1 (2026-11-04)
+
+Fixes from the 0.6.0 hardware test.
+
+- Boot: BIOS GRUB uses a text menu (no "insufficient memory") and has a Safe
+  boot entry; terminal mode logs in on its own (root console); F10 shows the SSH password and F9 a new pair code (the
+  boot screen shows a password only in Test); the SSH line shows the real LAN
+  IP in a centred box; a USB 2 port gets a warning.
+- Desktop: xfwm4 maximises without a title bar, frame log path fixed, no
+  restart loop; the kiosk Power menu powers off after a confirm; the context
+  slider no longer draws a white/checkered box.
+- Network: the IP shows right after joining Wi-Fi; the Wi-Fi list rescans and
+  takes a hidden SSID.
+- Storage: the vault can live on STICKLLM-DATA (warning + confirm);
+  stickllm-persist accepts USB-transport drives; "Use free stick space" acts or
+  says why not; single-drive machines fall back to STICKLLM-DATA with clear
+  messages; `stickllm-update` stages a verified ISO (A/B, UEFI boot entries).
+- Models: presets follow the VRAM (32K/64K defaults), a fit check before
+  loading offers a smaller KV cache or context, one GPU only when the model
+  fits with a 10% margin, models on the USB stick sort last with a red
+  "Slow USB load" label, and the list refreshes when a vault or drive changes.
+- Agent Zero: "open <app>" opens at once from chat; the stickllm-apps skill
+  lists every app (add-ons and the browser); new open_url / open_file tools
+  show pages in the user's browser; an Agent Zero button next to Web hands the
+  message to Agent Zero; the chat model knows whether Agent Zero is there; the
+  Agent window offers "Open Agent Zero in a new tab"; Settings > Agent Zero has
+  "Unlock all plugins" (on by default, as in 0.5.9) and example tasks.
+- Apps: Notepad opens the folder it saved to; Office opens a file from this
+  computer right after copying it to vault/Documents.
+
 ## 0.6.0 (2026-11-04)
 
 Agent Zero is the one agent stack: the StickLLM chat is the simple view, the
