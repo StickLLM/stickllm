@@ -192,7 +192,7 @@ def test_build_bundles_agent_zero_on_the_iso():
     build = (ROOT / "scripts/lib/docker-build-live.sh").read_text()
     assert "a0_bundle.py pack" in build and "config/includes.binary/stickllm/agent-zero" in build
     assert "/stickllm-out/cache/agent-zero" in build
-    assert 'VERSION="${STICKLLM_VERSION:-0.6.1}"' in (ROOT / "scripts/build.sh").read_text()
+    assert 'VERSION="${STICKLLM_VERSION:-0.6.2}"' in (ROOT / "scripts/build.sh").read_text()
 
 
 def test_a5_ui_status_line():

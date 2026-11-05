@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.6.2 (2026-11-05)
+
+Agent Zero reliability first, plus model, GPU and desktop fixes from the 0.6.1
+hardware test.
+
+- Agent Zero: install and start no longer hang (bind retry without a DNS
+  lookup, MiniLM embedding bundled on the ISO and seeded offline, start order
+  fixed); install progress shows real stages; the agent window opens once it
+  answers; the agent preset follows the model you activate and waits for it;
+  chat spots a reply loop and suggests a bigger model. No typed confirmation
+  words anywhere (buttons; a checkbox plus a button for wipes).
+- Models: downloads resolve catalog files properly, fail clearly when nothing
+  resolves, keep "done" with the real size and show a moving step; split GGUFs
+  activate from part 00001; models with an experimental architecture are
+  labelled; a crash while loading names the architecture instead of a bare
+  exit code.
+- GPUs: among Vulkan cards with about the same free VRAM the PCIe x16 card
+  wins over an x1 riser; a card can be pinned by PCI address; the context is
+  shrunk before a partial offload; cards are named by PCI slot, size and link;
+  NVIDIA prep is skipped on machines without NVIDIA cards.
+- Boot: the Safe boot entry (GRUB and BIOS/isolinux menu) turns the AMD IOMMU
+  off for boards whose USB stops working with it on.
+- Desktop: toasts stack with a close button and never replace an error; app
+  windows come in front of the Chrome browser window; neutral GPU wording for
+  AMD/Intel; the SSH line says "Not connected" until there is a LAN IP.
+
 ## 0.6.1 (2026-11-04)
 
 Fixes from the 0.6.0 hardware test.
