@@ -1141,7 +1141,7 @@ function setVaultChrome(open, absent = false) {
   const vaultChanged = !!open !== !!state.vaultOpen;
   state.vaultOpen = open;
   // 0.6.1 (item 20): vault models appear/disappear without a manual refresh.
-  if (vaultChanged) setTimeout(() => { refreshModels().catch(() => {}); }, 300);
+  if (vaultChanged) setTimeout(() => { if (typeof refreshModels === "function") refreshModels().catch(() => {}); }, 300);
   // The mode tabs follow the vault: Vault is highlighted only while it is
   // unlocked, Ephemeral whenever it is locked (first load included).
   if (!open && sessionMode === "vault") applyModeUi("ephemeral");

@@ -87,5 +87,5 @@ def test_usb_models_bottom_and_red_label_and_autorefresh():
     s = APP.read_text()
     assert "Slow USB load" in s and "slowUsb(a) - slowUsb(b)" in s
     assert "pill.slowUsb" in (ROOT / "ui/style.css").read_text()
-    assert "if (vaultChanged) setTimeout(() => { refreshModels()" in s
+    assert "if (vaultChanged) setTimeout(" in s and "refreshModels().catch" in s
     assert "refreshModels().catch(() => {});  // 0.6.1 (item 20)" in s
