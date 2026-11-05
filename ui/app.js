@@ -387,10 +387,14 @@ async function refreshAgentLink() {
         setBtnBusy(btn, false, "Open Agent Zero");
         btn.onclick = () => { agentInstallWatch = false; btn.onclick = () => installAgent(); refreshAgentLink(); a0OpenFull(); };
       } else if (busy) setBtnBusy(btn, true, "Installing…");
-      else setBtnBusy(btn, false, s.bundled ? "Install Agent Zero (from the stick)" : "Install Agent Zero");
+      else if (s.preinstalled || (s.drive && s.drive.seed_ready) || s.image_present) {
+        setBtnBusy(btn, false, "Open Agent Zero");
+        btn.hidden = true;
+      } else setBtnBusy(btn, false, s.bundled ? "Install Agent Zero (from the stick)" : "Install Agent Zero");
     }
     if (ready && !agentReadyToasted) { agentReadyToasted = true; toast("Agent Zero is ready — Open Agent Zero"); }
     if (s.state === "error" || s.state === "pull_failed") agentInstallWatch = false;
+    renderA0Drive(s);
     const text = s.state === "error" ? (s.message || detail) : (s.pull_log || "");
     for (const log of [$("#agentPullLog"), $("#agentCatalogPull")]) {
       if (!log) continue;
@@ -5361,6 +5365,120 @@ if ($("#wifiScan")) $("#wifiScan").onclick = async () => {
 };
 
 
+
+/* ---- 0.6.3: Move Agent Zero to SSD / Run from stick ---- */
+let a0MovePoll = null;
+function a0MoveButtons() {
+  return ["a0MoveSsd", "a0RunStick", "agentMoveSsdBtn", "agentRunStickBtn"]
+    .map((id) => $("#" + id)).filter(Boolean);
+}
+function renderA0Drive(s) {
+  const d = (s && s.drive) || {};
+  const move = d.move || {};
+  const busy = move.state === "running";
+  const loc = d.location || "";
+  const msg = $("#a0DriveMsg") || $("#agentCatalogMsg") || $("#agentInstallMsg");
+  if (msg) {
+    if (busy) msg.textContent = move.message || "Copying Agent Zero…";
+    else if (loc === "ssd") msg.textContent = "Agent Zero is on the host SSD (faster).";
+    else msg.textContent = "Agent Zero runs from the stick (preinstalled). Optionally move it to an SSD for speed.";
+  }
+  const bar = $("#a0MoveBar") || $("#agentMoveBar");
+  const pctEl = $("#a0MovePct") || $("#agentMovePct");
+  if (bar) {
+    bar.hidden = !busy;
+    if (pctEl) pctEl.style.width = Math.max(0, Math.min(100, Number(move.progress) || 0)) + "%";
+  }
+  const moveBtn = $("#a0MoveSsd") || $("#agentMoveSsdBtn");
+  const stickBtn = $("#a0RunStick") || $("#agentRunStickBtn");
+  if (moveBtn) {
+    moveBtn.disabled = busy || !d.can_move_to_ssd || loc === "ssd";
+    moveBtn.hidden = loc === "ssd" && !busy;
+    moveBtn.textContent = busy && move.target === "ssd"
+      ? ("Moving… " + (move.progress || 0) + "%")
+      : "Move Agent Zero to SSD (faster)";
+  }
+  if (stickBtn) {
+    stickBtn.hidden = loc !== "ssd" && !(busy && move.target === "usb");
+    stickBtn.disabled = busy;
+    stickBtn.textContent = busy && move.target === "usb"
+      ? ("Switching… " + (move.progress || 0) + "%")
+      : "Run from stick";
+  }
+  for (const btn of agentInstallButtons()) {
+    if (s && (s.preinstalled || s.image_present || d.seed_ready)) btn.hidden = true;
+  }
+  const catInstall = $("#agentCatalogInstall");
+  if (catInstall && (s && (s.preinstalled || s.image_present || d.seed_ready))) catInstall.hidden = true;
+}
+async function moveAgentDrive(target) {
+  for (const b of a0MoveButtons()) b.disabled = true;
+  try {
+    const r = await fetch("/api/agent/docker-drive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) },
+      body: JSON.stringify({ target }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) {
+      toast(j.message || "Could not move Agent Zero");
+      for (const b of a0MoveButtons()) b.disabled = false;
+      return;
+    }
+    toast(j.message || (target === "ssd" ? "Moving Agent Zero to SSD…" : "Switching to stick…"));
+    if (a0MovePoll) clearInterval(a0MovePoll);
+    a0MovePoll = setInterval(async () => {
+      try {
+        const st = await fetch("/api/agent/status", {
+          headers: token ? { Authorization: "Bearer " + token } : {},
+        }).then((x) => x.json());
+        renderA0Drive(st);
+        const mv = st.drive && st.drive.move;
+        if (!mv || mv.state !== "running") {
+          clearInterval(a0MovePoll); a0MovePoll = null;
+          if (mv && mv.state === "done") toast(mv.message || "Done");
+          if (mv && mv.state === "error") toast(mv.message || "Copy failed");
+        }
+      } catch (_) {}
+    }, 1500);
+  } catch (e) {
+    showError(e, "Could not move Agent Zero");
+    for (const b of a0MoveButtons()) b.disabled = false;
+  }
+}
+function wireA0DriveButtons() {
+  const ms = $("#a0MoveSsd") || $("#agentMoveSsdBtn");
+  const rs = $("#a0RunStick") || $("#agentRunStickBtn");
+  if (ms) ms.onclick = () => moveAgentDrive("ssd");
+  if (rs) rs.onclick = () => moveAgentDrive("usb");
+}
+wireA0DriveButtons();
+
+/* 0.6.3: Agent Zero is the main chat — auto-start after vault/model ready. */
+let stickllmAutoStartA0 = false;
+async function ensureAgentZeroStarted() {
+  if (stickllmAutoStartA0) return;
+  try {
+    const st = await fetch("/api/agent/status", {
+      headers: token ? { Authorization: "Bearer " + token } : {},
+    }).then((r) => r.json());
+    renderA0Drive(st);
+    if (st.state === "running" || st.state === "starting" || st.state === "installing") {
+      stickllmAutoStartA0 = st.state === "running";
+      return;
+    }
+    if (st.preinstalled || st.image_present || (st.drive && st.drive.seed_ready) || st.bundled) {
+      stickllmAutoStartA0 = true;
+      toast("Starting Agent Zero…");
+      await fetch("/api/agent/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) },
+        body: "{}",
+      });
+    }
+  } catch (_) {}
+}
+
 /* ---- 0.6.3 first-time setup wizard ---- */
 const SETUP_KEY = "stickllm.setup.v063";
 function setupDone() { try { return localStorage.getItem(SETUP_KEY) === "1"; } catch (_) { return false; } }
@@ -5464,10 +5582,28 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
 <div class="drive-list">${rows}${um}</div>
 <label class="field"><span>Vault folder</span><input id="wizVault"></label>
 <label class="field"><span>Models / downloads folder</span><input id="wizModels"></label>
-<label class="field"><span>Agent Zero / Docker folder</span><input id="wizDocker"></label>`;
+<label class="field"><span>Agent Zero / Docker folder</span><input id="wizDocker"></label>
+<div class="card" id="wizA0Drive" style="margin-top:10px">
+  <p class="muted small">Agent Zero is preinstalled on the stick. Moving it to an SSD makes it start faster (one-time copy).</p>
+  <button type="button" class="btn" id="wizMoveA0">Move Agent Zero to SSD (faster)</button>
+  <button type="button" class="btn ghost" id="wizRunStick" hidden>Run from stick</button>
+  <div class="progress" id="wizMoveBar" hidden><div id="wizMovePct" style="width:0%"></div></div>
+</div>`;
       $("#wizVault").value = state.vaultPath;
       $("#wizModels").value = state.modelsPath;
       $("#wizDocker").value = state.dockerPath;
+      const wizMove = $("#wizMoveA0");
+      const wizStick = $("#wizRunStick");
+      if (wizMove) wizMove.onclick = () => moveAgentDrive("ssd");
+      if (wizStick) wizStick.onclick = () => moveAgentDrive("usb");
+      fetch("/api/agent/status", { headers: token ? { Authorization: "Bearer " + token } : {} })
+        .then((r) => r.json()).then((st) => {
+          const d = st.drive || {};
+          if (wizMove) { wizMove.disabled = !d.can_move_to_ssd; wizMove.hidden = d.location === "ssd"; }
+          if (wizStick) wizStick.hidden = d.location !== "ssd";
+          const box = $("#wizA0Drive");
+          if (box) box.hidden = !d.ssd_available && d.location !== "ssd";
+        }).catch(() => {});
       body.querySelectorAll(".drive-pick[data-id]").forEach((b) => {
         b.onclick = () => {
           state.drive = drives.find((d) => d.id === b.dataset.id);
@@ -7712,6 +7848,7 @@ function deskAgent() {
 window.stickApp = Object.freeze({
   openSettings, closeSettings, showSec, lockVault, showApps, toast,
   setSessionMode, focusVaultUnlock, refreshApps, refreshAgentLink, refreshModels, installAgent,
+  ensureAgentZeroStarted, moveAgentDrive, renderA0Drive,
   deskAppUrl, deskCatalog, deskAgent, control, agentFastPoll, authHeaders,
   sessionMode: () => state.mode, vaultOpen: () => !!state.vaultOpen,
 });
@@ -7914,3 +8051,26 @@ async function loadVaultChoices() {
   }
 }
 if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices();
+
+
+/* 0.6.3: StickLLM chat UI retired — Agent Zero is the main Chat window.
+   Keep #app in DOM for Settings/Models mounts; hide the thread/composer. */
+(function hideStickllmChatChrome() {
+  try {
+    document.documentElement.classList.add("a0-main-chat");
+    const style = document.createElement("style");
+    style.textContent = `
+      html.a0-main-chat #app .chatThread,
+      html.a0-main-chat #app #thread,
+      html.a0-main-chat #app .composer,
+      html.a0-main-chat #app #composer,
+      html.a0-main-chat #app .a0Toggle,
+      html.a0-main-chat #a0Toggle,
+      html.a0-main-chat .a0Full { display: none !important; }
+    `;
+    document.head.appendChild(style);
+  } catch (_) {}
+})();
+document.addEventListener("stickllm:model-ready", () => { try { ensureAgentZeroStarted(); } catch (_) {} });
+document.addEventListener("stickllm:vault-unlocked", () => { try { ensureAgentZeroStarted(); } catch (_) {} });
+setTimeout(() => { try { ensureAgentZeroStarted(); } catch (_) {} }, 8000);

@@ -144,13 +144,13 @@
                 <div class="appsRow appsRowLive" id="agentCatalogRow" data-app="agent-zero" data-license="MIT" data-disk-min="4" data-ram-min="2" data-gpu="none">
                   <span class="appName">
                     <span>Agent Zero</span>
-                    <small id="agentCatalogMsg">Unlock the vault, then install. The image stays on the host drive.</small>
+                    <small id="agentCatalogMsg">Agent Zero is preinstalled on the stick. Optionally move it to an SSD for speed.</small>
                     <small class="appReq">Disk 4 GB (measured) · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
                     <small class="appNote">Uses llama-server for the model; Kokoro TTS on CPU ~0.5-1 GB RAM; needs a few GB free while unpacking</small>
                     <pre id="agentCatalogPull" class="mono appsPull" hidden></pre>
                   </span>
                   <span class="appsState">
-                    <button type="button" class="btn sm" id="agentCatalogInstall">Install Agent Zero</button>
+                    <button type="button" class="btn sm" id="agentCatalogInstall" hidden>Install Agent Zero</button><button type="button" class="btn sm" id="agentMoveSsdBtn">Move Agent Zero to SSD (faster)</button><button type="button" class="btn sm ghost" id="agentRunStickBtn" hidden>Run from stick</button><div class="progress" id="agentMoveBar" hidden><div id="agentMovePct" style="width:0%"></div></div>
                   </span>
                 </div>
               </div>
@@ -443,6 +443,15 @@
       </div>
       <div class="row" style="gap:8px;flex-wrap:wrap">
         <button class="btn" id="setupWizardBtn" type="button">First-time setup…</button>
+        <div class="card" id="a0DriveCard" style="margin-top:12px">
+          <h3>Agent Zero location</h3>
+          <p class="muted small" id="a0DriveMsg">Runs from the stick by default (preinstalled).</p>
+          <div class="row gap">
+            <button type="button" class="btn" id="a0MoveSsd">Move Agent Zero to SSD (faster)</button>
+            <button type="button" class="btn ghost" id="a0RunStick" hidden>Run from stick</button>
+          </div>
+          <div class="progress" id="a0MoveBar" hidden><div id="a0MovePct" style="width:0%"></div></div>
+        </div>
         <button class="btn primary" id="createVault">Create vault…</button>
       </div>
     </div>
@@ -522,7 +531,7 @@
   </div>
   <h3>Agent Zero</h3>
   <div class="group">
-    <div class="row"><div><b>Agent Zero</b><small id="agentInstallMsg">Unlock the vault, then install. The image stays on the host drive.</small></div><button class="btn sm" id="agentInstallBtn" type="button" hidden>Install Agent Zero</button></div>
+    <div class="row"><div><b>Agent Zero</b><small id="agentInstallMsg">Agent Zero is preinstalled on the stick. Optionally move it to an SSD for speed.</small></div><button class="btn sm" id="agentInstallBtn" type="button" hidden>Install Agent Zero</button></div>
     <pre id="agentPullLog" class="mono" hidden></pre>
     <div class="row"><div><b>Unlock all plugins</b><small id="a0PluginsMsg">Agent Zero may install and run any plugin (Plugin Hub). Off locks plugins down to StickLLM's own. Applies after a restart.</small></div>
       <label class="switch"><input type="checkbox" id="a0PluginsUnlocked" checked><span></span></label></div>

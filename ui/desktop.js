@@ -30,7 +30,8 @@
   // StickLLM's own apps (0.5.6). Settings, Models and the App Store mount the
   // existing panels from index.html; Agent and catalog apps are iframes.
   const SYS = {
-    chat: { title: "Chat" },
+    // 0.6.3: Chat is Agent Zero (StickLLM thread UI retired).
+    chat: { title: "Chat", w: 1180, h: 800 },
     browser: { title: "Browser", w: 1180, h: 780 },
     agent: { title: "Agent", w: 1180, h: 800 },
     store: { title: "App Store", w: 1000, h: 700 },
@@ -733,7 +734,17 @@
   }
 
   function chatSpec() {
-    return { id: CHAT, title: "Chat", w: 1000, h: 720, pinned: true, mountNode: $("#app") };
+    // 0.6.3: main Chat window loads Agent Zero (same URL as the old Agent app).
+    // StickLLM #app stays for Settings/Models panel mounts only.
+    const api = appApi();
+    const ag = api.deskAgent ? api.deskAgent() : { installed: false, running: false };
+    if (ag.installed && ag.running) {
+      return {
+        id: CHAT, title: "Chat", w: 1180, h: 800, pinned: true,
+        url: urlFor("agent"), popOut: () => openOutside("agent"),
+      };
+    }
+    return { id: CHAT, title: "Chat", w: 1000, h: 720, pinned: true, mountNode: ui.agentPanel || $("#app") };
   }
   const POP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.2'%3E%3Cpath d='M14 4h6v6M20 4l-9 9M18 14v6H4V6h6'/%3E%3C/svg%3E";
   function isLocal() {
@@ -764,7 +775,15 @@
     // 0.6.2: opening/raising an app must bring it above any Chrome window.
     if (browserCovers()) yieldBrowser();
     const api = appApi();
-    if (id === CHAT) return wm.open(chatSpec());
+    if (id === CHAT) {
+      try { if (api.ensureAgentZeroStarted) api.ensureAgentZeroStarted(); } catch (e) {}
+      const cur = wm.get(CHAT);
+      const ag = api.deskAgent ? api.deskAgent() : {};
+      if (cur && cur.agentPanel && ag.installed && ag.running) wm.close(CHAT, true);
+      const w = wm.open(chatSpec());
+      if (w && !(ag.installed && ag.running)) w.agentPanel = true;
+      return w;
+    }
     if (id === "settings") {
       const w = wm.open(mountSpec("settings", ui.settings));
       if (api.openSettings && !$("#settings .setScroll > section:not([hidden])")) api.openSettings("general");
@@ -781,7 +800,10 @@
       if (api.refreshApps) api.refreshApps().then(scheduleCatalog, () => {});
       return w;
     }
-    if (id === "agent") return openAgent();
+    if (id === "agent") {
+      // 0.6.3: Agent launcher opens the main Chat (A0) window.
+      return openApp(CHAT);
+    }
     if (id === "browser") { openBrowser("", "Browser"); return true; }
     if (has(APPS, id)) {
       const a = APPS[id];
