@@ -53,6 +53,10 @@ DATA_MNT = Path(os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data"))
 # "usb", "ssd" or "auto" (default). Portable: on the settings partition.
 DOCKER_DRIVE_PREF = Path(os.environ.get(
     "STICKLLM_DOCKER_DRIVE_PREF", str(SETTINGS_MNT / "agent-docker-drive")))
+SEED_DIR = Path(os.environ.get(
+    "STICKLLM_A0_SEED_DIR", "/opt/stickllm/docker-seed"))
+MOVE_STATUS = Path(os.environ.get(
+    "STICKLLM_A0_MOVE_STATUS", "/run/stickllm/a0-move.json"))
 # Agent Zero image bundled on the ISO (scripts/lib/a0_bundle.py).
 A0_BUNDLE_DIRS = tuple(Path(p) for p in os.environ.get(
     "STICKLLM_A0_BUNDLE_DIRS",
@@ -499,8 +503,244 @@ def docker_drive_pref() -> str:
     try:
         value = DOCKER_DRIVE_PREF.read_text(encoding="utf-8").strip().lower()
     except OSError:
-        return "auto"
-    return value if value in ("usb", "ssd", "auto") else "auto"
+        # 0.6.3: Agent Zero ships preinstalled on the stick — default USB.
+        return "usb"
+    return value if value in ("usb", "ssd", "auto") else "usb"
+
+
+
+def seed_meta() -> dict | None:
+    """squashfs docker-seed metadata when the seed graph is present."""
+    try:
+        doc = json.loads((SEED_DIR / "stickllm-seed.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or not (SEED_DIR / "image").is_dir():
+        return None
+    return doc
+
+
+def seed_ready() -> bool:
+    return seed_meta() is not None
+
+
+def seed_matches_pin(pin: dict | None = None) -> bool:
+    meta = seed_meta()
+    if not meta:
+        return False
+    try:
+        data = pin or load_pin()
+    except (OSError, ValueError):
+        return False
+    return (
+        str(meta.get("config_digest") or "") == str(data.get("config_digest") or "")
+        and str(meta.get("amd64_digest") or "") == str(data.get("amd64_digest") or "")
+    )
+
+
+def write_move_status(doc: dict) -> None:
+    MOVE_STATUS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = MOVE_STATUS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+    tmp.replace(MOVE_STATUS)
+
+
+def read_move_status() -> dict:
+    try:
+        doc = json.loads(MOVE_STATUS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def set_docker_drive_pref(value: str) -> None:
+    if value not in ("usb", "ssd", "auto"):
+        raise ValueError("pref must be usb, ssd, or auto")
+    DOCKER_DRIVE_PREF.parent.mkdir(parents=True, exist_ok=True)
+    DOCKER_DRIVE_PREF.write_text(value + "\n", encoding="utf-8")
+
+
+def ensure_seeded(root: Path | None = None) -> dict:
+    """Copy squashfs docker-seed into the chosen data-root when image is missing.
+
+    Silent first-boot prepare (not an Install). Safe when already seeded.
+    """
+    root = root or choose_docker_root()
+    out: dict = {"ok": False, "root": str(root) if root else "", "copied": False, "skipped": False}
+    if root is None:
+        out["error"] = "no_docker_root"
+        return out
+    if (root / "image").is_dir():
+        out["ok"] = True
+        out["skipped"] = True
+        return out
+    if not seed_ready():
+        out["error"] = "no_seed"
+        return out
+    if not seed_matches_pin():
+        out["error"] = "seed_pin_mismatch"
+        return out
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.run(
+            ["rsync", "-a", "--delete", str(SEED_DIR) + "/", str(root) + "/"],
+            capture_output=True, text=True, check=False,
+        )
+        if proc.returncode != 0:
+            raise OSError(proc.stderr or "rsync failed")
+    except FileNotFoundError:
+        proc = subprocess.run(
+            ["cp", "-a", str(SEED_DIR) + "/.", str(root) + "/"],
+            capture_output=True, text=True, check=False,
+        )
+        if proc.returncode != 0:
+            out["error"] = (proc.stderr or "cp failed")[:300]
+            return out
+    out["ok"] = (root / "image").is_dir()
+    out["copied"] = True
+    if not out["ok"]:
+        out["error"] = "seed_copy_incomplete"
+    return out
+
+
+def move_agent_root(target: str) -> dict:
+    """One-time copy USB↔SSD for Agent Zero's docker data-root; updates pref.
+
+    target 'ssd' = Move Agent Zero to SSD (faster); 'usb' = Run from stick.
+    Button should stay disabled while MOVE_STATUS.state == 'running'.
+    """
+    target = (target or "").strip().lower()
+    if target not in ("ssd", "usb"):
+        return {"ok": False, "error": "bad_target", "message": "target must be ssd or usb"}
+    cur = read_move_status()
+    if cur.get("state") == "running":
+        return {"ok": False, "error": "busy", "message": "A move is already running.", **cur}
+    ssd = docker_data_root(use_env=False)
+    usb = DATA_MNT / DOCKER_DIR_NAME if usb_data_mounted() else None
+    if target == "ssd":
+        if ssd is None:
+            return {"ok": False, "error": "no_ssd", "message": "Mount a host SSD first."}
+        src = usb
+        if src is None or not (src / "image").is_dir():
+            if seed_ready() and usb is not None:
+                ensure_seeded(usb)
+                src = usb
+            if src is None or not (src / "image").is_dir():
+                return {"ok": False, "error": "no_source", "message": "Agent Zero is not on the stick yet."}
+        dst = ssd
+        label = "Move Agent Zero to SSD"
+    else:
+        if usb is None:
+            return {"ok": False, "error": "no_usb", "message": "Stick DATA partition is not mounted."}
+        dst = usb
+        label = "Run Agent Zero from stick"
+        if (usb / "image").is_dir():
+            set_docker_drive_pref("usb")
+            write_move_status({"state": "done", "target": "usb", "progress": 100, "message": "Running from stick."})
+            return {"ok": True, "target": "usb", "copied": False, "pref": "usb"}
+        src = ssd
+        if src is None or not (src / "image").is_dir():
+            res = ensure_seeded(usb)
+            if not res.get("ok"):
+                return {"ok": False, "error": res.get("error") or "seed_failed",
+                        "message": "Could not prepare the stick copy."}
+            set_docker_drive_pref("usb")
+            write_move_status({"state": "done", "target": "usb", "progress": 100, "message": "Running from stick."})
+            return {"ok": True, "target": "usb", "copied": True, "pref": "usb"}
+    write_move_status({
+        "state": "running", "target": target, "progress": 0,
+        "message": label + "...", "src": str(src), "dst": str(dst),
+    })
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+        try:
+            src_bytes = sum(p.stat().st_size for p in src.rglob("*") if p.is_file())
+        except OSError:
+            src_bytes = 0
+        try:
+            proc = subprocess.Popen(
+                ["rsync", "-a", "--info=progress2", str(src) + "/", str(dst) + "/"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+        except FileNotFoundError:
+            proc = subprocess.Popen(
+                ["cp", "-a", str(src) + "/.", str(dst) + "/"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            src_bytes = 0
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            m = re.search(r"(\d+)%", line)
+            if m:
+                write_move_status({
+                    "state": "running", "target": target, "progress": int(m.group(1)),
+                    "message": label + "...", "src": str(src), "dst": str(dst),
+                })
+            elif src_bytes:
+                try:
+                    done = sum(p.stat().st_size for p in dst.rglob("*") if p.is_file())
+                    pct = min(99, int(100 * done / max(src_bytes, 1)))
+                    write_move_status({
+                        "state": "running", "target": target, "progress": pct,
+                        "message": label + "...", "src": str(src), "dst": str(dst),
+                    })
+                except OSError:
+                    pass
+        rc = proc.wait()
+        if rc != 0 or not (dst / "image").is_dir():
+            write_move_status({
+                "state": "error", "target": target, "progress": 0,
+                "message": "Copy failed.", "error": f"rc={rc}",
+            })
+            return {"ok": False, "error": "copy_failed", "message": "Copy failed."}
+        set_docker_drive_pref(target)
+        write_move_status({
+            "state": "done", "target": target, "progress": 100,
+            "message": "Moved." if target == "ssd" else "Running from stick.",
+        })
+        return {"ok": True, "target": target, "copied": True, "pref": target}
+    except Exception as e:
+        write_move_status({
+            "state": "error", "target": target, "progress": 0,
+            "message": "Copy failed.", "error": f"{e.__class__.__name__}: {e}"[:300],
+        })
+        return {"ok": False, "error": "copy_failed", "message": str(e)[:300]}
+
+
+def drive_status() -> dict:
+    """UI fields: where A0 runs and whether Move / Run-from-stick is available."""
+    pref = docker_drive_pref()
+    root = choose_docker_root()
+    ssd = docker_data_root(use_env=False)
+    usb = DATA_MNT / DOCKER_DIR_NAME if usb_data_mounted() else None
+    move = read_move_status()
+    location = "none"
+    if root is not None:
+        if usb is not None and root == usb:
+            location = "usb"
+        elif ssd is not None and root == ssd:
+            location = "ssd"
+        else:
+            location = "other"
+    return {
+        "pref": pref,
+        "location": location,
+        "root": str(root) if root else "",
+        "usb_ready": bool(usb and (usb / "image").is_dir()) or seed_ready(),
+        "ssd_ready": bool(ssd and (ssd / "image").is_dir()),
+        "ssd_available": bool(ssd is not None and ssd.parent.is_dir()),
+        "seed_ready": seed_ready(),
+        "move": {
+            "state": str(move.get("state") or ""),
+            "target": str(move.get("target") or ""),
+            "progress": int(move.get("progress") or 0) if isinstance(move.get("progress"), (int, float)) else 0,
+            "message": str(move.get("message") or ""),
+        },
+        "can_move_to_ssd": bool(
+            ssd is not None and (seed_ready() or (usb and (usb / "image").is_dir()) or (ssd and (ssd / "image").is_dir()))
+        ),
+        "can_run_from_stick": bool(usb is not None),
+    }
 
 
 
@@ -547,15 +787,16 @@ def choose_docker_root(
         return ssd
     if pref == "usb" and usb is not None:
         return usb
-    # 0.6.3: prefer host SSD when its parent is mounted and has room; stick alone still works.
+    # auto: keep an SSD that already has the image (prior Move / 0.5.x).
     if ssd is not None and (ssd / "image").is_dir():
         return ssd
+    # 0.6.3: prefer USB when the seed or an existing USB image is ready (default).
+    if usb is not None and ((usb / "image").is_dir() or seed_ready() or pull_allowed(free_bytes(DATA_MNT))):
+        return usb
     ssd_base = ssd.parent if (ssd is not None and ssd.name == DOCKER_DIR_NAME) else ssd
     if ssd is not None and ssd_base is not None and ssd_base.is_dir() and pull_allowed(free_bytes(ssd_base)):
         return ssd
-    if usb is not None and ((usb / "image").is_dir() or pull_allowed(free_bytes(DATA_MNT))):
-        return usb
-    return ssd or usb
+    return usb or ssd
 
 
 def bundle_info(dirs: tuple[Path, ...] | None = None, pin: dict[str, str] | None = None) -> dict | None:
@@ -650,7 +891,7 @@ def bundle_stream(out, info: dict | None = None, *, status: bool = True) -> int:
                     write_status("installing", image_present=False, low_space=False,
                                  phase="loading", progress=install_progress("loading", pct),
                                  step=1, steps=INSTALL_STEPS,
-                                 message=f"Step 1 of {INSTALL_STEPS}: loading Agent Zero from the stick… {pct}%")
+                                 message=f"Step 1 of {INSTALL_STEPS}: loading Agent Zero from the stick... {pct}%")
         if "sha256:" + h.hexdigest() != part.get("sha256"):
             # docker load has not seen the end of the archive yet, so a bad
             # part makes it fail rather than load a corrupt image.
@@ -660,7 +901,7 @@ def bundle_stream(out, info: dict | None = None, *, status: bool = True) -> int:
     if status:
         write_status("installing", image_present=False, low_space=False, phase="unpacking",
                      progress=install_progress("unpacking", 0), step=2, steps=INSTALL_STEPS,
-                     message=f"Step 2 of {INSTALL_STEPS}: unpacking the Agent Zero image (slow on USB)…")
+                     message=f"Step 2 of {INSTALL_STEPS}: unpacking the Agent Zero image (slow on USB)...")
     return 0
 
 
@@ -2744,7 +2985,7 @@ def status_document(
         message = LOW_SPACE_MESSAGE
         state = "low_space"
     elif installing:
-        # 0.6.0 (A5): the loader/puller writes its own "… 42%" line.
+        # 0.6.0 (A5): the loader/puller writes its own "... 42%" line.
         message = str(saved.get("message") or "").strip() or "Installing Agent Zero"
         state = "installing"
     elif pull_failed:
@@ -2763,19 +3004,25 @@ def status_document(
     elif not upstream_up:
         # 0.6.2 (A3): say which start step is running instead of a dead page.
         detail = str(saved.get("message") or "").strip() if saved.get("state") in ("starting", "running") else ""
-        message = detail or "Agent Zero is starting…"
+        message = detail or "Agent Zero is starting..."
         state = "starting"
     else:
         message = "Agent"
         state = "running"
+    # 0.6.3: seed on the stick counts as installed - no Install button.
+    preinstalled = bool(image_present) or seed_ready()
     needs_install = (
         vault_open
         and settings_open
         and ssd
-        and not image_present
+        and not preinstalled
         and not low_space
-        and state not in ("installing", "error")
+        and state not in ("installing", "error", "starting", "running")
     )
+    if state == "needs_install" and preinstalled:
+        message = "Starting Agent Zero..."
+        state = "starting"
+        needs_install = False
     return {
         "ok": True,
         "state": state,
@@ -2799,6 +3046,8 @@ def status_document(
         "bundled": bundle_info() is not None if state in ("needs_install", "pull_failed", "no_ssd") else None,
         "port": AGENT_PORT,
         "gateway_port": AGENT_TLS_PORT,
+        "drive": drive_status(),
+        "preinstalled": bool(image_present) or seed_ready(),
     }
 
 
@@ -3937,6 +4186,18 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "egress-proxy":
         run_egress_proxy()
+        return 0
+    if cmd == "ensure-seeded":
+        res = ensure_seeded()
+        print(json.dumps(res))
+        return 0 if res.get("ok") else 3
+    if cmd == "move-root":
+        target = argv[2] if len(argv) > 2 else ""
+        res = move_agent_root(target)
+        print(json.dumps(res))
+        return 0 if res.get("ok") else 3
+    if cmd == "drive-status":
+        print(json.dumps(drive_status()))
         return 0
     if cmd == "image-on-disk":
         # 0 = present, 1 = absent, 2 = unknown (ask dockerd).

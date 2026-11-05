@@ -3,7 +3,9 @@
 - First-time setup wizard (network, storage, vault, starter model, tour); re-runnable from Settings.
 - STICKLLM-DATA vault first-class; storage_targets + mount unmounted host partitions (never format).
 - Downloads prefer SSD models folder; space check before enqueue; failed queue items kept with reason; Stop/Delete soft; partial cleanup.
-- Agent Zero install prefers SSD with free-space message.
+- Agent Zero ships preinstalled on the stick (docker-seed in squashfs); runs from USB by default with no Install step.
+- Optional one-time "Move Agent Zero to SSD (faster)" in Settings and first-time setup (progress bar; reversible "Run from stick").
+- Agent Zero is the main Chat window; StickLLM thread/composer UI hidden (Models / System / Settings / apps kept).
 - Cheap `status_light` / cached model enrich for System monitor.
 - Persist journal + dmesg snapshots to STICKLLM-DATA; skip GPUs whose amdgpu init fails (best effort).
 - Models list groups non-loadable entries under "Can't load on this system".

@@ -215,6 +215,30 @@ if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
   mkdir -p /stickllm-out/cache/minilm
   python3 -u /stickllm/scripts/lib/minilm_bundle.py pack /stickllm-out/cache/minilm "$A0_BUNDLE_OUT/minilm"
   test -f "$A0_BUNDLE_OUT/minilm/files/model.safetensors"
+  # 0.6.3: bake a docker data-root seed into squashfs so A0 runs preinstalled
+  # from the USB with no Install step. Tar parts stay in cache for rebuilds.
+  if [[ "${STICKLLM_A0_SEED:-1}" != "0" ]]; then
+    echo "[stickllm] building Agent Zero docker-seed (preinstalled on stick)"
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io rsync >/dev/null
+    A0_SEED_OUT=config/includes.chroot/opt/stickllm/docker-seed
+    rm -rf "$A0_SEED_OUT"
+    bash /stickllm/scripts/lib/a0_seed.sh \
+      config/includes.chroot/usr/local/share/stickllm/agent-zero.pin \
+      "$A0_BUNDLE_OUT" "$A0_SEED_OUT"
+    test -f "$A0_SEED_OUT/stickllm-seed.json"
+    test -d "$A0_SEED_OUT/image"
+    # Keep MiniLM in the squashfs next to the seed (not only on ISO9660).
+    if [[ -d "$A0_BUNDLE_OUT/minilm" ]]; then
+      rm -rf config/includes.chroot/usr/local/share/stickllm/agent-zero-minilm
+      cp -a "$A0_BUNDLE_OUT/minilm" config/includes.chroot/usr/local/share/stickllm/agent-zero-minilm
+    fi
+    # Drop large tar parts from the ISO9660 layer (seed lives in squashfs).
+    find "$A0_BUNDLE_OUT" -name 'agent-zero.tar.part-*' -delete
+    printf '%s\n' '{"format":1,"seed":"/opt/stickllm/docker-seed","note":"image preinstalled via squashfs seed"}' \
+      > "$A0_BUNDLE_OUT/bundle.json"
+    du -sh "$A0_SEED_OUT" "$A0_BUNDLE_OUT"
+  fi
   du -sh "$A0_BUNDLE_OUT"
 else
   echo "[stickllm] STICKLLM_A0_BUNDLE=0: Agent Zero image NOT bundled"

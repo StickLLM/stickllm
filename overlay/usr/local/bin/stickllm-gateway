@@ -1840,7 +1840,7 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
             out["pair_code"] = "(paired — Pair remints)"
             out["pair_state"] = "paired"
         else:
-            out["pair_code"] = "(starting…)"
+            out["pair_code"] = "(starting...)"
             out["pair_state"] = "waiting"
         rid = str(remint.get("id") or "").strip()
         if rid:
@@ -2948,7 +2948,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not ok:
             self._json(500, {"ok": False, "error": "restart_failed", "message": "Could not restart Agent Zero."})
             return
-        self._json(200, {"ok": True, "message": "Restarting Agent Zero…"})
+        self._json(200, {"ok": True, "message": "Restarting Agent Zero..."})
 
     def _agent_chat(self, action: str) -> None:
         """0.6.2 (A6): chat -> Agent Zero. ask starts a task, poll returns its
@@ -3017,6 +3017,48 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _is_agent_server(self) -> bool:
         return bool(getattr(self.server, "stickllm_agent_gateway", False))
+
+
+    def _agent_docker_drive(self) -> None:
+        """0.6.3: Move Agent Zero to SSD / Run from stick (one-time copy + pref)."""
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(min(n, 4096)) if n else b""
+        if self._agent_refused():
+            return
+        if not vault_unlocked():
+            msg = vault_needed_message("Unlock vault to move Agent Zero")
+            self._json(403, {"ok": False, "error": msg, "message": msg, "code": "vault_needed"})
+            return
+        try:
+            req = json.loads(raw.decode("utf-8") or "{}") if raw else {}
+        except (UnicodeDecodeError, ValueError):
+            req = {}
+        if not isinstance(req, dict):
+            req = {}
+        target = str(req.get("target") or "").strip().lower()
+        if target not in ("ssd", "usb"):
+            self._json(400, {"ok": False, "error": "bad_target", "message": "target must be ssd or usb"})
+            return
+        try:
+            subprocess.Popen(
+                ["python3", "/usr/local/lib/stickllm_agent.py", "move-root", target],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as e:
+            self._json(500, {"ok": False, "error": "spawn_failed", "message": str(e)[:200]})
+            return
+        self._json(
+            200,
+            {
+                "ok": True,
+                "started": True,
+                "target": target,
+                "message": "Move Agent Zero to SSD..." if target == "ssd" else "Switching to stick...",
+                "drive": agent_lib().drive_status(),
+            },
+        )
 
     def _agent_install(self) -> None:
         n = int(self.headers.get("Content-Length") or 0)
@@ -4334,7 +4376,7 @@ class Handler(SimpleHTTPRequestHandler):
         if state in ("starting", "installing"):
             waited = int(st.get("waited") or 0)
             verb = "Installing" if state == "installing" else "Starting"
-            text = f"{verb} {name}… {waited} s. This page opens the app by itself when it is ready."
+            text = f"{verb} {name}... {waited} s. This page opens the app by itself when it is ready."
             if (self.command or "GET") == "GET":
                 self._addon_progress_page(name, text)
             else:
@@ -5128,6 +5170,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/agent/start":
             self._agent_restart()
+            return
+        if path == "/api/agent/docker-drive":
+            self._agent_docker_drive()
             return
         if path in ("/api/agent/ask", "/api/agent/poll", "/api/agent/stop"):
             self._agent_chat(path.rsplit("/", 1)[-1])

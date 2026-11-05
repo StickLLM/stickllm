@@ -1,7 +1,8 @@
 #!/bin/bash
 # Start Agent Zero only after the server vault is mounted.
-# The image is pulled onto the mounted host SSD, next to models. It is not
-# part of the ISO and it is not stored in the vault.
+# 0.6.3: Agent Zero ships preinstalled (docker-seed in squashfs). Default
+# data-root is the stick DATA partition; optional Move to SSD copies it.
+# It is not stored in the vault.
 # Do not print API keys, vault passcodes, or chat text.
 set -euo pipefail
 
@@ -23,6 +24,13 @@ CONTAINER="stickllm-agent-zero"
 NETWORK="stickllm-agent"
 ENTRY="/usr/local/bin/stickllm-agent-entrypoint"
 DOCKER_DIR=""
+
+# 0.6.3: copy squashfs docker-seed into the chosen data-root (preinstalled).
+a0_ensure_seed() {
+  "$PYBIN" "$LIB" write-status --state starting --phase preparing --progress 5 \
+    --message "Starting Agent Zero…" --image_present false 2>/dev/null || true
+  "$PYBIN" "$LIB" ensure-seeded >/tmp/stickllm-a0-ensure.json 2>/dev/null || true
+}
 
 if [[ -z "${PYBIN}" || ! -f "$LIB" ]]; then
   echo "stickllm-agent: python helper missing" >&2
@@ -164,12 +172,15 @@ needs_install() {
 # ExecCondition for stickllm-agent.service: skip the unit (no ExecStop, no
 # dockerd) while the image is not installed. Exit 1 = skip.
 cmd_image_ready() {
+  # 0.6.3: seed the USB data-root from squashfs, then the image is "installed".
+  if "$PYBIN" "$LIB" docker-may-start 2>/dev/null; then
+    resolve_docker_dir 2>/dev/null || true
+    a0_ensure_seed
+  fi
   if image_on_disk; then
     exit 0
   fi
-  # 0.6.0 (A1): the image ships on the ISO. Load it (offline, with progress)
-  # on the first agent start instead of waiting for an Apps-page install.
-  # Never an automatic network pull.
+  # Legacy: split-tar bundle still loadable via install unit (fallback).
   if "$PYBIN" "$LIB" docker-may-start 2>/dev/null && "$PYBIN" "$LIB" bundle-info >/dev/null 2>&1 \
      && ! install_running && command -v systemctl >/dev/null 2>&1; then
     systemctl start --no-block stickllm-agent-install.service 2>/dev/null || true
@@ -457,6 +468,24 @@ cmd_install() {
     echo "host SSD has under 12 GB free: image pull stopped" >&2
     exit 0
   fi
+  a0_ensure_seed
+  # 0.6.3: seed already provided the image — skip load/pull, go to start.
+  if image_on_disk; then
+    "$PYBIN" "$LIB" write-status --state starting --phase creating --progress 60 \
+      --image_present true --low_space false \
+      --message "Starting Agent Zero…" >/dev/null || true
+    if use_systemd; then
+      exec 9>&-
+      systemctl restart stickllm-agent.service
+      exit 0
+    fi
+    ensure_dockerd agent
+    release_dockerd agent-install
+    trap - EXIT
+    exec 9>&-
+    cmd_run_container
+    exit 0
+  fi
   ensure_dockerd agent-install
   # Success or failure, the installer's own hold on dockerd ends with it.
   trap 'release_dockerd agent-install' EXIT
@@ -468,7 +497,7 @@ cmd_install() {
   previous="$(docker_cli image inspect -f '{{.Id}}' "$tag" 2>/dev/null || docker_cli image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)"
   mkdir -p "$RUN_DIR"
   : >"$PULL_LOG"
-  # 0.6.0 (A1): offline first. The ISO carries the pinned image.
+  # 0.6.0 (A1): offline first. The ISO carries the pinned image (legacy tar).
   if "$PYBIN" "$LIB" bundle-info >/dev/null 2>&1; then
     if load_bundle; then
       loaded=1
@@ -730,6 +759,8 @@ cmd_start() {
     refuse_locked
     exit 0
   fi
+  resolve_docker_dir 2>/dev/null || true
+  a0_ensure_seed
   # Unlock never starts the service (or dockerd) for an image that is not there.
   if ! image_on_disk; then
     needs_install
