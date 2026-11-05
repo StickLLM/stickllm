@@ -30,6 +30,11 @@ def test_seed_ready_and_ensure_seeded(tmp_path, monkeypatch):
     a = _load(AGENT, "stickllm_agent_seed")
     seed = tmp_path / "seed"
     (seed / "image").mkdir(parents=True)
+    layer = seed / "overlay2" / "layer1"
+    (layer / "diff").mkdir(parents=True)
+    (layer / "diff" / "bulk").write_text("BIG", encoding="utf-8")
+    (layer / "link").write_text("meta", encoding="utf-8")
+    (seed / "overlay2" / "l").mkdir(parents=True)
     (seed / "stickllm-seed.json").write_text(json.dumps({
         "format": 1,
         "config_digest": "sha256:" + "a" * 64,
@@ -44,35 +49,26 @@ def test_seed_ready_and_ensure_seeded(tmp_path, monkeypatch):
     assert a.seed_matches_pin() is True
     dest = tmp_path / "data" / "stickllm-docker"
     monkeypatch.setattr(a, "choose_docker_root", lambda **k: dest)
+    binds = []
 
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "rsync":
-            src = Path(cmd[-2].rstrip("/"))
-            dst = Path(cmd[-1].rstrip("/"))
-        else:
-            src = Path(str(cmd[2]).rstrip("/.").rstrip("/"))
-            dst = Path(str(cmd[3]).rstrip("/.").rstrip("/"))
+    def fake_bind(src, dst):
+        binds.append((src, dst))
         dst.mkdir(parents=True, exist_ok=True)
-        for p in src.iterdir():
-            target = dst / p.name
-            if p.is_dir():
-                shutil.copytree(p, target, dirs_exist_ok=True)
-            else:
-                shutil.copy2(p, target)
+        (dst / ".bind").write_text(str(src), encoding="utf-8")
 
-        class R:
-            returncode = 0
-            stderr = ""
-            stdout = ""
-
-        return R()
-
-    monkeypatch.setattr(a.subprocess, "run", fake_run)
+    monkeypatch.setattr(a, "_bind_ro", fake_bind)
     res = a.ensure_seeded(dest)
-    assert res["ok"] and res["copied"]
+    assert res["ok"] is True
+    assert res["copied"] is False
+    assert res.get("mounted") is True
+    assert binds and binds[0][0] == layer / "diff"
     assert (dest / "image").is_dir()
+    assert not (dest / "overlay2" / "layer1" / "diff" / "bulk").exists()
     res2 = a.ensure_seeded(dest)
-    assert res2["ok"] and res2["skipped"]
+    assert res2["ok"] is True
+    assert res2["copied"] is False
+
+
 
 
 def test_choose_docker_root_usb_default_with_seed(tmp_path, monkeypatch):
@@ -104,24 +100,16 @@ def test_move_to_ssd_updates_pref(tmp_path, monkeypatch):
     monkeypatch.setattr(a, "DOCKER_DRIVE_PREF", tmp_path / "pref")
     monkeypatch.setattr(a, "MOVE_STATUS", tmp_path / "move.json")
 
-    def fake_popen(cmd, **kwargs):
-        if cmd[0] == "rsync":
-            src = Path(cmd[-2].rstrip("/"))
-            dst = Path(cmd[-1].rstrip("/"))
-        else:
-            src = Path(str(cmd[2]).rstrip("/.").rstrip("/"))
-            dst = Path(str(cmd[3]).rstrip("/.").rstrip("/"))
-        shutil.copytree(src, dst, dirs_exist_ok=True)
+    def fake_mat(root):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "image").mkdir(exist_ok=True)
+        (root / "overlay2").mkdir(exist_ok=True)
+        return {"ok": True, "copied": True, "root": str(root)}
 
-        class P:
-            stdout = iter([])
-
-            def wait(self):
-                return 0
-
-        return P()
-
-    monkeypatch.setattr(a.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(a, "materialize_seed", fake_mat)
+    monkeypatch.setattr(a, "ensure_seeded", lambda root=None: {
+        "ok": True, "copied": False, "mounted": True, "root": str(root or usb),
+    })
     res = a.move_agent_root("ssd")
     assert res["ok"] and res["pref"] == "ssd"
     assert a.docker_drive_pref() == "ssd"
@@ -129,6 +117,7 @@ def test_move_to_ssd_updates_pref(tmp_path, monkeypatch):
     res2 = a.move_agent_root("usb")
     assert res2["ok"] and res2["pref"] == "usb"
     assert a.docker_drive_pref() == "usb"
+
 
 
 def test_agent_sh_seeds_before_start():

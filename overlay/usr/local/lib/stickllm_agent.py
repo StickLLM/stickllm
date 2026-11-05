@@ -560,20 +560,148 @@ def set_docker_drive_pref(value: str) -> None:
     DOCKER_DRIVE_PREF.write_text(value + "\n", encoding="utf-8")
 
 
-def ensure_seeded(root: Path | None = None) -> dict:
-    """Copy squashfs docker-seed into the chosen data-root when image is missing.
 
-    Silent first-boot prepare (not an Install). Safe when already seeded.
+def _bind_ro(src: Path, dst: Path) -> None:
+    """Bind-mount src read-only at dst (Linux stick runtime)."""
+    dst.mkdir(parents=True, exist_ok=True)
+    # Already mounted?
+    try:
+        mounts = Path("/proc/self/mounts").read_text(encoding="utf-8")
+    except OSError:
+        mounts = ""
+    if f" {dst.as_posix()} " in mounts or mounts.endswith(f" {dst.as_posix()}\n"):
+        return
+    proc = subprocess.run(
+        ["mount", "--bind", str(src), str(dst)],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        raise OSError(proc.stderr or f"bind {src} -> {dst} failed")
+    subprocess.run(
+        ["mount", "-o", "remount,ro,bind", str(dst)],
+        capture_output=True, text=True, check=False,
+    )
+
+
+def _copy_tree_small(src: Path, dst: Path) -> None:
+    if dst.exists():
+        return
+    if src.is_dir():
+        shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=False)
+    elif src.is_file():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+
+def ensure_seeded(root: Path | None = None) -> dict:
+    """Attach squashfs docker-seed at the runnable data-root without a full copy.
+
+    Layout (verified with dockerd overlay2 + alpine):
+      - Copy small metadata (image/, top-level mutable dirs) onto DATA/SSD root.
+      - For each overlay2/<id>/diff: bind-mount RO from SEED_DIR (bulk layers stay on squashfs).
+      - overlay2/l is a writable symlink farm recreated from the seed.
+    Never rsync/cp the whole seed into DATA. Returns copied=False always.
     """
     root = root or choose_docker_root()
-    out: dict = {"ok": False, "root": str(root) if root else "", "copied": False, "skipped": False}
+    out: dict = {
+        "ok": False,
+        "root": str(root) if root else "",
+        "copied": False,
+        "mounted": False,
+        "skipped": False,
+    }
     if root is None:
         out["error"] = "no_docker_root"
         return out
-    if (root / "image").is_dir():
-        out["ok"] = True
-        out["skipped"] = True
+    if not seed_ready():
+        # Already a real data-root (e.g. after Move to SSD materialize)?
+        if (root / "image").is_dir() and (root / "overlay2").is_dir():
+            out["ok"] = True
+            out["skipped"] = True
+            return out
+        out["error"] = "no_seed"
         return out
+    if not seed_matches_pin():
+        out["error"] = "seed_pin_mismatch"
+        return out
+    root.mkdir(parents=True, exist_ok=True)
+    seed = SEED_DIR
+    try:
+        for name in (
+            "containerd", "containers", "network", "plugins", "runtimes",
+            "swarm", "tmp", "trust", "volumes", "buildkit",
+        ):
+            src = seed / name
+            dst = root / name
+            if src.exists() and not dst.exists():
+                _copy_tree_small(src, dst)
+            else:
+                dst.mkdir(parents=True, exist_ok=True)
+        # image metadata (small) — refresh when missing
+        if not (root / "image").is_dir():
+            _copy_tree_small(seed / "image", root / "image")
+        for item in seed.iterdir():
+            if item.name in {
+                "image", "overlay2", "containerd", "containers", "network",
+                "plugins", "runtimes", "swarm", "tmp", "trust", "volumes",
+                "buildkit", "stickllm-seed.json",
+            }:
+                continue
+            if item.is_file() and not (root / item.name).exists():
+                shutil.copy2(item, root / item.name)
+        # Keep seed marker for operators (tiny).
+        if (seed / "stickllm-seed.json").is_file():
+            shutil.copy2(seed / "stickllm-seed.json", root / "stickllm-seed.json")
+        overlay_dst = root / "overlay2"
+        overlay_dst.mkdir(parents=True, exist_ok=True)
+        seed_overlay = seed / "overlay2"
+        # Writable link farm
+        link_dir = overlay_dst / "l"
+        link_dir.mkdir(parents=True, exist_ok=True)
+        seed_l = seed_overlay / "l"
+        if seed_l.is_dir():
+            for link in seed_l.iterdir():
+                dest = link_dir / link.name
+                if dest.exists() or dest.is_symlink():
+                    continue
+                if link.is_symlink():
+                    dest.symlink_to(os.readlink(link))
+        mounts = 0
+        if seed_overlay.is_dir():
+            for ent in seed_overlay.iterdir():
+                if ent.name == "l":
+                    continue
+                if not ent.is_dir():
+                    target = overlay_dst / ent.name
+                    if not target.exists():
+                        shutil.copy2(ent, target)
+                    continue
+                layer = overlay_dst / ent.name
+                layer.mkdir(parents=True, exist_ok=True)
+                for child in ent.iterdir():
+                    if child.name == "diff" and child.is_dir():
+                        _bind_ro(child, layer / "diff")
+                        mounts += 1
+                    else:
+                        dst_child = layer / child.name
+                        if not dst_child.exists():
+                            if child.is_dir():
+                                shutil.copytree(child, dst_child, symlinks=True)
+                            else:
+                                shutil.copy2(child, dst_child)
+        out["ok"] = (root / "image").is_dir()
+        out["mounted"] = mounts > 0
+        out["mounts"] = mounts
+        if not out["ok"]:
+            out["error"] = "seed_mount_incomplete"
+    except OSError as exc:
+        out["error"] = f"{exc.__class__.__name__}: {exc}"[:300]
+    return out
+
+
+def materialize_seed(root: Path) -> dict:
+    """Full seed -> root copy. Only for explicit Move to SSD (user-triggered)."""
+    out: dict = {"ok": False, "root": str(root), "copied": False}
     if not seed_ready():
         out["error"] = "no_seed"
         return out
@@ -596,17 +724,20 @@ def ensure_seeded(root: Path | None = None) -> dict:
         if proc.returncode != 0:
             out["error"] = (proc.stderr or "cp failed")[:300]
             return out
-    out["ok"] = (root / "image").is_dir()
+    out["ok"] = (root / "image").is_dir() and (root / "overlay2").is_dir()
     out["copied"] = True
     if not out["ok"]:
-        out["error"] = "seed_copy_incomplete"
+        out["error"] = "materialize_incomplete"
     return out
 
 
-def move_agent_root(target: str) -> dict:
-    """One-time copy USB↔SSD for Agent Zero's docker data-root; updates pref.
 
-    target 'ssd' = Move Agent Zero to SSD (faster); 'usb' = Run from stick.
+
+def move_agent_root(target: str) -> dict:
+    """One-time Move Agent Zero to SSD / Run from stick; updates pref.
+
+    SSD: materialize full seed onto the SSD docker root (explicit user action).
+    USB: remount seed binds via ensure_seeded (no full copy).
     Button should stay disabled while MOVE_STATUS.state == 'running'.
     """
     target = (target or "").strip().lower()
@@ -620,91 +751,71 @@ def move_agent_root(target: str) -> dict:
     if target == "ssd":
         if ssd is None:
             return {"ok": False, "error": "no_ssd", "message": "Mount a host SSD first."}
-        src = usb
-        if src is None or not (src / "image").is_dir():
-            if seed_ready() and usb is not None:
-                ensure_seeded(usb)
-                src = usb
-            if src is None or not (src / "image").is_dir():
-                return {"ok": False, "error": "no_source", "message": "Agent Zero is not on the stick yet."}
-        dst = ssd
-        label = "Move Agent Zero to SSD"
-    else:
-        if usb is None:
-            return {"ok": False, "error": "no_usb", "message": "Stick DATA partition is not mounted."}
-        dst = usb
-        label = "Run Agent Zero from stick"
-        if (usb / "image").is_dir():
-            set_docker_drive_pref("usb")
-            write_move_status({"state": "done", "target": "usb", "progress": 100, "message": "Running from stick."})
-            return {"ok": True, "target": "usb", "copied": False, "pref": "usb"}
-        src = ssd
-        if src is None or not (src / "image").is_dir():
-            res = ensure_seeded(usb)
-            if not res.get("ok"):
-                return {"ok": False, "error": res.get("error") or "seed_failed",
-                        "message": "Could not prepare the stick copy."}
-            set_docker_drive_pref("usb")
-            write_move_status({"state": "done", "target": "usb", "progress": 100, "message": "Running from stick."})
-            return {"ok": True, "target": "usb", "copied": True, "pref": "usb"}
+        write_move_status({
+            "state": "running", "target": "ssd", "progress": 0,
+            "message": "Move Agent Zero to SSD...", "dst": str(ssd),
+        })
+        try:
+            mat = materialize_seed(ssd)
+            if not mat.get("ok"):
+                write_move_status({
+                    "state": "error", "target": "ssd", "progress": 0,
+                    "message": "Copy failed.", "error": mat.get("error"),
+                })
+                return {"ok": False, "error": mat.get("error") or "materialize_failed",
+                        "message": "Could not install Agent Zero onto the SSD."}
+            if usb is not None and usb.is_dir():
+                for name in ("volumes", "containers", "network"):
+                    s, d = usb / name, ssd / name
+                    if s.is_dir():
+                        try:
+                            subprocess.run(
+                                ["rsync", "-a", str(s) + "/", str(d) + "/"],
+                                capture_output=True, text=True, check=False,
+                            )
+                        except FileNotFoundError:
+                            if d.exists():
+                                shutil.rmtree(d)
+                            shutil.copytree(s, d, symlinks=True)
+            set_docker_drive_pref("ssd")
+            write_move_status({
+                "state": "done", "target": "ssd", "progress": 100, "message": "Moved.",
+            })
+            return {"ok": True, "target": "ssd", "copied": True, "pref": "ssd"}
+        except Exception as e:
+            write_move_status({
+                "state": "error", "target": "ssd", "progress": 0,
+                "message": "Copy failed.", "error": f"{e.__class__.__name__}: {e}"[:300],
+            })
+            return {"ok": False, "error": "copy_failed", "message": str(e)[:300]}
+    # Run from stick
+    if usb is None:
+        return {"ok": False, "error": "no_usb", "message": "Stick DATA partition is not mounted."}
     write_move_status({
-        "state": "running", "target": target, "progress": 0,
-        "message": label + "...", "src": str(src), "dst": str(dst),
+        "state": "running", "target": "usb", "progress": 0,
+        "message": "Run Agent Zero from stick...", "dst": str(usb),
     })
     try:
-        dst.mkdir(parents=True, exist_ok=True)
-        try:
-            src_bytes = sum(p.stat().st_size for p in src.rglob("*") if p.is_file())
-        except OSError:
-            src_bytes = 0
-        try:
-            proc = subprocess.Popen(
-                ["rsync", "-a", "--info=progress2", str(src) + "/", str(dst) + "/"],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            )
-        except FileNotFoundError:
-            proc = subprocess.Popen(
-                ["cp", "-a", str(src) + "/.", str(dst) + "/"],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            )
-            src_bytes = 0
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            m = re.search(r"(\d+)%", line)
-            if m:
-                write_move_status({
-                    "state": "running", "target": target, "progress": int(m.group(1)),
-                    "message": label + "...", "src": str(src), "dst": str(dst),
-                })
-            elif src_bytes:
-                try:
-                    done = sum(p.stat().st_size for p in dst.rglob("*") if p.is_file())
-                    pct = min(99, int(100 * done / max(src_bytes, 1)))
-                    write_move_status({
-                        "state": "running", "target": target, "progress": pct,
-                        "message": label + "...", "src": str(src), "dst": str(dst),
-                    })
-                except OSError:
-                    pass
-        rc = proc.wait()
-        if rc != 0 or not (dst / "image").is_dir():
+        res = ensure_seeded(usb)
+        if not res.get("ok"):
             write_move_status({
-                "state": "error", "target": target, "progress": 0,
-                "message": "Copy failed.", "error": f"rc={rc}",
+                "state": "error", "target": "usb", "progress": 0,
+                "message": "Could not prepare the stick.", "error": res.get("error"),
             })
-            return {"ok": False, "error": "copy_failed", "message": "Copy failed."}
-        set_docker_drive_pref(target)
+            return {"ok": False, "error": res.get("error") or "seed_failed",
+                    "message": "Could not prepare the stick copy."}
+        set_docker_drive_pref("usb")
         write_move_status({
-            "state": "done", "target": target, "progress": 100,
-            "message": "Moved." if target == "ssd" else "Running from stick.",
+            "state": "done", "target": "usb", "progress": 100, "message": "Running from stick.",
         })
-        return {"ok": True, "target": target, "copied": True, "pref": target}
+        return {"ok": True, "target": "usb", "copied": False, "pref": "usb", "mounted": res.get("mounted")}
     except Exception as e:
         write_move_status({
-            "state": "error", "target": target, "progress": 0,
+            "state": "error", "target": "usb", "progress": 0,
             "message": "Copy failed.", "error": f"{e.__class__.__name__}: {e}"[:300],
         })
         return {"ok": False, "error": "copy_failed", "message": str(e)[:300]}
+
 
 
 def drive_status() -> dict:

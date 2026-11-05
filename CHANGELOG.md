@@ -1,4 +1,5 @@
 ## 0.6.3 - 2026-11-05
+- Agent Zero runnable endpoint: RO-bind squashfs layer diffs into DATA docker root (no first-boot full seed copy); Move to SSD materializes explicitly
 
 - First-time setup wizard (network, storage, vault, starter model, tour); re-runnable from Settings.
 - STICKLLM-DATA vault first-class; storage_targets + mount unmounted host partitions (never format).
