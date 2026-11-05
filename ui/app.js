@@ -283,7 +283,7 @@ function agentPageUrl(status) {
   if (host === "127.0.0.1" || host === "localhost" || host === "::1") {
     return "http://127.0.0.1:5099/";
   }
-  return "https://" + host + ":5443/";
+  return location.origin.replace(/\/$/, "") + "/agent-zero/";
 }
 function agentIsInstalled(s) {
   return !!(s && (s.image_present || s.state === "running" || s.state === "starting" || s.state === "error"));
@@ -7866,18 +7866,12 @@ async function followAgentInstall(id, name) {
 }
 async function deskAppUrl(id) {
   if (id === "agent") {
-    const fallback = ($("#agentLink") && $("#agentLink").href) || "";
-    if (!detectLocalHost() && token) {
-      try {
-        const r = await fetch("/api/agent/handoff", {
-          method: "POST", cache: "no-store",
-          headers: authHeaders({ "Content-Type": "application/json" }), body: "{}",
-        });
-        const j = await r.json().catch(() => ({}));
-        if (r.ok && j.url) return j.url;
-      } catch (_) {}
+    const fallback = ($("#agentLink") && $("#agentLink").href) || agentPageUrl(agentLastStatus);
+    if (!detectLocalHost()) {
+      // Same-origin embed proxy (pair cookie / Bearer already on this origin).
+      return location.origin.replace(/\/$/, "") + "/agent-zero/";
     }
-    return fallback;
+    return fallback || "http://127.0.0.1:5099/";
   }
   const a = catalogApps.get(id);
   if (!a || !a.open_url) return "";

@@ -39,6 +39,7 @@ PORT = int(os.environ.get("STICKLLM_PORT", "80"))
 TLS_PORT = int(os.environ.get("STICKLLM_TLS_PORT", "443"))
 # Agent Zero's own origin. Not a raw publish of the loopback UI port.
 AGENT_TLS_PORT = int(os.environ.get("STICKLLM_AGENT_TLS_PORT", "5443"))
+AGENT_EMBED_PREFIX = "/agent-zero"
 # Desktop file helper. Loopback only; this gateway is the LAN entry.
 FILES_PORT = int(os.environ.get("STICKLLM_FILES_PORT", "8096"))
 UA = "StickLLM/0.3 (+local privacy USB; StickLLM UI only)"
@@ -137,11 +138,13 @@ def _host_only(host: str) -> str:
 
 def ui_frame_sources(host: str = "") -> str:
     """Origins the StickLLM page may frame: itself, the loopback add-on relays
-    and Agent Zero (console), and this same host's TLS ports (LAN)."""
+    and Agent Zero (console), and this same host's HTTP/TLS ports (LAN).
+    LAN Chat embeds A0 via same-origin /agent-zero/ ('self'); https://host:5443
+    remains for pop-out after cert trust."""
     out = ["'self'", "http://127.0.0.1:*", "http://localhost:*"]
     h = _host_only(host)
     if h and h not in ("127.0.0.1", "localhost"):
-        out.append(f"https://{h}:*")
+        out += [f"https://{h}:*", f"http://{h}:*"]
     return " ".join(out)
 
 
@@ -179,6 +182,40 @@ def addon_frame_headers(pairs, framers: str):
     if had_xfo and not had_fa:
         out.append(("Content-Security-Policy", "frame-ancestors " + framers))
     return out
+
+
+
+def rewrite_agent_embed_payload(data: bytes, ctype: str, prefix: str = AGENT_EMBED_PREFIX) -> bytes:
+    """Prefix absolute root URLs so A0 under /agent-zero/ keeps working."""
+    if not data:
+        return data
+    low = (ctype or "").split(";")[0].strip().lower()
+    if low not in (
+        "text/html",
+        "text/css",
+        "text/javascript",
+        "application/javascript",
+        "application/x-javascript",
+        "text/ecmascript",
+        "application/ecmascript",
+    ):
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    pref = prefix.rstrip("/")
+    if low == "text/html" and re.search(r"(?i)<head", text) and not re.search(r"(?i)<base\s", text):
+        text = re.sub(r"(?i)<head([^>]*)>", r'<head\1><base href="' + pref + '/">', text, count=1)
+    # "/foo -> "/agent-zero/foo  (not //, not already prefixed)
+    text = re.sub(
+        r"""(?P<q>["'`])/(?!/)(?!""" + re.escape(pref.lstrip("/")) + r"""/)(?P<p>[A-Za-z0-9_./?&=%#~+-]*)""",
+        lambda m: f"{m.group('q')}{pref}/{m.group('p')}",
+        text,
+    )
+    return text.encode("utf-8")
+
+
 
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
@@ -2896,6 +2933,11 @@ class Handler(SimpleHTTPRequestHandler):
             )
             doc["agent_url"] = self._agent_public_url()
             doc["gateway_port"] = AGENT_TLS_PORT
+            # Same-origin embed for LAN iframes (avoids self-signed :5443 in Chrome).
+            if not self._is_loopback():
+                doc["agent_url"] = AGENT_EMBED_PREFIX + "/"
+                doc["agent_embed"] = AGENT_EMBED_PREFIX + "/"
+                doc["agent_popout_url"] = self._agent_public_url()
         except Exception:
             self._json(500, {"ok": False, "error": "agent status failed"})
             return
@@ -4188,6 +4230,82 @@ class Handler(SimpleHTTPRequestHandler):
             saved=mod.read_status(),
         )
 
+
+    def _agent_embed_proxy(self, method: str) -> None:
+        """Same-origin /agent-zero/* -> loopback A0 :5099 for paired LAN iframes.
+
+        Remote Chrome parents are http://<lan>/ (Not secure). Embedding
+        https://<lan>:5443/ fails on the self-signed stickllm cert inside an
+        iframe (broken-page icon) and unauth :5443 responses use
+        frame-ancestors 'none'. This path keeps pair auth on the StickLLM
+        origin, proxies 1:1 to A0, rewrites absolute URLs, and allows framing
+        only by this stick's pages.
+        """
+        if self._agent_refused():
+            return
+        if not _agent_port_open(5099):
+            self._json(503, {"ok": False, "error": "agent_not_running",
+                             "message": "Agent Zero is not running yet."})
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        upstream = parsed.path[len(AGENT_EMBED_PREFIX):] or "/"
+        if not upstream.startswith("/"):
+            upstream = "/" + upstream
+        target = upstream + (("?" + parsed.query) if parsed.query else "")
+        upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
+        # Pair already checked; present loopback Origin so A0 CSRF accepts embed.
+        incoming = dict(self.headers)
+        incoming["Origin"] = "http://127.0.0.1:5099"
+        incoming["Referer"] = "http://127.0.0.1:5099" + upstream
+        headers = agent_lib().agent_proxy_headers(incoming, websocket=upgrade)
+        headers["X-Forwarded-Proto"] = self._docs_proto()
+        host = (self.headers.get("Host") or "").strip()
+        if host:
+            headers["X-Forwarded-Host"] = host
+            headers["X-Forwarded-Prefix"] = AGENT_EMBED_PREFIX
+        if upgrade and method == "GET":
+            self._relay_websocket(upstream, parsed.query)
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        if agent_lib().agent_request_denied(method, upstream, body):
+            self._json(403, {"ok": False, "error": "plugins_locked",
+                             "message": "Plugins are locked on StickLLM."})
+            return
+        conn = http.client.HTTPConnection("127.0.0.1", 5099, timeout=300)
+        try:
+            conn.request(method, target, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+        except Exception:
+            self._json(502, {"ok": False, "error": "Agent is not running"})
+            return
+        finally:
+            conn.close()
+        ctype = resp.getheader("Content-Type") or ""
+        data = rewrite_agent_embed_payload(data, ctype)
+        self._skip_stick_headers = True
+        self.send_response(resp.status)
+        framers = addon_framers(self.headers.get("Host") or "")
+        for key, value in addon_frame_headers(resp.getheaders(), framers):
+            low = key.lower()
+            if low in ("transfer-encoding", "connection", "content-length") + TAB_REUSE_DROP:
+                continue
+            if low == "location":
+                loc = str(value)
+                if loc.startswith("/") and not loc.startswith(AGENT_EMBED_PREFIX):
+                    value = AGENT_EMBED_PREFIX + loc
+                elif loc.startswith("http://127.0.0.1:5099"):
+                    value = AGENT_EMBED_PREFIX + loc.split("5099", 1)[-1]
+            self.send_header(key, value)
+        # Ensure embeddable even if upstream omitted framing headers.
+        if not any(k.lower() == "content-security-policy" for k, _ in resp.getheaders()):
+            self.send_header("Content-Security-Policy", "frame-ancestors " + framers)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if method != "HEAD" and data:
+            self.wfile.write(data)
+
     def _serve_agent_gateway(self, method: str) -> None:
         """1:1 proxy to the loopback UI. No path or body rewriting."""
         parsed = urllib.parse.urlparse(self.path)
@@ -4950,6 +5068,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/appagent" or path.startswith("/appagent/"):
             self._appagent_proxy("GET")
             return
+        if path == "/agent-zero" or path.startswith("/agent-zero/"):
+            self._agent_embed_proxy("GET")
+            return
         if path in ("/health", "/api/health"):
             auth = load_auth()
             # Pair skip is loopback-only; Chat serves LAN with pair.
@@ -5158,6 +5279,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/appagent" or path.startswith("/appagent/"):
             self._appagent_proxy("POST")
+            return
+        if path == "/agent-zero" or path.startswith("/agent-zero/"):
+            self._agent_embed_proxy("POST")
             return
         if path.startswith("/api/files"):
             self._proxy_files("POST")
