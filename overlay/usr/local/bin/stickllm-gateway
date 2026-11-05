@@ -186,34 +186,83 @@ def addon_frame_headers(pairs, framers: str):
 
 
 def rewrite_agent_embed_payload(data: bytes, ctype: str, prefix: str = AGENT_EMBED_PREFIX) -> bytes:
-    """Prefix absolute root URLs so A0 under /agent-zero/ keeps working."""
+    """Make A0 HTML work under /agent-zero/ without rewriting JS bodies.
+
+    Blind string rewrite of JS corrupted A0's _normalizeApiUrl and short
+    API paths (e.g. fetchApi("/poll") became /agent-zero/api/agent-zero/poll),
+    leaving the remote Chat iframe on skeleton placeholders forever. HTML gets
+    a base tag, import map for absolute ES modules, and a same-origin fetch /
+    WebSocket patch so /api and /js hit the embed proxy. JS/CSS bytes pass
+    through unchanged.
+    """
     if not data:
         return data
     low = (ctype or "").split(";")[0].strip().lower()
-    if low not in (
-        "text/html",
-        "text/css",
-        "text/javascript",
-        "application/javascript",
-        "application/x-javascript",
-        "text/ecmascript",
-        "application/ecmascript",
-    ):
+    if low != "text/html":
         return data
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return data
-    pref = prefix.rstrip("/")
-    if low == "text/html" and re.search(r"(?i)<head", text) and not re.search(r"(?i)<base\s", text):
-        text = re.sub(r"(?i)<head([^>]*)>", r'<head\1><base href="' + pref + '/">', text, count=1)
-    # "/foo -> "/agent-zero/foo  (not //, not already prefixed)
-    text = re.sub(
-        r"""(?P<q>["'`])/(?!/)(?!""" + re.escape(pref.lstrip("/")) + r"""/)(?P<p>[A-Za-z0-9_./?&=%#~+-]*)""",
-        lambda m: f"{m.group('q')}{pref}/{m.group('p')}",
-        text,
+    pref = prefix.rstrip("/") or "/agent-zero"
+    if "data-stickllm-a0-embed" in text:
+        return data
+    inject = (
+        f'<base href="{pref}/" data-stickllm-a0-embed="1">'
+        '<script type="importmap">'
+        '{"imports":{'
+        f'"/js/":"{pref}/js/",'
+        f'"/components/":"{pref}/components/",'
+        f'"/plugins/":"{pref}/plugins/",'
+        f'"/vendor/":"{pref}/vendor/",'
+        f'"/public/":"{pref}/public/",'
+        f'"/ui/":"{pref}/ui/",'
+        f'"/index.js":"{pref}/index.js",'
+        f'"/index.css":"{pref}/index.css"'
+        "}}</script>"
+        "<script data-stickllm-a0-embed=\"1\">(function(){"
+        f"var P={pref!r};"
+        "var f=window.fetch;"
+        "function fix(u){"
+        "try{"
+        "var x=new URL(u,location.origin);"
+        "if(x.origin!==location.origin)return u;"
+        "var p=x.pathname;"
+        "if(p===P||p.indexOf(P+\"/\")===0)return u;"
+        "if(p.charAt(0)!==\"/\")return u;"
+        "x.pathname=P+p;return x.toString();"
+        "}catch(e){return u;}"
+        "}"
+        "window.fetch=function(i,n){"
+        "try{"
+        "if(typeof i===\"string\")i=fix(i);"
+        "else if(i&&typeof i.url===\"string\"){"
+        "var nu=fix(i.url);"
+        "if(nu!==i.url)i=new Request(nu,i);"
+        "}"
+        "}catch(e){}"
+        "return f.call(this,i,n);"
+        "};"
+        "if(window.WebSocket){"
+        "var W=window.WebSocket;"
+        "window.WebSocket=function(u,p){"
+        "try{u=fix(u);}catch(e){}"
+        "return p===undefined?new W(u):new W(u,p);"
+        "};"
+        "window.WebSocket.prototype=W.prototype;"
+        "window.WebSocket.CONNECTING=W.CONNECTING;"
+        "window.WebSocket.OPEN=W.OPEN;"
+        "window.WebSocket.CLOSING=W.CLOSING;"
+        "window.WebSocket.CLOSED=W.CLOSED;"
+        "}"
+        "})();</script>"
     )
+    if re.search(r"(?i)<head\b", text):
+        text = re.sub(r"(?i)<head([^>]*)>", r"<head\1>" + inject, text, count=1)
+    else:
+        text = inject + text
     return text.encode("utf-8")
+
 
 
 
