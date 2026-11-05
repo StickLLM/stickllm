@@ -24,10 +24,16 @@
  *
  * @return {!Promise<FileSystemFileHandle>} Handle to the existing file.
  */
+const STICKLLM_PICKER_ID = 'stickllm-notepad';
+
 function getFileHandle() {
   // For Chrome 86 and later...
   if ('showOpenFilePicker' in window) {
-    return window.showOpenFilePicker().then((handles) => handles[0]);
+    // StickLLM 0.6.1: Open and Save share one picker id, so Chromium opens
+    // the folder the last file was saved in (they used to remember separate
+    // folders, so a saved file looked missing on reopen).
+    return window.showOpenFilePicker({id: STICKLLM_PICKER_ID, startIn: 'documents'})
+        .then((handles) => handles[0]);
   }
   // For Chrome 85 and earlier...
   return window.chooseFileSystemEntries();
@@ -42,6 +48,8 @@ function getNewFileHandle() {
   // For Chrome 86 and later...
   if ('showSaveFilePicker' in window) {
     const opts = {
+      id: STICKLLM_PICKER_ID,
+      startIn: 'documents',
       types: [{
         description: 'Text file',
         accept: {'text/plain': ['.txt']},

@@ -99,6 +99,9 @@
           <button type="button" class="toggleChip" id="webToggle" aria-pressed="true" title="Allow live web lookup when needed (needs internet)">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>Web
           </button>
+          <button type="button" class="toggleChip" id="a0Toggle" aria-pressed="false" title="Send the message to Agent Zero (multi-step tasks: files, code, web)">
+            <svg viewBox="0 0 24 24"><rect x="5" y="7" width="14" height="11" rx="2"/><path d="M12 3v4M9 12h.01M15 12h.01"/></svg>Agent Zero
+          </button>
           <span class="grow"></span>
           <button type="button" class="toggleChip" id="voiceModeBtn" aria-pressed="false" title="Voice off">Voice</button>
           <button type="button" class="iconBtn" id="stopSpeechBtn" hidden title="Stop speaking" aria-label="Stop speaking">
@@ -513,6 +516,16 @@
   <div class="group">
     <div class="row"><div><b>Agent Zero</b><small id="agentInstallMsg">Unlock the vault, then install. The image stays on the host drive.</small></div><button class="btn sm" id="agentInstallBtn" type="button" hidden>Install Agent Zero</button></div>
     <pre id="agentPullLog" class="mono" hidden></pre>
+    <div class="row"><div><b>Unlock all plugins</b><small id="a0PluginsMsg">Agent Zero may install and run any plugin (Plugin Hub). Off locks plugins down to StickLLM's own. Applies after a restart.</small></div>
+      <label class="switch"><input type="checkbox" id="a0PluginsUnlocked" checked><span></span></label></div>
+  </div>
+  <div class="group a0Welcome" id="a0Welcome">
+    <div class="row"><div><b>Try Agent Zero</b><small>Agent Zero works step by step on its own: it can write and run code, use files and search the web. Turn on the Agent Zero button next to Web in chat, or open it from the desktop, then try:</small></div></div>
+    <ul class="a0Examples">
+      <li>"Make a hello-world web page and open it in my browser."</li>
+      <li>"Create a spreadsheet of my monthly budget with totals and open it in Office."</li>
+      <li>"Search the web for this week's weather in my city and write a short summary."</li>
+    </ul>
   </div>
   <h3>Updates</h3>
   <div class="group">

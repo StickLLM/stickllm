@@ -338,6 +338,8 @@ async function refreshAgentLink() {
     const s = await r.json();
     const installed = agentIsInstalled(s);
     const href = agentPageUrl(s);
+    agentZeroNote = agentZeroStatusNote(installed, s);
+    agentZeroInstalled = installed;
     if (link) {
       link.href = href;
       link.target = AGENT_TAB;
@@ -1743,7 +1745,26 @@ async function takeChatStream(gen, abort, body, onShown, opts) {
   }
   throw new Error(lastMsg);
 }
+// 0.6.1 (item 23): the chat model knows whether Agent Zero is there.
+let agentZeroNote = "";
+let agentZeroInstalled = false;
+function agentZeroStatusNote(installed, s) {
+  if (!installed) return "Agent Zero (the autonomous agent app on this stick) is not installed; it can be installed from Apps.";
+  const st = String((s && s.state) || "");
+  const how = st === "running" || st === "ready" ? "running" : (st ? "installed (" + st + ")" : "installed");
+  return "Agent Zero (the autonomous agent app on this stick) is " + how + ". For multi-step work on files, code or the web, suggest the Agent Zero button next to Web, which sends the message to Agent Zero.";
+}
+function withAgentZeroNote(list) {
+  if (!agentZeroNote) return list;
+  const out = list.slice();
+  const i = out.findIndex((m) => m && m.role === "system" && typeof m.content === "string");
+  if (i >= 0) out[i] = { role: "system", content: out[i].content + "\n\n" + agentZeroNote };
+  return out;
+}
 function messagesForRequest(voiceOn) {
+  return withAgentZeroNote(messagesForRequestBase(voiceOn));
+}
+function messagesForRequestBase(voiceOn) {
   if (!voiceOn) return messages;
   const brief = "Answer in one or two plain spoken sentences. No headings, no bullet lists, no markdown. Keep the response short.";
   let added = false;
@@ -2193,7 +2214,62 @@ try {
   };
 } catch (_) {}
 
+// 0.6.1 (item 21): "open minesweeper" opens the app at once, no model call.
+const OPEN_FAST_ALIAS = {
+  minesweep: "minesweeper", mines: "minesweeper", office: "docs", onlyoffice: "docs",
+  documents: "docs", document: "docs", word: "docs", excel: "docs", spreadsheet: "docs",
+  "file manager": "files", "files app": "files", "text editor": "notepad", editor: "notepad",
+  calc: "calculator", "system monitor": "monitor", music: "media", video: "media",
+  "web browser": "browser", chromium: "browser", internet: "browser", web: "browser",
+  "agent zero": "agent", agent0: "agent", a0: "agent", "node red": "node-red", nodered: "node-red",
+  tasks: "tasks-md", "tasks.md": "tasks-md", notes: "trilium", budget: "paisa", comfy: "comfyui",
+};
+function openFastPathId(raw) {
+  const m = String(raw || "").trim().match(/^(?:please\s+)?(?:open|start|launch|show|run)\s+(?:the\s+|my\s+)?(.{2,30}?)(?:\s+app)?\s*[.!]?$/i);
+  if (!m) return "";
+  const name = m[1].toLowerCase().replace(/\s+/g, " ").trim();
+  const id = OPEN_FAST_ALIAS[name] || name.replace(/ /g, "-");
+  return /^[a-z][a-z0-9-]{0,23}$/.test(id) ? id : "";
+}
+function openFastPath(raw) {
+  const id = openFastPathId(raw);
+  if (!id) return false;
+  const desk = window.stickDesk;
+  if (id === "browser") {
+    if (desk && desk.openBrowser) { desk.openBrowser("", "Browser"); return true; }
+    return false;
+  }
+  if (desk && desk.handles && desk.handles(id)) return !!desk.openApp(id);
+  if (typeof appTabLink === "function" && appTabLink(id)) return openStickApp(id, "");
+  return false;
+}
+// 0.6.1 (item 23, partial): with the Agent Zero toggle on, the message goes
+// to Agent Zero: its window opens and the text is put on the clipboard.
+async function handOffToAgentZero(text) {
+  let copied = false;
+  try { await navigator.clipboard.writeText(text); copied = true; } catch (_) {}
+  const desk = window.stickDesk;
+  if (desk && desk.handles && desk.handles("agent")) desk.openApp("agent");
+  else { const a = $("#agentLink"); if (a && a.href) window.open(a.href, a.target || "_blank"); }
+  toast(!agentZeroInstalled ? "Agent Zero is not installed yet — install it from Apps."
+    : copied ? "Opening Agent Zero… your message is on the clipboard: paste it there (Ctrl+V). Progress shows in the Agent Zero window."
+    : "Opening Agent Zero… paste your message there. Progress shows in the Agent Zero window.");
+}
 async function send() {
+  {
+    const raw = $("#input").value;
+    if (!state.attach.length && openFastPath(raw)) {
+      $("#input").value = "";
+      autosize();
+      toast("Opened " + openFastPathId(raw));
+      return;
+    }
+    if (state.a0 && raw.trim() && !state.attach.length) {
+      $("#input").value = "";
+      autosize();
+      return handOffToAgentZero(raw.trim());
+    }
+  }
   {
     const route = appAgentOn ? appAgentRoute($("#input").value) : null;
     appAgentSkipOnce = false;
@@ -2448,6 +2524,10 @@ $("#webToggle").onclick = () => {
   state.web = !state.web;
   $("#webToggle").setAttribute("aria-pressed", state.web);
   $("#webDefault").checked = state.web;
+};
+if ($("#a0Toggle")) $("#a0Toggle").onclick = () => {
+  state.a0 = !state.a0;
+  $("#a0Toggle").setAttribute("aria-pressed", state.a0);
 };
 $("#webDefault").onchange = (e) => {
   state.web = e.target.checked;
@@ -6825,6 +6905,18 @@ function openStickApp(id, doc) {
   else reportOpenApp(id, "blocked");
   return false;
 }
+// 0.6.1 (item 22): Agent Zero's open_url / open_file show a page in the
+// user's browser (the kiosk browser window, or a new tab on a LAN browser).
+function openAgentUrl(url, title) {
+  if (!/^https?:\/\//i.test(url)) return false;
+  const local = /^http:\/\/127\.0\.0\.1(?::\d+)?\/browser-pages\//.test(url);
+  const desk = window.stickDesk;
+  if (detectLocalHost() && desk && desk.openBrowser) { desk.openBrowser(url, title || "Agent Zero"); return true; }
+  if (local) { toast("Agent Zero opened a page on the StickLLM screen; it can only be shown there."); return false; }
+  const w = window.open(url, "_blank", "noopener");
+  if (!w) toast("Agent Zero wants to open " + url + " — allow pop-ups for StickLLM.");
+  return !!w;
+}
 // Agent Zero install_app: the gateway asks this screen; nothing installs
 // until the user clicks Install here (the normal /api/apps/install).
 let agentInstallId = "";
@@ -6921,6 +7013,11 @@ function startOpenAppEvents() {
       let data = {};
       try { data = JSON.parse(ev.data || "{}"); } catch (err) { return; }
       if (data && data.id) openStickApp(String(data.id), typeof data.doc === "string" ? data.doc : "");
+    });
+    es.addEventListener("open_url", (ev) => {
+      let data = {};
+      try { data = JSON.parse(ev.data || "{}"); } catch (err) { return; }
+      if (data && typeof data.url === "string") openAgentUrl(data.url, String(data.title || ""));
     });
     es.addEventListener("install_started", (ev) => {
       let data = {};
@@ -7193,4 +7290,29 @@ window.stickApp = Object.freeze({
   window.addEventListener("blur", close);
   window.addEventListener("resize", close);
   document.addEventListener("scroll", close, true);
+})();
+
+// 0.6.1 (item 25): Settings > Agent Zero > Unlock all plugins.
+(function a0PluginsSwitch() {
+  const box = document.getElementById("a0PluginsUnlocked");
+  const msg = document.getElementById("a0PluginsMsg");
+  if (!box) return;
+  const load = () => fetch("/api/agent/plugins", { cache: "no-store", headers: authHeaders() })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => { if (j && typeof j.unlocked === "boolean") box.checked = j.unlocked; })
+    .catch(() => {});
+  box.addEventListener("change", async () => {
+    const want = box.checked;
+    try {
+      const r = await fetch("/api/agent/plugins", {
+        method: "POST",
+        headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+        body: JSON.stringify({ unlocked: want }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) { box.checked = !want; toast((j && j.message) || "Could not save the plugin setting"); return; }
+      if (msg) msg.textContent = j.message || "Saved.";
+    } catch (e) { box.checked = !want; toast("Could not save the plugin setting"); }
+  });
+  load();
 })();

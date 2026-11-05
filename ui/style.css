@@ -676,3 +676,6 @@ input.secret { -webkit-text-security: disc; }
 
 /* 0.6.1 (item 19) */
 .pill.slowUsb{background:#b3261e;color:#fff;border-color:#b3261e}
+/* 0.6.1 (item 24) */
+.dkFrameFallback{position:absolute;left:8px;bottom:8px;z-index:3;display:flex;gap:6px;align-items:center;padding:6px 8px;border-radius:8px;background:rgba(15,23,42,.92);color:#fff;font-size:12px}
+.a0Examples{margin:4px 14px 10px 30px;padding:0;font-size:13px;line-height:1.6}

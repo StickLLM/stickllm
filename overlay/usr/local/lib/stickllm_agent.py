@@ -1364,15 +1364,49 @@ APP_ACTIONS_TEXT = (
 )
 
 
-def apps_skill_text() -> str:
-    body = apps_prompt_text().split("## StickLLM apps\n", 1)[1]
+APP_LABELS = {
+    "minesweeper": "Minesweeper (desktop label minesweep)",
+    "solitaire": "Solitaire",
+    "tetris": "Tetris",
+    "notepad": "Notepad (text editor)",
+    "calculator": "Calculator",
+    "files": "Files (file manager)",
+    "media": "Media player",
+    "monitor": "System monitor",
+}
+
+
+def apps_list_lines(installed: tuple[str, ...] | list[str] | None = None) -> list[str]:
+    """The live app list for the stickllm-apps skill: built-in apps, the
+    add-on catalog (marked installed when known) and the browser."""
+    lines = ["App list (open with open_app and this id):"]
+    for app_id in APPS_URL_IDS:
+        lines.append(f"- {app_id}: {APP_LABELS.get(app_id, app_id)}")
+    for app_id in CATALOG_APP_IDS:
+        if app_blocked(app_id):
+            continue
+        if installed is None:
+            tag = "add-on; if open_app says not_installed, use install_app"
+        else:
+            tag = "add-on, installed" if app_id in installed else "add-on, not installed: install_app first"
+        lines.append(f"- {app_id}: {CATALOG_APP_NAMES.get(app_id, app_id)} ({tag})")
+    lines.append("- browser: the user's web browser. Use open_url for a site and open_file for a page you made.")
+    lines.append(
+        "Fast path: for \"open/start/show <app>\" call open_app with the id as your first and only tool, "
+        "then answer in one short line. Do not plan, search, or use the browser tool first."
+    )
+    return lines
+
+
+def apps_skill_text(installed: tuple[str, ...] | list[str] | None = None) -> str:
+    body = "\n".join(apps_list_lines(installed)) + "\n\n" + apps_prompt_text().split("## StickLLM apps\n", 1)[1]
     return (
         "---\n"
         "name: stickllm-apps\n"
-        "description: Play StickLLM apps on the user's screen with open_app, "
-        "app_state, and app_act. URL ids are minesweeper, solitaire, tetris, "
-        "notepad, calculator, files, media, and monitor. The desktop label "
-        "minesweep is URL id minesweeper.\n"
+        "description: Open and play StickLLM apps on the user's screen with open_app, "
+        "app_state, and app_act, and show pages with open_url / open_file. Ids: "
+        + ", ".join(APPS_URL_IDS + CATALOG_APP_IDS)
+        + ", plus the browser. The desktop label minesweep is id minesweeper.\n"
         "---\n\n"
         + APP_PLAY_RULE
         + "\n\n"
@@ -1469,6 +1503,121 @@ class {class_name}(Tool):
             _FAILS.pop(sig, None)
         return Response(message=raw.strip() or "ok", break_loop=False)
 '''
+
+
+OPEN_URL_MAX = 2048
+OPEN_FILE_EXTS = (".html", ".htm", ".txt", ".md", ".svg", ".csv", ".json")
+
+
+def open_url_ok(url: object) -> bool:
+    """open_url targets: http(s) pages with a host. Never the stick itself
+    (loopback, the docker bridge) and never URLs with credentials."""
+    if not isinstance(url, str) or not url or len(url) > OPEN_URL_MAX:
+        return False
+    if any(ord(c) < 33 for c in url):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = (parts.hostname or "").lower()
+        _ = parts.port
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not host or "@" in parts.netloc:
+        return False
+    if host in ("localhost", "0.0.0.0", "::1", "::") or host.endswith(".localhost"):
+        return False
+    if host.startswith("127.") or host.startswith("172.30.") or host.startswith("169.254."):
+        return False
+    return True
+
+
+def open_url_tool_source() -> str:
+    return _guarded_tool_source("OpenUrl", "open_url", "/open-url", ("url", "title"), {})
+
+
+def open_file_tool_source() -> str:
+    """open_file reads a page the agent made (in its own container) and sends
+    the HTML to the user's screen. Text files are shown in a <pre>."""
+    return '''from __future__ import annotations
+
+import html as _html
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from helpers.tool import Response, Tool
+
+_TOKEN_FILE = Path("/stickllm-open-app.token")
+_URL = "http://172.30.0.1:8082/open-url"
+_EXTS = %r
+_MAX = 64 * 1024
+_ROOTS = (Path("/a0/usr"), Path("/a0/tmp"), Path("/tmp"), Path("/root"))
+
+
+class OpenFile(Tool):
+    async def execute(self, **kwargs):
+        args = self.args if isinstance(self.args, dict) else {}
+        raw = str(args.get("path") or kwargs.get("path") or "").strip()
+        if not raw:
+            return Response(message="open_file needs a path", break_loop=False)
+        path = Path(raw)
+        if not path.is_absolute():
+            path = Path("/a0/usr/workdir") / path
+        try:
+            path = path.resolve()
+        except OSError:
+            return Response(message="open_file: bad path", break_loop=False)
+        if not any(path == r or r in path.parents for r in _ROOTS):
+            return Response(message="open_file: only files under /a0/usr, /a0/tmp, /tmp or /root", break_loop=False)
+        if path.suffix.lower() not in _EXTS:
+            return Response(message="open_file shows " + ", ".join(_EXTS) + " files only", break_loop=False)
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            return Response(message="open_file: cannot read the file: " + str(exc), break_loop=False)
+        if len(data) > _MAX:
+            return Response(message="open_file: the file is over 64 KB", break_loop=False)
+        text = data.decode("utf-8", "replace")
+        if path.suffix.lower() not in (".html", ".htm", ".svg"):
+            text = "<!doctype html><meta charset=utf-8><title>" + _html.escape(path.name) + "</title><pre>" + _html.escape(text) + "</pre>"
+        try:
+            token = _TOKEN_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+        if not token:
+            return Response(message="open_file failed: control token is missing", break_loop=False)
+        req = urllib.request.Request(
+            _URL,
+            data=json.dumps({"html": text, "title": path.name}).encode("utf-8"),
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                out = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            out = "open_file failed: " + exc.read().decode("utf-8", "replace")[:400] + " (do not retry; tell the user)"
+        except Exception as exc:
+            out = "open_file failed: " + str(exc)
+        return Response(message=out.strip() or "opened", break_loop=False)
+''' % (OPEN_FILE_EXTS,)
+
+
+def open_url_tool_prompt() -> str:
+    return (
+        "### open_url\n"
+        "Show a web page in the user's browser on their screen (a StickLLM browser window, "
+        "or a new tab on a LAN browser). Use it when the user asks to open, show or visit a site. "
+        "http(s) only; not the stick's own addresses.\n"
+        'Example: {"tool_name":"open_url","tool_args":{"url":"https://example.org","title":"Example"}}\n\n'
+        "### open_file\n"
+        "Show a file you made (html, htm, svg, txt, md, csv, json; up to 64 KB) in the user's "
+        "browser. Use it after you write a page, e.g. a hello-world HTML, instead of telling "
+        "the user to open it. Relative paths are under /a0/usr/workdir.\n"
+        'Example: {"tool_name":"open_file","tool_args":{"path":"hello.html"}}\n'
+        + NO_GUI_RULE + "\n"
+    )
 
 
 def install_app_tool_source() -> str:
@@ -1655,6 +1804,9 @@ def ensure_open_app_plugin(root: Path | None = None) -> None:
         root / "tools" / "open_document.py": open_document_tool_source(),
         root / "prompts" / "agent.system.tool.install_app.md": install_app_tool_prompt(),
         root / "prompts" / "agent.system.tool.docs.md": docs_tools_prompt(),
+        root / "tools" / "open_url.py": open_url_tool_source(),
+        root / "tools" / "open_file.py": open_file_tool_source(),
+        root / "prompts" / "agent.system.tool.open_url.md": open_url_tool_prompt(),
         root / "skills" / "stickllm-apps" / "SKILL.md": apps_skill_text(),
     }
     if egress_scan:
@@ -2199,12 +2351,12 @@ def open_app_server(
         def do_POST(self) -> None:  # noqa: N802
             path = urllib.parse.urlsplit(self.path).path
             length = int(self.headers.get("Content-Length") or 0)
-            limit = AGENT_DOCS_MAX_BODY if path == "/docs" else 8192
+            limit = AGENT_DOCS_MAX_BODY if path == "/docs" else (80 * 1024 if path == "/open-url" else 8192)
             if length < 0 or length > limit:
                 self._send(413, {"ok": False, "error": "too_large"})
                 return
             raw = self.rfile.read(length) if length else b""
-            if path not in ("/open", "/state", "/act", "/install", "/docs", "/egress-event"):
+            if path not in ("/open", "/state", "/act", "/install", "/docs", "/egress-event", "/open-url"):
                 self._send(404, {"ok": False, "error": "not_found"})
                 return
             if not self._authorized():
@@ -2224,6 +2376,30 @@ def open_app_server(
                     return
                 record_egress_event({**req, "via": "bridge"})
                 self._send(200, {"ok": True})
+                return
+            if path == "/open-url":
+                body = {}
+                if isinstance(req.get("html"), str):
+                    body["html"] = req["html"]
+                elif open_url_ok(req.get("url")):
+                    body["url"] = req["url"]
+                else:
+                    self._send(400, {
+                        "ok": False,
+                        "error": "bad_url",
+                        "message": "open_url takes an http(s) URL that is not the stick itself.",
+                    })
+                    return
+                if isinstance(req.get("title"), str):
+                    body["title"] = req["title"][:80]
+                try:
+                    result = gateway_post("open-url", body, self._token()) if relay is None else relay(path, "", body)
+                except Exception:
+                    self._send(502, {"ok": False, "error": "ui_unavailable"})
+                    return
+                if not isinstance(result, dict):
+                    result = {"ok": False, "error": "bad_reply"}
+                self._send(bridge_status(result), result)
                 return
             if path in ("/install", "/docs"):
                 if path == "/install":
@@ -3093,7 +3269,45 @@ BUILTIN_DATA_DIRS = (("_goal", "goals"), ("_orchestrator", "data"))
 # v0.5.9 (Nink): every Agent Zero plugin is unlocked. The plugin dir is
 # writable and persistent, the installer/scan/validator stay, Plugin Hub
 # installs survive a restart, and the proxy no longer denies plugin APIs.
-PLUGINS_UNLOCKED = True
+# 0.6.1 (item 25): Settings > Agent Zero > "Unlock all plugins" stores the
+# choice in the settings partition (agent-zero/plugins.json). Default stays
+# unlocked (the 0.5.9 behaviour: agent_request_denied returns ""). It is
+# read once at import, so a change applies after StickLLM restarts.
+PLUGINS_SETTING_NAME = "plugins.json"
+
+
+def plugins_unlocked_setting(root: Path | None = None) -> bool:
+    path = (root if root is not None else PORTABLE) / PLUGINS_SETTING_NAME
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return True
+    if isinstance(doc, dict) and isinstance(doc.get("unlocked"), bool):
+        return doc["unlocked"]
+    return True
+
+
+def set_plugins_unlocked(unlocked: bool, root: Path | None = None) -> dict:
+    base = root if root is not None else PORTABLE
+    if root is None and not settings_mounted():
+        return {"ok": False, "error": "settings_locked", "message": "Unlock settings first (the choice is saved on the stick)."}
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        tmp = base / (PLUGINS_SETTING_NAME + ".tmp")
+        tmp.write_text(json.dumps({"unlocked": bool(unlocked)}) + "\n", encoding="utf-8")
+        os.replace(tmp, base / PLUGINS_SETTING_NAME)
+    except OSError as exc:
+        return {"ok": False, "error": "write_failed", "message": f"Could not save the setting: {exc}"}
+    return {
+        "ok": True,
+        "unlocked": bool(unlocked),
+        "active": PLUGINS_UNLOCKED,
+        "message": "Saved. Restart StickLLM (or reboot) for Agent Zero to pick it up."
+        if bool(unlocked) != PLUGINS_UNLOCKED else "Saved.",
+    }
+
+
+PLUGINS_UNLOCKED = plugins_unlocked_setting()
 # Built-in plugins switched off. Empty while PLUGINS_UNLOCKED.
 DISABLED_BUILTINS: tuple[str, ...] = () if PLUGINS_UNLOCKED else ("_plugin_scan",)
 MODEL_CONFIG_FILES = ("config.json", "presets.yaml", ".toggle-0", ".toggle-1")

@@ -231,11 +231,13 @@
       box.appendChild(li);
     }
   }
+  let lastReady = false;
   async function refresh() {
     let st = null;
     try { st = await api("/api/docs/status"); } catch (e) { $("#state").textContent = e.message; }
     if (st) $("#state").textContent = st.message || st.state;
     const ready = !!(st && st.running);
+    lastReady = ready;
     document.querySelectorAll("[data-new], #upload").forEach((el) => { el.disabled = !(st && st.vault_open && st.installed); });
     const list = $("#list");
     list.innerHTML = "";
@@ -294,7 +296,11 @@
       });
       say("Saved " + j.path + " in vault/Documents");
       ev.target.value = "";
-      refresh();
+      // 0.6.1 (item 27): open the file right away instead of leaving the
+      // user to find it (and press New, which made Untitled copies).
+      await refresh();
+      if (lastReady) open(j.path);
+      else say("Saved " + j.path + " in vault/Documents. Office is still starting; press Open when it is ready.");
     } catch (e) { say(e.message); }
   });
   $("#dlRefresh").addEventListener("click", () => refresh());

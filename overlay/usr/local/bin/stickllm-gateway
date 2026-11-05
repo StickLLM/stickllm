@@ -106,6 +106,11 @@ def csp_for_path(path: str, host: str = "") -> str:
     # App pages may be framed by the StickLLM tab itself (same origin only),
     # so open_app works in a LAN browser that blocks pop-ups. Everything else
     # still refuses to be framed.
+    if bare == "/__stickllm/handoff":
+        # 0.6.1 (item 24): the one-time sign-in page on :5443 (and add-on
+        # ports) is shown inside the StickLLM Agent window, so this stick's
+        # own pages (443 / loopback) may frame it. Nothing else.
+        return "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors " + addon_framers(host)
     if bare.startswith("/apps/"):
         policy = policy.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
     elif policy is CSP:
@@ -393,6 +398,9 @@ class _UiOpenBus:
         reason: str = "",
         path: str = "",
         doc: str = "",
+        kind: str = "open_app",
+        url: str = "",
+        title: str = "",
     ) -> dict:
         event = {
             "id": app_id,
@@ -400,7 +408,10 @@ class _UiOpenBus:
             "window": f"stickllm-{app_id}",
             "published_at": time.time(),
         }
-        event["kind"] = "open_app"
+        event["kind"] = kind
+        if url:
+            event["url"] = url
+            event["title"] = title
         if doc:
             event["doc"] = doc
         # Only the screen that is driving Agent gets the event ("" = everyone).
@@ -3958,6 +3969,13 @@ class Handler(SimpleHTTPRequestHandler):
                     }
                     if event.get("doc"):
                         payload["doc"] = event["doc"]
+                elif kind == "open_url":
+                    if app:
+                        return
+                    want = event.get("conn")
+                    if want and want != conn and UI_OPEN.conn_alive(int(want)):
+                        return
+                    payload = {"url": event.get("url") or "", "title": event.get("title") or "", "seq": event.get("seq")}
                 elif kind in ("install_confirm", "install_started"):
                     if app:
                         return
@@ -4975,6 +4993,12 @@ class Handler(SimpleHTTPRequestHandler):
             hits = duckduckgo_search(q or "StickLLM", n=5)
             self._json(200, {"results": hits, "online": uplink_ok()})
             return
+        if path == "/api/agent/plugins":
+            if self._agent_refused():
+                return
+            lib = agent_lib()
+            self._json(200, {"ok": True, "unlocked": lib.plugins_unlocked_setting(), "active": lib.PLUGINS_UNLOCKED})
+            return
         if path == "/api/agent/status":
             self._agent_status()
             return
@@ -5035,6 +5059,22 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/agent/handoff":
             self._agent_handoff_mint()
+            return
+        if path == "/api/agent/plugins":
+            # 0.6.1 (item 25): Settings > Agent Zero > Unlock all plugins.
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(min(n, 4096)) if n else b""
+            if self._agent_refused():
+                return
+            try:
+                req = json.loads(raw.decode("utf-8") or "{}") if raw else {}
+            except (UnicodeDecodeError, ValueError):
+                req = {}
+            if not isinstance(req, dict) or not isinstance(req.get("unlocked"), bool):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            out = agent_lib().set_plugins_unlocked(req["unlocked"])
+            self._json(200 if out.get("ok") else 409, out)
             return
         if path == "/api/apps/open-link":
             self._addon_open_link()
@@ -5178,6 +5218,40 @@ class Handler(SimpleHTTPRequestHandler):
                     "reason": reason,
                 },
             )
+            return
+
+        if path == "/api/ui/open-url":
+            # 0.6.1 (item 22): Agent Zero's open_url / open_file.
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            if not self._open_app_control_ok():
+                return
+            title = re.sub(r"[\x00-\x1f\x7f]", "", str(req.get("title") or ""))[:80]
+            if isinstance(req.get("html"), str):
+                saved = save_browser_page(title or "Agent Zero page", req["html"])
+                if not saved.get("ok"):
+                    self._json(400, saved)
+                    return
+                url = saved["url"]
+            else:
+                url = req.get("url")
+                if not agent_lib().open_url_ok(url):
+                    self._json(400, {"ok": False, "error": "bad_url"})
+                    return
+            target, reason = ui_target()
+            conn = UI_OPEN.ui_conn_for(target)
+            if target != "kiosk" and conn is None:
+                reason = "no_ui_tab"
+            UI_OPEN.publish("browser", target=target, conn=conn, reason=reason, kind="open_url", url=url, title=title)
+            self._json(200, {
+                "ok": True,
+                "url": url,
+                "screen": "kiosk" if target == "kiosk" else "browser",
+                "reason": reason,
+                "message": "Shown on the user's screen." if reason != "no_ui_tab"
+                else "The user has no StickLLM tab open; ask them to open StickLLM, then try once more.",
+            })
             return
 
         if path == "/api/ui/install-request":

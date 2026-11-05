@@ -707,6 +707,18 @@
       f.setAttribute("allow", "fullscreen; clipboard-read; clipboard-write; autoplay");
       frameHooks(f, spec.id);
       wb.body.appendChild(f);
+      // 0.6.1 (item 24): on a LAN browser the Agent window loads
+      // https://<ip>:5443, whose self-signed certificate can't be accepted
+      // inside a frame. Always offer a new tab instead of a dead frame.
+      if (spec.id === "agent" && !isLocal()) {
+        const bar = document.createElement("div");
+        bar.className = "dkFrameFallback";
+        bar.innerHTML = '<span>Agent Zero not showing?</span> <button type="button" class="btn sm">Open Agent Zero in a new tab</button> <button type="button" class="btn sm ghost" aria-label="Hide">×</button>';
+        const [openBtn, hideBtn] = bar.querySelectorAll("button");
+        openBtn.onclick = (ev) => { ev.stopPropagation(); openOutside("agent"); };
+        hideBtn.onclick = (ev) => { ev.stopPropagation(); bar.remove(); };
+        wb.body.appendChild(bar);
+      }
       if (spec.popOut && wb.addControl) {
         wb.addControl({ index: 0, class: "wb-pop", image: POP_ICON, click: (ev) => { ev.stopPropagation(); spec.popOut(); } });
       }
@@ -1116,6 +1128,7 @@
     vaultPrompt: () => on && toggleVaultPop(true),
     refreshCatalog: scheduleCatalog,
     openApp: (id) => openApp(id),
+    openBrowser: (url, title) => openBrowser(url, title),
     closeAll: () => { if (wm) wm.closeAll(false); toggleLauncher(false); },
     list: () => (wm ? wm.list() : []),
     _wm: () => wm,
