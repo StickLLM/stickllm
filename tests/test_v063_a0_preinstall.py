@@ -159,3 +159,9 @@ def test_a0_seed_forces_overlay2():
     assert 'SEED_BYTES' in src
     assert 'expected overlay2' in src
 
+def test_a0_seed_work_prefers_volume():
+    src = Path("scripts/lib/a0_seed.sh").read_text(encoding="utf-8")
+    assert "WORK=/work/stickllm-a0-seed-work" in src
+    live = Path("scripts/lib/docker-build-live.sh").read_text(encoding="utf-8")
+    assert "A0_SEED_WORK=/work/stickllm-a0-seed-work" in live
+

@@ -223,7 +223,8 @@ if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io rsync >/dev/null
     A0_SEED_OUT=config/includes.chroot/opt/stickllm/docker-seed
     rm -rf "$A0_SEED_OUT"
-    bash /stickllm/scripts/lib/a0_seed.sh \
+    A0_SEED_WORK=/work/stickllm-a0-seed-work \
+  bash /stickllm/scripts/lib/a0_seed.sh \
       config/includes.chroot/usr/local/share/stickllm/agent-zero.pin \
       "$A0_BUNDLE_OUT" "$A0_SEED_OUT"
     test -f "$A0_SEED_OUT/stickllm-seed.json"

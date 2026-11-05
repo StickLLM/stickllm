@@ -8,7 +8,16 @@ BUNDLE="${2:?bundle}"
 OUT="${3:?out}"
 SOCK="${A0_SEED_SOCK:-/tmp/stickllm-a0-seed.sock}"
 PIDFILE="${A0_SEED_PID:-/tmp/stickllm-a0-seed.pid}"
-WORK="${A0_SEED_WORK:-/tmp/stickllm-a0-seed-work}"
+# Prefer /work (docker volume → ext4) over /tmp (overlayfs). Nested overlay2
+# fails on overlay backing ("failed to mount overlay: invalid argument") which
+# surfaces as docker "errors pretty printing info". Stick runtime also uses overlay2.
+if [[ -n "${A0_SEED_WORK:-}" ]]; then
+  WORK="$A0_SEED_WORK"
+elif [[ -d /work ]]; then
+  WORK=/work/stickllm-a0-seed-work
+else
+  WORK=/tmp/stickllm-a0-seed-work
+fi
 
 rm -rf "$WORK" "$OUT"
 mkdir -p "$WORK" "$OUT"
@@ -26,7 +35,11 @@ for i in $(seq 1 60); do
   docker -H "unix://$SOCK" info >/dev/null 2>&1 && break
   sleep 1
 done
-docker -H "unix://$SOCK" info >/dev/null
+if ! docker -H "unix://$SOCK" info >/dev/null 2>&1; then
+  echo "a0_seed: dockerd failed to become ready (work=$WORK)" >&2
+  tail -n 80 /tmp/stickllm-a0-seed-dockerd.log >&2 || true
+  exit 1
+fi
 
 python3 - "$BUNDLE" "$SOCK" <<'PY'
 import json, sys, subprocess
