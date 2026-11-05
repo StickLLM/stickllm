@@ -1,3 +1,13 @@
+## 0.6.3 — 2026-11-05
+
+- First-time setup wizard (network, storage, vault, starter model, tour); re-runnable from Settings.
+- STICKLLM-DATA vault first-class; storage_targets + mount unmounted host partitions (never format).
+- Downloads prefer SSD models folder; space check before enqueue; failed queue items kept with reason; Stop/Delete soft; partial cleanup.
+- Agent Zero install prefers SSD with free-space message.
+- Cheap `status_light` / cached model enrich for System monitor.
+- Persist journal + dmesg snapshots to STICKLLM-DATA; skip GPUs whose amdgpu init fails (best effort).
+- Models list groups non-loadable entries under "Can't load on this system".
+- Control hardened against EIO on flaky DATA (discovery + do_POST).
 # Changelog
 
 ## 0.6.2 (2026-11-05)
