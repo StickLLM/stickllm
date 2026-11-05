@@ -165,3 +165,9 @@ def test_a0_seed_work_prefers_volume():
     live = Path("scripts/lib/docker-build-live.sh").read_text(encoding="utf-8")
     assert "A0_SEED_WORK=/work/stickllm-a0-seed-work" in live
 
+def test_a0_seed_keeps_image_layers():
+    src = Path("scripts/lib/a0_seed.sh").read_text(encoding="utf-8")
+    assert "system prune -af" not in src
+    assert "seed too small" in src
+    assert "overlay2 is empty" in src
+

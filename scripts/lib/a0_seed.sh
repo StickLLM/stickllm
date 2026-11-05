@@ -83,9 +83,8 @@ if [[ "$DRIVER" != "overlay2" ]]; then
   kill "$(cat "$PIDFILE")" 2>/dev/null || true
   exit 1
 fi
-# Drop build cache; keep only the loaded image graph in the data-root.
+# Drop buildx cache only. Do not prune images (would delete the loaded A0 image).
 docker -H "unix://$SOCK" builder prune -af >/dev/null 2>&1 || true
-docker -H "unix://$SOCK" system prune -af >/dev/null 2>&1 || true
 
 kill "$(cat "$PIDFILE")" 2>/dev/null || true
 for i in $(seq 1 30); do
@@ -120,6 +119,15 @@ SEED_BYTES=$(du -sb "$OUT" | awk '{print $1}')
 # Soft cap: image is ~8.6GB; allow headroom for overlay2 metadata (<20GB).
 if [[ "$SEED_BYTES" -gt $((20 * 1024 * 1024 * 1024)) ]]; then
   echo "a0_seed: ERROR seed too large ($(du -sh "$OUT" | awk '{print $1}')) — refusing to embed in squashfs" >&2
+  exit 1
+fi
+# Floor: empty seed after an accidental prune is useless.
+if [[ "$SEED_BYTES" -lt $((1024 * 1024 * 1024)) ]]; then
+  echo "a0_seed: ERROR seed too small ($(du -sh "$OUT" | awk '{print $1}')) — image layers missing?" >&2
+  exit 1
+fi
+if [[ ! -d "$OUT/overlay2" ]] || [[ -z "$(ls -A "$OUT/overlay2" 2>/dev/null | head -1)" ]]; then
+  echo "a0_seed: ERROR $OUT/overlay2 is empty" >&2
   exit 1
 fi
 echo "a0_seed: OK -> $OUT ($(du -sh "$OUT" | awk '{print $1}'))"
