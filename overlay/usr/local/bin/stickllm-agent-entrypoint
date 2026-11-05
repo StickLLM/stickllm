@@ -129,6 +129,8 @@ PY
 if [[ -x /opt/venv-a0/bin/python ]]; then
   if ! /opt/venv-a0/bin/python -c "import scipy.special" >/dev/null 2>&1; then
     echo "a0-entrypoint: repairing scipy/numpy ABI for memory/VectorDB path"
+    # Dual numpy installs (e.g. 2.3.x + 1.26.x) cause sph_legendre_p ufunc type errors.
+    /opt/venv-a0/bin/pip uninstall -y numpy 2>/dev/null || true
     /opt/venv-a0/bin/pip uninstall -y numpy 2>/dev/null || true
     /opt/venv-a0/bin/pip install --no-cache-dir "numpy>=2.0,<2.3" || true
     if ! /opt/venv-a0/bin/python -c "import scipy.special" >/dev/null 2>&1; then

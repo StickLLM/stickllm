@@ -21,6 +21,7 @@ if [[ ! -S "$SOCK" ]]; then
 fi
 
 docker_cli() { DOCKER_HOST="unix://${SOCK}" docker "$@"; }
+dexec() { DOCKER_HOST="unix://${SOCK}" docker exec -i "$CONTAINER" "$@"; }
 
 if ! docker_cli inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -qx true; then
   echo "ERROR: container $CONTAINER not running"
@@ -29,34 +30,8 @@ if ! docker_cli inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep 
 fi
 
 echo "-- before --"
-docker_cli exec "$CONTAINER" "$PY" - <<'PY' || true
-import sys
-print("exe", sys.executable)
-print("path0", sys.path[:5])
-try:
-    import numpy as np
-    print("numpy", np.__version__, np.__file__)
-    print("numpy.ufunc", type(np.ufunc), getattr(np.ufunc, "__module__", None))
-except Exception as e:
-    print("numpy FAIL", type(e).__name__, e)
-try:
-    import scipy
-    print("scipy", scipy.__version__, scipy.__file__)
-except Exception as e:
-    print("scipy FAIL", type(e).__name__, e)
-try:
-    import scipy.special
-    print("scipy.special OK")
-except Exception as e:
-    print("scipy.special FAIL", type(e).__name__, e)
-try:
-    import sklearn
-    print("sklearn", sklearn.__version__)
-except Exception as e:
-    print("sklearn FAIL", type(e).__name__, e)
-PY
-
-# Targeted repair: one numpy matching scipy ABI. Not a blanket upgrade.
+dexec "$PY" -c "import sys; print('exe', sys.executable); import numpy as np; print('numpy', np.__version__, np.__file__); import scipy; print('scipy', scipy.__version__)" || echo "before-import-failed"
+dexec "$PY" -c "import scipy.special; print('scipy.special OK')" || echo "scipy.special FAIL before"
 echo "-- repair --"
 docker_cli exec "$CONTAINER" bash -lc "
 set -e
@@ -70,11 +45,5 @@ fi
 "
 
 echo "-- after --"
-docker_cli exec "$CONTAINER" "$PY" - <<'PY'
-import numpy, scipy, scipy.special
-print("OK numpy", numpy.__version__, "scipy", scipy.__version__, "special importable")
-import sklearn
-print("OK sklearn", sklearn.__version__)
-PY
-
+dexec "$PY" -c "import numpy,scipy,scipy.special,sklearn; print('OK numpy', numpy.__version__, 'scipy', scipy.__version__, 'sklearn', sklearn.__version__)"
 echo "=== fix complete (container files only; run_ui not restarted) ==="
