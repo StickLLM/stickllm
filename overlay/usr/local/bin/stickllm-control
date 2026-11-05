@@ -3842,14 +3842,27 @@ def place_cards(cards: list[dict], need_bytes: int, all_rows: list[dict] | None 
             kept = [g for g in rows if int(g.get("index") or 0) in allowed]
         if kept:
             cards = kept
+    # 0.6.1 (item 18): one card only when model + KV + buffers fit on it with a
+    # 10% margin (the estimate is not exact); otherwise split across every
+    # suitable card. A pinned card no longer blocks the split when it is too
+    # small (27B at 128K on 2x3090 tried one card and failed in 0.6.0).
+    need_margin = int(int(need_bytes) * 1.10)
+
+    def fits(g: dict) -> bool:
+        return int(g.get("free_mib") or 0) * 1024 * 1024 >= need_margin
+
     pin_raw = str(env.get("STICKLLM_GPU_PIN") or "").strip()
     if pin_raw.isdigit():
         hit = [g for g in rows if int(g.get("index") or 0) == int(pin_raw)]
-        if hit:
+        if hit and (fits(hit[0]) or len(cards) < 2):
             return hit[:1]
+        if hit:
+            # Pinned card first so it carries the larger share order-wise.
+            cards = hit[:1] + [g for g in cards if g is not hit[0]
+                               and int(g.get("index") or 0) != int(pin_raw)]
     if len(cards) > 1 and str(env.get("STICKLLM_GPU_SPLIT") or "") != "always":
         best = max(cards, key=lambda g: (int(g.get("free_mib") or 0), -int(g.get("index") or 0)))
-        if int(best.get("free_mib") or 0) * 1024 * 1024 >= int(need_bytes):
+        if fits(best):
             return [best]
     return cards
 

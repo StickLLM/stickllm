@@ -1138,7 +1138,10 @@ function setVaultChrome(open, absent = false) {
   // Open -> locked from anywhere (another browser, the kiosk lock combo, a
   // lock in Settings): clear the screen too, not only the chrome (0.5.4).
   if (!open && state.vaultOpen && !vaultUnlocking && !clearingOnLock) clearOnLock();
+  const vaultChanged = !!open !== !!state.vaultOpen;
   state.vaultOpen = open;
+  // 0.6.1 (item 20): vault models appear/disappear without a manual refresh.
+  if (vaultChanged) setTimeout(() => { refreshModels().catch(() => {}); }, 300);
   // The mode tabs follow the vault: Vault is highlighted only while it is
   // unlocked, Ephemeral whenever it is locked (first load included).
   if (!open && sessionMode === "vault") applyModeUi("ephemeral");
@@ -2773,7 +2776,12 @@ function renderModelsList() {
   const order = { gpu: 0, offload: 1, no: 2 };
   // 0.5.6: installed models always come first (then the chosen sort).
   const have = (m) => Number(!m.installed);
+  // 0.6.1 (item 19): when models exist on an SSD/vault, installed USB-stick
+  // models go to the bottom and get a red "Slow USB load" label.
+  const fastDisk = rows.some((m) => m.installed && modelWhere(m) !== "stick");
+  const slowUsb = (m) => Number(fastDisk && !!m.installed && modelWhere(m) === "stick");
   rows.sort((a, b) => {
+    if (slowUsb(a) !== slowUsb(b)) return slowUsb(a) - slowUsb(b);
     if (state.mf.sort === "running") {
       const rank = (m) => (m.running ? 0 : m.active ? 1 : 2);
       return (rank(a) - rank(b)) || (have(a) - have(b)) || String(a.name || a.id).localeCompare(String(b.name || b.id));
@@ -2825,7 +2833,7 @@ function renderModelsList() {
     }
     return `<article class="mcard ${trust === "blocked" ? "blocked" : ""} ${sel ? "sel" : ""}" data-id="${esc(id)}" tabindex="0">
       <div class="mcTop">
-        <div class="mcName"><b>${esc(name)}</b><small>${esc(q)} · ${have ? gbTxt + " on disk" : "~" + gbTxt}${have ? " · on " + where : ""}${rec ? " · recommended" : ""}</small></div>
+        <div class="mcName"><b>${esc(name)}</b><small>${esc(q)} · ${have ? gbTxt + " on disk" : "~" + gbTxt}${have && !(fastDisk && where === "stick") ? " · on " + where : ""}${rec ? " · recommended" : ""}${have && fastDisk && where === "stick" ? ' <span class="pill slowUsb" title="Loads from the USB stick; a copy on the SSD loads much faster">Slow USB load</span>' : ""}</small></div>
         ${run ? '<span class="pill ok">running</span>' : ""}${loading ? '<span class="pill warn">loading</span>' : ""}${rec ? '<span class="pill acc">recommended</span>' : ""}
       </div>
       <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${visionTag(m, id)}${isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">GGUF</span></div>
@@ -2895,6 +2903,7 @@ function syncModelActions() {
   }
   if ($("#delModel")) $("#delModel").hidden = !m.deletable;
   const max = Number(m.ctx_max || m.ctxMax || 32768);
+  try { updateDynamicPresets(m); } catch (_) {}
   if ($("#ctx")) {
     $("#ctx").max = max;
     if (+$("#ctx").value > max) $("#ctx").value = max;
@@ -3119,9 +3128,68 @@ function stopDlPoll() { if (dlPollTimer) { clearInterval(dlPollTimer); dlPollTim
 // highlight follows the knobs, so moving one away from a preset shows "Custom".
 const TUNE_PRESETS = {
   fast: { ctx: 4096, kv: "q8", temp: 0.7 },
-  balanced: { ctx: 8192, kv: "f16", temp: 0.7 },
-  long: { ctx: 32768, kv: "q4", temp: 0.6 },
+  balanced: { ctx: 32768, kv: "f16", temp: 0.7 },
+  long: { ctx: 65536, kv: "q8", temp: 0.6 },
 };
+// 0.6.1 (item 16): presets follow free VRAM for the selected model. Big GPUs:
+// Long 64K / Balanced 32K (Agent Zero wants >= 32K). Smaller GPUs scale down.
+const KV_MUL = { f16: 1, q8: 0.53, q4: 0.28 };
+const CTX_STEPS = [2048, 4096, 8192, 16384, 32768, 65536, 131072];
+function vramPoolGb() {
+  const hw = hardwarePool();
+  return hw.backend === "vulkan" ? (Number(hw.vramEach) || Number(hw.vram) || 0) : (Number(hw.vram) || 0);
+}
+// Largest context (tokens) whose KV cache fits next to the weights.
+function ctxThatFits(m, kv, poolGb = vramPoolGb()) {
+  const gb = modelGb(m || {}) || Number(m?.min_vram_gb || 0) || 4;
+  const perTok = (gb / 8) / 8192 * (KV_MUL[kv] || 1);
+  const left = poolGb - gb - 1;
+  if (!(poolGb > 0) || left <= 0 || perTok <= 0) return 0;
+  return Math.floor(left / perTok);
+}
+function roundCtxDown(n) { let r = 0; for (const s of CTX_STEPS) if (s <= n) r = s; return r; }
+function pickCtx(m, target, kvs, max, poolGb) {
+  for (const kv of kvs) {
+    const c = Math.min(max, roundCtxDown(ctxThatFits(m, kv, poolGb)));
+    if (c >= Math.min(target, max)) return { ctx: Math.min(target, max), kv };
+  }
+  const kv = kvs[kvs.length - 1];
+  return { ctx: Math.max(2048, Math.min(max, roundCtxDown(ctxThatFits(m, kv, poolGb)))), kv };
+}
+function dynamicPresets(m, poolGb = vramPoolGb()) {
+  const max = Number(m?.ctx_max || m?.ctxMax || 32768) || 32768;
+  if (!(poolGb > 0)) {
+    return { fast: { ctx: Math.min(4096, max), kv: "q8", temp: 0.7 },
+             balanced: { ctx: Math.min(8192, max), kv: "f16", temp: 0.7 },
+             long: { ctx: Math.min(32768, max), kv: "q4", temp: 0.6 } };
+  }
+  return {
+    fast: { ctx: Math.min(4096, max), kv: "q8", temp: 0.7 },
+    balanced: { ...pickCtx(m, 32768, ["f16", "q8", "q4"], max, poolGb), temp: 0.7 },
+    long: { ...pickCtx(m, 65536, ["q8", "q4"], max, poolGb), temp: 0.6 },
+  };
+}
+function ctxLabel(n) { return n >= 1024 ? Math.round(n / 1024) + "k" : String(n); }
+function updateDynamicPresets(m) {
+  const d = dynamicPresets(m);
+  for (const k of Object.keys(d)) {
+    TUNE_PRESETS[k] = d[k];
+    const sm = document.querySelector(`#presets button[data-preset="${k}"] small`);
+    if (sm) sm.textContent = `${ctxLabel(d[k].ctx)} ctx · ${d[k].kv} KV · temp ${d[k].temp}`;
+  }
+}
+// 0.6.1 (item 17): before Load, check model + context fits; offer a smaller
+// KV cache or the largest context that fits instead of failing in llama.cpp.
+function preloadFit(m, ctx, kv, poolGb = vramPoolGb()) {
+  if (!(poolGb > 0)) return { ok: true };
+  const fitsAt = (k) => ctxThatFits(m, k, poolGb) >= ctx;
+  if (fitsAt(kv)) return { ok: true };
+  for (const k of ["q8", "q4"]) {
+    if ((KV_MUL[k] < (KV_MUL[kv] || 1)) && fitsAt(k)) return { ok: false, kv: k, ctx };
+  }
+  const best = roundCtxDown(ctxThatFits(m, "q4", poolGb));
+  return { ok: false, kv: "q4", ctx: best >= 2048 ? best : 0 };
+}
 const TUNE_KEY = "stickllm_tune";
 const LLAMA_CTX_FLOOR = 32768; // below this, show the Agent Zero hint (llama-start honours the value)
 function tuneNow() {
@@ -3543,6 +3611,24 @@ $("#activate").onclick = async () => {
   const m = findModel(selectedModelId);
   if (!m) return toast("Select a model");
   const name = m.name || m.id;
+  {
+    const ctx = +$("#ctx").value;
+    const pf = preloadFit(m, ctx, state.kv);
+    if (!pf.ok) {
+      const pool = vramPoolGb().toFixed(0);
+      if (pf.ctx === ctx) {
+        if (window.confirm(`${ctxLabel(ctx)} context with ${state.kv} KV cache will not fit in ${pool} GB VRAM.\n\nOK = use ${pf.kv} KV cache (fits, slightly lower quality).\nCancel = load anyway (may spill to RAM or fail).`)) {
+          setKv(pf.kv); saveTune(); syncPresetHighlight();
+        }
+      } else if (pf.ctx) {
+        if (window.confirm(`${ctxLabel(ctx)} context will not fit in ${pool} GB VRAM with this model.\n\nOK = use ${ctxLabel(pf.ctx)} context with q4 KV cache (largest that fits).\nCancel = load anyway (may spill to RAM or fail).`)) {
+          setKv("q4"); $("#ctx").value = Math.min(pf.ctx, +$("#ctx").max || pf.ctx); paintCtxVal(); syncPresetHighlight(); saveTune();
+        }
+      } else {
+        toast(`This model barely fits in ${pool} GB VRAM; it will run partly from RAM (slower).`);
+      }
+    }
+  }
   try {
     // Synchronous UI first — do not wait for activate round-trip.
     beginModelLoadUi(m.id, name);
@@ -3808,6 +3894,7 @@ async function refreshDrivesLive() {
           throw new Error(res.error || res.stderr || "Mount failed");
         }
         await refreshDrivesLive();
+        refreshModels().catch(() => {});  // 0.6.1 (item 20): models on the new mount
         const mp = res.mount_path || "";
         toast(res.already_mounted ? (`Already mounted${mp ? " at " + mp : ""}`) : (`Mounted${mp ? " at " + mp : ""}`));
       } catch (err) { toast("Mount failed: " + (err.message || err)); }

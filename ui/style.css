@@ -673,3 +673,6 @@ input.secret { -webkit-text-security: disc; }
 .wifiList button{display:flex;width:100%;justify-content:space-between;gap:8px;padding:8px 12px;background:none;border:0;border-bottom:1px solid var(--line2);color:var(--ink);text-align:left;cursor:pointer;font:inherit}
 .wifiList button:hover,.wifiList button:focus-visible{background:var(--bg2)}
 .wifiList .sig{color:var(--muted);font-size:12px;white-space:nowrap}
+
+/* 0.6.1 (item 19) */
+.pill.slowUsb{background:#b3261e;color:#fff;border-color:#b3261e}
