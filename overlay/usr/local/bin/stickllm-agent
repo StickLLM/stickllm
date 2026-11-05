@@ -672,8 +672,8 @@ cmd_run_container() {
   if [[ -f /usr/local/share/stickllm/agent-zero-seccomp.json ]]; then
     SECCOMP_OPT=(--security-opt "seccomp=/usr/local/share/stickllm/agent-zero-seccomp.json")
   fi
-  docker_cli run --name "$CONTAINER" \
-    --restart unless-stopped \
+  : >>/run/stickllm/a0-init.log
+  docker_cli run -d --name "$CONTAINER" \
     --log-driver local \
     --log-opt max-size=2m \
     --log-opt max-file=2 \
@@ -731,10 +731,32 @@ cmd_run_container() {
     -v "${ADDON}/empty-ro:/a0/usr/api:ro" \
     -v "${ADDON}/empty-ro:/a0/usr/extensions:ro" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/open-app.token:/stickllm-open-app.token:ro" \
+    -v /run/stickllm/a0-init.log:/tmp/a0-init.log \
     -v "${ENTRY}:/stickllm-entrypoint.sh:ro" \
     --entrypoint /bin/bash \
     "$ref" \
     /stickllm-entrypoint.sh
+  # Keep unit alive; restart container in-place if it exits (do not tear down dockerd).
+  (
+    for _i in $(seq 1 90); do
+      if curl -sf --max-time 2 http://127.0.0.1:5099/api/health >/dev/null \
+        || curl -sf --max-time 2 http://127.0.0.1:5099/ >/dev/null; then
+        "$PYBIN" "$LIB" write-status --state running --image_present true --low_space false \
+          --message "Agent" >/dev/null || true
+        break
+      fi
+      sleep 2
+    done
+  ) 9>&- &
+  while docker_cli inspect -f '{{.Id}}' "$CONTAINER" >/dev/null 2>&1; do
+    docker_cli wait "$CONTAINER" >/dev/null 2>&1 || true
+    if ! docker_cli inspect -f '{{.Id}}' "$CONTAINER" >/dev/null 2>&1; then
+      break
+    fi
+    echo "stickllm-agent: container exited; restarting in place" >&2
+    docker_cli start "$CONTAINER" >/dev/null 2>&1 || break
+    sleep 2
+  done
 }
 
 cmd_run() {

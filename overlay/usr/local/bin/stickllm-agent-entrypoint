@@ -122,4 +122,7 @@ report = {
 out.write_text(json.dumps(report) + "\n", encoding="utf-8")
 PY
 
+# Host-visible boot log (bind-mounted from stickllm-agent run).
+exec >>/tmp/a0-init.log 2>&1
+echo "a0-entrypoint $(date -u +%Y-%m-%dT%H:%M:%SZ) starting initialize.sh"
 exec /exe/initialize.sh main
