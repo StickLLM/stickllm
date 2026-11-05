@@ -337,6 +337,63 @@ def vault_open() -> bool:
     return is_mounted(VAULT_MNT)
 
 
+DATA_MNT_ADDONS = Path(os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data"))
+HOST_MNT_ADDONS = Path(os.environ.get("STICKLLM_HOST_MNT", "/mnt/stickllm-host"))
+RUN_ADDONS = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
+
+
+def _vault_configured() -> bool:
+    if (DATA_MNT_ADDONS / "stickllm-vault-location.json").is_file():
+        return True
+    try:
+        doc = json.loads((RUN_ADDONS / "vault.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(doc, dict) and bool(doc.get("blob") or doc.get("root"))
+
+
+def _host_drive_mounted(mounts_text: str | None = None) -> bool:
+    if mounts_text is None:
+        try:
+            mounts_text = Path("/proc/self/mounts").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            mounts_text = ""
+    root = str(HOST_MNT_ADDONS) + "/"
+    return any(len(p) >= 2 and p[1].startswith(root)
+               for p in (ln.split() for ln in mounts_text.splitlines()))
+
+
+def vault_needed_message(mounts_text: str | None = None, *, free_gb: float | None = None) -> str:
+    """0.6.1 (item 28): say why an add-on can't install and what to do.
+
+    Add-on and Agent Zero data live only in the encrypted vault. On a
+    single-drive machine (no host SSD, no vault) the vault can now be created
+    as a file on this drive's STICKLLM-DATA partition (item 12)."""
+    if _vault_configured():
+        return VAULT_LOCKED_MESSAGE
+    if _host_drive_mounted(mounts_text):
+        return ("No vault yet. Apps keep their data in the encrypted vault: create one in "
+                "Settings → Storage → Create vault (a file on your drive; nothing is formatted).")
+    data_ok = is_mounted(DATA_MNT_ADDONS) if mounts_text is None else any(
+        len(p) >= 2 and p[1] == str(DATA_MNT_ADDONS) for p in (ln.split() for ln in mounts_text.splitlines()))
+    if data_ok:
+        if free_gb is None:
+            try:
+                st = os.statvfs(DATA_MNT_ADDONS)
+                free_gb = st.f_bavail * st.f_frsize / 1e9
+            except OSError:
+                free_gb = 0.0
+        if free_gb >= 2:
+            return ("No vault yet and no internal drive found. Apps keep their data in the encrypted "
+                    "vault, which can live on this drive: Settings → Storage → "
+                    f"\"Store vault on this drive\" (STICKLLM-DATA, about {free_gb:.0f} GB free).")
+        return (f"This drive's STICKLLM-DATA partition is full (about {free_gb:.1f} GB free). "
+                "Free some space or plug in a drive with free space, then create the vault there.")
+    return ("No writable space for apps: no internal drive, no vault, and no STICKLLM-DATA "
+            "partition on this drive. Use Settings → Storage → \"Use free space on the stick\", "
+            "or plug in a drive with free space and mount it in Settings → Storage.")
+
+
 def require_vault() -> None:
     if not vault_open():
         raise AddonError("vault_locked", VAULT_LOCKED_MESSAGE, 423)

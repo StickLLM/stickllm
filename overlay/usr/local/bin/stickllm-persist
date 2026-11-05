@@ -20,15 +20,23 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-# Find removable USB disks (exclude loop/ram)
-mapfile -t CANDIDATES < <(lsblk -dn -o NAME,TYPE,RM,SIZE,MODEL | awk '$2=="disk" && $3=="1" {print $1}')
+# Find USB disks: removable flag OR USB transport. 0.6.1 (item 13): many USB
+# HDDs/SSDs and some sticks report RM=0 but TRAN=usb. Internal SATA/NVMe
+# disks (TRAN sata/nvme/ata) are never candidates.
+is_usb_disk() {
+  local d="$1" rm tran
+  rm="$(lsblk -dn -o RM "/dev/$d" 2>/dev/null | tr -d '[:space:]')"
+  tran="$(lsblk -dn -o TRAN "/dev/$d" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$rm" == "1" || "$tran" == "usb" ]]
+}
+mapfile -t CANDIDATES < <(lsblk -dn -o NAME,TYPE | awk '$2=="disk"{print $1}' | while read -r d; do is_usb_disk "$d" && echo "$d"; done)
 
 if [[ ${#CANDIDATES[@]} -eq 0 ]]; then
-  echo "No removable disks found."
+  echo "No USB disks found (removable or USB-attached)."
   exit 1
 fi
 
-echo "Removable disks:"
+echo "USB disks:"
 for d in "${CANDIDATES[@]}"; do
   lsblk -o NAME,SIZE,MODEL,LABEL "/dev/$d"
 done
@@ -41,9 +49,8 @@ if [[ ! -b "/dev/$DISK" ]]; then
   exit 1
 fi
 
-RM="$(lsblk -dn -o RM "/dev/$DISK")"
-if [[ "$RM" != "1" ]]; then
-  echo "Refusing: /dev/$DISK is not marked removable."
+if ! is_usb_disk "$DISK"; then
+  echo "Refusing: /dev/$DISK is neither removable nor USB-attached (internal disks are never used)."
   exit 1
 fi
 

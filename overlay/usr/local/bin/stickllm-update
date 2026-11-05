@@ -1,0 +1,103 @@
+#!/bin/bash
+# stickllm-update — 0.6.1 in-place updater (item 15).
+#
+# Stages a newer StickLLM ISO on this drive's STICKLLM-DATA partition and adds
+# it as an extra boot choice. The original system on the stick is NEVER
+# overwritten, so rollback is always possible:
+#   GRUB "5 Updated system (staged ISO)"  -> /stickllm-update/next.iso
+#   GRUB "6 Previous update (rollback)"   -> /stickllm-update/prev.iso
+#   GRUB "1 Server / Local"               -> the system the stick was flashed with
+# Data (models, vault pointer, settings) stays where it is: nothing is
+# partitioned, formatted or deleted besides the oldest staged ISO.
+#
+# Honest limits (see docs/CHANGELOG): needs a mounted STICKLLM-DATA with room
+# for the ISO; the staged entries are in the UEFI GRUB menu only (BIOS/
+# isolinux boots the flashed system); booting a staged ISO relies on
+# live-boot's findiso= and is not hardware-verified for 0.6.1.
+#
+# Usage: sudo stickllm-update <file.iso|https://…/file.iso> <sha256> [--yes]
+#        stickllm-update --status
+set -euo pipefail
+
+DATA_MNT="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+DIR="$DATA_MNT/stickllm-update"
+STATUS="${STICKLLM_UPDATE_STATUS:-/run/stickllm/update.json}"
+
+die() { echo "stickllm-update: $*" >&2; write_status false "$*"; exit 1; }
+write_status() {
+  mkdir -p "$(dirname "$STATUS")" 2>/dev/null || true
+  python3 - "$STATUS" "$1" "$2" <<'PY' 2>/dev/null || true
+import json, sys, time
+json.dump({"ok": sys.argv[2] == "true", "message": sys.argv[3], "time": int(time.time())},
+          open(sys.argv[1], "w"))
+PY
+}
+
+if [[ "${1:-}" == "--status" ]]; then
+  for f in next prev; do
+    if [[ -f "$DIR/$f.iso" ]]; then
+      echo "$f: $(cat "$DIR/$f.version" 2>/dev/null || echo unknown) $(cat "$DIR/$f.sha256" 2>/dev/null | cut -c1-16)…"
+    else
+      echo "$f: none"
+    fi
+  done
+  exit 0
+fi
+
+SRC="${1:-}"; SUM="${2:-}"; YES="${3:-}"
+[[ -n "$SRC" && -n "$SUM" ]] || die "usage: stickllm-update <file.iso|https-url> <sha256> [--yes]"
+[[ "$(id -u)" -eq 0 ]] || die "run as root (sudo)"
+SUM="$(echo "$SUM" | tr 'A-F' 'a-f' | tr -d '[:space:]')"
+[[ "$SUM" =~ ^[0-9a-f]{64}$ ]] || die "sha256 must be 64 hex characters (copy it from the release page)"
+mountpoint -q "$DATA_MNT" || die "STICKLLM-DATA is not mounted — use Settings → Storage → Use free space on the stick first"
+
+mkdir -p "$DIR"
+TMP="$DIR/incoming.iso.part"
+rm -f "$TMP"
+case "$SRC" in
+  https://*)
+    command -v curl >/dev/null || die "curl missing"
+    echo "Downloading $SRC …"
+    curl -fL --retry 3 -o "$TMP" "$SRC" || { rm -f "$TMP"; die "download failed"; } ;;
+  http://*) die "refusing plain http:// — use https:// or a local file" ;;
+  *)
+    [[ -f "$SRC" ]] || die "file not found: $SRC"
+    need=$(( $(stat -c %s "$SRC") / 1024 + 1024 ))
+    free=$(df -Pk "$DIR" | awk 'NR==2{print $4}')
+    (( free > need )) || die "not enough space on STICKLLM-DATA (need $((need/1024)) MiB)"
+    cp -f "$SRC" "$TMP" ;;
+esac
+
+echo "Checking sha256 …"
+got="$(sha256sum "$TMP" | awk '{print $1}')"
+[[ "$got" == "$SUM" ]] || { rm -f "$TMP"; die "sha256 mismatch (got $got) — file is corrupt or not the release you meant; nothing changed"; }
+
+# Sanity: must be a StickLLM live ISO.
+probe="$(mktemp -d)"
+cleanup() { umount "$probe" 2>/dev/null || true; rmdir "$probe" 2>/dev/null || true; }
+trap cleanup EXIT
+mount -o loop,ro "$TMP" "$probe" 2>/dev/null || { rm -f "$TMP"; die "not a mountable ISO image"; }
+for f in live/vmlinuz live/initrd.img live/filesystem.squashfs; do
+  [[ -f "$probe/$f" ]] || { cleanup; rm -f "$TMP"; die "ISO is missing $f — not a StickLLM live ISO"; }
+done
+ver="$(grep -ho '"version"[^,}]*' "$probe"/stickllm.json "$probe"/live/stickllm.json 2>/dev/null | head -1 | sed 's/.*: *"//;s/"//' || true)"
+cleanup; trap - EXIT
+
+if [[ "$YES" != "--yes" ]]; then
+  read -r -p "Stage StickLLM ${ver:-?} as boot entry 5 (keeps current system + data)? [y/N] " a
+  [[ "$a" =~ ^[yY] ]] || { rm -f "$TMP"; die "cancelled"; }
+fi
+
+# A/B: next -> prev (older prev is replaced), incoming -> next.
+if [[ -f "$DIR/next.iso" ]]; then
+  mv -f "$DIR/next.iso" "$DIR/prev.iso"
+  mv -f "$DIR/next.sha256" "$DIR/prev.sha256" 2>/dev/null || true
+  mv -f "$DIR/next.version" "$DIR/prev.version" 2>/dev/null || true
+fi
+mv -f "$TMP" "$DIR/next.iso"
+echo "$SUM" > "$DIR/next.sha256"
+echo "${ver:-unknown}" > "$DIR/next.version"
+sync
+msg="Staged StickLLM ${ver:-?}. Reboot and pick \"5 Updated system\" (UEFI). Entry 1 still boots the original; entry 6 the previous update."
+echo "$msg"
+write_status true "$msg"

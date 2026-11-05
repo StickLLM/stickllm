@@ -1971,6 +1971,14 @@ def vault_host_mounted() -> bool:
 _LAST_VIEW_REFRESH = [0.0]
 
 
+def vault_needed_message(default: str) -> str:
+    """0.6.1 (item 28): why an add-on / Agent Zero can't install, and what to do."""
+    try:
+        return addons_lib().vault_needed_message() or default
+    except Exception:
+        return default
+
+
 def vault_unlocked() -> bool:
     """True when the vault is mounted here. Heals a missing gateway view (B4)."""
     if _vault_unlocked_here():
@@ -2943,7 +2951,8 @@ class Handler(SimpleHTTPRequestHandler):
         if self._agent_refused():
             return
         if not vault_unlocked():
-            self._json(403, {"ok": False, "error": "Unlock vault to use Agent"})
+            msg = vault_needed_message("Unlock vault to use Agent")
+            self._json(403, {"ok": False, "error": msg, "message": msg, "code": "vault_needed"})
             return
         if not self._install_verified_ok("agent-zero", req if isinstance(req, dict) else {}):
             return
@@ -3190,7 +3199,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             mod = docs_lib()
             if not mod.vault_open():
-                self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
+                self._json(423, {"ok": False, "error": "vault_locked", "message": vault_needed_message(mod.VAULT_LOCKED_MESSAGE)})
                 return
         except Exception:
             self._json(500, {"ok": False, "error": "Office support is not installed."})
@@ -3694,7 +3703,7 @@ class Handler(SimpleHTTPRequestHandler):
             mod = docs_lib()
             if not mod.vault_open():
                 self._json(423, {"ok": False, "installed": False, "error": "vault_locked",
-                                 "message": mod.VAULT_LOCKED_MESSAGE, "deleted": []})
+                                 "message": vault_needed_message(mod.VAULT_LOCKED_MESSAGE), "deleted": []})
                 return
             if not mod.settings_open():
                 self._json(409, {"ok": False, "installed": False, "error": "settings_missing",
@@ -4172,7 +4181,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(404, {"ok": False, "error": "unknown_app"})
             return
         if not mod.vault_open():
-            self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
+            self._json(423, {"ok": False, "error": "vault_locked", "message": vault_needed_message(mod.VAULT_LOCKED_MESSAGE)})
             return
         st = addon_ensure_started(app_id)
         self._json(200, {"ok": True, "id": app_id, "state": st.get("state"), "running": bool(st.get("running")),
@@ -4209,7 +4218,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return
         # A locked vault has no app to open: no URL, no handoff ticket.
         if not mod.vault_open():
-            self._json(423, {"ok": False, "error": "vault_locked", "message": mod.VAULT_LOCKED_MESSAGE})
+            self._json(423, {"ok": False, "error": "vault_locked", "message": vault_needed_message(mod.VAULT_LOCKED_MESSAGE)})
             return
         base = self._addon_public_url(app_id)
         try:
@@ -6199,7 +6208,7 @@ def addon_start(action: str, app_id: str) -> tuple[int, dict]:
     name = mod.app(app_id)["name"]
     if not mod.vault_open():
         return 423, {"ok": False, "installed": False, "error": "vault_locked",
-                     "message": mod.VAULT_LOCKED_MESSAGE, "deleted": []}
+                     "message": vault_needed_message(mod.VAULT_LOCKED_MESSAGE), "deleted": []}
     if action == "install":
         if mod.is_installed(app_id):
             return 200, {"ok": True, "installed": True, "state": "installed",

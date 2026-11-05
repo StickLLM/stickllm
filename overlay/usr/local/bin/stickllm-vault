@@ -240,6 +240,20 @@ is_live_usb_path() {
   return 1
 }
 
+is_stick_data_path() {
+  # True only for a writable folder on the mounted STICKLLM-DATA partition.
+  local p="$1" mnt src label fstype
+  mnt="$(df -P "$p" 2>/dev/null | awk 'NR==2{print $6}')" || return 1
+  [[ "$mnt" == "$DATA_MNT" ]] || return 1
+  src="$(findmnt -n -o SOURCE --target "$mnt" 2>/dev/null || true)"
+  [[ -b "$src" ]] || return 1
+  label="$(lsblk -no LABEL "$src" 2>/dev/null | head -1 || true)"
+  fstype="$(lsblk -no FSTYPE "$src" 2>/dev/null | head -1 || true)"
+  [[ "$label" == "STICKLLM-DATA" ]] || return 1
+  case "$fstype" in ext4|ext3|ext2|xfs|btrfs|f2fs) return 0 ;; esac
+  return 1
+}
+
 fs_looks_ordinary() {
   local fstype="$1"
   case "$fstype" in
@@ -364,7 +378,17 @@ assert_safe_vault_root() {
       die "refusing unrecognized partition table '$pt' — fail-closed, hands off"
   fi
 
-  is_live_usb_path "$probe" && die "refusing StickLLM live USB / STICKLLM-DATA as SSD vault target — choose a folder on the host SSD (already mounted)"
+  if is_live_usb_path "$probe"; then
+    # 0.6.1 (item 12): on a machine with no internal drive the vault may be a
+    # LUKS file on this drive's STICKLLM-DATA partition, after the user
+    # confirmed "No internal drive found – store vault on this drive?". Never
+    # the live medium itself, never a raw device, never partitioning.
+    if [[ "${STICKLLM_VAULT_ALLOW_STICK_DATA:-}" == "STICK-DATA" ]] && is_stick_data_path "$probe"; then
+      echo "NOTE: vault on STICKLLM-DATA (user confirmed: no internal drive)" >&2
+    else
+      die "refusing StickLLM live USB / STICKLLM-DATA as SSD vault target — choose a folder on the host SSD (already mounted), or confirm \"Store vault on this drive\" when no internal drive exists"
+    fi
+  fi
 
   # Writable check
   local testdir="$probe"
@@ -2490,6 +2514,15 @@ cmd_use() {
   need_root
   local raw="${1:-}"
   [[ -n "$raw" ]] || die "usage: use <directory-or-stickllm-vault.img>"
+
+  # 0.6.1 (item 12): re-attaching an EXISTING vault blob that lives on
+  # STICKLLM-DATA (created after the "store vault on this drive" confirm) is
+  # allowed without asking again; nothing is created or formatted here.
+  local _sd="$raw"
+  [[ -f "$_sd" ]] || _sd="$raw/$BLOB_NAME"
+  if [[ -f "$_sd" ]] && is_stick_data_path "$(dirname "$_sd")"; then
+    export STICKLLM_VAULT_ALLOW_STICK_DATA=STICK-DATA
+  fi
 
   local root="" blob=""
   if [[ -f "$raw" ]]; then

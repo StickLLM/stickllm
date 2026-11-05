@@ -4146,6 +4146,62 @@ def delete_model(model_id: str) -> dict:
     }
 
 
+def usb_claim_outcome(r: dict) -> dict:
+    """0.6.1 (item 14): --auto always exits 0 (boot must not show FAILED), so
+    read storage.json and say what happened, or why nothing happened."""
+    st = r.get("storage") if isinstance(r.get("storage"), dict) else {}
+    out = (r.get("stdout") or "")
+    note = str(st.get("note") or "").strip()
+    if st.get("mounted"):
+        free = st.get("free_gb")
+        made = "Creating partition" in out or "created" in note.lower()
+        r["ok"] = True
+        r["message"] = (("Made a new STICKLLM-DATA area" if made else "STICKLLM-DATA is already set up")
+                        + f" at {st.get('mount') or '/mnt/stickllm-data'}"
+                        + (f" ({free} GiB free)." if free not in (None, "") else "."))
+        return r
+    why = note or (r.get("stderr") or "").strip()[-300:] or "the claim helper did not report a reason"
+    hint = "Nothing was changed."
+    low = why.lower()
+    if "free space" in low or "need" in low:
+        hint = "There is not enough unpartitioned space on this drive (need at least 1 GiB). Reflash with a larger stick, or use a folder on a host drive instead."
+    elif "identify" in low:
+        hint = "StickLLM could not tell which disk it booted from, so it will not partition anything. Use a host drive folder, or boot from the StickLLM stick directly."
+    elif "isohybrid" in low or "partition" in low:
+        hint = "The drive's partition table could not take a new partition while running. Reboot to the Terminal entry and run: sudo stickllm-usb-claim"
+    r["ok"] = False
+    r["error"] = f"Couldn't use free stick space: {why}. {hint}"
+    r["message"] = r["error"]
+    return r
+
+
+def stick_data_vault_option(devices: dict | None = None) -> dict | None:
+    """0.6.1 (item 12): offer STICKLLM-DATA for the vault when no internal
+    drive is selectable. None when DATA is not mounted or has no room."""
+    try:
+        if not os.path.ismount(str(MNT)):
+            return None
+        st = os.statvfs(str(MNT))
+        free_gb = round(st.f_bavail * st.f_frsize / (1024 ** 3), 1)
+    except OSError:
+        return None
+    devices = devices or {}
+    sel = devices.get("selectable")
+    if sel is None:
+        sel = [d for d in (devices.get("devices") or []) if isinstance(d, dict) and d.get("selectable")]
+    host = [d for d in (sel or []) if isinstance(d, dict)
+            and not str(d.get("mount_path") or d.get("path") or "").startswith(str(MNT))]
+    return {
+        "path": str(MNT / "vault"),
+        "free_gb": free_gb,
+        "no_internal_drive": not host,
+        "enough": free_gb >= 2,
+        "warning": "No internal drive found – store vault on this drive? The vault is an "
+                   "encrypted file on this drive's STICKLLM-DATA partition. Reflashing the "
+                   "drive deletes it; keep your recovery phrase.",
+    }
+
+
 def wifi_scan() -> dict:
     """0.6.1: nearby networks for Settings > Network (strongest first, one row per SSID)."""
     r = sh(["nmcli", "-t", "-e", "yes", "-f", "SSID,SIGNAL,SECURITY,IN-USE",
@@ -4672,7 +4728,7 @@ def handle(action: str, params: dict) -> dict:
     if action == "usb_claim":
         r = sh(["/usr/local/bin/stickllm-usb-claim", "--auto", "--yes"], timeout=180)
         r["storage"] = read_json(RUN / "storage.json")
-        return r
+        return usb_claim_outcome(r)
     if action == "model_probe":
         r = sh(["/usr/local/bin/stickllm-model-probe"], timeout=60)
         r["probe"] = read_json(RUN / "model-probe.json")
@@ -4860,6 +4916,7 @@ def vault_action(cmd: str, params: dict) -> dict:
         if data.get("ok") is False and data.get("error") == "list-devices parse failed":
             return data
         data["ok"] = bool(data.get("ok", True))
+        data["stick_data"] = stick_data_vault_option(data)
         return data
     if cmd == "list-dirs":
         path = str(params.get("path") or "").strip()
@@ -5111,6 +5168,12 @@ def vault_action(cmd: str, params: dict) -> dict:
         env = os.environ.copy()
         env["STICKLLM_VAULT_CONFIRM"] = "CREATE-VAULT"
         env["STICKLLM_VAULT_CONFIRM_SAVED"] = "SAVED"
+        # 0.6.1 (item 12): user confirmed "No internal drive found – store
+        # vault on this drive?" (stickllm-vault still checks it is STICKLLM-DATA).
+        if str(params.get("stick_data_confirm") or "") == "STICK-DATA":
+            env["STICKLLM_VAULT_ALLOW_STICK_DATA"] = "STICK-DATA"
+        else:
+            env.pop("STICKLLM_VAULT_ALLOW_STICK_DATA", None)
         env["STICKLLM_VAULT_PASS"] = passcode
         env["STICKLLM_VAULT_PASS2"] = passcode2
         # Sparse logical size may exceed free; UI CREATE-VAULT implies SPACE-OK awareness.

@@ -2523,9 +2523,11 @@ $("#settings").onclick = (e) => { if (e.target.id === "settings") closeSettings(
 let cfCb;
 function confirmBox({ title, text, word, ok = "Delete", extra, cb }) {
   $("#cfTitle").textContent = title; $("#cfText").textContent = text; $("#cfWord").textContent = word;
-  $("#cfOk").textContent = ok; $("#cfOk").disabled = true; $("#cfInput").value = "";
+  // 0.6.1: no `word` = plain notice (no typed confirmation needed).
+  const fld = $("#cfInput").closest(".field"); if (fld) fld.hidden = !word;
+  $("#cfOk").textContent = ok; $("#cfOk").disabled = !!word; $("#cfInput").value = "";
   $("#cfExtra").hidden = !extra; $("#cfExtra").textContent = extra || "";
-  cfCb = cb; $("#confirm").hidden = false; setTimeout(() => $("#cfInput").focus(), 20);
+  cfCb = cb; $("#confirm").hidden = false; setTimeout(() => (word ? $("#cfInput") : $("#cfOk")).focus(), 20);
 }
 $("#cfInput").oninput = () => ($("#cfOk").disabled = $("#cfInput").value.trim() !== $("#cfWord").textContent);
 $("#cfInput").onkeydown = (e) => { if (e.key === "Enter" && !$("#cfOk").disabled) $("#cfOk").click(); };
@@ -3715,6 +3717,7 @@ async function refreshStorage() {
   await refreshDrivesLive();
   await refreshMovableLive();
 }
+let vaultStickData = false;  // 0.6.1: user confirmed "store vault on this drive"
 async function refreshDrivesLive() {
   try {
     const res = await control("vault_devices");
@@ -3726,11 +3729,19 @@ async function refreshDrivesLive() {
     const mountable = Array.isArray(res.mountable) ? res.mountable : [];
     const blocked = Array.isArray(res.blocked_disks) ? res.blocked_disks : [];
     const box = $("#drives");
-    if (!sel.length && !mountable.length && !blocked.length) {
-      box.innerHTML = '<div class="row"><small>No browsable mounts. Mount a clear host volume, or unlock encrypted disks in the host OS.</small></div>';
+    // 0.6.1 (items 12/28): no internal drive -> offer this drive's STICKLLM-DATA.
+    const sd = res.stick_data;
+    const sdHtml = (sd && sd.no_internal_drive)
+      ? `<div class="drive"><div class="dh"><b>This drive (STICKLLM-DATA)</b></div>
+        <small class="mono">${esc(sd.path)}</small>
+        <small>${esc(String(sd.free_gb))} GiB free · ${sd.enough ? "no internal drive found" : "not enough space (need 2 GiB)"}</small>
+        <div><button class="btn sm" data-stickdata="${esc(sd.path)}" type="button" ${sd.enough ? "" : "disabled"}>Store vault on this drive…</button></div></div>`
+      : "";
+    if (!sel.length && !mountable.length && !blocked.length && !sdHtml) {
+      box.innerHTML = '<div class="row"><small>No browsable mounts and no STICKLLM-DATA partition. Use “Use free space on the stick” below, or plug in a drive and mount it.</small></div>';
       return;
     }
-    let html = "";
+    let html = sdHtml;
     for (const d of sel) {
       const path = d.mount_path || d.path || "";
       const free = d.free_gb != null
@@ -3770,6 +3781,20 @@ async function refreshDrivesLive() {
       pickerPurpose = "vault";
       if ($("#fpTitle")) $("#fpTitle").textContent = "Choose folder / vault";
       openLivePicker(el.dataset.path);
+    }));
+    $$("[data-stickdata]").forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation();
+      confirmBox({
+        title: "No internal drive found – store vault on this drive?",
+        text: (sd && sd.warning) || "The vault becomes an encrypted file on this drive's STICKLLM-DATA partition.",
+        word: "STICK-DATA", ok: "Use this drive",
+        cb: () => {
+          vaultStickData = true;
+          $("#vaultPath").value = b.dataset.stickdata;
+          toast("Vault folder set to this drive. Choose a passcode and Create vault.");
+          $("#np1")?.focus();
+        },
+      });
     }));
     $$("[data-mountdev]").forEach((b) => (b.onclick = async (e) => {
       e.stopPropagation();
@@ -4149,8 +4174,16 @@ $("#actClaim").onclick = () => {
     text: "Creates a StickLLM data partition on this StickLLM USB stick only. Your own drives are never partitioned.",
     word: "USE-STICK-SPACE", ok: "Use free space",
     cb: async () => {
-      try { toast("Claiming…"); await control("usb_claim"); toast("Claim finished"); await refreshStorage(); }
-      catch (e) { toast(e.message); }
+      // 0.6.1 (item 14): say what happened or why it could not.
+      try {
+        toast("Setting up stick space…");
+        const res = await control("usb_claim");
+        if (res && res.ok === false) {
+          confirmBox({ title: "Couldn't use free stick space", text: res.error || res.message || "Unknown reason", ok: "OK" });
+        } else toast((res && res.message) || "Stick space ready");
+        await refreshStorage();
+        await refreshDrivesLive().catch(() => {});
+      } catch (e) { confirmBox({ title: "Couldn't use free stick space", text: e.message || String(e), ok: "OK" }); }
     },
   });
 };
@@ -4238,9 +4271,11 @@ $("#createVault").onclick = () => {
     word: "CREATE-VAULT", ok: "Create vault",
     cb: async () => {
       try {
+        const onStickData = vaultStickData && path.startsWith("/mnt/stickllm-data/");
         const res = await control("vault_setup", {
           path, size_gb: size, confirm: "CREATE-VAULT",
           recovery_confirm: "SHOW-ONCE", passcode: p1, passcode2: p2, space_confirm: "SPACE-OK",
+          ...(onStickData ? { stick_data_confirm: "STICK-DATA" } : {}),
         });
         $("#np1").value = $("#np2").value = "";
         if (!res.ok) throw new Error(res.error || res.stderr || "setup failed");
