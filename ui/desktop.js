@@ -897,23 +897,14 @@
     const retry = p.querySelector(".apRetry");
     if (inst) {
       const showInstall = !!ag.needsInstall && !ag.installed;
-      const showOpen = !!ag.installed && !ag.running && !ag.needsInstall;
+      const showOpen = (!!ag.installed || !!ag.preinstalled) && !ag.running && !ag.needsInstall;
       inst.hidden = !(showInstall || showOpen);
       inst.disabled = !!ag.busy;
       inst.classList.toggle("busy", !!ag.busy);
-      if (showOpen) {
-        inst.textContent = ag.busy ? "Starting…" : "Open Agent Zero";
-        inst.onclick = () => {
-          const api2 = appApi();
-          if (api2.ensureAgentZeroStarted) Promise.resolve(api2.ensureAgentZeroStarted()).catch(() => {});
-          openOutside("agent");
-          startChatAgentPoll();
-        };
-      } else {
-        inst.textContent = ag.busy ? "Installing…" : "Install Agent Zero";
-        inst.onclick = null; // rely on buildPanels listener; clear Open override
-        if (ui.agentInstallClick) inst.onclick = ui.agentInstallClick;
-      }
+      inst.dataset.mode = showOpen ? "open" : "install";
+      inst.textContent = showOpen
+        ? (ag.busy ? "Starting…" : "Open Agent Zero")
+        : (ag.busy ? "Installing…" : "Install Agent Zero");
     }
     if (retry) {
       retry.hidden = !ag.installed || !!ag.needsInstall || !!ag.running;
@@ -1045,20 +1036,22 @@
     // Agent window while Agent Zero is not installed.
     const ag = el("div", "deskPanel deskAgentPanel");
     ag.innerHTML = '<div class="apCard"><img src="agent-zero.png?v=desk4" alt=""><h2>Agent</h2><p>Agent Zero works on tasks for you with the local model. The program installs to the StickLLM data drive (/mnt/stickllm-data/stickllm-docker); its chats, memory and settings stay in your encrypted vault.</p><p class="apState" aria-live="polite"></p><div class="apBar" hidden><i></i></div><div class="apActs"><button type="button" class="btn primary apInstall">Install Agent Zero</button><button type="button" class="btn apRetry" hidden>Retry</button><button type="button" class="btn ghost apStore">Open App Store</button></div></div>';
-    const apInstallBtn = ag.querySelector(".apInstall");
-    function agentInstallClick(e) {
+    ag.querySelector(".apInstall").addEventListener("click", (e) => {
       const api = appApi();
       const b = e.currentTarget;
-      if ((b.textContent || "").indexOf("Open Agent") >= 0) return; // Open handler set in renderAgentPanel
+      if (b.dataset.mode === "open") {
+        if (api.ensureAgentZeroStarted) Promise.resolve(api.ensureAgentZeroStarted()).catch(() => {});
+        openOutside("agent");
+        startChatAgentPoll();
+        return;
+      }
       b.disabled = true; b.classList.add("busy"); b.textContent = "Installing…";
       if (api.installAgent) Promise.resolve(api.installAgent()).catch(() => {});
       setTimeout(() => {
         if (wm && wm.has(CHAT) && wm.get(CHAT) && wm.get(CHAT).agentPanel) startChatAgentPoll();
         else if (wm && wm.has("agent")) openAgent();
       }, 1500);
-    }
-    apInstallBtn.addEventListener("click", agentInstallClick);
-    ui.agentInstallClick = agentInstallClick;
+    });
     ag.querySelector(".apRetry").addEventListener("click", (e) => {
       const api = appApi();
       const b = e.currentTarget;
