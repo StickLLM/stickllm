@@ -667,3 +667,9 @@ input.secret { -webkit-text-security: disc; }
 /* 0.5.6: "Vault is on another computer" actions under the unlock form */
 .vaultOther { display: flex; gap: 8px; flex-wrap: wrap; flex-basis: 100%; }
 .vaultOther[hidden] { display: none; }
+
+/* 0.6.1: Settings > Network WiFi scan list */
+.wifiList{margin-top:8px;border:1px solid var(--line);border-radius:var(--r);max-height:240px;overflow:auto}
+.wifiList button{display:flex;width:100%;justify-content:space-between;gap:8px;padding:8px 12px;background:none;border:0;border-bottom:1px solid var(--line2);color:var(--ink);text-align:left;cursor:pointer;font:inherit}
+.wifiList button:hover,.wifiList button:focus-visible{background:var(--bg2)}
+.wifiList .sig{color:var(--muted);font-size:12px;white-space:nowrap}

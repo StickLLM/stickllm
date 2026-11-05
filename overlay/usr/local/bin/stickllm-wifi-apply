@@ -4,6 +4,8 @@ set -euo pipefail
 
 SSID="${1:-}"
 PASS="${2:-}"
+HIDDEN=0
+[[ "${3:-}" == "--hidden" ]] && HIDDEN=1
 if [[ -z "$SSID" ]]; then
   echo "usage: stickllm-wifi-apply <ssid> [password]" >&2
   exit 2
@@ -38,6 +40,8 @@ autoconnect-priority=50
 mode=infrastructure
 ssid=${SSID_E}
 EOF
+  # 0.6.1: hidden SSID (not broadcast): NM must probe for it by name.
+  [[ "$HIDDEN" == 1 ]] && echo "hidden=true"
   if [[ -n "$PASS" ]]; then
     cat <<EOF
 
@@ -77,9 +81,9 @@ systemctl start --no-block NetworkManager.service 2>/dev/null || true
 nmcli connection reload >/dev/null 2>&1 || true
 if ! nmcli connection up "$CONN_NAME" >/dev/null 2>&1; then
   if [[ -n "$PASS" ]]; then
-    nmcli device wifi connect "$SSID" password "$PASS" >/dev/null 2>&1 || true
+    nmcli device wifi connect "$SSID" password "$PASS" $([[ "$HIDDEN" == 1 ]] && echo "hidden yes") >/dev/null 2>&1 || true
   else
-    nmcli device wifi connect "$SSID" >/dev/null 2>&1 || true
+    nmcli device wifi connect "$SSID" $([[ "$HIDDEN" == 1 ]] && echo "hidden yes") >/dev/null 2>&1 || true
   fi
 fi
 

@@ -4146,11 +4146,51 @@ def delete_model(model_id: str) -> dict:
     }
 
 
-def wifi_connect(ssid: str, password: str) -> dict:
+def wifi_scan() -> dict:
+    """0.6.1: nearby networks for Settings > Network (strongest first, one row per SSID)."""
+    r = sh(["nmcli", "-t", "-e", "yes", "-f", "SSID,SIGNAL,SECURITY,IN-USE",
+            "device", "wifi", "list", "--rescan", "auto"], timeout=25)
+    if not r.get("ok"):
+        msg = (r.get("stderr") or r.get("error") or "").strip()
+        return {"ok": False, "networks": [],
+                "error": "No WiFi adapter found or WiFi is off." if not msg or "No Wi-Fi device" in msg or "not found" in msg else msg[:200]}
+    return {"ok": True, "networks": parse_wifi_scan(r.get("stdout") or "")}
+
+
+def parse_wifi_scan(text: str) -> list[dict]:
+    best: dict[str, dict] = {}
+    for line in (text or "").splitlines():
+        # nmcli -t -e yes escapes ':' inside fields as '\:'.
+        parts = re.split(r"(?<!\\):", line)
+        if len(parts) < 3:
+            continue
+        ssid = parts[0].replace("\\:", ":").replace("\\\\", "\\").strip()
+        if not ssid:
+            continue  # hidden networks: use "Hidden network" + type the name
+        try:
+            sig = int(parts[1] or 0)
+        except ValueError:
+            sig = 0
+        sec = (parts[2] or "").strip()
+        cur = len(parts) > 3 and parts[3].strip() == "*"
+        row = {"ssid": ssid, "signal": sig, "secure": bool(sec and sec != "--"),
+               "security": sec if sec != "--" else "", "in_use": cur}
+        old = best.get(ssid)
+        if not old or sig > old["signal"] or cur:
+            if old and old.get("in_use"):
+                row["in_use"] = True
+            best[ssid] = row
+    return sorted(best.values(), key=lambda x: (not x["in_use"], -x["signal"], x["ssid"].lower()))
+
+
+def wifi_connect(ssid: str, password: str, hidden: bool = False) -> dict:
     ssid = (ssid or "").strip()
     if not ssid:
         return {"ok": False, "error": "ssid required"}
-    r = sh(["/usr/local/bin/stickllm-wifi-apply", ssid, password or ""], timeout=120)
+    cmd = ["/usr/local/bin/stickllm-wifi-apply", ssid, password or ""]
+    if hidden:
+        cmd.append("--hidden")
+    r = sh(cmd, timeout=120)
     online = False
     try:
         p = subprocess.run(
@@ -4168,6 +4208,11 @@ def wifi_connect(ssid: str, password: str) -> dict:
     wifi_doc = read_json(RUN / "wifi.json") if (RUN / "wifi.json").is_file() else {"ssid": ssid}
     # wifi.json is key=value; also expose simple fields
     r["wifi"] = {"ssid": ssid, "online": online}
+    # 0.6.1: hand the UI the new address straight away (Settings showed none).
+    try:
+        r["net"] = net_info()
+    except Exception:
+        pass
     if not r.get("ok"):
         r["ok"] = r.get("code", 1) == 0
     return r
@@ -4719,7 +4764,10 @@ def handle(action: str, params: dict) -> dict:
             return {"ok": False, "error": "id required"}
         return delete_model(mid)
     if action == "wifi_connect":
-        return wifi_connect(str(params.get("ssid") or ""), str(params.get("password") or ""))
+        return wifi_connect(str(params.get("ssid") or ""), str(params.get("password") or ""),
+                            bool(params.get("hidden")))
+    if action == "wifi_scan":
+        return wifi_scan()
     if action == "catalog":
         return {"ok": True, "models": enrich_models()}
     if action == "ssd_status":

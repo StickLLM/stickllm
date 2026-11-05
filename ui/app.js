@@ -4793,11 +4793,55 @@ $("#wifiBtn").onclick = async () => {
   if (!ssid) return toast("Enter a network name");
   try {
     toast("Connecting to " + ssid + "…");
-    const res = await control("wifi_connect", { ssid, password });
+    const hidden = !!($("#wifiHidden") && $("#wifiHidden").checked);
+    const res = await control("wifi_connect", { ssid, password, hidden });
     $("#wpass").value = "";
     toast(res.online ? "Online via WiFi" : "WiFi profile saved — waiting for uplink");
     await refreshStatus();
+    // 0.6.1: show the new address right away, then follow DHCP for ~20 s.
+    await refreshNetwork().catch(() => {});
+    for (let i = 0; i < 10 && !(res.net && res.net.ip); i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const j = await control("net_info").catch(() => null);
+      if (j && j.net && j.net.ip) { res.net = j.net; await refreshNetwork().catch(() => {}); break; }
+    }
   } catch (e) { $("#wpass").value = ""; toast(e.message); }
+};
+// 0.6.1: WiFi scan list (tap a network to fill the name).
+if ($("#wifiScan")) $("#wifiScan").onclick = async () => {
+  const list = $("#wifiList");
+  try {
+    toast("Scanning for WiFi…");
+    const j = await control("wifi_scan");
+    list.textContent = "";
+    list.hidden = false;
+    const nets = (j && j.networks) || [];
+    if (!j.ok || !nets.length) {
+      const p = document.createElement("p");
+      p.className = "muted small";
+      p.style.padding = "8px 12px";
+      p.textContent = j.ok ? "No networks found. For a hidden network tick “Hidden network” and type its name." : (j.error || "Scan failed");
+      list.appendChild(p);
+      return;
+    }
+    nets.forEach((n) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "option");
+      const name = document.createElement("span");
+      name.textContent = n.ssid + (n.in_use ? " (connected)" : "");
+      const sig = document.createElement("span");
+      sig.className = "sig";
+      sig.textContent = (n.secure ? "🔒 " : "") + n.signal + "%";
+      b.append(name, sig);
+      b.onclick = () => {
+        $("#ssid").value = n.ssid;
+        if ($("#wifiHidden")) $("#wifiHidden").checked = false;
+        (n.secure ? $("#wpass") : $("#wifiBtn")).focus();
+      };
+      list.appendChild(b);
+    });
+  } catch (e) { toast(e.message); }
 };
 
 async function refreshStatus() {
