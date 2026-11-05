@@ -76,17 +76,17 @@ def vault_host_root() -> str:
     """Vault setup folder on the host SSD (may hold stickllm-vault.img)."""
     st = read_json(RUN / "vault.json")
     root = str(st.get("root") or "").strip()
-    if root and not root.startswith("/dev/") and Path(root).is_dir():
+    if root and not root.startswith("/dev/") and _path_is_dir(root):
         return root
     for meta in (Path("/var/lib/stickllm/vault-meta"), MNT / "vault-meta"):
         root_file = meta / "root"
-        if not root_file.is_file():
+        if not _path_is_file(root_file):
             continue
         try:
             root = root_file.read_text(encoding="utf-8").strip()
         except Exception:
             continue
-        if root and not root.startswith("/dev/") and Path(root).is_dir():
+        if root and not root.startswith("/dev/") and _path_is_dir(root):
             return root
     return ""
 
@@ -99,14 +99,14 @@ def vault_clear_models_dirs() -> list[Path]:
     rp = Path(root)
     dirs: list[Path] = []
     # User often chooses …/models as vault root; GGUFs sit beside the blob.
-    if rp.is_dir():
+    if _path_is_dir(rp):
         dirs.append(rp)
     nested = rp / "models"
-    if nested.is_dir() and nested not in dirs:
+    if _path_is_dir(nested) and nested not in dirs:
         dirs.append(nested)
     # Common host library beside …/home/<user>/models (list/load only).
     sibling_lm = rp.parent / ".lmstudio" / "models"
-    if sibling_lm.is_dir() and sibling_lm not in dirs:
+    if _path_is_dir(sibling_lm) and sibling_lm not in dirs:
         dirs.append(sibling_lm)
     return dirs
 
@@ -135,7 +135,7 @@ def get_preferred_models_dir() -> Path | None:
     """User-selected models folder (Models › Change…), if still valid."""
     doc = read_json(MODELS_DIR_PATH)
     p = _safe_models_dir(str(doc.get("path") or ""))
-    if p is not None and p.is_dir():
+    if p is not None and _path_is_dir(p):
         return p
     return None
 
@@ -149,7 +149,7 @@ def set_preferred_models_dir(path: str) -> dict:
         p.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         return {"ok": False, "error": f"cannot create folder: {e}"}
-    if not p.is_dir():
+    if not _path_is_dir(p):
         return {"ok": False, "error": "path is not a directory"}
     RUN.mkdir(parents=True, exist_ok=True)
     doc = {"ok": True, "path": str(p), "updated": int(time.time())}
@@ -163,7 +163,7 @@ def get_discovered_model_dirs() -> list[Path]:
     out: list[Path] = []
     for raw in doc.get("dirs") or []:
         p = _safe_models_dir(str(raw))
-        if p is not None and p.is_dir() and p not in out:
+        if p is not None and _path_is_dir(p) and p not in out:
             out.append(p)
     return out
 
@@ -176,7 +176,7 @@ def remember_discovered_models(hits: list) -> list[str]:
             continue
         raw = str(h.get("path") or h.get("dir") or "").strip()
         p = _safe_models_dir(raw)
-        if p is None or not p.is_dir():
+        if p is None or not _path_is_dir(p):
             continue
         existing[str(p)] = p
     dirs = sorted(existing.values(), key=lambda p: str(p))
@@ -190,23 +190,84 @@ def remember_discovered_models(hits: list) -> list[str]:
     return [str(p) for p in dirs]
 
 
-def vault_download_models_dir() -> Path | None:
-    """Where catalog downloads land (user pick only → vault SSD → USB DATA).
+def _free_bytes(path: Path) -> int:
+    try:
+        target = path if _path_is_dir(path) else path.parent
+        st = os.statvfs(str(target))
+        return int(st.f_bavail) * int(st.f_frsize)
+    except OSError:
+        return 0
 
-    Discovered Search-for-models roots are never used as download destinations.
+
+def _host_ssd_models_candidates() -> list[Path]:
+    """Host SSD (or large non-stick) models folders suitable for downloads."""
+    out: list[Path] = []
+    for d in get_discovered_model_dirs():
+        s = str(d)
+        if s.startswith(str(MNT)):
+            continue
+        if s.startswith("/mnt/stickllm-settings") or s.startswith("/var/lib/stickllm"):
+            continue
+        if _path_is_dir(d) and d not in out:
+            out.append(d)
+    # Common layout under stickllm-host mounts: <mount>/models or <mount>/home/.../models
+    host = Path("/mnt/stickllm-host")
+    if _path_is_dir(host):
+        try:
+            for ent in host.iterdir():
+                if not ent.is_dir():
+                    continue
+                for cand in (ent / "models", ent / "stickllm-models"):
+                    if _path_is_dir(cand) and cand not in out:
+                        out.append(cand)
+                # offer to create <mount>/models when mount is writable and large
+                try:
+                    if _free_bytes(ent) > 20 * (1024**3):
+                        cand = ent / "models"
+                        if cand not in out:
+                            out.append(cand)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+    return out
+
+
+def vault_download_models_dir() -> Path | None:
+    """Where catalog downloads land.
+
+    0.6.3: prefer the user pick; else the host SSD models folder with the most
+    free space; else vault/models; else STICKLLM-DATA/models. Discovered roots
+    on the stick stay load-only unless chosen.
     """
     preferred = get_preferred_models_dir()
     if preferred is not None:
         return preferred
+    cands: list[Path] = []
+    for d in _host_ssd_models_candidates():
+        cands.append(d)
     root = vault_host_root()
-    if not root:
-        return None
-    rp = Path(root)
-    # Prefer the folder they chose when it is already a models directory.
-    if rp.is_dir() and rp.name.lower() == "models":
-        return rp
-    nested = rp / "models"
-    return nested
+    if root:
+        rp = Path(root)
+        if _path_is_dir(rp) and rp.name.lower() == "models":
+            cands.append(rp)
+        else:
+            cands.append(rp / "models")
+    if _path_is_dir(MNT):
+        cands.append(MNT / "models")
+    best: Path | None = None
+    best_free = -1
+    for d in cands:
+        # Skip stick DATA when a host candidate has more free space
+        free = _free_bytes(d if _path_is_dir(d) else (d.parent if d.parent.as_posix() != "." else d))
+        # Prefer non-stick when free is close
+        score = free
+        if str(d).startswith(str(MNT)):
+            score -= 1  # tiny tie-break against stick
+        if score > best_free:
+            best_free = score
+            best = d
+    return best
 
 
 def sh(cmd: list[str], timeout: int = 600) -> dict:
@@ -275,6 +336,13 @@ def _path_is_dir(path) -> bool:
 def _path_exists(path) -> bool:
     try:
         return Path(path).exists()
+    except OSError:
+        return False
+
+
+def _path_is_file(path) -> bool:
+    try:
+        return Path(path).is_file()
     except OSError:
         return False
 
@@ -420,6 +488,29 @@ def find_file(name: str) -> Path | None:
     return None
 
 
+
+def classify_gguf_loadability(name: str, size_gb: float, arch: str = "") -> dict:
+    """0.6.3: flag files that cannot usefully load on this StickLLM build."""
+    low = (name or "").lower()
+    reasons = []
+    if size_gb > 0 and size_gb < 0.1:
+        reasons.append("tiny file (<0.1 GB)")
+    if any(x in low for x in ("vocab", "tokenizer", "mmproj")) and not low.endswith(".gguf"):
+        reasons.append("not a loadable model weights file")
+    if "vocab" in low and "gguf" in low and size_gb < 1.0:
+        reasons.append("vocab / tokenizer GGUF")
+    if re.search(r"(^|[^a-z])(mtp|nextn|expert)([^a-z]|$)", low) or "qwen4exp" in low:
+        reasons.append("MTP / expert shard")
+    if arch and EXPERIMENTAL_ARCH_RE.search(arch):
+        reasons.append(f"unsupported architecture ({arch})")
+    if "deepseek" in low and "flash" in low and ("v4" in low or "4.1" in low):
+        reasons.append("unsupported DeepSeek Flash variant")
+    return {
+        "cant_load": bool(reasons),
+        "cant_load_reason": "; ".join(reasons),
+    }
+
+
 def discover_local_ggufs() -> list[dict]:
     """Surface on-disk GGUFs not already represented by catalog filenames.
 
@@ -444,7 +535,7 @@ def discover_local_ggufs() -> list[dict]:
             allow.add(pref)
         allow.update(get_discovered_model_dirs())
         data = MNT / "models"
-        if data.is_dir():
+        if _path_is_dir(data):
             allow.add(data)
         roots = [d for d in roots if d in allow]
         if not roots:
@@ -3084,7 +3175,16 @@ def _enqueue_download(params: dict) -> dict:
             items = _order_queue(items)
             err = _space_error(items)
             if err:
-                return {"ok": False, "error": err, "queue": _public_queue(items)}
+                existing["state"] = "failed"
+                existing["error"] = err
+                write_download_sidecar(existing)
+                _queue_save(items)
+                return {
+                    "ok": False,
+                    "error": err,
+                    "queued": True,
+                    "queue": _public_queue(items),
+                }
             write_download_sidecar(existing)
             _queue_save(items)
             pumped = _pump_download_queue()
@@ -3116,7 +3216,21 @@ def _enqueue_download(params: dict) -> dict:
     trial = items + [job]
     err = _space_error(trial)
     if err:
-        return {"ok": False, "error": err, "queue": _public_queue(items)}
+        # 0.6.3: keep the item visible with the reason (do not drop silently).
+        job["state"] = "failed"
+        job["error"] = err
+        write_download_sidecar(job)
+        items.append(job)
+        items = _order_queue(items)
+        _queue_save(items)
+        return {
+            "ok": False,
+            "error": err,
+            "queued": True,
+            "note": "Queued with an error — free space or change the models folder.",
+            "download_dir": job.get("dest") or "",
+            "queue": _public_queue(items),
+        }
     write_download_sidecar(job)
     items.append(job)
     items = _order_queue(items)
@@ -3397,16 +3511,22 @@ def _queue_remove(mid: str) -> dict:
 
 
 def queue_stop(mid: str) -> dict:
+    if not str(mid or "").strip():
+        return {"ok": False, "error": "id required"}
     with QUEUE_LOCK:
         return _queue_stop(mid)
 
 
 def queue_start(mid: str) -> dict:
+    if not str(mid or "").strip():
+        return {"ok": False, "error": "id required"}
     with QUEUE_LOCK:
         return _queue_start(mid)
 
 
 def queue_remove(mid: str) -> dict:
+    if not str(mid or "").strip():
+        return {"ok": False, "error": "id required"}
     with QUEUE_LOCK:
         return _queue_remove(mid)
 
@@ -3639,6 +3759,64 @@ def _is_baked_alias(base: str) -> bool:
     return base in (BAKED_3B.name.lower(), BAKED_7B.name.lower()) or "qwen2.5-7b-instruct-q5_k_m" in base
 
 
+
+# 0.6.3: System monitor must not wait on a full enrich every poll.
+_STATUS_ENRICH_TTL = 12.0
+_status_enrich_lock = threading.Lock()
+_status_enrich_cache: dict = {"t": 0.0, "vram": None, "models": []}
+_status_online_cache: dict = {"t": 0.0, "online": False}
+_status_vault_cache: dict = {"t": 0.0, "vault": {}}
+
+
+def enrich_models_cached(vram_gb: float | None = None, *, force: bool = False) -> list[dict]:
+    now = time.monotonic()
+    with _status_enrich_lock:
+        hit = _status_enrich_cache
+        if (
+            not force
+            and hit["models"]
+            and hit["vram"] == vram_gb
+            and now - float(hit["t"]) < _STATUS_ENRICH_TTL
+        ):
+            return list(hit["models"])
+        models = enrich_models(vram_gb)
+        _status_enrich_cache["t"] = time.monotonic()
+        _status_enrich_cache["vram"] = vram_gb
+        _status_enrich_cache["models"] = list(models)
+        return list(models)
+
+
+def _online_cached(force: bool = False) -> bool:
+    now = time.monotonic()
+    if not force and now - float(_status_online_cache["t"]) < 15.0:
+        return bool(_status_online_cache["online"])
+    online = False
+    try:
+        p = subprocess.run(
+            [
+                "curl", "-fsS", "--max-time", "2", "-o", "/dev/null",
+                "https://connectivitycheck.gstatic.com/generate_204",
+            ],
+            capture_output=True, timeout=4, check=False,
+        )
+        online = p.returncode == 0
+    except Exception:
+        online = False
+    _status_online_cache["t"] = time.monotonic()
+    _status_online_cache["online"] = online
+    return online
+
+
+def _vault_status_cached(force: bool = False) -> dict:
+    now = time.monotonic()
+    if not force and now - float(_status_vault_cache["t"]) < 8.0 and _status_vault_cache["vault"]:
+        return dict(_status_vault_cache["vault"])
+    vault = vault_action("status", {})
+    _status_vault_cache["t"] = time.monotonic()
+    _status_vault_cache["vault"] = dict(vault or {})
+    return dict(vault or {})
+
+
 def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None) -> list[dict]:
     if vram_gb is None:
         vram_gb = detect_vram_gb()
@@ -3774,6 +3952,14 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
             "ram_warning": ram_warning,
             "arch": str(meta.get("general.architecture") or ""),
             "arch_warning": gguf_arch_warning(str(meta.get("general.architecture") or "")),
+            **(lambda _cl: {
+                "cant_load": bool(_cl.get("cant_load")),
+                "cant_load_reason": str(_cl.get("cant_load_reason") or ""),
+            })(classify_gguf_loadability(
+                str(m.get("name") or m.get("id") or first or ""),
+                float(size_gb or 0),
+                str(meta.get("general.architecture") or ""),
+            )),
             "path": first,
             "vram_gb": round(vram_gb, 1),
             "ram_gb": round(ram_gb, 1),
@@ -4788,35 +4974,198 @@ _GGUF_INVALIDATE_ACTIONS = {
 }
 
 
+
+def list_partial_downloads() -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    roots = []
+    d = vault_download_models_dir()
+    if d is not None:
+        roots.append(d)
+    for r in model_dirs():
+        if r not in roots:
+            roots.append(r)
+    for root in roots:
+        try:
+            if not _path_is_dir(root):
+                continue
+            for p in root.glob("*.partial"):
+                key = str(p)
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    sz = p.stat().st_size
+                except OSError:
+                    sz = 0
+                out.append({
+                    "path": str(p),
+                    "name": p.name,
+                    "bytes": sz,
+                    "size_gb": round(sz / (1024**3), 2),
+                })
+        except OSError:
+            continue
+    out.sort(key=lambda x: -int(x.get("bytes") or 0))
+    return out
+
+
+def delete_partial_download(path: str) -> dict:
+    raw = str(path or "").strip()
+    if not raw or ".." in raw or not raw.endswith(".partial"):
+        return {"ok": False, "error": "invalid partial path"}
+    p = Path(raw)
+    allowed = False
+    for root in model_dirs() + ([vault_download_models_dir()] if vault_download_models_dir() else []):
+        if root is None:
+            continue
+        try:
+            if str(p.resolve()).startswith(str(Path(root).resolve())):
+                allowed = True
+                break
+        except OSError:
+            if str(p).startswith(str(root)):
+                allowed = True
+                break
+    if not allowed:
+        return {"ok": False, "error": "partial is not under a models folder"}
+    try:
+        p.unlink()
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "note": f"Removed {p.name}", "partials": list_partial_downloads()}
+
+
+
+def list_storage_targets() -> dict:
+    """0.6.3: drives for the setup wizard (mounted + unmounted internal disks)."""
+    drives = []
+    seen = set()
+    # Stick DATA first-class
+    if _path_is_dir(MNT):
+        drives.append({
+            "id": "stick-data",
+            "label": "StickLLM stick",
+            "path": str(MNT),
+            "kind": "stick",
+            "mounted": True,
+            "free_gb": round(_free_bytes(MNT) / (1024**3), 1),
+            "writable": os.access(str(MNT), os.W_OK),
+            "suggested_vault": str(MNT / "vault"),
+            "suggested_models": str(MNT / "models"),
+            "suggested_docker": str(MNT / "stickllm-docker"),
+        })
+        seen.add(str(MNT))
+    # Mounted host paths
+    host = Path("/mnt/stickllm-host")
+    if _path_is_dir(host):
+        try:
+            for ent in sorted(host.iterdir()):
+                if not ent.is_dir():
+                    continue
+                p = str(ent)
+                if p in seen:
+                    continue
+                seen.add(p)
+                drives.append({
+                    "id": f"host:{ent.name}",
+                    "label": ent.name,
+                    "path": p,
+                    "kind": "ssd",
+                    "mounted": True,
+                    "free_gb": round(_free_bytes(ent) / (1024**3), 1),
+                    "writable": os.access(p, os.W_OK),
+                    "suggested_vault": str(ent / "vault"),
+                    "suggested_models": str(ent / "models"),
+                    "suggested_docker": str(ent / "stickllm-docker"),
+                })
+        except OSError:
+            pass
+    # Unmounted internal block devices (never format) — offer mount point
+    unmounted = []
+    try:
+        p = subprocess.run(
+            ["lsblk", "-J", "-o", "NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT,RM,HOTPLUG,MODEL,SERIAL,PKNAME"],
+            capture_output=True, text=True, timeout=8, check=False,
+        )
+        doc = json.loads(p.stdout or "{}")
+    except Exception:
+        doc = {}
+    def walk(nodes, parent_rm=False):
+        for n in nodes or []:
+            rm = bool(n.get("rm")) or bool(n.get("hotplug")) or parent_rm
+            kids = n.get("children") or []
+            if n.get("type") == "part" and not n.get("mountpoint") and n.get("fstype") in ("ext4", "xfs", "btrfs", "ntfs", "exfat", "vfat"):
+                if not rm and n.get("fstype") not in ("crypto_LUKS",):
+                    name = str(n.get("name") or "")
+                    unmounted.append({
+                        "id": f"blk:{name}",
+                        "label": f"{n.get('model') or parent_model or name} ({n.get('size') or '?'})",
+                        "device": f"/dev/{name}",
+                        "fstype": n.get("fstype"),
+                        "kind": "ssd_unmounted",
+                        "mounted": False,
+                        "free_gb": None,
+                        "suggested_mount": f"/mnt/stickllm-host/{name}",
+                    })
+            walk(kids, rm)
+    parent_model = ""
+    for disk in doc.get("blockdevices") or []:
+        parent_model = str(disk.get("model") or disk.get("name") or "")
+        walk([disk], bool(disk.get("rm")) or bool(disk.get("hotplug")))
+    return {"ok": True, "drives": drives, "unmounted": unmounted,
+            "active_vault": read_json(RUN / "vault.json"),
+            "preferred_models": str(get_preferred_models_dir() or ""),
+            "download_dir": str(vault_download_models_dir() or "")}
+
+
+def mount_host_partition(device: str, mountpoint: str | None = None) -> dict:
+    """Mount an existing filesystem read-write under /mnt/stickllm-host (never format)."""
+    dev = str(device or "").strip()
+    if not re.fullmatch(r"/dev/[a-zA-Z0-9]+", dev):
+        return {"ok": False, "error": "invalid device"}
+    name = Path(dev).name
+    mp = str(mountpoint or f"/mnt/stickllm-host/{name}").strip()
+    if not mp.startswith("/mnt/stickllm-host/"):
+        return {"ok": False, "error": "mount point must be under /mnt/stickllm-host"}
+    try:
+        Path(mp).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    # Prefer stickllm helper if present
+    helpers = [
+        ["sudo", "-n", "stickllm-mount-host", dev, mp],
+        ["sudo", "-n", "mount", "-o", "rw", dev, mp],
+    ]
+    last = {"ok": False, "error": "no mount helper"}
+    for cmd in helpers:
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+        except Exception as e:
+            last = {"ok": False, "error": str(e)}
+            continue
+        if p.returncode == 0 and os.path.ismount(mp):
+            return {"ok": True, "path": mp, "device": dev, "note": f"Mounted {dev} at {mp}"}
+        last = {"ok": False, "error": (p.stderr or p.stdout or "mount failed")[-400:]}
+    return last
+
+
 def handle(action: str, params: dict) -> dict:
     if action in _GGUF_INVALIDATE_ACTIONS:
         gguf_index_invalidate()
+    if action == "status_light":
+        params = dict(params)
+        params["light"] = True
+        action = "status"
     if action == "status":
+        light = bool(params.get("light") or params.get("cheap") or params.get("monitor"))
         inv = gpu_inventory()
         vram = float(inv.get("vram_gb") or 0)
         ram = detect_ram_gb()
-        models = enrich_models(vram)
-        watchdog = pump_download_queue()
+        models = enrich_models_cached(vram, force=not light)
+        watchdog = pump_download_queue() if not light else {"ok": True, "skipped": True}
         loaded = active_model_identity()
-        online = False
-        try:
-            p = subprocess.run(
-                [
-                    "curl",
-                    "-fsS",
-                    "--max-time",
-                    "2",
-                    "-o",
-                    "/dev/null",
-                    "https://connectivitycheck.gstatic.com/generate_204",
-                ],
-                capture_output=True,
-                timeout=4,
-                check=False,
-            )
-            online = p.returncode == 0
-        except Exception:
-            online = False
+        online = _online_cached(force=not light)
         wifi_ssid = ""
         try:
             for line in (RUN / "wifi.json").read_text(encoding="utf-8").splitlines():
@@ -4824,7 +5173,7 @@ def handle(action: str, params: dict) -> dict:
                     wifi_ssid = line.split("=", 1)[1].strip()
         except Exception:
             pass
-        vault = vault_action("status", {})
+        vault = _vault_status_cached(force=not light)
         dl_dir = vault_download_models_dir()
         if session_mode() != "vault" and dl_dir is None:
             data_models = MNT / "models"
@@ -4905,11 +5254,18 @@ def handle(action: str, params: dict) -> dict:
     if action == "mmproj_download":
         return download_mmproj(params)
     if action == "queue_stop":
-        return queue_stop(str(params.get("id") or ""))
+        r = queue_stop(str(params.get("id") or ""))
+        # Soft error (missing id / not in queue) — keep HTTP 200 so UI Stop works.
+        if not r.get("ok") and "code" not in r:
+            r = {**r, "ok": True, "stopped": False, "error": r.get("error") or "not stopped"}
+        return r
     if action == "queue_start":
         return queue_start(str(params.get("id") or ""))
     if action == "queue_remove":
-        return queue_remove(str(params.get("id") or ""))
+        r = queue_remove(str(params.get("id") or ""))
+        if not r.get("ok") and "code" not in r:
+            r = {**r, "ok": True, "removed": False, "error": r.get("error") or "not removed"}
+        return r
     if action == "set_hf_token":
         return write_hf_token(str(params.get("token") or ""))
     if action == "model_activate":
@@ -4946,6 +5302,14 @@ def handle(action: str, params: dict) -> dict:
         return appagent_set(True, autoload=bool(params.get("autoload")))
     if action == "net_info":
         return {"ok": True, "net": net_info()}
+    if action == "storage_targets":
+        return list_storage_targets()
+    if action == "mount_host_partition":
+        return mount_host_partition(str(params.get("device") or ""), str(params.get("path") or "") or None)
+    if action == "list_partials":
+        return {"ok": True, "partials": list_partial_downloads()}
+    if action == "delete_partial":
+        return delete_partial_download(str(params.get("path") or ""))
     if action == "system_info":
         inv = gpu_inventory()
         return {

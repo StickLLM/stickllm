@@ -503,6 +503,25 @@ def docker_drive_pref() -> str:
     return value if value in ("usb", "ssd", "auto") else "auto"
 
 
+
+def docker_root_or_explain(**kwargs) -> tuple[Path | None, str]:
+    """0.6.3: pick docker data-root or a clear free-space / mount error."""
+    root = choose_docker_root(**kwargs)
+    if root is None:
+        return None, "Mount a drive for Agent Zero (host SSD or the StickLLM stick DATA partition)."
+    parent = root.parent if root.name == DOCKER_DIR_NAME else root
+    free = free_bytes(parent)
+    # Bundle + unpack headroom (~8 GiB min)
+    need = 8 * 1024**3
+    if free is not None and free < need:
+        gb = round(free / (1024**3), 1)
+        return None, (
+            f"Not enough free space for Agent Zero at {root} "
+            f"({gb} GB free; need about 8 GB). Free space or pick another drive in Setup."
+        )
+    return root, ""
+
+
 def choose_docker_root(
     *,
     mounts_text: str | None = None,
@@ -516,6 +535,8 @@ def choose_docker_root(
     data-root that already holds images is kept in "auto", so 0.5.x images
     are not stranded. Otherwise "auto" prefers the stick when it has room,
     so the bundled image loads offline with no host SSD at all.
+
+    0.6.3 auto prefers a host SSD when one is mounted and has room.
     """
     if use_env and os.environ.get("STICKLLM_DOCKER_DIR", "").strip():
         return docker_data_root()
@@ -526,7 +547,10 @@ def choose_docker_root(
         return ssd
     if pref == "usb" and usb is not None:
         return usb
+    # 0.6.3: prefer host SSD when present (and with room); stick remains fine alone.
     if ssd is not None and (ssd / "image").is_dir():
+        return ssd
+    if ssd is not None and pull_allowed(free_bytes(ssd.parent if ssd.name == DOCKER_DIR_NAME else ssd)):
         return ssd
     if usb is not None and ((usb / "image").is_dir() or pull_allowed(free_bytes(DATA_MNT))):
         return usb
@@ -3871,9 +3895,9 @@ def main(argv: list[str]) -> int:
     if cmd == "settings-mounted":
         return 0 if settings_mounted() else 3
     if cmd == "docker-dir":
-        path = choose_docker_root()
+        path, err = docker_root_or_explain()
         if path is None:
-            print(SSD_MISSING, file=sys.stderr)
+            print(err or SSD_MISSING, file=sys.stderr)
             return 4
         print(path)
         return 0
