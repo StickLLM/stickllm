@@ -10,8 +10,10 @@ Type=simple
 ExecCondition=/usr/local/bin/stickllm-agent image-ready
 ExecStart=/usr/local/bin/stickllm-agent run
 ExecStop=/usr/local/bin/stickllm-agent stop
-Restart=on-failure
+Restart=always
 RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=5
 # Host mount namespace so the vault, settings, and host SSD mounts are visible.
 # Docker data-root is a folder on the host SSD. The daemon is not started by docker.service.
 

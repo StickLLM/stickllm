@@ -3146,9 +3146,11 @@ def status_document(
         and state not in ("installing", "error", "starting", "running")
     )
     if state == "needs_install" and preinstalled:
-        message = "Starting Agent Zero..."
-        state = "starting"
+        # Seed present but container not up: honest idle state (not fake starting).
+        message = "Agent Zero is installed — open or start Agent"
+        state = "stopped"
         needs_install = False
+        image_present = True
     return {
         "ok": True,
         "state": state,

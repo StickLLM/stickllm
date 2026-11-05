@@ -28,9 +28,14 @@ DOCKER_DIR=""
 
 # Attach /opt/stickllm/docker layer diffs (RO) at the writable data-root.
 a0_ensure_seed() {
+  # Keep image_present when OS seed is the installed graph (a0run).
   "$PYBIN" "$LIB" write-status --state starting --phase preparing --progress 5 \
-    --message "Starting Agent Zero…" --image_present false 2>/dev/null || true
-  "$PYBIN" "$LIB" ensure-seeded >/tmp/stickllm-a0-ensure.json 2>/dev/null || true
+    --message "Starting Agent Zero…" 2>/dev/null || true
+  if "$PYBIN" "$LIB" ensure-seeded >/tmp/stickllm-a0-ensure.json 2>/dev/null; then
+    "$PYBIN" "$LIB" write-status --image_present true --low_space false 2>/dev/null || true
+  elif [[ -f /opt/stickllm/docker/stickllm-docker.json || -f /opt/stickllm/docker/stickllm-seed.json ]]; then
+    "$PYBIN" "$LIB" write-status --image_present true --low_space false 2>/dev/null || true
+  fi
 }
 
 if [[ -z "${PYBIN}" || ! -f "$LIB" ]]; then
@@ -668,7 +673,10 @@ cmd_run_container() {
     SECCOMP_OPT=(--security-opt "seccomp=/usr/local/share/stickllm/agent-zero-seccomp.json")
   fi
   docker_cli run --name "$CONTAINER" \
-    --log-driver none \
+    --restart unless-stopped \
+    --log-driver local \
+    --log-opt max-size=2m \
+    --log-opt max-file=2 \
     --network "$NETWORK" \
     --add-host llama:host-gateway \
     "${BLOCK_HOST_ARGS[@]}" \
@@ -752,7 +760,11 @@ cmd_stop() {
     return 0
   fi
   release_dockerd agent
-  "$PYBIN" "$LIB" write-status --state stopped >/dev/null || true
+  if [[ -f /opt/stickllm/docker/stickllm-docker.json || -f /opt/stickllm/docker/stickllm-seed.json ]]; then
+    "$PYBIN" "$LIB" write-status --state stopped --image_present true --low_space false >/dev/null || true
+  else
+    "$PYBIN" "$LIB" write-status --state stopped >/dev/null || true
+  fi
 }
 
 cmd_start() {
