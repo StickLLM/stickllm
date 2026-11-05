@@ -1,4 +1,4 @@
-﻿"""0.6.3: one version everywhere."""
+"""0.6.3: one version everywhere."""
 import json
 import re
 from pathlib import Path
@@ -26,8 +26,8 @@ def test_kiosk_fallback_and_build_default_063():
 
 
 def test_changelog_top_is_063():
-    log = (ROOT / "CHANGELOG.md").read_text()
+    log = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     first = re.search(r"^## (\S+)", log, re.M).group(1)
     assert first == "0.6.3"
-    for item in ("setup wizard", "status_light", "gpu-skip", "STICKLLM-DATA"):
+    for item in ("setup wizard", "status_light", "amdgpu", "STICKLLM-DATA"):
         assert item.lower() in log.lower()

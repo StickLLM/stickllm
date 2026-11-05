@@ -547,10 +547,11 @@ def choose_docker_root(
         return ssd
     if pref == "usb" and usb is not None:
         return usb
-    # 0.6.3: prefer host SSD when present (and with room); stick remains fine alone.
+    # 0.6.3: prefer host SSD when its parent is mounted and has room; stick alone still works.
     if ssd is not None and (ssd / "image").is_dir():
         return ssd
-    if ssd is not None and pull_allowed(free_bytes(ssd.parent if ssd.name == DOCKER_DIR_NAME else ssd)):
+    ssd_base = ssd.parent if (ssd is not None and ssd.name == DOCKER_DIR_NAME) else ssd
+    if ssd is not None and ssd_base is not None and ssd_base.is_dir() and pull_allowed(free_bytes(ssd_base)):
         return ssd
     if usb is not None and ((usb / "image").is_dir() or pull_allowed(free_bytes(DATA_MNT))):
         return usb

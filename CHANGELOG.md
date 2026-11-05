@@ -1,4 +1,4 @@
-## 0.6.3 — 2026-11-05
+## 0.6.3 - 2026-11-05
 
 - First-time setup wizard (network, storage, vault, starter model, tour); re-runnable from Settings.
 - STICKLLM-DATA vault first-class; storage_targets + mount unmounted host partitions (never format).

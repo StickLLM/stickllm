@@ -5422,7 +5422,7 @@ async function openSetupWizard(opts) {
       body.innerHTML = `
 <p class="muted">Connect to Wi‑Fi or plug in a cable. You can type a hidden network name.</p>
 <label class="field"><span>Network name (SSID)</span><input id="wizSsid" autocomplete="off"></label>
-<label class="field"><span>Password</span><input id="wizWpass" type="password" autocomplete="off"></label>
+<label class="field"><span>Password</span><input id="wizWpass" type="text" class="secret" autocomplete="off"></label>
 <div id="wizWifiList" class="wifi-list" hidden></div>
 <button type="button" id="wizScan" class="ghost">Scan for networks</button>
 <button type="button" id="wizJoin" class="ghost">Join Wi‑Fi</button>`;
@@ -5494,8 +5494,8 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
       $("#setupTitle").textContent = "Vault passcode";
       body.innerHTML = `
 <p>Encrypt chats and settings. Models can live beside the vault on the same drive.</p>
-<label class="field"><span>Passcode (8+ characters)</span><input id="wizP1" type="password"></label>
-<label class="field"><span>Confirm passcode</span><input id="wizP2" type="password"></label>
+<label class="field"><span>Passcode (8+ characters)</span><input id="wizP1" type="text" class="secret"></label>
+<label class="field"><span>Confirm passcode</span><input id="wizP2" type="text" class="secret"></label>
 <p class="muted small">Vault path: <code id="wizVaultShow"></code></p>`;
       $("#wizVaultShow").textContent = state.vaultPath || "(choose storage first)";
       $("#wizP1").value = state.pass1; $("#wizP2").value = state.pass2;
@@ -5592,7 +5592,8 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
 async function refreshStatus() {
   // A refresh must not paint Loading until this browser is paired.
   if (!browserPaired) return;
-  if (!$("#setupWizard")?.classList.contains("show") && !setupDone() && (isLocalMode || detectLocalHost())) {
+  const stickLocalUi = !!(isLocalMode) || !!(detectLocalHost && detectLocalHost());
+  if (!$("#setupWizard")?.classList.contains("show") && !setupDone() && stickLocalUi) {
     openSetupWizard().catch(() => {});
   }
   const ep = vaultEpoch;

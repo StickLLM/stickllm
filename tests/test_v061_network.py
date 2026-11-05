@@ -55,4 +55,4 @@ def test_ui_refreshes_network_after_connect_and_has_scan():
     assert blk.index("refreshNetwork()") < blk.index('$("#wifiScan")')
     assert 'control("wifi_scan")' in a
     h = (ROOT / "ui/index.html").read_text()
-    assert 'id="wifiHidden"' in h and 'id="wifiScan"' in h and 'id="wifiList"' in h
+    assert 'id="wifiSsidHint"' in h and 'id="wifiScan"' in h and 'id="wifiList"' in h and 'id="ssid"' in h
