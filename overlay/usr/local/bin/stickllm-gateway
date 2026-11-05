@@ -1755,7 +1755,8 @@ def ssh_password_for_loopback() -> dict:
     out = {
         "ssh_enabled": True,
         "ssh_user": "stickllm",
-        "ssh_host": ip or "127.0.0.1",
+        # 0.6.1: never advertise 127.0.0.1; the UI re-asks until the LAN is up.
+        "ssh_host": ip or "",
         "ssh_note": "Random per boot. Shown only on this stick (loopback). Not sent to LAN clients.",
     }
     if passwd:

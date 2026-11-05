@@ -27,7 +27,8 @@ def test_issue_has_literal_lan_ip_and_no_agetty_escape(tmp_path):
     text = issue.read_text()
     assert "LAN IP:    192.168.1.42" in text and "ssh stickllm@192.168.1.42" in text
     assert "\\4" not in text and "127.0.0.1" not in text
-    assert "s3cret-pass" in text and oct(issue.stat().st_mode & 0o777) == "0o600"
+    # 0.6.1: password never on the console banner (F10 shows it).
+    assert "s3cret-pass" not in text and "F10" in text and oct(issue.stat().st_mode & 0o777) == "0o600"
 
 
 def test_issue_without_network_never_claims_loopback(tmp_path):

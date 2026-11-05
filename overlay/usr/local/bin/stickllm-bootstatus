@@ -117,24 +117,101 @@ say_screen() {
 }
 
 ssh_password_line() {
-  # Print SSH credentials when menu enabled SSH (Terminal or Test).
-  # Kept visually loud — READY can hand off to the browser quickly.
+  # Print SSH credentials when menu enabled SSH (Test, menu 3 only on the
+  # loading screen; Terminal mode never paints this - it uses F10 on tty1).
+  # 0.6.1: the box is centred on the banner screen (was left-aligned on wide
+  # AMD/HDMI modes) and the host is the real LAN IP, never 127.0.0.1.
   [[ "$SSH_ON" -eq 1 ]] || return 0
-  local ip="${1:-}" pass=""
+  local ip="${1:-}" pass="" host
   pass="$(tr -d '[:space:]' <"$RUN/ssh-password.txt" 2>/dev/null || true)"
+  host="${ip:-<LAN IP: waiting for the network>}"
+  if [[ "${PLAIN_FALLBACK:-1}" -eq 0 ]] && [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
+    if [[ -n "${pass:-}" ]]; then
+      center "+--------------------------------------------+"
+      center "SSH  (Test mode - also F10 on the desktop)"
+      center "ssh stickllm@${host}"
+      center "password: ${pass}"
+      center "+--------------------------------------------+"
+    else
+      center "SSH: stickllm@${host}  (password being set...)"
+    fi
+    return 0
+  fi
   if [[ -n "${pass:-}" ]]; then
     say "  ----------------------------------------"
     say "  SSH (copy now — also in Settings → System on this screen)"
     say "  user: stickllm"
-    say "  host: ${ip:-<lan-ip>}   (or 127.0.0.1 from the stick)"
+    say "  host: ${host}"
     say_screen "  password: ${pass}"
     say "  ----------------------------------------"
   else
-    say "  SSH: stickllm@${ip:-<lan-ip>}  (password is on this screen when the file is readable)"
+    say "  SSH: stickllm@${host}  (password is on this screen when the file is readable)"
   fi
 }
 
-VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.5.8)"
+# 0.6.1: "stick is on a USB 2 port" hint. Message only when the boot medium
+# enumerated at <=480M and the machine has a SuperSpeed (>=5000M) root hub
+# (a USB 3 port exists). Cached after the first answer.
+USB_SPEED_MSG=""
+USB_SPEED_DONE=0
+usb_speed_check() {
+  [[ "$USB_SPEED_DONE" -eq 1 ]] && { printf '%s' "$USB_SPEED_MSG"; return 0; }
+  local src disk dev speed fast=0 sp v
+  src="$(findmnt -no SOURCE /run/live/medium 2>/dev/null | head -n1)"
+  [[ -n "$src" ]] || src="$(blkid -L STICKLLM-DATA 2>/dev/null || true)"
+  [[ -n "$src" ]] || return 0
+  disk="$(lsblk -no PKNAME "$src" 2>/dev/null | head -n1)"
+  [[ -n "$disk" ]] || disk="$(basename "$src")"
+  dev="$(readlink -f "${STICKLLM_SYS:-}/sys/block/$disk" 2>/dev/null || true)"
+  [[ -n "$dev" && "$dev" == */usb* ]] || { USB_SPEED_DONE=1; return 0; }
+  speed=""
+  while [[ "$dev" != "/" && -n "$dev" ]]; do
+    if [[ -f "$dev/speed" && -f "$dev/idVendor" ]]; then speed="$(cat "$dev/speed" 2>/dev/null)"; break; fi
+    dev="$(dirname "$dev")"
+  done
+  for sp in "${STICKLLM_SYS:-}"/sys/bus/usb/devices/usb*/speed; do
+    [[ -f "$sp" ]] || continue
+    v="$(cat "$sp" 2>/dev/null)"
+    [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 5000 )) && fast=1
+  done
+  USB_SPEED_DONE=1
+  if [[ "$speed" =~ ^[0-9.]+$ ]] && (( ${speed%.*} <= 480 )) && (( fast == 1 )); then
+    USB_SPEED_MSG="Stick is on a USB 2 port - move it to a USB 3 port for faster loading"
+  fi
+  printf '%s' "$USB_SPEED_MSG"
+}
+
+# 0.6.1: F10 / F9 on the loading screen (every desktop mode). bootstatus owns
+# tty1 here, so read the keys from it directly. F10 = ESC[21~, F9 = ESC[20~.
+show_secrets_screen() {
+  local _k
+  clear_tty
+  say_screen ""
+  say_screen ""
+  /usr/local/bin/stickllm-show-secrets "$1" >>"$TTY" 2>/dev/null || true
+  say_screen "  (hides in 20 s, or press any key)"
+  IFS= read -rsn1 -t 20 _k <"$TTY" 2>/dev/null || true
+  LAST_SIG=""
+}
+key_wait() {
+  local secs="$1" k rest end
+  if [[ "$TTY" != /dev/tty1 ]] || ! [[ -r "$TTY" ]]; then sleep "$secs"; return 0; fi
+  stty -F "$TTY" -icanon -echo min 1 time 0 2>/dev/null || { sleep "$secs"; return 0; }
+  end=$(( SECONDS + secs ))
+  while (( SECONDS < end )); do
+    k=""
+    IFS= read -rsn1 -t 1 k <"$TTY" 2>/dev/null || continue
+    [[ "$k" == $'\e' ]] || continue
+    rest=""
+    IFS= read -rsn4 -t 0.3 rest <"$TTY" 2>/dev/null || true
+    case "$rest" in
+      "[21~") show_secrets_screen ssh; return 0 ;;
+      "[20~") show_secrets_screen pair; return 0 ;;
+    esac
+  done
+}
+
+VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.6.1)"
 
 # 0.5.8: Terminal mode never depends on the loading screen, the kiosk, Xorg,
 # the gateway or llama. Paint the SSH info into the login banner (/etc/issue.d)
@@ -790,6 +867,9 @@ draw_plain() {
   [[ -n "$ml" ]] && center "${ok} ${ml}"
   refresh_failed
   if [[ -n "${last_failed:-}" ]]; then center "! Problem: $last_failed"; fi
+  local usbw
+  usbw="$(usb_speed_check)"
+  [[ -n "$usbw" ]] && center "! ${usbw}" "1;33"
   say_screen ""
   if [[ "$SSH_ON" -eq 1 ]]; then
     # Test (menu 3): SSH back door on screen, as before 0.5.7.
@@ -1109,7 +1189,7 @@ while (( SECONDS < deadline )); do
   fi
   paint_loading "$SECONDS" "$phase" "${ip:-}" "$ui_ok" "$api_ok"
   if [[ "$phase" == "STICKLLM Network Loading" ]] || desktop_mode; then
-    sleep 2
+    key_wait 2
   else
     sleep 10
   fi

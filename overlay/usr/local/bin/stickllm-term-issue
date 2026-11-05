@@ -6,13 +6,13 @@
 # and the SSH user, then asks agetty to redraw (agetty --reload). Run once with
 # --once (banner now, whatever is known), or with no argument as a short-lived
 # transient unit that keeps the banner current for 10 minutes and whenever the
-# IP changes. The SSH password goes only into the root-only issue file shown
-# on tty1, never into a log or the journal.
+# IP changes. 0.6.1: the SSH password is no longer written here (F10 shows it
+# on the autologin console via stickllm-show-secrets).
 set -u
 RUN="${STICKLLM_RUN:-/run/stickllm}"
 ISSUE="${STICKLLM_TERM_ISSUE:-/etc/issue.d/50-stickllm-terminal.issue}"
 LANIP="${STICKLLM_LAN_IP_BIN:-/usr/local/bin/stickllm-lan-ip}"
-VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.6.0)"
+VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.6.1)"
 
 current_ip() {
   local ip=""
@@ -40,12 +40,13 @@ write_issue() {
         printf '  SSH:       ssh stickllm@<lan-ip>   WiFi: stickllm-wifi-setup\n'
       fi
       printf '  user:      stickllm\n'
+      # 0.6.1: never print the password on the console banner. F10 shows it.
       if [[ -n "$pass" ]]; then
-        printf '  password:  %s\n' "$pass"
+        printf '  password:  press F10 to show it\n'
       else
         printf '  password:  being set (stickllm-ssh.service)...\n'
       fi
-      printf '  Log in below with the same user and password.\n'
+      printf '  This console logs in on its own (root). F9 = pair code.\n'
       if [[ -n "$ip" ]]; then
         printf '  Web UI (if it started): http://%s/\n\n' "$ip"
       else

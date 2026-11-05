@@ -4534,7 +4534,8 @@ async function issueSshHotkey() {
     const pass = String(c.ssh_password || "").trim();
     const enabled = !!c.ssh_enabled;
     const user = c.ssh_user || "stickllm";
-    const host = c.ssh_host || c.ip || "127.0.0.1";
+    // 0.6.1: real LAN IP only (never 127.0.0.1); say so while the network is not up.
+    const host = c.ssh_host || c.ip || "<LAN IP not up yet - press F10 again in a moment>";
     if (enabled && pass) {
       pushSystemMsg(`SSH: ${user}@${host}  password: ${pass}`);
       toast("SSH password posted in chat");
