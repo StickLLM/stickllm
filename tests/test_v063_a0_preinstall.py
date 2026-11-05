@@ -152,3 +152,10 @@ def test_gateway_has_docker_drive_api():
     gw = (ROOT / "overlay/usr/local/bin/stickllm-gateway").read_text(encoding="utf-8")
     assert "/api/agent/docker-drive" in gw
     assert "_agent_docker_drive" in gw
+
+def test_a0_seed_forces_overlay2():
+    src = Path('scripts/lib/a0_seed.sh').read_text(encoding='utf-8')
+    assert '--storage-driver=overlay2' in src
+    assert 'SEED_BYTES' in src
+    assert 'expected overlay2' in src
+

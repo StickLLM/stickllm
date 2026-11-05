@@ -16,7 +16,10 @@ command -v dockerd >/dev/null
 command -v docker >/dev/null
 command -v python3 >/dev/null
 
+# overlay2 keeps the seed ~image size; vfs (docker-in-docker default) balloons to 50–70GB
+# and blows the live-build chroot/ISO. Fail closed if overlay2 is unavailable.
 dockerd --data-root "$WORK" --host "unix://$SOCK" --pidfile "$PIDFILE" \
+  --storage-driver=overlay2 \
   --iptables=false --ip-forward=false --bridge=none \
   --log-level=warn >/tmp/stickllm-a0-seed-dockerd.log 2>&1 &
 for i in $(seq 1 60); do
@@ -60,6 +63,16 @@ CFG="${CFG#sha256:}"
 docker -H "unix://$SOCK" tag "$CFG" "stickllm/agent-zero:${VER}" 2>/dev/null || \
   docker -H "unix://$SOCK" tag "sha256:$CFG" "stickllm/agent-zero:${VER}" 2>/dev/null || true
 docker -H "unix://$SOCK" images
+DRIVER=$(docker -H "unix://$SOCK" info --format '{{.Driver}}' 2>/dev/null || true)
+echo "a0_seed: storage-driver=$DRIVER"
+if [[ "$DRIVER" != "overlay2" ]]; then
+  echo "a0_seed: ERROR expected overlay2, got '$DRIVER' (vfs balloons seed)" >&2
+  kill "$(cat "$PIDFILE")" 2>/dev/null || true
+  exit 1
+fi
+# Drop build cache; keep only the loaded image graph in the data-root.
+docker -H "unix://$SOCK" builder prune -af >/dev/null 2>&1 || true
+docker -H "unix://$SOCK" system prune -af >/dev/null 2>&1 || true
 
 kill "$(cat "$PIDFILE")" 2>/dev/null || true
 for i in $(seq 1 30); do
@@ -89,4 +102,11 @@ doc = {
 (out / "stickllm-seed.json").write_text(json.dumps(doc, indent=1) + "\n")
 print("a0_seed: wrote", out / "stickllm-seed.json", flush=True)
 PY
+
+SEED_BYTES=$(du -sb "$OUT" | awk '{print $1}')
+# Soft cap: image is ~8.6GB; allow headroom for overlay2 metadata (<20GB).
+if [[ "$SEED_BYTES" -gt $((20 * 1024 * 1024 * 1024)) ]]; then
+  echo "a0_seed: ERROR seed too large ($(du -sh "$OUT" | awk '{print $1}')) — refusing to embed in squashfs" >&2
+  exit 1
+fi
 echo "a0_seed: OK -> $OUT ($(du -sh "$OUT" | awk '{print $1}'))"
