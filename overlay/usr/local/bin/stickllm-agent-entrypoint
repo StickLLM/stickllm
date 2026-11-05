@@ -123,6 +123,21 @@ out.write_text(json.dumps(report) + "\n", encoding="utf-8")
 PY
 
 # Ensure tmp dirs exist/writable (SearXNG/tempfile require this).
+# Targeted repair: A0 memory/VectorDB imports transformers -> sklearn -> scipy.special.
+# Broken scipy/numpy ABI shows: ValueError All ufuncs must have type numpy.ufunc (sph_legendre_p).
+# Only runs when the import fails - not a blanket upgrade. Needs Agent Zero container start.
+if [[ -x /opt/venv-a0/bin/python ]]; then
+  if ! /opt/venv-a0/bin/python -c "import scipy.special" >/dev/null 2>&1; then
+    echo "a0-entrypoint: repairing scipy/numpy ABI for memory/VectorDB path"
+    /opt/venv-a0/bin/pip uninstall -y numpy 2>/dev/null || true
+    /opt/venv-a0/bin/pip install --no-cache-dir "numpy>=2.0,<2.3" || true
+    if ! /opt/venv-a0/bin/python -c "import scipy.special" >/dev/null 2>&1; then
+      echo "a0-entrypoint: falling back to scipy==1.14.1 for ABI match"
+      /opt/venv-a0/bin/pip install --no-cache-dir "scipy==1.14.1" || true
+    fi
+    /opt/venv-a0/bin/python -c "import numpy,scipy,scipy.special; print('a0-entrypoint: numpy', numpy.__version__, 'scipy', scipy.__version__)" || true
+  fi
+fi
 mkdir -p /tmp /var/tmp
 chmod 1777 /tmp /var/tmp || true
 mkdir -p /a0/usr/logs

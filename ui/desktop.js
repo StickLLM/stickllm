@@ -249,7 +249,6 @@
     footBtn("apps", "App Store", SVG.apps);
     footBtn("settings", "Settings", SVG.gear);
     footBtn("lock", "Lock vault", SVG.lockShut).hidden = true;
-    footBtn("classic", "Classic layout", SVG.classic);
     // 0.6.1: Power off (stick screen only; asks first).
     footBtn("power", "Power off", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v9"/><path d="M6.3 7.5a8 8 0 1 0 11.4 0"/></svg>').hidden = !isLocal();
     launcher.addEventListener("click", (e) => {
@@ -354,7 +353,6 @@
     if (act === "settings") openApp("settings");
     else if (act === "lock") { if (appApi().lockVault) appApi().lockVault(); }
     else if (act === "apps") openApp("store");
-    else if (act === "classic") { core.writeOverride(store, "classic"); syncLayoutSeg(); evaluate(); }
     else if (act === "power") powerOff();
   }
   // 0.6.1: kiosk Power off with confirm. The gateway only accepts it from the
@@ -1152,7 +1150,7 @@
     const v = core.readOverride(store);
     document.querySelectorAll("#layoutSeg button").forEach((b) => b.classList.toggle("on", b.dataset.layout === v));
     const now = $("#layoutNow");
-    if (now) now.textContent = "Now: " + (on ? "desktop" : "classic") + (v === "auto" ? " (auto)" : "");
+    if (now) now.textContent = "Now: " + (on ? "desktop" : "simple") + (v === "auto" ? " (auto)" : "");
   }
   document.querySelectorAll("#layoutSeg button").forEach((b) => {
     b.addEventListener("click", () => { core.writeOverride(store, b.dataset.layout); syncLayoutSeg(); evaluate(); });

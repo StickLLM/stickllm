@@ -8,7 +8,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  const LAYOUT_KEY = "stickllm.uiLayout";      // auto | desktop | classic (per browser)
+  const LAYOUT_KEY = "stickllm.uiLayout";      // auto | desktop (classic migrated to desktop)
   const STATE_KEY = "stickllm.desk.v1";        // { geom: { id: {x,y,w,h,max} } }
   const MIN_W = 1024, MIN_H = 600;              // smallest viewport for auto desktop
   const TASKBAR_H = 48;
@@ -16,7 +16,9 @@
 
   function normOverride(v) {
     v = String(v || "").toLowerCase();
-    return v === "desktop" || v === "classic" ? v : "auto";
+    // Classic (old chat page) removed: treat stored classic as desktop.
+    if (v === "classic") v = "desktop";
+    return v === "desktop" ? v : (v === "auto" ? "auto" : "desktop");
   }
 
   // Desktop when the main pointer is precise (mouse/trackpad), it can hover,
@@ -77,7 +79,11 @@
       set(k, v) { try { ls.setItem(k, v); } catch (e) {} },
     };
   }
-  function readOverride(store) { return normOverride(store.get(LAYOUT_KEY)); }
+  function readOverride(store) {
+    const raw = store.get(LAYOUT_KEY);
+    if (raw == null || raw === "") return "desktop"; // default desktop
+    return normOverride(raw);
+  }
   function writeOverride(store, v) { store.set(LAYOUT_KEY, normOverride(v)); }
 
   function loadState(store) {

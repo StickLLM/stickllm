@@ -87,7 +87,7 @@ if [[ -d "$SRC/opt/stickllm/ui" ]]; then
         installed=1
         continue
         ;;
-      app.js|index.html|style.css|stickllm.json|favicon.svg) ;;
+      app.js|index.html|style.css|stickllm.json|favicon.svg|desktop.js|desktop-core.js|desktop.css) ;;
       *) echo "skipping non-UI file: $base" >&2; continue ;;
     esac
     sed -i 's/\r$//' "$f" 2>/dev/null || true
