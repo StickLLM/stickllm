@@ -6,6 +6,7 @@
 - Agent Zero ships preinstalled on the stick (docker-seed in squashfs); runs from USB by default with no Install step.
 - Agent Zero docker-seed uses overlay2 (not vfs) so the squashfs seed stays ~image-sized; refuse seeds >20GB
 - a0_seed builds overlay2 data-root on the live-build volume (/work), not /tmp (Docker Desktop nested overlay fails on /tmp)
+- a0_seed must not system-prune the loaded image; refuse seeds <1GB or empty overlay2
 - Optional one-time "Move Agent Zero to SSD (faster)" in Settings and first-time setup (progress bar; reversible "Run from stick").
 - Agent Zero is the main Chat window; StickLLM thread/composer UI hidden (Models / System / Settings / apps kept).
 - Cheap `status_light` / cached model enrich for System monitor.
