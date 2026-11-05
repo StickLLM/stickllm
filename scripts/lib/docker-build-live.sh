@@ -227,7 +227,7 @@ if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
   bash /stickllm/scripts/lib/a0_seed.sh \
       config/includes.chroot/usr/local/share/stickllm/agent-zero.pin \
       "$A0_BUNDLE_OUT" "$A0_SEED_OUT"
-    test -f "$A0_SEED_OUT/stickllm-seed.json"
+    test -f "$A0_SEED_OUT/stickllm-docker.json"
     test -d "$A0_SEED_OUT/image"
     # Keep MiniLM in the squashfs next to the seed (not only on ISO9660).
     if [[ -d "$A0_BUNDLE_OUT/minilm" ]]; then
@@ -239,8 +239,9 @@ if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
     find "$A0_BUNDLE_OUT" -name 'agent-zero.tar.part-*' -delete
     rm -rf "$A0_BUNDLE_OUT"
     du -sh "$A0_SEED_OUT"
+  elif [[ -d "$A0_BUNDLE_OUT" ]]; then
+    du -sh "$A0_BUNDLE_OUT"
   fi
-  du -sh "$A0_BUNDLE_OUT"
 else
   echo "[stickllm] STICKLLM_A0_BUNDLE=0: Agent Zero image NOT bundled"
 fi
