@@ -5293,19 +5293,14 @@ def vault_action(cmd: str, params: dict) -> dict:
             return {"ok": False, "error": "passcode must be at least 8 characters"}
         if passcode != passcode2:
             return {"ok": False, "error": "passcodes do not match"}
-        # 0.6.1-hotfix: STICKLLM-DATA without the STICK-DATA confirm -> clear message.
+        # 0.6.2 hotfix: STICKLLM-DATA is a first-class vault home — auto-allow
+        # any path under the DATA mount. stick_data_confirm kept for older UIs.
         _p = os.path.normpath(path)
-        if (_p == str(MNT) or _p.startswith(str(MNT) + "/")) and \
-                str(params.get("stick_data_confirm") or "") != "STICK-DATA":
-            return {"ok": False, "needs": "stick_data_confirm",
-                    "error": "This folder is on the StickLLM drive (STICKLLM-DATA). Confirm "
-                             "\u201cStore vault on this drive\u201d (STICK-DATA) to create the vault here."}
+        _on_data = (_p == str(MNT) or _p.startswith(str(MNT) + "/"))
         env = os.environ.copy()
         env["STICKLLM_VAULT_CONFIRM"] = "CREATE-VAULT"
         env["STICKLLM_VAULT_CONFIRM_SAVED"] = "SAVED"
-        # 0.6.1 (item 12): user confirmed "No internal drive found – store
-        # vault on this drive?" (stickllm-vault still checks it is STICKLLM-DATA).
-        if str(params.get("stick_data_confirm") or "") == "STICK-DATA":
+        if _on_data or str(params.get("stick_data_confirm") or "") == "STICK-DATA":
             env["STICKLLM_VAULT_ALLOW_STICK_DATA"] = "STICK-DATA"
         else:
             env.pop("STICKLLM_VAULT_ALLOW_STICK_DATA", None)

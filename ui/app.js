@@ -4668,14 +4668,8 @@ $("#unlockForm").onsubmit = async (e) => {
 $("#createVault").onclick = () => {
   let path = ($("#vaultPath").value || "").trim().replace(/\/+$/, "");
   if (path === "/mnt/stickllm-data") { path = "/mnt/stickllm-data/vault"; $("#vaultPath").value = path; }
-  if (path.startsWith("/mnt/stickllm-data/") && !vaultStickData) {
-    return confirmBox({
-      title: "Store vault on this drive?",
-      text: "The vault becomes an encrypted file on this drive's STICKLLM-DATA partition. Reflashing the drive deletes it; keep your recovery phrase.",
-      word: "STICK-DATA", ok: "Use this drive",
-      cb: () => { vaultStickData = true; $("#createVault").click(); },
-    });
-  }
+  // 0.6.2 hotfix: DATA is first-class — no extra "Store vault on this drive" step.
+  if (path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/")) vaultStickData = true;
   const size = String($("#vaultSize").value || "32");
   const p1 = $("#np1").value, p2 = $("#np2").value;
   if (!path) return toast("Choose a folder first");
@@ -4687,7 +4681,7 @@ $("#createVault").onclick = () => {
     word: "CREATE-VAULT", ok: "Create vault",
     cb: async () => {
       try {
-        const onStickData = vaultStickData && path.startsWith("/mnt/stickllm-data/");  // path normalised above
+        const onStickData = path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/");
         const res = await control("vault_setup", {
           path, size_gb: size, confirm: "CREATE-VAULT",
           recovery_confirm: "SHOW-ONCE", passcode: p1, passcode2: p2, space_confirm: "SPACE-OK",

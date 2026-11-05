@@ -38,13 +38,24 @@ def _addons(monkeypatch, tmp_path):
     return mod
 
 
-def test_vault_allows_stick_data_only_with_confirm():
+def test_vault_allows_stick_data_as_first_class():
+    # 0.6.2 hotfix: DATA needs no STICK-DATA env; live ISO still refused.
     s = VAULT.read_text()
     assert "is_stick_data_path()" in s
-    assert 'STICKLLM_VAULT_ALLOW_STICK_DATA:-}" == "STICK-DATA"' in s
-    assert '[[ "$label" == "STICKLLM-DATA" ]]' in s
+    assert "NOTE: vault on STICKLLM-DATA" in s
+    assert 'elif is_live_usb_path "$probe"' in s
+    # Old gate must not remain (allow only with env).
+    assert 'STICKLLM_VAULT_ALLOW_STICK_DATA:-}" == "STICK-DATA"' not in s
     assert "luksFormat" in s  # LUKS file kept, no partitioning added
     assert subprocess.run(["bash", "-n", str(VAULT)]).returncode == 0
+
+
+def test_control_auto_allows_data_path_without_confirm():
+    src = CTL.read_text()
+    assert "_on_data" in src and 'env["STICKLLM_VAULT_ALLOW_STICK_DATA"] = "STICK-DATA"' in src
+    assert '"needs": "stick_data_confirm"' not in src
+    # Keep backward-compatible stick_data_confirm still sets the env.
+    assert 'params.get("stick_data_confirm")' in src
 
 
 def test_control_passes_stick_data_confirm_and_offer(monkeypatch, tmp_path):

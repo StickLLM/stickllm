@@ -241,17 +241,31 @@ is_live_usb_path() {
 }
 
 is_stick_data_path() {
-  # True only for a writable folder on the mounted STICKLLM-DATA partition.
+  # True for a folder on the mounted STICKLLM-DATA partition (exact mount or
+  # any subpath). 0.6.2 hotfix: the stick IS the product — DATA is a
+  # first-class vault home. Still false for the live ISO root and for
+  # /mnt/stickllm-settings (different mount).
   local p="$1" mnt src label fstype
   mnt="$(df -P "$p" 2>/dev/null | awk 'NR==2{print $6}')" || return 1
-  [[ "$mnt" == "$DATA_MNT" ]] || return 1
+  [[ "$mnt" == "$DATA_MNT" || "$mnt" == /mnt/stickllm-data ]] || return 1
+  # Never treat the settings/crypt mount as DATA even if mis-linked.
+  case "$p" in
+    /mnt/stickllm-settings|/mnt/stickllm-settings/*) return 1 ;;
+  esac
   src="$(findmnt -n -o SOURCE --target "$mnt" 2>/dev/null || true)"
-  [[ -b "$src" ]] || return 1
-  label="$(lsblk -no LABEL "$src" 2>/dev/null | head -1 || true)"
-  fstype="$(lsblk -no FSTYPE "$src" 2>/dev/null | head -1 || true)"
-  [[ "$label" == "STICKLLM-DATA" ]] || return 1
-  case "$fstype" in ext4|ext3|ext2|xfs|btrfs|f2fs) return 0 ;; esac
-  return 1
+  # Prefer label+fstype when available; fall back to mount point alone so a
+  # missing/odd lsblk LABEL cannot block vault create on a healthy DATA mount.
+  if [[ -n "$src" ]]; then
+    label="$(lsblk -no LABEL "$src" 2>/dev/null | head -1 | tr -d "[:space:]" || true)"
+    fstype="$(findmnt -n -o FSTYPE --target "$mnt" 2>/dev/null || lsblk -no FSTYPE "$src" 2>/dev/null | head -1 || true)"
+    if [[ -n "$label" && "$label" != "STICKLLM-DATA" ]]; then
+      return 1
+    fi
+    if [[ -n "$fstype" ]]; then
+      case "$fstype" in ext4|ext3|ext2|xfs|btrfs|f2fs) ;; *) return 1 ;; esac
+    fi
+  fi
+  return 0
 }
 
 fs_looks_ordinary() {
@@ -378,16 +392,13 @@ assert_safe_vault_root() {
       die "refusing unrecognized partition table '$pt' — fail-closed, hands off"
   fi
 
-  if is_live_usb_path "$probe"; then
-    # 0.6.1 (item 12): on a machine with no internal drive the vault may be a
-    # LUKS file on this drive's STICKLLM-DATA partition, after the user
-    # confirmed "No internal drive found – store vault on this drive?". Never
-    # the live medium itself, never a raw device, never partitioning.
-    if [[ "${STICKLLM_VAULT_ALLOW_STICK_DATA:-}" == "STICK-DATA" ]] && is_stick_data_path "$probe"; then
-      echo "NOTE: vault on STICKLLM-DATA (user confirmed: no internal drive)" >&2
-    else
-      die "refusing StickLLM live USB / STICKLLM-DATA as SSD vault target — choose a folder on the host SSD (already mounted), or confirm \"Store vault on this drive\" when no internal drive exists"
-    fi
+  if is_stick_data_path "$probe"; then
+    # 0.6.2 hotfix: STICKLLM-DATA is a first-class vault target — no env /
+    # "Store vault on this drive" confirm required. Still refuse the live ISO
+    # system partitions (is_live_usb_path alone, without DATA).
+    echo "NOTE: vault on STICKLLM-DATA" >&2
+  elif is_live_usb_path "$probe"; then
+    die "refusing StickLLM live USB as SSD vault target — choose a folder on the host SSD (already mounted), or a folder under /mnt/stickllm-data"
   fi
 
   # Writable check
