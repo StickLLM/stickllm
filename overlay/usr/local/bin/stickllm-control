@@ -4054,7 +4054,7 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     # model config on the settings partition (no-op when it is locked).
     try:
         subprocess.Popen(
-            ["/usr/local/bin/stickllm-agent", "sync-model"],
+            ["/usr/local/bin/stickllm-agent", "sync-model", "600", str(path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,

@@ -263,7 +263,8 @@ def test_install_and_container_run_in_their_own_units():
 
     text = _script()
     install = text.split("cmd_install()", 1)[1].split("\nuse_systemd()", 1)[0]
-    tail = install.split("--state pulled", 1)[1]
+    # 0.6.2 (A4): the install stays "installing" (step 4 of 6) until A0 answers.
+    tail = install.split("--phase creating", 1)[1]
     # dockerd lives in its own unit now, so the install no longer stops it.
     assert "stop_dockerd" not in tail
     assert tail.index("use_systemd") < tail.index("systemctl restart stickllm-agent.service")

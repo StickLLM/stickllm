@@ -210,6 +210,11 @@ if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
     config/includes.chroot/usr/local/share/stickllm/agent-zero.pin \
     /stickllm-out/cache/agent-zero "$A0_BUNDLE_OUT"
   test -f "$A0_BUNDLE_OUT/bundle.json"
+  # 0.6.2 (A1): A0's memory model (MiniLM, ~90 MB) next to the image, so A0
+  # starts offline (HF_HUB_OFFLINE=1) instead of waiting on Hugging Face.
+  mkdir -p /stickllm-out/cache/minilm
+  python3 -u /stickllm/scripts/lib/minilm_bundle.py pack /stickllm-out/cache/minilm "$A0_BUNDLE_OUT/minilm"
+  test -f "$A0_BUNDLE_OUT/minilm/files/model.safetensors"
   du -sh "$A0_BUNDLE_OUT"
 else
   echo "[stickllm] STICKLLM_A0_BUNDLE=0: Agent Zero image NOT bundled"

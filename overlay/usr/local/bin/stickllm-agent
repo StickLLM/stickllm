@@ -206,8 +206,8 @@ load_bundle() {
   local tag cfg id
   tag="$("$PYBIN" "$LIB" local-tag)"
   cfg="$("$PYBIN" "$LIB" config-digest)" || return 1
-  "$PYBIN" "$LIB" write-status --state installing --phase loading --progress 0 --image_present false --low_space false \
-    --message "Loading Agent Zero from the stick…" >/dev/null || true
+  "$PYBIN" "$LIB" write-status --state installing --phase loading --progress 0 --step 1 --steps 6 --image_present false --low_space false \
+    --message "Step 1 of 6: loading Agent Zero from the stick…" >/dev/null || true
   echo "loading the Agent Zero image bundled on the stick" | tee -a "$PULL_LOG"
   if ! "$PYBIN" "$LIB" bundle-stream | docker_cli load 2>&1 | tee -a "$PULL_LOG"; then
     echo "bundled image did not load" | tee -a "$PULL_LOG" >&2
@@ -281,6 +281,66 @@ stop_open_app() {
   fi
 }
 
+# 0.6.2 (A2): wait for the bridge address before starting a bridge daemon,
+# then give each one up to ~20 s to listen. The reason for a failure goes to
+# its log (appended, not truncated on every retry) and to the unit's stderr.
+bridge_ip_up() {
+  local i
+  for i in $(seq 1 80); do
+    if ip -4 -o addr show 2>/dev/null | grep -q ' 172\.30\.0\.1/'; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "stickllm-agent: bridge address 172.30.0.1 is not up after 20 s" >&2
+  return 1
+}
+
+port_listening() {
+  "$PYBIN" - "$1" <<'PY'
+import socket, sys
+s = socket.socket()
+s.settimeout(0.3)
+try:
+    s.connect(("172.30.0.1", int(sys.argv[1])))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+}
+
+# start_bridge NAME PIDFILE PORT LOG LIBCMD
+start_bridge() {
+  local name="$1" pidfile="$2" port="$3" log="$4" libcmd="$5" i pid="" starts=0
+  bridge_ip_up || true
+  for i in $(seq 1 80); do
+    pid=""
+    if [[ -f "$pidfile" ]]; then
+      pid="$(tr -cd '0-9' <"$pidfile" || true)"
+    fi
+    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      if [[ "$starts" -ge 4 ]]; then
+        break
+      fi
+      starts=$((starts + 1))
+      printf '%s start %s (attempt %s)\n' "$(date -Is)" "$name" "$starts" >>"$log"
+      "$PYBIN" "$LIB" "$libcmd" >>"$log" 2>&1 9>&- &
+      echo $! >"$pidfile"
+    fi
+    if port_listening "$port"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  local why
+  why="$(tail -n 3 "$log" 2>/dev/null | tr '\n' ' ' | cut -c1-300)"
+  echo "stickllm-agent: ${name} did not listen on 172.30.0.1:${port}: ${why:-no output}" >&2
+  "$PYBIN" "$LIB" write-status --state error --image_present true \
+    --message "${name} did not start on 172.30.0.1:${port}. ${why}" >/dev/null || true
+  return 1
+}
+
 stop_egress() {
   if [[ -f "$EGRESS_PIDFILE" ]]; then
     local pid
@@ -295,142 +355,35 @@ stop_egress() {
 
 ensure_egress() {
   # HTTP/HTTPS proxy for the agent container. Bridge address only.
-  local i
-  for i in $(seq 1 25); do
-    local pid=""
-    if [[ -f "$EGRESS_PIDFILE" ]]; then
-      pid="$(tr -cd '0-9' <"$EGRESS_PIDFILE" || true)"
-    fi
-    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-      "$PYBIN" "$LIB" egress-proxy >/var/log/stickllm-agent-egress.log 2>&1 9>&- &
-      echo $! >"$EGRESS_PIDFILE"
-    fi
-    if "$PYBIN" - <<'PY'
-import socket
-s = socket.socket()
-s.settimeout(0.2)
-try:
-    s.connect(("172.30.0.1", 18080))
-except OSError:
-    raise SystemExit(1)
-finally:
-    s.close()
-PY
-    then
-      return 0
-    fi
-    sleep 0.2
-  done
-  echo "stickllm-agent: egress proxy did not bind 172.30.0.1:18080" >&2
-  "$PYBIN" "$LIB" write-status --state error --image_present true --message "egress proxy did not bind 172.30.0.1:18080" >/dev/null || true
-  return 1
+  start_bridge "egress proxy" "$EGRESS_PIDFILE" 18080 /var/log/stickllm-agent-egress.log egress-proxy
 }
 
 
 ensure_relay() {
   # Bridge address only. llama-server stays on 127.0.0.1:8080.
-  local i
-  for i in $(seq 1 25); do
-    local pid=""
-    if [[ -f "$RELAY_PIDFILE" ]]; then
-      pid="$(tr -cd '0-9' <"$RELAY_PIDFILE" || true)"
-    fi
-    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-      "$PYBIN" "$LIB" llama-relay >/var/log/stickllm-agent-relay.log 2>&1 9>&- &
-      echo $! >"$RELAY_PIDFILE"
-    fi
-    if "$PYBIN" - <<'PY'
-import socket
-s = socket.socket()
-s.settimeout(0.2)
-try:
-    s.connect(("172.30.0.1", 8080))
-except OSError:
-    raise SystemExit(1)
-finally:
-    s.close()
-PY
-    then
-      return 0
-    fi
-    sleep 0.2
-  done
-  echo "stickllm-agent: llama relay did not bind 172.30.0.1:8080" >&2
-  "$PYBIN" "$LIB" write-status --state error --image_present true --message "llama relay did not bind 172.30.0.1:8080" >/dev/null || true
-  return 1
+  start_bridge "llama relay" "$RELAY_PIDFILE" 8080 /var/log/stickllm-agent-relay.log llama-relay
 }
 
 ensure_apps() {
   # Static ui/apps only, on the bridge address. Not 0.0.0.0 and not the LAN.
-  local i
-  for i in $(seq 1 25); do
-    local pid=""
-    if [[ -f "$APPS_PIDFILE" ]]; then
-      pid="$(tr -cd '0-9' <"$APPS_PIDFILE" || true)"
-    fi
-    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-      "$PYBIN" "$LIB" apps-bridge >/var/log/stickllm-agent-apps.log 2>&1 9>&- &
-      echo $! >"$APPS_PIDFILE"
-    fi
-    if "$PYBIN" - <<'PY'
-import socket
-s = socket.socket()
-s.settimeout(0.2)
-try:
-    s.connect(("172.30.0.1", 8081))
-except OSError:
-    raise SystemExit(1)
-finally:
-    s.close()
-PY
-    then
-      return 0
-    fi
-    sleep 0.2
-  done
-  echo "stickllm-agent: apps bridge did not bind 172.30.0.1:8081" >&2
-  "$PYBIN" "$LIB" write-status --state error --image_present true --message "apps bridge did not bind 172.30.0.1:8081" >/dev/null || true
-  return 1
+  start_bridge "apps bridge" "$APPS_PIDFILE" 8081 /var/log/stickllm-agent-apps.log apps-bridge
 }
 
 ensure_open_app() {
   # Control port on the bridge and on loopback. Not 0.0.0.0 and not the LAN.
   "$PYBIN" "$LIB" ensure-open-app-token >/dev/null
-  local i
-  for i in $(seq 1 25); do
-    local pid=""
-    if [[ -f "$OPEN_APP_PIDFILE" ]]; then
-      pid="$(tr -cd '0-9' <"$OPEN_APP_PIDFILE" || true)"
-    fi
-    if [[ -z "${pid}" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-      "$PYBIN" "$LIB" open-app-bridge >/var/log/stickllm-agent-open-app.log 2>&1 9>&- &
-      echo $! >"$OPEN_APP_PIDFILE"
-    fi
-    if "$PYBIN" - <<'PY'
-import socket
-s = socket.socket()
-s.settimeout(0.2)
-try:
-    s.connect(("172.30.0.1", 8082))
-except OSError:
-    raise SystemExit(1)
-finally:
-    s.close()
-PY
-    then
-      return 0
-    fi
-    sleep 0.2
-  done
-  echo "stickllm-agent: open app control did not bind 172.30.0.1:8082" >&2
-  "$PYBIN" "$LIB" write-status --state error --image_present true --message "open app control did not bind 172.30.0.1:8082" >/dev/null || true
-  return 1
+  start_bridge "open app control" "$OPEN_APP_PIDFILE" 8082 /var/log/stickllm-agent-open-app.log open-app-bridge
 }
 
 cache_embedding() {
-  # MiniLM is the Agent Zero memory embedder. Cache it before the container
-  # is marked offline, so the first question cannot block on Hugging Face.
+  # MiniLM is the Agent Zero memory embedder. 0.6.2 (A1): the ISO carries it
+  # next to the image, so this is a local copy and needs no network. The
+  # download below is only a fallback for a stick without the bundle; it runs
+  # after the egress proxy is up, through it, and gives up after 120 s.
   if "$PYBIN" "$LIB" embedding-cached; then
+    return 0
+  fi
+  if "$PYBIN" "$LIB" seed-embedding; then
     return 0
   fi
   if ! image_present; then
@@ -441,17 +394,25 @@ cache_embedding() {
   mkdir -p "${ADDON}/state/.cache"
   local DNS_ARGS=()
   mapfile -t DNS_ARGS < <(dns_args)
-  docker_cli run --rm \
+  docker_cli rm -f stickllm-a0-embed >/dev/null 2>&1 || true
+  timeout 120 env DOCKER_HOST="unix://${SOCK}" docker run --rm --name stickllm-a0-embed \
     --network "$NETWORK" \
     "${DNS_ARGS[@]}" \
     -e HF_HUB_OFFLINE=0 \
     -e HF_HUB_DISABLE_TELEMETRY=1 \
+    -e HF_HUB_ETAG_TIMEOUT=20 \
+    -e HF_HUB_DOWNLOAD_TIMEOUT=60 \
+    -e HTTP_PROXY=http://172.30.0.1:18080 \
+    -e HTTPS_PROXY=http://172.30.0.1:18080 \
+    -e http_proxy=http://172.30.0.1:18080 \
+    -e https_proxy=http://172.30.0.1:18080 \
     -e HF_HOME=/a0/usr/.cache/huggingface \
     -e SENTENCE_TRANSFORMERS_HOME=/a0/usr/.cache/sentence-transformers \
     -v "${ADDON}/state:/a0/usr" \
-    "${CHATS_ARGS[@]}" \
     --entrypoint /opt/venv-a0/bin/python3 \
-    "$ref" -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")'
+    "$ref" -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")' \
+    || { echo "stickllm-agent: MiniLM download failed or timed out; Agent Zero starts without it cached" >&2; docker_cli rm -f stickllm-a0-embed >/dev/null 2>&1 || true; return 1; }
+  "$PYBIN" "$LIB" embedding-cached
 }
 
 ensure_nft() {
@@ -525,8 +486,9 @@ cmd_install() {
     fi
     docker_cli tag "$ref" "$tag"
   fi
-  "$PYBIN" "$LIB" write-status --state installing --phase checking --progress 100 --image_present false --low_space false \
-    --message "Checking Agent Zero…" >/dev/null || true
+  "$PYBIN" "$LIB" write-status --state installing --phase checking --progress "$("$PYBIN" "$LIB" install-progress checking 0)" \
+    --step 3 --steps 6 --image_present false --low_space false \
+    --message "Step 3 of 6: checking the Agent Zero image…" >/dev/null || true
   if ! smoke_image "$tag"; then
     echo "agent image smoke test failed; previous image left in place" | tee -a "$PULL_LOG" >&2
     "$PYBIN" "$LIB" write-status --state pull_failed --image_present false --low_space false >/dev/null || true
@@ -535,7 +497,11 @@ cmd_install() {
   if [[ -n "$previous" ]]; then
     docker_cli tag "$previous" stickllm-agent-zero:rollback
   fi
-  "$PYBIN" "$LIB" write-status --state pulled --image_present true --low_space false >/dev/null || true
+  # 0.6.2 (A4): stay "installing" until Agent Zero answers; the start steps
+  # below (and in stickllm-agent.service) continue the same bar.
+  "$PYBIN" "$LIB" write-status --state installing --phase creating --progress "$("$PYBIN" "$LIB" install-progress creating 0)" \
+    --step 4 --steps 6 --image_present true --low_space false \
+    --message "Step 4 of 6: preparing the Agent Zero container…" >/dev/null || true
   if use_systemd; then
     # Hand the container to stickllm-agent.service. It survives a stickllm-ui
     # restart and systemctl reports it. dockerd stays in stickllm-dockerd.service.
@@ -571,7 +537,22 @@ stop_container() {
   fi
 }
 
+# start_step PHASE STEP MESSAGE: "installing" during a fresh install (one
+# bar to 100%), "starting" otherwise ("Starting… step X of 6").
+START_STATE=starting
+start_step() {
+  local phase="$1" step="$2" msg="$3" prefix="Starting Agent Zero"
+  [[ "$START_STATE" == installing ]] && prefix="Installing Agent Zero"
+  "$PYBIN" "$LIB" write-status --state "$START_STATE" --phase "$phase" \
+    --progress "$("$PYBIN" "$LIB" install-progress "$phase" 0)" --step "$step" --steps 6 \
+    --image_present true --low_space false \
+    --message "${prefix}… step ${step} of 6: ${msg}" >/dev/null || true
+}
+
 cmd_run_container() {
+  if [[ "$("$PYBIN" "$LIB" status-state 2>/dev/null || true)" == installing ]]; then
+    START_STATE=installing
+  fi
   if ! "$PYBIN" "$LIB" docker-may-start; then
     refuse_locked
     exit 0
@@ -615,22 +596,30 @@ cmd_run_container() {
     echo "agent plugins could not be assembled: agent not started" >&2
     exit 1
   fi
+  start_step creating 4 "network and firewall"
   ensure_network
-  STICKLLM_HF_OFFLINE=0
-  if "$PYBIN" "$LIB" embedding-cached || cache_embedding; then
-    STICKLLM_HF_OFFLINE=1
-  fi
-  export STICKLLM_HF_OFFLINE
+  # 0.6.2 (A1): firewall and egress proxy first. dockerd runs with
+  # --iptables=false, so nothing in a container reaches the internet until
+  # nft + the proxy on 172.30.0.1:18080 are up.
   ensure_nft
+  ensure_egress
   ensure_relay
   ensure_apps
   ensure_open_app
-  ensure_egress
+  start_step creating 4 "memory model (MiniLM)"
+  STICKLLM_HF_OFFLINE=0
+  if cache_embedding; then
+    STICKLLM_HF_OFFLINE=1
+  fi
+  export STICKLLM_HF_OFFLINE
   local ref origins
   ref="$(run_ref)"
   origins="$("$PYBIN" "$LIB" allowed-origins)"
-  "$PYBIN" "$LIB" write-status --state running --image_present true --low_space false >/dev/null || true
+  start_step starting 5 "starting the container"
   stop_container
+  # The status turns "running" when 127.0.0.1:5099 answers (gateway health
+  # check); until then the Agent window shows step 6 with a retry.
+  ( sleep 4; start_step health 6 "waiting for Agent Zero to answer" ) 9>&- &
   local DNS_ARGS=()
   mapfile -t DNS_ARGS < <(dns_args)
   # Own bridge: llama relay and the internet only. UI is published on loopback.
@@ -755,7 +744,7 @@ cmd_start() {
 
 cmd_sync_model() {
   # 0.6.0 (bug 14): point A0's Default preset at the loaded llama model.
-  "$PYBIN" "$LIB" sync-model "${1:-300}"
+  "$PYBIN" "$LIB" sync-model "${1:-300}" "${2:-}"
 }
 
 usage() {

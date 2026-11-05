@@ -565,6 +565,39 @@ def bundle_info(dirs: tuple[Path, ...] | None = None, pin: dict[str, str] | None
     return None
 
 
+# 0.6.2 (A4): one progress bar for the whole install. 100% only when Agent
+# Zero answers (status_document reports "running" then).
+INSTALL_STEPS = 6
+_INSTALL_BANDS = {
+    # phase: (start %, end %)
+    "downloading": (0, 55),
+    "loading": (0, 55),
+    "unpacking": (55, 68),
+    "checking": (68, 74),
+    "creating": (74, 86),
+    "starting": (86, 94),
+    "health": (94, 99),
+}
+INSTALL_STEP_NAMES = {
+    "loading": "Loading Agent Zero from the stick",
+    "downloading": "Downloading Agent Zero",
+    "unpacking": "Unpacking the image",
+    "checking": "Checking the image (smoke test)",
+    "creating": "Preparing the container (network, firewall, memory model)",
+    "starting": "Starting the container",
+    "health": "Waiting for Agent Zero to answer",
+}
+
+
+def install_progress(phase: str, pct: float = 0) -> int:
+    lo, hi = _INSTALL_BANDS.get(phase, (0, 99))
+    try:
+        frac = max(0.0, min(100.0, float(pct))) / 100.0
+    except (TypeError, ValueError):
+        frac = 0.0
+    return int(lo + (hi - lo) * frac)
+
+
 def bundle_stream(out, info: dict | None = None, *, status: bool = True) -> int:
     """Write the bundle tar to ``out`` (docker load's stdin), checking every
     part's sha256 and reporting % in the agent status. 0 ok, 3 bad bundle."""
@@ -590,8 +623,9 @@ def bundle_stream(out, info: dict | None = None, *, status: bool = True) -> int:
                     last = now
                     pct = done * 100 // total
                     write_status("installing", image_present=False, low_space=False,
-                                 phase="loading", progress=pct,
-                                 message=f"Loading Agent Zero from the stick… {pct}%")
+                                 phase="loading", progress=install_progress("loading", pct),
+                                 step=1, steps=INSTALL_STEPS,
+                                 message=f"Step 1 of {INSTALL_STEPS}: loading Agent Zero from the stick… {pct}%")
         if "sha256:" + h.hexdigest() != part.get("sha256"):
             # docker load has not seen the end of the archive yet, so a bad
             # part makes it fail rather than load a corrupt image.
@@ -599,8 +633,9 @@ def bundle_stream(out, info: dict | None = None, *, status: bool = True) -> int:
             return 3
     out.flush()
     if status:
-        write_status("installing", image_present=False, low_space=False, phase="loading",
-                     progress=100, message="Loading Agent Zero from the stick… unpacking")
+        write_status("installing", image_present=False, low_space=False, phase="unpacking",
+                     progress=install_progress("unpacking", 0), step=2, steps=INSTALL_STEPS,
+                     message=f"Step 2 of {INSTALL_STEPS}: unpacking the Agent Zero image (slow on USB)…")
     return 0
 
 
@@ -1277,6 +1312,42 @@ _APPS_TYPES = {
 }
 
 
+class QuickBindHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse-DNS lookup in server_bind.
+
+    0.6.2 (A2): http.server.HTTPServer.server_bind calls socket.getfqdn() on
+    the listen address before listen(). On the stick the agent bridge address
+    (172.30.0.1) has no PTR record and the resolver is often unreachable
+    (offline, or egress not up yet), so getfqdn() blocked for 10-30 s. The
+    port was bound but not listening, the 5 s bind check in stickllm-agent
+    failed, and stickllm-agent.service went into a restart loop.
+    """
+
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        import socketserver
+
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
+def bind_with_retry(factory, what: str, attempts: int = 40, delay: float = 0.5):
+    """Create a server, retrying while the bridge address is not up yet.
+    Every failure reason goes to stderr (the bridge's log file)."""
+    last: Exception | None = None
+    for i in range(max(1, attempts)):
+        try:
+            return factory()
+        except OSError as exc:
+            last = exc
+            print(f"{what}: bind attempt {i + 1} failed: {exc}", file=sys.stderr, flush=True)
+            time.sleep(delay)
+    raise SystemExit(f"{what}: could not bind: {last}")
+
+
 def apps_ui_root() -> Path:
     """Host directory of static apps. Not the vault, home, or the chat UI."""
     return Path(os.environ.get("STICKLLM_UI", "/opt/stickllm/ui")) / "apps"
@@ -1910,15 +1981,18 @@ def apps_server(listen_host: str, listen_port: int, root: Path | None = None) ->
         def version_string(self) -> str:
             return "StickLLM"
 
-    return ThreadingHTTPServer((listen_host, int(listen_port)), Handler)
+    return QuickBindHTTPServer((listen_host, int(listen_port)), Handler)
 
 
 def run_apps_bridge(listen_host: str, listen_port: int, root: Path | None = None) -> None:
     """Serve ui/apps on the bridge address. Read-only. No chat, vault, or control API."""
-    srv = apps_server(listen_host, listen_port, root)
+    srv = bind_with_retry(lambda: apps_server(listen_host, listen_port, root),
+                          f"apps bridge {listen_host}:{listen_port}")
+    print(f"apps bridge listening on {listen_host}:{listen_port}", file=sys.stderr, flush=True)
     try:
         srv.serve_forever()
-    except OSError:
+    except OSError as exc:
+        print(f"apps bridge stopped: {exc}", file=sys.stderr, flush=True)
         return
     finally:
         try:
@@ -2520,7 +2594,7 @@ def open_app_server(
         def version_string(self) -> str:
             return "StickLLM"
 
-    return ThreadingHTTPServer((listen_host, int(listen_port)), Handler)
+    return QuickBindHTTPServer((listen_host, int(listen_port)), Handler)
 
 
 def run_open_app_bridge(
@@ -2531,7 +2605,10 @@ def run_open_app_bridge(
     for host in hosts:
         if host in ("0.0.0.0", "::", ""):
             raise SystemExit("open app control must not listen on all interfaces")
-    servers = [open_app_server(host, listen_port) for host in hosts]
+    servers = [
+        bind_with_retry(lambda h=host: open_app_server(h, listen_port), f"open app control {host}:{listen_port}")
+        for host in hosts
+    ]
     threads: list[threading.Thread] = []
     for srv in servers[:-1]:
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -2601,7 +2678,7 @@ def pull_progress(text: str) -> int | None:
 
 
 def _progress_value(saved: dict, state: str) -> int | None:
-    if state != "installing":
+    if state not in ("installing", "starting"):
         return None
     try:
         if saved.get("progress") is not None:
@@ -2659,7 +2736,9 @@ def status_document(
         message = NEEDS_INSTALL_MESSAGE
         state = "needs_install"
     elif not upstream_up:
-        message = "Agent Zero is loading…"
+        # 0.6.2 (A3): say which start step is running instead of a dead page.
+        detail = str(saved.get("message") or "").strip() if saved.get("state") in ("starting", "running") else ""
+        message = detail or "Agent Zero is starting…"
         state = "starting"
     else:
         message = "Agent"
@@ -2687,7 +2766,10 @@ def status_document(
         "message": message,
         "pull_log": pull_log_tail() if state in ("installing", "pull_failed") else "",
         # 0.6.0 (A5): progress for the status line.
-        "phase": str(saved.get("phase") or "") if state == "installing" else "",
+        "phase": str(saved.get("phase") or "") if state in ("installing", "starting") else "",
+        "step": saved.get("step") if state in ("installing", "starting") else None,
+        "steps": saved.get("steps") if state in ("installing", "starting") else None,
+        "step_name": INSTALL_STEP_NAMES.get(str(saved.get("phase") or ""), "") if state in ("installing", "starting") else "",
         "progress": _progress_value(saved, state),
         "bundled": bundle_info() is not None if state in ("needs_install", "pull_failed", "no_ssd") else None,
         "port": AGENT_PORT,
@@ -2958,6 +3040,59 @@ def embedding_cached(root: Path | None = None) -> bool:
     return False
 
 
+MINILM_REPO = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def minilm_bundle_dir(dirs: tuple[Path, ...] | None = None) -> Path | None:
+    """0.6.2 (A1): MiniLM files shipped next to the A0 image on the ISO."""
+    for base in dirs if dirs is not None else A0_BUNDLE_DIRS:
+        cand = base / "minilm"
+        try:
+            doc = json.loads((cand / "minilm.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("revision") and (cand / "files" / "model.safetensors").is_file():
+            return cand
+    return None
+
+
+def seed_embedding(root: Path | None = None, hf_home: Path | None = None,
+                   dirs: tuple[Path, ...] | None = None) -> bool:
+    """Copy the bundled MiniLM into the container caches (hub layout), so
+    Agent Zero starts with HF_HUB_OFFLINE=1 and never waits on Hugging Face."""
+    src = minilm_bundle_dir(dirs)
+    if src is None:
+        return False
+    doc = json.loads((src / "minilm.json").read_text(encoding="utf-8"))
+    rev = str(doc["revision"])
+    folder = "models--" + MINILM_REPO.replace("/", "--")
+    targets = [root or embedding_cache_root()]
+    hub = (hf_home or (ADDON / "state" / ".cache" / "huggingface")) / "hub"
+    targets.append(hub)
+    ok = False
+    for base in targets:
+        repo = base / folder
+        snap = repo / "snapshots" / rev
+        try:
+            for f in (src / "files").rglob("*"):
+                if not f.is_file():
+                    continue
+                rel = f.relative_to(src / "files")
+                dest = snap / rel
+                if dest.is_file() and dest.stat().st_size == f.stat().st_size:
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dest.with_name(dest.name + ".tmp")
+                shutil.copyfile(f, tmp)
+                os.replace(tmp, dest)
+            (repo / "refs").mkdir(parents=True, exist_ok=True)
+            (repo / "refs" / "main").write_text(rev, encoding="utf-8")
+            ok = True
+        except OSError as exc:
+            print(f"seed-embedding: {base}: {exc}", file=sys.stderr)
+    return ok and embedding_cached(root)
+
+
 def _sync_plugin_model_config(root: Path, model_name: str) -> None:
     """Update an already-migrated plugin config. Leave preset selection alone."""
     path = root / "model-config" / "config.json"
@@ -3177,7 +3312,22 @@ def llama_model_ready_id() -> str:
     return ""
 
 
-def sync_model(wait: float = 300.0, poll: float = 2.0, model_name: str | None = None) -> dict:
+def _model_matches(model: str, expect: str) -> bool:
+    """0.6.2 (A7): the id llama-server reports belongs to the model that was
+    just activated (alias, file name or path)."""
+    if not expect:
+        return True
+    stem = Path(expect).name
+    for suf in (".gguf",):
+        if stem.lower().endswith(suf):
+            stem = stem[: -len(suf)]
+    stem = re.sub(r"-0*1-of-0*\d+$", "", stem)
+    m = model.lower()
+    return stem.lower() in m or Path(model).name.lower().startswith(stem.lower()) or m in expect.lower()
+
+
+def sync_model(wait: float = 300.0, poll: float = 2.0, model_name: str | None = None,
+               expect: str = "") -> dict:
     """0.6.0 (bug 14): keep A0's "Default" preset on the loaded model.
 
     Called in the background after every model change (stickllm-control
@@ -3193,6 +3343,9 @@ def sync_model(wait: float = 300.0, poll: float = 2.0, model_name: str | None = 
     deadline = time.time() + max(0.0, wait)
     while not model:
         model = llama_model_ready_id()
+        if model and not _model_matches(model, expect):
+            # The old model still answers (restart in flight): wait for the new id.
+            model = ""
         if model or time.time() >= deadline:
             break
         time.sleep(poll)
@@ -3803,7 +3956,8 @@ def main(argv: list[str]) -> int:
                 wait = float(argv[2])
             except ValueError:
                 pass
-        res = sync_model(wait)
+        expect = argv[3] if len(argv) > 3 else ""
+        res = sync_model(wait, expect=expect)
         print(json.dumps(res))
         return 0 if res.get("ok") else 3
     if cmd == "assemble-plugins":
@@ -3813,6 +3967,14 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "embedding-cached":
         return 0 if embedding_cached() else 1
+    if cmd == "status-state":
+        print(str(read_status().get("state") or ""))
+        return 0
+    if cmd == "seed-embedding":
+        return 0 if seed_embedding() else 1
+    if cmd == "install-progress":
+        print(install_progress(argv[2] if len(argv) > 2 else "", float(argv[3]) if len(argv) > 3 else 0))
+        return 0
     if cmd == "write-status":
         state = "unknown"
         extra: dict[str, object] = {}
