@@ -31,7 +31,7 @@ def mute(text):
     out = []
     program = ""
     seen_autostart = False
-    muted = {"run_sshd", "run_tunnel_api"}
+    muted = {"run_sshd", "run_tunnel_api", "run_searxng"}
 
     def flush_autostart(buf, prog, seen):
         if prog in muted and not seen:
@@ -122,7 +122,11 @@ report = {
 out.write_text(json.dumps(report) + "\n", encoding="utf-8")
 PY
 
-# Host-visible boot log (bind-mounted from stickllm-agent run).
+# Ensure tmp dirs exist/writable (SearXNG/tempfile require this).
+mkdir -p /tmp /var/tmp
+chmod 1777 /tmp /var/tmp || true
+mkdir -p /a0/usr/logs
+# Host bind-mounts /run/stickllm/a0-init.log -> /tmp/a0-init.log when present.
 exec >>/tmp/a0-init.log 2>&1
 echo "a0-entrypoint $(date -u +%Y-%m-%dT%H:%M:%SZ) starting initialize.sh"
 exec /exe/initialize.sh main

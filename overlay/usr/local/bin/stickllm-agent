@@ -712,7 +712,8 @@ cmd_run_container() {
     -e A0_SET_a2a_server_enabled=false \
     -e A0_SET_mcp_server_enabled=false \
     -e A0_SET_workdir_path=/a0/usr/workdir \
-    --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+    --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=256m \
+    --tmpfs /var/tmp:rw,nosuid,nodev,mode=1777,size=64m \
     -v "${ADDON}/state:/a0/usr" \
     "${CHATS_ARGS[@]}" \
     -v "${ADDON}/work:/a0/usr/workdir" \
