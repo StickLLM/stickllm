@@ -5,10 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v067c" />
-<link rel="stylesheet" href="desktop.css?v=v067c" />
+<link rel="stylesheet" href="style.css?v=v068a" />
+<link rel="stylesheet" href="desktop.css?v=v068a" />
 </head>
 <body>
+<!-- Exact stickllm-bootstatus BANNER (block "STICKLLM"); deskMode backdrop only. -->
+<pre class="deskSplash" aria-hidden="true">███████╗████████╗██╗ ██████╗██╗  ██╗██╗     ██╗     ███╗   ███╗
+██╔════╝╚══██╔══╝██║██╔════╝██║ ██╔╝██║     ██║     ████╗ ████║
+███████╗   ██║   ██║██║     █████╔╝ ██║     ██║     ██╔████╔██║
+╚════██║   ██║   ██║██║     ██╔═██╗ ██║     ██║     ██║╚██╔╝██║
+███████║   ██║   ██║╚██████╗██║  ██╗███████╗███████╗██║ ╚═╝ ██║
+╚══════╝   ╚═╝   ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚═╝</pre>
 <div class="app" id="app">
   <div class="scrim" id="scrim" hidden></div>
 
@@ -235,7 +242,7 @@
 
   <!-- Settings modal -->
   <div class="modalWrap" id="settings" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+    <div class="modal setShell" role="dialog" aria-modal="true" aria-labelledby="setTitle">
       <nav class="setNav" id="setNav" aria-label="Settings sections">
         <div class="setNavHead" id="setTitle">Settings</div>
         <button type="button" data-sec="general">General</button>
@@ -610,7 +617,7 @@
     <h3>StickLLM</h3>
     <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
     <div class="group">
-      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.7</span></div>
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.8</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono" id="aboutLlama">—</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
@@ -738,8 +745,8 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v067c"></script>
-<script src="desktop-core.js?v=v067c"></script>
-<script src="desktop.js?v=v067c"></script>
+<script src="app.js?v=v068a"></script>
+<script src="desktop-core.js?v=v068a"></script>
+<script src="desktop.js?v=v068a"></script>
 </body>
 </html>

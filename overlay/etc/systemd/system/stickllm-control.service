@@ -8,6 +8,8 @@ Type=simple
 # Downloads are started in the background. Restarting this API must not kill them.
 KillMode=process
 ExecStartPre=/usr/bin/mkdir -p /run/stickllm
+# Warmup spawn log must be appendable by both root (this unit) and stickllm CLI.
+ExecStartPre=/bin/bash -c 'touch /run/stickllm/warmup.log /run/stickllm/llama-warmup.json; chmod 666 /run/stickllm/warmup.log /run/stickllm/llama-warmup.json 2>/dev/null || true'
 # Prefix '-' so a bad shebang/exit never blocks control; console-setup also mints.
 ExecStartPre=-/usr/local/bin/stickllm-pair --force
 ExecStart=/usr/local/bin/stickllm-control

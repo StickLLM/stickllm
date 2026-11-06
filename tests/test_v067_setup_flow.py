@@ -9,9 +9,11 @@ def test_boot_probes_ssd_before_wizard():
     assert "async function probeBootVault" in app
     assert "mount_host_partition" in app
     assert "openVaultUnlockOnly" in app
-    # Fresh path still has Open model before network/storage/vault.
-    assert "STEP_MODEL" in app and "STEP_NET" in app and "STEP_VAULT" in app
-    assert app.index("STEP_MODEL") < app.index("STEP_VAULT")
+    # Fresh path: Welcome → Open model → network/storage/vault.
+    assert "STEP_WELCOME" in app and "STEP_MODEL" in app and "STEP_NET" in app and "STEP_VAULT" in app
+    assert app.index("STEP_WELCOME") < app.index("STEP_MODEL") < app.index("STEP_VAULT")
+    assert "setupBlocksAgent" in app
+    assert "setSetupChrome" in app
 
 
 def test_vault_create_enters_mode_before_recovery():
@@ -27,10 +29,14 @@ def test_agent_panel_clears_locked_ctas():
     desk = (ROOT / "ui/desktop.js").read_text(encoding="utf-8")
     assert 'dataset.mode = "unlock"' in desk or 'dataset.mode="unlock"' in desk
     assert "Unlock vault" in desk
-    assert "waitRunning" in desk or "Starting…" in desk
+    assert "waitReady" in desk or "Starting…" in desk
     # Reboot unlock must start A0 and hide Open/Retry/Store while starting/running.
     assert "ensureAgentZeroStarted" in desk.split("stickllm:vault-unlocked", 1)[1]
     assert "store.hidden = needsUnlock || settingsGap || working" in desk
+    # Open A0 only after setup / unlock; poll HTTP before iframe.
+    assert "setupBlocksA0" in desk
+    assert "agentHttpReady" in desk
+    assert "startChatAgentPoll" in desk.split("stickllm:vault-unlocked", 1)[1]
 
 
 def test_vault_unlock_opening_wording_and_no_save_password():

@@ -1,3 +1,18 @@
+## 0.6.8 - 2026-11-06
+- Agent Zero open sequencing: never open Chat/A0 during first-boot wizard or mid vault-create; open once after System ready / wizard dismiss or vault unlock on returning boot (`stickllm:vault-unlocked`).
+- First load without error: show Install/Waiting panel and poll until `/agent-zero/` HTTP is up (`agentHttpReady`) before setting the iframe — never navigate to a dead port (no 127.0.0.1 refused-to-connect on first paint).
+- Hard-reload harden: `agentHttpReady` requires `/agent-zero/api/csrf_token` (not HEAD alone); single-flight panel→iframe upgrade; detect splash “Unable to load” / “could not get data” for in-place reload; UI cache bust `v068a`.
+- Cap blank/`pair_required` iframe recovery to in-place reloads (max 3); no close+reopen loops.
+- Keep prior fix: no vault-mode toast spam from the health poll (`setSessionMode` idempotent / `unchanged`).
+- Auto llama warmup: after Activate and after vault unlock restore, fire a real `/v1/chat/completions` ping (no llama remint) so the first Agent Zero message is not stuck on “Calling LLM”; write `llama-warmup.json` with `ready=true` (666 under `/run`, `/tmp` fallback when stickllm cannot create in root:stickllm-llama 775); UI chip shows “Warming up…” while queued/waiting/running.
+- Preparing-agent toast removed — caused Agent Zero embed failure (bad screen). No StickLLM “Preparing agent…” UI, no embed `stickllm-a0` prompt postMessage, no gateway `AGENT_PROMPT_BUSY` hooks (`agent_prompt` health field left as unused stub).
+- Default llama `ctx_size` raised to **32768** (32K floor) in the baked profile.
+- Desktop: boot splash block logo as a quiet deskMode backdrop; Settings hamburger driven by panel width (`.setShell.setNarrow`) rather than viewport alone.
+
+### Later
+- Generate splash / SSH test-mode passwords (`stickllm-ssh-bootstrap`) with a stricter OCR-friendly charset (avoid O/0, S/5, I/l/1, B/8, Z/2, etc.); keep length / entropy adequate.
+- Optimize entire desktop UI for phones — taskbar, windows, launcher and icons currently do not render well on small viewports. See `docs/UI-PHONE.md`.
+
 ## 0.6.7 - 2026-11-06
 - Default baked model: **Qwen2.5-7B Instruct Q4_K_M** (~4.4 GB split GGUF on the stick) replaces Qwen3.5-4B; Open model / catalog `base_model_id` / probe default follow it. Q5_K_M stays an optional download (min 10 GB VRAM for 32K headroom). Qwen3.5-4B remains an optional catalog download (not Open default, not baked).
 - VRAM tier recommends (one each): **8 GB** baked 7B Q4 · **12 GB** 14B Q4 · **16 GB** 32B Q3 · **24 GB** 27B Q4 · **32 GB** 32B Q4 · **Dual 24 GB** 72B Q3 (CUDA tensor-split; probe sums NVIDIA VRAM). See `docs/MODELS.md`.
@@ -18,9 +33,6 @@
 - Docs: advertise minimum hardware **16 GB** system RAM + **8 GB** GPU (do not market 4 GB).
 - Docs: GPU backends — **AMD:** ROCm and Vulkan; **NVIDIA:** CUDA; **Intel GPU:** Vulkan.
 - Docs: Tested hardware — NVIDIA single/dual RTX 3090; AMD single RX 570 / RX 580.
-
-### Later
-- Optimize entire desktop UI for phones — taskbar, windows, launcher and icons currently do not render well on small viewports. See `docs/UI-PHONE.md`.
 
 ## 0.6.6 - 2026-11-06
 - Retire StickLLM Chat chrome and desktop Chat icon; Agent Zero is the only chat window (never mount `#app` into WinBox).

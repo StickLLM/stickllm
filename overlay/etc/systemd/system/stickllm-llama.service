@@ -27,7 +27,9 @@ Environment=LD_LIBRARY_PATH=/opt/stickllm/lib
 Environment=STICKLLM_LLAMA_HOST=127.0.0.1
 Environment=STICKLLM_LLAMA_PORT=8080
 # Ensure run dir writable for llama-start / the planner (User=stickllm-llama).
-ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true'
+# Pre-create llama-warmup.json as 666 so stickllm CLI can update status without
+# directory write (dir stays root:stickllm-llama 775).
+ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /tmp; chgrp stickllm-llama /run/stickllm 2>/dev/null || true; chmod 775 /run/stickllm 2>/dev/null || true; touch /run/stickllm/llama-warmup.json /run/stickllm/warmup.log; chmod 666 /run/stickllm/llama-warmup.json /run/stickllm/warmup.log 2>/dev/null || true'
 # Prep needs root (modprobe); + ignores User=. Soft-fail — never block CPU.
 ExecStartPre=+/bin/bash -c '/usr/local/bin/stickllm-nvidia-prep || true'
 # Drop a baked CUDA_VISIBLE_DEVICES=0 pin so pick-gpus (cuda.env) is the only list.

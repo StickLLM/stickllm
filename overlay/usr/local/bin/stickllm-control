@@ -1710,7 +1710,316 @@ def model_unload() -> dict:
                 f.unlink()
         except Exception:
             pass
+    # Explicit unload: do not auto-restore this model after the next unlock.
+    clear_last_model()
+    _write_warmup_state({"status": "idle", "ts": int(time.time()), "note": "unloaded"})
     return {"ok": bool(r.get("ok", True)), "unloaded": True}
+
+
+LAST_MODEL_NAME = "last-model.json"
+WARMUP_PATH = RUN / "llama-warmup.json"
+# /run/stickllm is often root:stickllm-llama 775 — stickllm CLI cannot create files
+# there. Keep a /tmp fallback so unlock/Activate warmup state is still visible.
+WARMUP_PATH_FALLBACK = Path("/tmp/stickllm-llama-warmup.json")
+WARMUP_LOG = RUN / "warmup.log"
+WARMUP_LOG_FALLBACK = Path("/tmp/stickllm-warmup.log")
+
+
+def _warmup_paths() -> list[Path]:
+    return [WARMUP_PATH, WARMUP_PATH_FALLBACK]
+
+
+def _warmup_log_paths() -> list[Path]:
+    return [WARMUP_LOG, WARMUP_LOG_FALLBACK]
+
+
+def _open_warmup_log():
+    """Append log for spawn_llama_warmup; stickllm and root must both write.
+
+    Prefer /run/stickllm/warmup.log (prepared 666 by llama unit). Fall back to
+    /tmp. Always chmod 666 after create so a stickllm-owned 0644 file does not
+    block a later root (or vice versa) append.
+    """
+    last: OSError | None = None
+    for path in _warmup_log_paths():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        try:
+            fd = os.open(
+                str(path),
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                0o666,
+            )
+            try:
+                os.fchmod(fd, 0o666)
+            except OSError:
+                try:
+                    os.chmod(path, 0o666)
+                except OSError:
+                    pass
+            return os.fdopen(fd, "ab", buffering=0)
+        except OSError as e:
+            last = e
+            continue
+    raise last or OSError("warmup log unavailable")
+
+
+def _last_model_paths() -> list[Path]:
+    """Durable first (USB settings / vault), then /run for this boot only."""
+    out: list[Path] = []
+    for base in (SETTINGS_MNT,):
+        try:
+            if os.path.ismount(str(base)):
+                out.append(base / LAST_MODEL_NAME)
+        except OSError:
+            pass
+    try:
+        vd = vault_settings_dir()
+        if vd is not None:
+            out.append(vd / LAST_MODEL_NAME)
+    except Exception:
+        pass
+    out.append(RUN / LAST_MODEL_NAME)
+    # Unique while keeping order.
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for p in out:
+        s = str(p)
+        if s not in seen:
+            seen.add(s)
+            uniq.append(p)
+    return uniq
+
+
+def remember_last_model(model_id: str, ctx_size: int | None = None, kv_type: str | None = None) -> None:
+    """Remember the last successful Activate so unlock can restore it."""
+    mid = str(model_id or "").strip()
+    if not mid:
+        return
+    doc: dict = {"id": mid, "ts": int(time.time())}
+    if ctx_size is not None:
+        try:
+            doc["ctx_size"] = int(ctx_size)
+        except (TypeError, ValueError):
+            pass
+    kv = KV_TYPES.get(str(kv_type or "").strip().lower())
+    if kv:
+        doc["kv_type"] = kv
+    text = json.dumps(doc, indent=2) + "\n"
+    for path in _last_model_paths():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+            try:
+                os.chmod(path, 0o644)
+            except OSError:
+                pass
+        except OSError:
+            continue
+
+
+def clear_last_model() -> None:
+    for path in _last_model_paths():
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def read_last_model() -> dict:
+    for path in _last_model_paths():
+        doc = read_json(path)
+        mid = str(doc.get("id") or "").strip()
+        if mid:
+            return doc
+    return {}
+
+
+def _write_warmup_state(doc: dict) -> None:
+    """Write warmup status where stickllm + gateway can read it.
+
+    Prefer /run/stickllm (root / stickllm-llama). If that dir is not writable
+    (common for the stickllm user: root:stickllm-llama 775), fall back to /tmp.
+    When root can write /run, chmod the file 666 so later stickllm updates work.
+    """
+    text = json.dumps(doc) + "\n"
+    wrote = False
+    if os.geteuid() == 0:
+        try:
+            RUN.mkdir(parents=True, exist_ok=True)
+            # Keep group write for stickllm-llama; world-write the status file only.
+            os.chmod(RUN, 0o775)
+        except OSError:
+            pass
+    for path in _warmup_paths():
+        ok_here = False
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        # Atomic replace needs directory write (fails for stickllm on
+        # root:stickllm-llama 775). Fall back to truncating an existing 666 file.
+        try:
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+            ok_here = True
+        except OSError:
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                ok_here = True
+            except OSError:
+                ok_here = False
+        if not ok_here:
+            continue
+        try:
+            # 666 so stickllm CLI can refresh status without directory write.
+            os.chmod(path, 0o666)
+        except OSError:
+            pass
+        wrote = True
+    if not wrote:
+        pass
+
+
+def llama_warmup_state() -> dict:
+    for path in _warmup_paths():
+        doc = read_json(path)
+        if doc:
+            return doc
+    return {"status": "idle"}
+
+
+def llama_warmup(wait: float = 600.0, poll: float = 1.0) -> dict:
+    """Tiny completion after /health is OK — pays CUDA/KV first-token cost off the
+    user's first Agent Zero message. Does not restart llama."""
+    _write_warmup_state({"status": "waiting", "ts": int(time.time())})
+    deadline = time.time() + max(0.0, wait)
+    while True:
+        ok, msg = llama_health_ok()
+        if ok:
+            break
+        if time.time() >= deadline:
+            out = {"ok": False, "status": "timeout", "error": msg or "llama not healthy", "ts": int(time.time())}
+            _write_warmup_state(out)
+            return out
+        time.sleep(max(0.2, poll))
+    _write_warmup_state({"status": "running", "ts": int(time.time())})
+    # Short non-empty prompt + 8 tokens: enough to force CUDA graph / KV alloc
+    # without a long generation. max_tokens=1 can return too fast to warm some builds.
+    body = json.dumps({
+        "model": "stickllm",
+        "messages": [
+            {"role": "system", "content": "Reply with one short word."},
+            {"role": "user", "content": "ping"},
+        ],
+        "max_tokens": 8,
+        "temperature": 0,
+        "stream": False,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "http://127.0.0.1:8080/v1/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json", "X-StickLLM-Client": "warmup"},
+        method="POST",
+    )
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=max(30.0, wait)) as resp:
+            raw = resp.read(65536)
+            code = getattr(resp, "status", 200) or 200
+        elapsed = round(time.time() - t0, 2)
+        ok_http = 200 <= int(code) < 300
+        out = {
+            "ok": ok_http,
+            "ready": ok_http,
+            "status": "ready" if ok_http else "error",
+            "http": int(code),
+            "seconds": elapsed,
+            "ts": int(time.time()),
+            "bytes": len(raw or b""),
+        }
+        if not ok_http:
+            out["error"] = f"warmup http {code}"
+        _write_warmup_state(out)
+        return out
+    except Exception as e:
+        elapsed = round(time.time() - t0, 2)
+        out = {
+            "ok": False,
+            "ready": False,
+            "status": "error",
+            "error": str(e)[:200],
+            "seconds": elapsed,
+            "ts": int(time.time()),
+        }
+        _write_warmup_state(out)
+        return out
+
+
+def spawn_llama_warmup(wait: float = 600.0) -> None:
+    """Fire-and-forget warmup so Activate / restore stay non-blocking."""
+    try:
+        _write_warmup_state({"status": "queued", "ts": int(time.time())})
+        logf = _open_warmup_log()
+        subprocess.Popen(
+            [sys.executable, "/usr/local/bin/stickllm-control", "--warmup", str(int(wait))],
+            stdout=logf,
+            stderr=logf,
+            start_new_session=True,
+            close_fds=True,
+        )
+        try:
+            logf.close()
+        except OSError:
+            pass
+    except OSError as e:
+        _write_warmup_state({"status": "error", "error": f"spawn failed: {e}"[:200], "ts": int(time.time())})
+
+
+def restore_last_model() -> dict:
+    """After vault unlock / setup: reload the last Activated model if none is up.
+
+    Always kicks a real /v1/chat/completions warm when llama is already healthy so
+    the first Agent Zero message is not the cold first-token hit.
+    """
+    ok, _ = llama_health_ok()
+    if ok and active_model_path():
+        spawn_llama_warmup(600)
+        return {"ok": True, "restored": False, "running": True, "note": "already loaded", "warmup": "spawned"}
+    if active_model_path() and not ok:
+        # model.env present but server down or still starting — kick the unit, then warm.
+        sh(["systemctl", "reset-failed", "stickllm-llama.service"], timeout=30)
+        sh(["systemctl", "start", "stickllm-llama.service"], timeout=60)
+        spawn_llama_warmup(600)
+        return {"ok": True, "restored": False, "running": False, "note": "restarted", "warmup": "spawned"}
+    last = read_last_model()
+    mid = str(last.get("id") or "").strip()
+    if not mid:
+        return {"ok": True, "restored": False, "note": "no last model"}
+    ctx = last.get("ctx_size")
+    try:
+        ctx_arg = int(ctx) if ctx is not None else None
+    except (TypeError, ValueError):
+        ctx_arg = None
+    # Stale ships remembered 8192; re-pick via activate defaults (32K when fit).
+    if ctx_arg is not None and ctx_arg < LLAMA_CTX_FLOOR:
+        ctx_arg = None
+    kv = last.get("kv_type")
+    try:
+        r = activate_model(mid, ctx_arg, kv)
+    except Exception as e:
+        return {"ok": False, "restored": False, "error": str(e)[:200], "id": mid}
+    r = dict(r or {})
+    r["restored"] = bool(r.get("ok"))
+    r["from"] = mid
+    r["warmup"] = "spawned"
+    return r
 
 
 APPAGENT_UNIT = "stickllm-appagent.service"
@@ -1889,6 +2198,12 @@ def llama_fewer_layers() -> dict:
     return r
 
 
+# Product floor for Agent Zero (first system+tools assemble ~10k tokens).
+# llama-start still honours an explicit smaller STICKLLM_CTX_SIZE; activate /
+# estimate only *default* to this when VRAM/RAM fit allows.
+LLAMA_CTX_FLOOR = 32768
+
+
 def estimate_context_budget(
     *,
     vram_gb: float,
@@ -1911,6 +2226,8 @@ def estimate_context_budget(
       max_ctx_mem = floor(free_mem_after_bytes / kv_bytes_per_token)
       Clamp to [2048, model_max_ctx] (GGUF context_length when available).
       GPU hosts are not capped at 32K. A CPU host stays at 8K.
+      Default suggestion prefers LLAMA_CTX_FLOOR (32K) when it fits — required
+      for Agent Zero; 8K is only suggested when 32K does not fit.
     """
     dims = dims or {}
     size = max(0.1, float(approx_size_gb or 0) or 2.0)
@@ -1932,15 +2249,22 @@ def estimate_context_budget(
     max_from_mem = int((free_after * (1024**3)) // kv_bpt) if free_after > 0 else 2048
     train_ctx = int(model_max_ctx or dims.get("n_ctx_train") or 0)
     if train_ctx <= 0:
-        train_ctx = 32768
+        train_ctx = LLAMA_CTX_FLOOR
     # CPU hosts stay small. GPU hosts follow the GGUF context length.
     ceiling = train_ctx if gpu else min(train_ctx, 8192)
     hi = max(2048, min(ceiling, max(2048, max_from_mem)))
     # Snap down to a friendly step.
     step = 1024 if hi <= 8192 else 2048
     hi = max(2048, (hi // step) * step)
-    # Default suggestion: prefer 8k when it fits, else half of hi, else hi.
-    suggested = 8192 if hi >= 8192 else (4096 if hi >= 4096 else hi)
+    # Default suggestion: Agent Zero floor when it fits; else 8k/4k/hi.
+    if hi >= LLAMA_CTX_FLOOR:
+        suggested = LLAMA_CTX_FLOOR
+    elif hi >= 8192:
+        suggested = 8192
+    elif hi >= 4096:
+        suggested = 4096
+    else:
+        suggested = hi
     if suggested > hi:
         suggested = hi
     return {
@@ -2004,9 +2328,6 @@ def llama_health_ok() -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
-# stickllm-llama-start raises any smaller context to this (Agent Zero needs it).
-# Agent Zero prefers >= 32768, but llama-start honours the user value (no floor).
-LLAMA_CTX_FLOOR = 32768
 KV_TYPES = {"f16": "f16", "q8": "q8_0", "q8_0": "q8_0", "q4": "q4_0", "q4_0": "q4_0"}
 
 
@@ -4080,7 +4401,7 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
                 nbytes = gguf_weight_bytes(Path(first))
             except OSError:
                 nbytes = int(max(size_gb, 0.1) * 1e9)
-            preview_ctx = int(budget.get("ctx_suggested") or 8192)
+            preview_ctx = int(budget.get("ctx_suggested") or LLAMA_CTX_FLOOR)
             preview = plan_gpu_fit(
                 file_bytes=nbytes,
                 ctx=preview_ctx,
@@ -4441,9 +4762,12 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     except OSError:
         pass
     ctx_lo = int(m.get("ctx_min") or 2048)
-    ctx_hi = int(m.get("ctx_max") or 8192)
+    ctx_hi = int(m.get("ctx_max") or LLAMA_CTX_FLOOR)
     if ctx_size is None:
-        ctx = int(m.get("ctx_suggested") or min(8192, ctx_hi))
+        # Prefer Agent Zero 32K floor when the VRAM fit allows; never invent a
+        # larger value than ctx_hi (estimate_context_budget).
+        floor = LLAMA_CTX_FLOOR if ctx_hi >= LLAMA_CTX_FLOOR else ctx_hi
+        ctx = int(m.get("ctx_suggested") or floor)
     else:
         try:
             ctx = int(ctx_size)
@@ -4515,6 +4839,7 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     sh(["systemctl", "reset-failed", "stickllm-llama.service"], timeout=30)
     # model.env now exists → ConditionPathExists passes; start/restart loads on demand.
     r = sh(["systemctl", "restart", "stickllm-llama.service"], timeout=60)
+    remember_last_model(model_id, ctx, kv)
     # 0.6.0 (bug 14): Agent Zero's Default preset follows the loaded model.
     # Runs in the background: waits for llama-server, then rewrites the A0
     # model config on the settings partition (no-op when it is locked).
@@ -4527,6 +4852,8 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
         )
     except OSError:
         pass
+    # Pay first-token CUDA/KV cost before the user's first A0 chat (no llama restart).
+    spawn_llama_warmup(600)
     # Brief health peek only — large GGUFs take minutes; UI polls Loading → Running.
     # (Previously waited ~20s and blocked the Activate response / Loading paint.)
     healthy = False
@@ -4547,6 +4874,7 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     r["running"] = healthy
     r["health"] = health_msg
     r["load_state"] = "running" if healthy else "loading"
+    r["warmup"] = llama_warmup_state()
     r["offload"] = write_offload_plan(build_offload_plan())
     r["llama_service"] = llama_service_snapshot(stop_loop=False)
     r["models"] = enrich_models()
@@ -5433,6 +5761,15 @@ def handle(action: str, params: dict) -> dict:
             except (TypeError, ValueError):
                 return {"ok": False, "error": "ctx_size must be an integer"}
         return activate_model(mid, ctx_arg, params.get("kv_type"))
+    if action == "llama_warmup":
+        wait = params.get("wait", 600)
+        try:
+            wait_f = float(wait)
+        except (TypeError, ValueError):
+            wait_f = 600.0
+        return llama_warmup(wait_f)
+    if action == "restore_last_model":
+        return restore_last_model()
     if action == "load_settings_get":
         mid = str(params.get("id") or "").strip()
         return {"ok": True, "id": mid, "settings": load_settings_for(mid),
@@ -6043,6 +6380,20 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--plan-offload":
         return emit_offload_plan()
+    if len(sys.argv) > 1 and sys.argv[1] == "--warmup":
+        wait = 600.0
+        if len(sys.argv) > 2:
+            try:
+                wait = float(sys.argv[2])
+            except ValueError:
+                wait = 600.0
+        out = llama_warmup(wait)
+        print(json.dumps(out), flush=True)
+        return 0 if out.get("ok") else 1
+    if len(sys.argv) > 1 and sys.argv[1] == "--restore-last-model":
+        out = restore_last_model()
+        print(json.dumps(out), flush=True)
+        return 0 if out.get("ok", True) else 1
     RUN.mkdir(parents=True, exist_ok=True)
     httpd = ThreadedHTTPServer((HOST, PORT), Handler)
     print(f"stickllm-control on http://{HOST}:{PORT}", flush=True)

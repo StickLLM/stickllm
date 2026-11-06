@@ -749,11 +749,20 @@
     return wb;
   }
 
-  function chatSpec(ag) {
+  function setupBlocksA0() {
+    const api = appApi();
+    return !!(api.setupBlocksAgent && api.setupBlocksAgent())
+      || document.body.classList.contains("setup-active")
+      || !!(document.getElementById("setupWizard") && document.getElementById("setupWizard").classList.contains("show"));
+  }
+  function chatSpec(ag, opts) {
     // 0.6.5: Agent Zero window only — never mount StickLLM #app into WinBox
     // (that pulled the old thread UI onto the kiosk and distorted the desk).
+    // 0.6.8: iframe only when HTTP is confirmed ready (opts.httpReady) — never
+    // navigate to a dead /agent-zero/ or loopback port.
     ag = ag || (appApi().deskAgent ? appApi().deskAgent() : { installed: false, running: false });
-    if (ag.installed && ag.running) {
+    const embed = !!(opts && opts.httpReady) && !!(ag.installed && ag.running);
+    if (embed) {
       return {
         id: CHAT, title: "Agent Zero", w: 1180, h: 800, pinned: true,
         url: urlFor("agent"), popOut: () => openOutside("agent"),
@@ -807,33 +816,36 @@
     if (browserCovers()) yieldBrowser();
     const api = appApi();
     if (id === CHAT) {
+      // Wizard / mid vault-create owns the screen — do not open A0 yet.
+      if (setupBlocksA0()) return null;
       try { if (api.ensureAgentZeroStarted) api.ensureAgentZeroStarted(); } catch (e) {}
       const cur = wm.get(CHAT);
-      const openChatWith = (ag) => {
-        if (cur && cur.agentPanel && ag.installed && ag.running) wm.close(CHAT, true);
-        const w = wm.open(chatSpec(ag));
-        if (w && !(ag.installed && ag.running)) {
-          w.agentPanel = true;
-          startChatAgentPoll();
-        }
+      // Already showing the embed — just raise it (no reload thrash).
+      if (cur && !cur.agentPanel) return wm.focus(CHAT);
+      const openPanel = (ag) => {
+        const w = wm.open(chatSpec(ag, { httpReady: false }));
+        if (w) { w.agentPanel = true; startChatAgentPoll(); }
         return w;
       };
       const ag0 = api.deskAgent ? api.deskAgent() : {};
-      // Paired LAN: status may still be empty on first click — refresh before Install panel.
-      if (!(ag0.installed && ag0.running) && api.refreshAgentLink) {
-        Promise.resolve(api.refreshAgentLink()).then(() => {
-          const ag = api.deskAgent ? api.deskAgent() : ag0;
-          if (wm && wm.has(CHAT) && wm.get(CHAT) && wm.get(CHAT).agentPanel && ag.installed && ag.running) {
-            wm.close(CHAT, true);
-            wm.open(chatSpec(ag));
-            stopChatAgentPoll();
-          } else if (!wm || !wm.has(CHAT)) openChatWith(ag);
-          else renderAgentPanel(ag);
-        }).catch(() => openChatWith(ag0));
-        if (cur && cur.agentPanel) { renderAgentPanel(ag0); return cur; }
-        return openChatWith(ag0);
+      // Always show Waiting/Install panel first; upgrade to iframe only after
+      // agentHttpReady (never navigate to a dead port on first paint).
+      if (cur && cur.agentPanel) {
+        renderAgentPanel(ag0);
+        startChatAgentPoll();
+        return cur;
       }
-      return openChatWith(ag0);
+      const w = openPanel(ag0);
+      Promise.resolve(api.refreshAgentLink ? api.refreshAgentLink() : null)
+        .then(() => (api.agentHttpReady ? api.agentHttpReady(true) : Promise.resolve(false)))
+        .then((ok) => {
+          if (!ok || setupBlocksA0() || !wm || !wm.has(CHAT) || !chatWinIsPanel()) return;
+          const ag = api.deskAgent ? api.deskAgent() : ag0;
+          if (ag.installed && ag.running) upgradeChatToAgent(ag);
+          else renderAgentPanel(ag);
+        })
+        .catch(() => {});
+      return w;
     }
     if (id === "settings") {
       const w = wm.open(mountSpec("settings", ui.settings));
@@ -885,12 +897,36 @@
     const w = wm && wm.get(CHAT);
     return !!(w && w.agentPanel);
   }
+  let chatUpgradeLock = null;
   function upgradeChatToAgent(ag) {
-    if (!wm) return null;
-    stopChatAgentPoll();
-    const cur = wm.get(CHAT);
-    if (cur && cur.agentPanel) wm.close(CHAT, true);
-    return wm.open(chatSpec(ag || (appApi().deskAgent ? appApi().deskAgent() : {})));
+    if (!wm || setupBlocksA0()) return null;
+    // Single-flight: openApp + startChatAgentPoll must not close+reopen thrash
+    // (that paints splash / "Unable to load" / refused-to-connect on reload).
+    if (chatUpgradeLock) return chatUpgradeLock;
+    const api = appApi();
+    const go = () => {
+      stopChatAgentPoll();
+      chatFrameReloadN = 0;
+      const cur = wm.get(CHAT);
+      if (cur && cur.agentPanel) wm.close(CHAT, true);
+      else if (cur && !cur.agentPanel) { try { wm.focus(CHAT); } catch (_) {} return cur; }
+      return wm.open(chatSpec(ag || (api.deskAgent ? api.deskAgent() : {}), { httpReady: true }));
+    };
+    // Confirm HTTP before swapping panel → iframe (no refused-to-connect).
+    const run = api.agentHttpReady
+      ? Promise.resolve(api.agentHttpReady(true)).then((ok) => {
+          if (!ok || setupBlocksA0() || !wm) {
+            if (wm && wm.has(CHAT) && chatWinIsPanel()) {
+              renderAgentPanel(ag || (api.deskAgent ? api.deskAgent() : {}));
+              startChatAgentPoll();
+            }
+            return null;
+          }
+          return go();
+        }).catch(() => null)
+      : Promise.resolve(go());
+    chatUpgradeLock = Promise.resolve(run).finally(() => { chatUpgradeLock = null; });
+    return chatUpgradeLock;
   }
   function startChatAgentPoll() {
     const api = appApi();
@@ -898,6 +934,7 @@
     let kicks = 0;
     const tick = () => {
       if (!wm || !wm.has(CHAT) || !chatWinIsPanel()) { stopChatAgentPoll(); return; }
+      if (setupBlocksA0()) { stopChatAgentPoll(); return; }
       const kick = () => {
         // Reboot unlock: keep asking A0 to start while the panel is up.
         if (kicks < 8 && api.ensureAgentZeroStarted) {
@@ -907,12 +944,14 @@
       };
       kick();
       if (!api.refreshAgentLink) return;
-      Promise.resolve(api.refreshAgentLink()).then(() => {
-        const now = api.deskAgent ? api.deskAgent() : {};
-        if (!chatWinIsPanel()) return;
-        if (now.installed && now.running) upgradeChatToAgent(now);
-        else renderAgentPanel(now);
-      }).catch(() => {});
+      Promise.resolve(api.refreshAgentLink())
+        .then(() => (api.agentHttpReady ? api.agentHttpReady(true) : Promise.resolve(false)))
+        .then((ok) => {
+          const now = api.deskAgent ? api.deskAgent() : {};
+          if (!chatWinIsPanel()) return;
+          if (ok && now.installed && now.running) upgradeChatToAgent(now);
+          else renderAgentPanel(now);
+        }).catch(() => {});
     };
     tick();
     chatAgentPoll = setInterval(tick, 1500);
@@ -924,21 +963,33 @@
       const href = String((frame.contentWindow && frame.contentWindow.location && frame.contentWindow.location.href) || "");
       if (!href || href === "about:blank") return true;
       const text = String((frame.contentDocument && frame.contentDocument.body && frame.contentDocument.body.innerText) || "");
-      return /pair_required|not paired|pair this browser|unauthorized/i.test(text);
+      return /pair_required|not paired|pair this browser|unauthorized|agent_not_running|refused to connect|err_connection_refused|unable to load agent zero|could not get data|this site can.?t be reached|err_empty_response/i.test(text);
     } catch (_) {
       return false;
     }
   }
+  let chatFrameReloadAt = 0;
+  let chatFrameReloadN = 0;
   function reloadChatAgentFrame() {
     if (!wm || !wm.has(CHAT)) return false;
+    if (setupBlocksA0()) return false;
     const cur = wm.get(CHAT);
     if (!cur || cur.agentPanel) return false;
     const frame = cur.body && cur.body.querySelector ? cur.body.querySelector("iframe") : null;
-    if (!chatFrameNeedsReload(frame)) return false;
-    wm.close(CHAT, true);
+    if (!chatFrameNeedsReload(frame)) { chatFrameReloadN = 0; return false; }
+    const now = Date.now();
+    // Cap reload thrash (pair_required / blank) — in-place only, never close+reopen.
+    if (now - chatFrameReloadAt < 4000) return false;
+    if (chatFrameReloadN >= 3) return false;
+    chatFrameReloadAt = now;
+    chatFrameReloadN += 1;
     const api = appApi();
-    const ag = api.deskAgent ? api.deskAgent() : {};
-    wm.open(chatSpec(ag.installed && ag.running ? ag : { installed: true, running: true }));
+    const href = (api.deskAgent && api.deskAgent().href) || "/agent-zero/";
+    try {
+      // Same-origin embed only — never poke raw 127.0.0.1:5099.
+      const next = (href && String(href).indexOf("/agent-zero") >= 0) ? href : "/agent-zero/";
+      frame.src = next + (next.indexOf("?") >= 0 ? "&" : "?") + "_r=" + chatFrameReloadN;
+    } catch (_) {}
     return true;
   }
   /** After remote pair: show desktop Chat / A0 embed without a manual refresh. */
@@ -947,7 +998,7 @@
       evaluate();
       await new Promise((r) => setTimeout(r, 120));
     }
-    if (!on || !wm) return;
+    if (!on || !wm || setupBlocksA0()) return;
     const api = appApi();
     try { if (api.refreshAgentLink) await api.refreshAgentLink(); } catch (_) {}
     const ag = api.deskAgent ? api.deskAgent() : {};
@@ -958,8 +1009,7 @@
     const cur = wm.get(CHAT);
     if (cur && cur.agentPanel) {
       renderAgentPanel(ag);
-      if (ag.installed && ag.running) upgradeChatToAgent(ag);
-      else startChatAgentPoll();
+      startChatAgentPoll(); // upgrades only after agentHttpReady
       try { wm.focus(CHAT); } catch (_) {}
       return;
     }
@@ -970,37 +1020,8 @@
     try { wm.focus(CHAT); } catch (_) {}
   }
   function openAgent() {
-    const api = appApi();
-    const go = (ag) => {
-      const cur = wm.get("agent");
-      if (ag.installed && ag.running) {
-        stopAgentPoll();
-        if (cur && cur.agentPanel) wm.close("agent", true);
-        return wm.open({ id: "agent", title: "Agent", w: SYS.agent.w, h: SYS.agent.h, url: urlFor("agent"), popOut: () => openOutside("agent") });
-      }
-      renderAgentPanel(ag);
-      const w = wm.open(mountSpec("agent", ui.agentPanel));
-      if (w) w.agentPanel = true;
-      stopAgentPoll();
-      const tick = () => {
-        if (!wm || !wm.has("agent") || !agentWinIsPanel()) { stopAgentPoll(); return; }
-        if (!api.refreshAgentLink) return;
-        Promise.resolve(api.refreshAgentLink()).then(() => {
-          const now = api.deskAgent ? api.deskAgent() : ag;
-          if (!agentWinIsPanel()) return;
-          if (now.installed && now.running) openAgent();
-          else renderAgentPanel(now);
-        }).catch(() => {});
-      };
-      tick();
-      agentPoll = setInterval(tick, 1500);
-      return w;
-    };
-    const ag0 = api.deskAgent ? api.deskAgent() : { installed: false };
-    if (!(ag0.installed && ag0.running) && api.refreshAgentLink) {
-      Promise.resolve(api.refreshAgentLink()).then(() => go(api.deskAgent ? api.deskAgent() : ag0)).catch(() => go(ag0));
-    }
-    return go(ag0);
+    // 0.6.5+: Agent launcher opens the pinned Chat window (same HTTP-ready path).
+    return openApp(CHAT);
   }
   function renderAgentPanel(ag) {
     const p = ui && ui.agentPanel;
@@ -1210,30 +1231,30 @@
         return;
       }
       if (b.dataset.mode === "open") {
-        // 0.6.7: start A0 then wait until running before opening (first click).
+        // 0.6.8: start A0, wait until HTTP ready, then swap panel → iframe once.
         b.disabled = true; b.classList.add("busy"); b.textContent = "Starting…";
-        const finishOpen = (agNow) => {
+        const finishOpen = (agNow, httpOk) => {
           b.disabled = false; b.classList.remove("busy"); b.textContent = "Open Agent Zero";
-          if (wm && wm.has(CHAT) && wm.get(CHAT) && wm.get(CHAT).agentPanel && agNow && agNow.running) {
-            wm.close(CHAT, true);
-            wm.open(chatSpec(agNow));
-            stopChatAgentPoll();
+          if (wm && wm.has(CHAT) && wm.get(CHAT) && wm.get(CHAT).agentPanel && agNow && agNow.running && httpOk) {
+            upgradeChatToAgent(agNow);
           } else {
-            openOutside("agent");
+            renderAgentPanel(agNow || {});
             startChatAgentPoll();
           }
         };
-        const waitRunning = (n) => {
-          Promise.resolve(api.refreshAgentLink ? api.refreshAgentLink() : null).then(() => {
-            const now = api.deskAgent ? api.deskAgent() : {};
-            if (now.running) { finishOpen(now); return; }
-            if (n >= 40) { finishOpen(now); return; }
-            renderAgentPanel(now);
-            setTimeout(() => waitRunning(n + 1), 500);
-          }).catch(() => finishOpen({}));
+        const waitReady = (n) => {
+          Promise.resolve(api.refreshAgentLink ? api.refreshAgentLink() : null)
+            .then(() => (api.agentHttpReady ? api.agentHttpReady(true) : Promise.resolve(false)))
+            .then((ok) => {
+              const now = api.deskAgent ? api.deskAgent() : {};
+              if (ok && now.running) { finishOpen(now, true); return; }
+              if (n >= 40) { finishOpen(now, false); return; }
+              renderAgentPanel(now);
+              setTimeout(() => waitReady(n + 1), 500);
+            }).catch(() => finishOpen({}, false));
         };
         Promise.resolve(api.ensureAgentZeroStarted ? api.ensureAgentZeroStarted() : null)
-          .then(() => waitRunning(0))
+          .then(() => waitReady(0))
           .catch(() => { b.disabled = false; b.classList.remove("busy"); b.textContent = "Open Agent Zero"; });
         return;
       }
@@ -1327,7 +1348,9 @@
         const appEl = $("#app");
         if (appEl && ui.hold) move(appEl, ui.hold);
       } catch (e) {}
-      openApp(CHAT);
+      // First-boot wizard / mid vault-create: do not open Agent Zero yet.
+      // After setup dismiss or vault unlock, stickllm:vault-unlocked opens once.
+      if (!setupBlocksA0()) openApp(CHAT);
       pollBrowser();
       window.addEventListener("resize", onResize);
       renderTasks();
@@ -1469,6 +1492,12 @@
   window.addEventListener("stickllm:vault-unlocked", () => {
     if (!on || !wm) return;
     const api = appApi();
+    // Setup wizard owns the screen — never open/reload Agent Zero mid-wizard.
+    if (setupBlocksA0()) {
+      if (wm.has(CHAT)) try { wm.close(CHAT, true); } catch (_) {}
+      return;
+    }
+    // Open A0 once after setup complete or returning-boot vault unlock.
     if (!wm.has(CHAT)) {
       try { openApp(CHAT); } catch (_) {}
     }
@@ -1478,8 +1507,7 @@
       const cur = wm.get(CHAT);
       if (cur && cur.agentPanel) {
         renderAgentPanel(ag);
-        if (ag.installed && ag.running) upgradeChatToAgent(ag);
-        else startChatAgentPoll();
+        startChatAgentPoll(); // panel → iframe only when agentHttpReady
       } else if (ag.installed && ag.running) {
         try { wm.focus(CHAT); } catch (_) {}
       } else {
@@ -1492,10 +1520,10 @@
       .catch(after);
   });
   window.addEventListener("stickllm:agent-status", () => {
-    if (!on || !wm || !chatWinIsPanel()) return;
+    if (!on || !wm || !chatWinIsPanel() || setupBlocksA0()) return;
     const ag = appApi().deskAgent ? appApi().deskAgent() : {};
     renderAgentPanel(ag);
-    if (ag.installed && ag.running) upgradeChatToAgent(ag);
+    // Poll owns the HTTP-ready upgrade — do not close+reopen on every status tick.
   });
 
   ["(pointer:fine)", "(hover:hover)"].forEach((q) => {

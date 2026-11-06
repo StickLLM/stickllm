@@ -9,7 +9,7 @@ binary = "/opt/stickllm/bin/llama-server"
 model = "/opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
 host = "0.0.0.0"
 port = 8080
-ctx_size = 8192
+ctx_size = 32768
 n_gpu_layers = -1
 threads = 8
 

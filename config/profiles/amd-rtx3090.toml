@@ -24,7 +24,7 @@ engine = "llama.cpp"
 binary = "/opt/stickllm/bin/llama-server"
 host = "0.0.0.0"
 port = 8080
-ctx_size = 8192
+ctx_size = 32768
 n_gpu_layers = -1  # offload all layers to GPU
 threads = 8
 

@@ -395,6 +395,66 @@ function setBtnBusy(btn, busy, text) {
   btn.setAttribute("aria-busy", busy ? "true" : "false");
   if (text != null) btn.textContent = text;
 }
+// True when /agent-zero/ is actually usable — never navigate an iframe to a
+// dead :5099 / splash-"Unable to load" / refused-to-connect page.
+// Prefer CSRF (proves Origin rewrite + A0 API), then HEAD as fallback.
+let agentHttpReadyCache = { ok: false, at: 0 };
+async function agentHttpReady(force) {
+  const now = Date.now();
+  if (!force && agentHttpReadyCache.at && (now - agentHttpReadyCache.at) < 1200) {
+    return !!agentHttpReadyCache.ok;
+  }
+  const fail = () => {
+    agentHttpReadyCache = { ok: false, at: now };
+    return false;
+  };
+  try {
+    // Strong signal: embed proxy + Agent Zero API both answering.
+    const csrf = await fetch("/agent-zero/api/csrf_token", {
+      method: "GET",
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: authHeaders({ Accept: "application/json" }),
+    });
+    if (csrf.status === 503 || csrf.status === 502) return fail();
+    if (csrf.ok) {
+      const j = await csrf.json().catch(() => ({}));
+      if (j && (j.ok === true || j.token)) {
+        agentHttpReadyCache = { ok: true, at: now };
+        return true;
+      }
+    }
+  } catch (_) { /* fall through to HEAD */ }
+  try {
+    const r = await fetch("/agent-zero/", {
+      method: "HEAD",
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: authHeaders({ Accept: "text/html" }),
+    });
+    // Gateway: 503/502 while A0 is down. 401/403 = pair/plugins gate (port may
+    // not have been checked) — fall back to status.running. Any other status
+    // (200/302/404/405…) means the embed path reached a live upstream.
+    if (r.status === 503 || r.status === 502) return fail();
+    if (r.status === 401 || r.status === 403) {
+      const s = agentLastStatus || {};
+      const ok = !!(s.running || s.state === "running");
+      agentHttpReadyCache = { ok, at: now };
+      return ok;
+    }
+    // HEAD alone is weak (splash HTML can 200 while asset-bundle/API still
+    // fails after a gateway restart). Require status.running too.
+    const s = agentLastStatus || {};
+    const ok = !!(s.running || s.state === "running");
+    agentHttpReadyCache = { ok, at: now };
+    return ok;
+  } catch (_) {
+    // Network blip — never open the iframe on a forced probe failure.
+    agentHttpReadyCache = { ok: false, at: now };
+    return false;
+  }
+}
+
 async function refreshAgentLink() {
   const label = $("#agentLinkLabel");
   const link = $("#agentLink");
@@ -405,6 +465,8 @@ async function refreshAgentLink() {
     if (!r.ok) return;
     const s = await r.json();
     agentLastStatus = s;
+    // Invalidate HTTP-ready cache when status says not running.
+    if (!(s.running || s.state === "running")) agentHttpReadyCache = { ok: false, at: 0 };
     const installed = agentIsInstalled(s);
     // Prefer /agent-zero/ (kiosk + LAN). Avoid raw :5099 — kiosk Chromium
     // shows "can't connect to 127.0.0.1" while A0 is still starting.
@@ -1031,6 +1093,7 @@ let tt;
 // Errors use showError()'s persistent box.
 // 0.6.5: coalesce disconnect / Failed-to-fetch spam so remote clients are not
 // flooded while EventSource or health briefly drop.
+
 const toastRecent = new Map();
 function toast(msg, opts) {
   opts = opts || {};
@@ -1189,10 +1252,17 @@ if ($("#chatSync")) $("#chatSync").onchange = (e) => {
   setChatStore(cur, e.target.checked);
 };
 
-async function setSessionMode(m) {
+async function setSessionMode(m, opts) {
   const next = m === "vault" ? "vault" : "ephemeral";
   const prev = sessionMode;
+  const quiet = !!(opts && opts.quiet);
   if (sessionModeBusy) return;
+  // Already in this mode — do not re-POST (gateway would re-fire ensure-addons
+  // and the UI would toast "Vault mode · starting your apps" on every poll).
+  if (next === prev && (next !== "vault" || state.vaultOpen)) {
+    applyModeUi(next);
+    return;
+  }
   sessionModeBusy = true;
   try {
     if (next === "vault") {
@@ -1203,14 +1273,18 @@ async function setSessionMode(m) {
       // (usb_settings "present-locked"); vaultIsAbsent() knows that.
       if (vaultIsAbsent(vault) || (!st && !vault.usb_settings)) {
         applyModeUi(prev);
-        toast("No vault yet — create or attach one in Storage");
-        openSettings("storage");
+        if (!quiet) {
+          toast("No vault yet — create or attach one in Storage");
+          openSettings("storage");
+        }
         return;
       }
       if (!(st === "unlocked" || vault.mounted)) {
         applyModeUi(prev);
-        toast("Unlock the vault first");
-        await focusVaultUnlock();
+        if (!quiet) {
+          toast("Unlock the vault first");
+          await focusVaultUnlock();
+        }
         return;
       }
       state.vaultOpen = true;
@@ -1230,14 +1304,16 @@ async function setSessionMode(m) {
       // screen is left alone in the vault; new chats stay in memory.
       if (state.current && !state.ephemeral.includes(state.current)) newChat();
     }
-    toast(next === "vault"
-      ? (j.addons_restart ? "Vault mode · starting your apps" : "Vault mode")
-      : "Ephemeral mode · new chats stay in memory");
+    if (!quiet) {
+      toast(next === "vault"
+        ? (j.addons_restart ? "Vault mode · starting your apps" : "Vault mode")
+        : "Ephemeral mode · new chats stay in memory");
+    }
     renderConvs();
     if (next === "vault") loadVaultChats().catch(() => {});
   } catch (e) {
     applyModeUi(prev);
-    toast("Mode switch failed: " + e.message);
+    if (!quiet) toast("Mode switch failed: " + e.message);
   } finally {
     sessionModeBusy = false;
   }
@@ -2865,7 +2941,32 @@ let lastFocus;
 // Desktop layout (0.5.6): Settings and Models are desktop windows, so the
 // modal stays hidden and desktop.js shows the right window instead.
 const deskOn = () => !!(window.stickDesk && window.stickDesk.active && window.stickDesk.active());
-const settingsModal = () => $(".modal:not(.small):not(.fp)");
+const settingsModal = () => $(".setShell") || $(".modal:not(.small):not(.fp)");
+// Hamburger follows Settings panel width (WinBox / modal), not the browser viewport.
+const SET_NARROW_PX = 820;
+function settingsNarrow() {
+  const m = settingsModal();
+  return !!(m && m.classList.contains("setNarrow"));
+}
+function syncSettingsNarrow() {
+  const m = settingsModal();
+  if (!m) return;
+  const w = m.clientWidth;
+  // Hidden / not laid out yet: keep prior class until a real width is known.
+  if (w <= 0) return;
+  const narrow = w <= SET_NARROW_PX;
+  const was = m.classList.contains("setNarrow");
+  m.classList.toggle("setNarrow", narrow);
+  if (!narrow && was) setNavMenuOpen(false);
+}
+function watchSettingsWidth() {
+  const m = settingsModal();
+  if (!m || m._setNarrowRO) return;
+  const ro = new ResizeObserver(() => syncSettingsNarrow());
+  m._setNarrowRO = ro;
+  ro.observe(m);
+  syncSettingsNarrow();
+}
 function setNavButtons() {
   return $$(".setNav [data-sec]").filter((b) => getComputedStyle(b).display !== "none");
 }
@@ -2893,9 +2994,11 @@ function openSettings(sec = "general") {
   const desk = deskOn();
   lastFocus = document.activeElement; if (!desk) $("#settings").hidden = false; $("#statusPop").hidden = true;
   if (mobile()) toggleNav(false);
+  watchSettingsWidth();
+  syncSettingsNarrow();
   // Narrow Settings uses a hamburger drawer; always show the section body.
   showSec(sec === "__nav" ? "general" : sec, true);
-  setNavMenuOpen(sec === "__nav" && mobile());
+  setNavMenuOpen(sec === "__nav" && settingsNarrow());
   if (sec === "models" || sec === "downloads") refreshModels().catch((e) => toast(e.message));
   if (sec === "storage") refreshStorage().catch((e) => showError(e, "Storage"));
   if (sec === "devices" || sec === "network" || sec === "system" || sec === "about")
@@ -2971,7 +3074,8 @@ window.addEventListener("keydown", (e) => {
   const settingsVisible = (settingsEl && !settingsEl.hidden) ||
     (deskOn() && m && document.body.contains(m));
   if (!settingsVisible || !m) return;
-  if (mobile() && !m.classList.contains("setNavOpen")) return;
+  // Narrow: ↑/↓ only while the hamburger drawer is open; wide: always.
+  if (settingsNarrow() && !m.classList.contains("setNavOpen")) return;
   const bs = setNavButtons();
   if (!bs.length) return;
   const cur = bs.findIndex((b) => b.classList.contains("on"));
@@ -2988,6 +3092,7 @@ document.addEventListener("click", (e) => {
   setNavMenuOpen(false);
 });
 $("#settings").onclick = (e) => { if (e.target.id === "settings") closeSettings(); };
+watchSettingsWidth();
 
 let cfCb;
 // 0.6.2: no typed magic words anywhere. A plain confirm is two buttons; a
@@ -3037,10 +3142,29 @@ function showRecoveryPhraseOnce(phrase) {
   });
 }
 
-/** After create/unlock: vault mode + chrome + A0 start signal. */
-async function enterVaultModeNow() {
+function setupWizardShowing() {
+  return !!$("#setupWizard")?.classList.contains("show");
+}
+function setSetupChrome(on) {
+  document.body.classList.toggle("setup-active", !!on);
+  try {
+    if (on && window.stickDesk && window.stickDesk.closeAll) window.stickDesk.closeAll();
+  } catch (_) {}
+}
+/** True while first-boot wizard (or unlock-only) is on screen — no Agent Zero yet. */
+function setupBlocksAgent() {
+  if (setupWizardShowing() || document.body.classList.contains("setup-active")) return true;
+  return !setupDone();
+}
+
+/** After create/unlock: vault mode + chrome. A0 only after setup is finished. */
+async function enterVaultModeNow(opts) {
+  const quiet = !!(opts && opts.quiet);
+  const duringSetup = !!(opts && opts.duringSetup) || setupWizardShowing();
   setVaultChrome(true);
-  try { await setSessionMode("vault"); } catch (_) {}
+  state.vaultOpen = true;
+  try { await setSessionMode("vault", { quiet: quiet || duringSetup || sessionMode === "vault" }); } catch (_) {}
+  if (duringSetup || !setupDone()) return;
   try { window.dispatchEvent(new CustomEvent("stickllm:vault-unlocked")); } catch (_) {}
   try { ensureAgentZeroStarted(); } catch (_) {}
   try { await refreshAgentLink(); } catch (_) {}
@@ -3723,7 +3847,7 @@ const LLAMA_CTX_FLOOR = 32768; // below this, show the Agent Zero hint (llama-st
 function tuneNow() {
   const num = (sel, d) => { const el = $(sel); const v = el ? Number(el.value) : NaN; return Number.isFinite(v) ? v : d; };
   return {
-    ctx: num("#ctx", 8192), kv: state.kv || "f16", temp: num("#temp", 0.7),
+    ctx: num("#ctx", 32768), kv: state.kv || "f16", temp: num("#temp", 0.7),
     top_p: num("#topp", 0.9), top_k: num("#topk", 40), repeat_penalty: num("#rep", 1.1), max_tokens: num("#maxtok", CHAT_TOKENS),
   };
 }
@@ -5761,6 +5885,8 @@ wireA0DriveButtons();
 let stickllmAutoStartA0 = false;
 async function ensureAgentZeroStarted() {
   try {
+    // First-boot wizard: never open/start A0 until setup finishes.
+    if (setupBlocksAgent()) return null;
     const st = await fetch("/api/agent/status", {
       headers: token ? { Authorization: "Bearer " + token } : {},
       cache: "no-store",
@@ -5926,6 +6052,7 @@ async function openVaultUnlockOnly(opts) {
     document.body.appendChild(overlay);
   }
   overlay.classList.add("show");
+  setSetupChrome(true);
   const body = $("#setupBody");
   const err = $("#setupErr");
   const showErr = (m) => { if (!m) { err.hidden = true; err.textContent = ""; return; } err.hidden = false; err.textContent = m; };
@@ -5947,6 +6074,7 @@ async function openVaultUnlockOnly(opts) {
   setTimeout(() => $("#wizP1")?.focus(), 50);
   $("#setupSkip").onclick = () => {
     overlay.classList.remove("show");
+    setSetupChrome(false);
     openSetupWizard({ force: true }).catch(() => {});
   };
   $("#setupNext").onclick = async () => {
@@ -5963,6 +6091,7 @@ async function openVaultUnlockOnly(opts) {
       if (!res || res.ok === false) throw new Error((res && (res.error || res.message)) || "Unlock failed");
       markSetupDone({ vault_path: vaultPath });
       overlay.classList.remove("show");
+      setSetupChrome(false);
       toast("Vault unlocked");
       await enterVaultModeNow();
       try { await refreshStorage(); } catch (_) {}
@@ -5986,10 +6115,11 @@ async function openSetupWizard(opts) {
     }
     if (setupDoneLocal()) return;
   }
-  // 0.6.7: Open model → Network → Storage → Vault → Ready
-  const STEP_MODEL = 0, STEP_NET = 1, STEP_STOR = 2, STEP_VAULT = 3, STEP_READY = 4;
+  // Welcome → Open model → Network → Storage → Vault → Ready
+  const STEP_WELCOME = 0, STEP_MODEL = 1, STEP_NET = 2, STEP_STOR = 3, STEP_VAULT = 4, STEP_READY = 5;
   const LAST = STEP_READY;
   let step = 0;
+  let vaultStepBusy = false;
   const wiz = {
     drive: null,
     vaultPath: "",
@@ -6020,6 +6150,7 @@ async function openSetupWizard(opts) {
     document.body.appendChild(overlay);
   }
   overlay.classList.add("show");
+  setSetupChrome(true);
   const body = $("#setupBody");
   const err = $("#setupErr");
   const showErr = (m) => { if (!m) { err.hidden = true; err.textContent = ""; return; } err.hidden = false; err.textContent = m; };
@@ -6083,24 +6214,31 @@ async function openSetupWizard(opts) {
   function render() {
     showErr("");
     $("#setupBack").disabled = step <= 0;
-    $("#setupBack").hidden = false;
+    $("#setupBack").hidden = step <= 0;
     $("#setupSkip").hidden = false;
     $("#setupSkip").textContent = step >= LAST ? "Close" : "Skip";
     $("#setupNext").textContent = step >= LAST ? "Finish" : "Continue";
-    if (step === STEP_MODEL) {
+    if (step === STEP_WELCOME) {
+      $("#setupTitle").textContent = "Welcome to StickLLM";
+      $("#setupSkip").hidden = true;
+      $("#setupNext").textContent = "Continue";
+      body.innerHTML = `
+<p><strong>Welcome to StickLLM</strong> — a private AI stick that runs models and apps on this computer, offline when you want.</p>
+<p>This is your setup wizard. A few short steps get Wi‑Fi, storage, and your encrypted vault ready.</p>`;
+    } else if (step === STEP_MODEL) {
       $("#setupTitle").textContent = "Open model";
       const m = starterModel();
       const label = (m && (m.name || m.id)) || "Qwen2.5-7B Instruct Q4_K_M";
       const where = m ? modelWhere(m) : "stick";
       body.innerHTML = `
-<p>Load the on-stick <strong>${esc(label)}</strong> for chat and apps. Pros can skip and open their own model later.</p>
+<p>Our default installed model is <strong>${esc(label)}</strong> (Qwen2.5-7B Instruct Q4_K_M) — open now or Skip and download your own later.</p>
 <div class="card" style="margin:12px 0;padding:12px">
   <div><b>${esc(label)}</b></div>
   <div class="muted small">On the ${esc(where)} · id <code>${esc(STARTER_MODEL_ID)}</code></div>
 </div>
 <p class="muted small">Continue loads this model. Skip leaves the model picker for later.</p>`;
       $("#setupSkip").textContent = "Skip";
-      $("#setupNext").textContent = "Continue";
+      $("#setupNext").textContent = "Open now";
     } else if (step === STEP_NET) {
       $("#setupTitle").textContent = "Network";
       body.innerHTML = `
@@ -6223,13 +6361,22 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
 
   $("#setupBack").onclick = () => { if (step > 0) { step -= 1; render(); } };
   $("#setupSkip").onclick = () => {
-    if (step >= LAST) { markSetupDone({ vault_path: wiz.vaultPath || "" }); overlay.classList.remove("show"); return; }
-    if (step === STEP_VAULT) return; // skip hidden on vault
+    if (step >= LAST) {
+      markSetupDone({ vault_path: wiz.vaultPath || "" });
+      overlay.classList.remove("show");
+      setSetupChrome(false);
+      enterVaultModeNow().catch(() => {});
+      return;
+    }
+    if (step === STEP_VAULT || step === STEP_WELCOME) return; // skip hidden
     step += 1; render();
   };
   $("#setupNext").onclick = async () => {
     showErr("");
     try {
+      if (step === STEP_WELCOME) {
+        step += 1; render(); return;
+      }
       if (step === STEP_MODEL) {
         try { await refreshModels(); } catch (_) {}
         const m = starterModel();
@@ -6287,6 +6434,7 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
         } catch (_) { wiz.vaultMode = "create"; }
       }
       if (step === STEP_VAULT) {
+        if (vaultStepBusy) return;
         if (wiz.vaultDone && state.vaultOpen) {
           // Already created/unlocked this session — do not call setup again.
         } else {
@@ -6296,6 +6444,8 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
           if (wiz.vaultMode !== "unlock" && wiz.pass1 !== wiz.pass2) throw new Error("Passcodes don't match");
           const path = wiz.vaultPath.replace(/\/+$/, "");
           const onStick = path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/");
+          vaultStepBusy = true;
+          $("#setupNext").disabled = true;
           showVaultCreating(true, wiz.vaultMode === "unlock" ? "open" : "create");
           try {
             let res;
@@ -6305,7 +6455,7 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
               showVaultCreating(false);
               if (!res || res.ok === false) throw new Error((res && (res.error || res.message)) || "Unlock failed");
               toast("Vault unlocked");
-              await enterVaultModeNow();
+              await enterVaultModeNow({ duringSetup: true, quiet: true });
               wiz.vaultDone = true;
             } else {
               res = await control("vault_setup", {
@@ -6328,11 +6478,15 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
               }
               // Correct sequence: vault mode immediately → recovery (no Cancel) → ready.
               toast("Vault created");
-              await enterVaultModeNow();
+              await enterVaultModeNow({ duringSetup: true, quiet: true });
               wiz.vaultDone = true;
               wiz.vaultMode = "unlock"; // never create twice
               const phrase = res.recovery_phrase || "";
               if (phrase) await showRecoveryPhraseOnce(phrase);
+              else {
+                // Still show the recovery dialog so create cannot skip past it.
+                await showRecoveryPhraseOnce("(no phrase in response — check stick logs)");
+              }
             }
           } catch (e) {
             showVaultCreating(false);
@@ -6344,12 +6498,16 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
               return;
             }
             throw e;
+          } finally {
+            vaultStepBusy = false;
+            $("#setupNext").disabled = false;
           }
         }
       }
       if (step >= LAST) {
         markSetupDone({ vault_path: wiz.vaultPath || "" });
         overlay.classList.remove("show");
+        setSetupChrome(false);
         try { await refreshSetupState(true); } catch (_) {}
         try { await refreshStorage(); } catch (_) {}
         try { await enterVaultModeNow(); } catch (_) {}
@@ -6370,7 +6528,7 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
 async function maybeOfferSetupOrUnlock() {
   const stickLocalUi = !!(isLocalMode) || !!(detectLocalHost && detectLocalHost());
   if (!stickLocalUi || setupGateBusy) return;
-  if ($("#setupWizard")?.classList.contains("show")) return;
+  if (setupWizardShowing()) return;
   setupGateBusy = true;
   try {
     // 0.6.7: mount SSD first and prefer an existing vault over full setup.
@@ -6378,7 +6536,10 @@ async function maybeOfferSetupOrUnlock() {
     const st = await refreshSetupState(true);
     if (st.vault_unlocked || state.vaultOpen) {
       if (st.setup_complete || setupDoneLocal() || probe.found) markSetupDone({ vault_path: st.vault_path || probe.path || "" });
-      try { await enterVaultModeNow(); } catch (_) {}
+      // Only enter vault mode once — never re-toast / re-start apps on every health poll.
+      if (sessionMode !== "vault" || !state.vaultOpen) {
+        try { await enterVaultModeNow({ quiet: true }); } catch (_) {}
+      }
       return;
     }
     if (probe.found || st.setup_complete || st.vault_configured) {
@@ -6463,8 +6624,14 @@ async function refreshStatus() {
     } else if (j.llama_ok) {
       stopLoadPoll();
       const readyName = named || "ready";
-      $("#chipModel").textContent = readyName;
-      setChipLoad(false, 100, readyName);
+      const warm = (j.llama_warmup && j.llama_warmup.status) || "";
+      const warming = /^(queued|waiting|running)$/i.test(String(warm));
+      $("#chipModel").textContent = warming ? "Warming up…" : readyName;
+      if (warming) {
+        setChipLoad(true, 95, readyName, "Loading model… first reply will be faster", false);
+      } else {
+        setChipLoad(false, 100, readyName);
+      }
     } else if (named && named !== "none" && llamaUnitBusy(j)) {
       // Reload while this unit is actually starting. A saved model name is not a load.
       if (!loadStartedAt) {
@@ -6494,7 +6661,9 @@ async function refreshStatus() {
         pop.textContent = loadMismatchText;
         pop.title = "";
       } else if (j.llama_ok) {
-        pop.textContent = named || "ready";
+        const warm = (j.llama_warmup && j.llama_warmup.status) || "";
+        const warming = /^(queued|waiting|running)$/i.test(String(warm));
+        pop.textContent = warming ? `Warming up… — ${named || "model"}` : (named || "ready");
         pop.title = modelPath || named || "";
       } else if (named && named !== "none" && llamaUnitBusy(j)) {
         pop.textContent = `loading — ${named}`;
@@ -8771,9 +8940,10 @@ function deskAgent() {
 window.stickApp = Object.freeze({
   openSettings, closeSettings, showSec, lockVault, showApps, toast,
   setSessionMode, focusVaultUnlock, refreshApps, refreshAgentLink, refreshModels, installAgent,
-  ensureAgentZeroStarted, moveAgentDrive, renderA0Drive,
+  ensureAgentZeroStarted, moveAgentDrive, renderA0Drive, agentHttpReady,
   deskAppUrl, deskCatalog, deskAgent, control, agentFastPoll, authHeaders,
   sessionMode: () => state.mode, vaultOpen: () => !!state.vaultOpen,
+  setupDone: () => setupDone(), setupBlocksAgent: () => setupBlocksAgent(),
 });
 })();
 

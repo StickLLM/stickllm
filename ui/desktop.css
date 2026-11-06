@@ -2,9 +2,9 @@
    body.deskMode, so the classic and mobile layouts are untouched.
    Window chrome: WinBox.js 0.2.82 (vendor/winbox-0.2.82, Apache-2.0);
    these rules only restyle it to the StickLLM theme.
-   TODO(0.6.7+): optimize entire desktop UI for phones — taskbar, WinBox
+   TODO(0.6.8+): optimize entire desktop UI for phones — taskbar, WinBox
    chrome, launcher and wall icons do not render well on small viewports.
-   Tracked in docs/UI-PHONE.md and CHANGELOG 0.6.7 Later. */
+   Tracked in docs/UI-PHONE.md and CHANGELOG 0.6.8 Later. */
 body.deskMode{overflow:hidden;background:
   radial-gradient(1400px 700px at 12% -12%, rgba(43,181,168,.20), transparent 60%),
   radial-gradient(900px 600px at 100% 110%, rgba(108,142,240,.12), transparent 60%),
@@ -13,6 +13,19 @@ html[data-theme="light"] body.deskMode{background:
   radial-gradient(1400px 700px at 12% -12%, rgba(19,138,127,.16), transparent 60%),
   radial-gradient(900px 600px at 100% 110%, rgba(74,111,216,.10), transparent 60%),
   linear-gradient(180deg,#e4f1ef 0%,var(--bg) 55%)}
+
+/* Boot splash block logo (stickllm-bootstatus BANNER) as a large, quiet backdrop.
+   Lives outside #app / deskLayer so icons and WinBox stay above; no desktop.js. */
+.deskSplash{display:none}
+body.deskMode > .deskSplash{
+  display:block;position:fixed;left:50%;top:calc(50% - 24px);z-index:0;
+  margin:0;padding:0;border:0;background:none;transform:translate(-50%,-50%);
+  pointer-events:none;user-select:none;white-space:pre;text-align:left;
+  font-family:ui-monospace,"Cascadia Mono",Consolas,"DejaVu Sans Mono",monospace;
+  font-size:clamp(11px,2.35vw,26px);line-height:1.12;letter-spacing:0;
+  color:color-mix(in srgb,var(--accent) 70%,var(--ink));opacity:.11}
+html[data-theme="light"] body.deskMode > .deskSplash{
+  color:color-mix(in srgb,var(--accent) 55%,var(--ink2));opacity:.09}
 
 /* Windows live in their own stacking context under the taskbar, dialogs,
    load bar and toasts, however high WinBox counts its z-index. */
@@ -164,7 +177,8 @@ body.deskMode .wb-body > .modal .setNav [data-sec="models"],
 body.deskMode .wb-body > .modal .setNav [data-sec="downloads"],
 body.deskMode .wb-body > .modal #setClose,
 body.deskMode .wb-body > .modal #setBack{display:none!important}
-/* setNavBtn stays available on narrow viewports (style.css @media). */
+/* setNavBtn: .setShell.setNarrow via ResizeObserver (style.css), not viewport. */
+body.deskMode .wb-body > .modal.setShell.setNarrow{position:relative}
 body.deskMode .deskPanel{height:100%;display:flex;flex-direction:column;background:var(--panel);color:var(--ink)}
 body.deskMode .deskScroll{flex:1;min-height:0;overflow:auto;padding:18px 26px 26px}
 body.deskMode .deskTabs{display:flex;gap:4px;padding:10px 18px 0;border-bottom:1px solid var(--line2);background:var(--bg2)}

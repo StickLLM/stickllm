@@ -2011,6 +2011,12 @@ start_agent_addon() {
   if [[ -x /usr/local/bin/stickllm-addon ]]; then
     /usr/local/bin/stickllm-addon start-all >/run/stickllm/addons-start.log 2>&1 &
   fi
+  # Reload the last Activated model (and warm CUDA/KV) so the first A0 message
+  # is not stuck on opaque "Calling LLM" after unlock. No-op when none saved.
+  if [[ -x /usr/local/bin/stickllm-control ]]; then
+    /usr/local/bin/stickllm-control --restore-last-model \
+      >/run/stickllm/llama-restore.log 2>&1 &
+  fi
 }
 
 stop_vault_addons() {

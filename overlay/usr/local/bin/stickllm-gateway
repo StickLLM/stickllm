@@ -270,6 +270,14 @@ if(p.charAt(0)!=="/")return u;
 return P+p+(x.search||"")+(x.hash||"");
 }catch(e){return u;}
 }
+function pathOf(u){
+try{
+var p=new URL(String(u||""),location.href).pathname||"";
+if(p===P)return "/";
+if(p.indexOf(P+"/")===0)return p.slice(P.length)||"/";
+return p;
+}catch(e){return "";}
+}
 var f=window.fetch.bind(window);
 window.fetch=function(i,n){
 try{
@@ -1923,6 +1931,33 @@ def llama_load_info() -> dict:
     }
 
 
+def llama_warmup_info() -> dict:
+    """Background first-token warmup after Activate / unlock restore."""
+    # /run preferred when fresh; /tmp fallback when stickllm cannot create under
+    # root:stickllm-llama 775. Pick newest ts so a stale /run file loses.
+    docs = []
+    for path in (RUN_DIR / "llama-warmup.json", Path("/tmp/stickllm-llama-warmup.json")):
+        d = read_json_safe(path) or {}
+        if d:
+            docs.append(d)
+    doc = {}
+    if docs:
+        def _ts(d: dict) -> int:
+            try:
+                return int(d.get("ts") or 0)
+            except (TypeError, ValueError):
+                return 0
+        doc = max(docs, key=_ts)
+    st = str(doc.get("status") or "idle").lower()
+    return {
+        "status": st or "idle",
+        "ok": bool(doc.get("ok")) if "ok" in doc else st == "ready",
+        "ready": bool(doc.get("ready")) if "ready" in doc else st == "ready",
+        "seconds": doc.get("seconds"),
+        "error": str(doc.get("error") or "")[:200],
+    }
+
+
 def llama_unit_state() -> dict:
     """Whether stickllm-llama is actually starting or running. No secrets."""
     snap = {"active_state": "", "sub_state": "", "process_alive": False}
@@ -2176,6 +2211,14 @@ def set_session_mode(mode: str) -> dict:
     if mode not in SESSION_MODES:
         return {"ok": False, "error": "mode must be ephemeral or vault"}
     prev = get_session_mode()
+    # Idempotent: re-selecting the same mode must not re-fire ensure-addons
+    # (UI health poll was toasting "Vault mode · starting your apps" forever).
+    if prev == mode:
+        doc = read_json_safe(SESSION_MODE_PATH) or {"mode": mode}
+        doc["ok"] = True
+        doc["addons_restart"] = False
+        doc["unchanged"] = True
+        return doc
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     doc = {
         "mode": mode,
@@ -5432,6 +5475,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "connect": connect_info(self._may_show_secrets(), llama_ok=llama_ok),
                 "llama_load": llama_load_info(),
                 "llama_service": llama_unit_state(),
+                "llama_warmup": llama_warmup_info(),
+                # Unused stub (preparing-agent toast removed — caused A0 embed failure).
+                "agent_prompt": {"busy": False, "at": None, "age_s": None},
             }
             if path == "/api/health":
                 self._json(200, data)

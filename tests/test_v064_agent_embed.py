@@ -126,3 +126,27 @@ def test_embed_shim_quiets_a0_connection_toasts():
     ).decode()
     assert "quietA0ConnToasts" in out
     assert "notificationStore" in out
+
+
+def test_preparing_agent_toast_gone():
+    """Preparing-agent toast caused A0 embed failure — keep it removed."""
+    text = GATEWAY.read_text(encoding="utf-8")
+    assert "AGENT_PROMPT_BUSY" not in text
+    assert "a0ProgressHint" not in text
+    assert "tellParent" not in text
+    assert "isAgentPromptPath" not in text
+    assert '"agent_prompt"' in text or "'agent_prompt'" in text
+    mod = _load_gateway()
+    out = mod.rewrite_agent_embed_payload(
+        b"<head><title>a0</title></head>",
+        "text/html",
+    ).decode()
+    assert "tellParent" not in out
+    assert "a0ProgressHint" not in out
+    app = (ROOT / "ui/app.js").read_text(encoding="utf-8")
+    assert "Preparing agent (first run can take a minute)" not in app
+    assert "stickllm.a0PrepHint" not in app
+    assert "noteAgentPromptBusy" not in app
+    desk = (ROOT / "ui/desktop.js").read_text(encoding="utf-8")
+    assert "stickllm:a0-prompt" not in desk
+    assert 'kind !== "prompt"' not in desk and "kind !== 'prompt'" not in desk

@@ -257,6 +257,18 @@ details.reasoning>:not(summary){border-left:2px solid var(--line,rgba(127,127,12
 .setHead h2{margin:0;font-size:18px;font-weight:620;flex:1}
 .backBtn,.setNavBtn{display:none!important}
 .setScroll{flex:1;overflow:auto;padding:18px 26px 26px}
+/* Settings hamburger: driven by .setShell width (ResizeObserver), not viewport. */
+.setShell.setNarrow{position:relative}
+.setShell.setNarrow .setNavBtn{display:inline-grid!important}
+.setShell.setNarrow .backBtn{display:none!important}
+.setShell.setNarrow .setNav{display:none;position:absolute;inset:0 auto 0 0;width:min(280px,86%);z-index:6;border-right:1px solid var(--line);box-shadow:12px 0 40px rgba(0,0,0,.4)}
+.setShell.setNarrow.setNavOpen .setNav{display:flex}
+.setShell.setNarrow.setNavOpen::before{content:"";position:absolute;inset:0;background:rgba(5,8,9,.45);z-index:5}
+.setShell.setNarrow .setHead{padding:10px 12px}
+.setShell.setNarrow .setScroll{padding:16px}
+.setShell.setNarrow .summary,.setShell.setNarrow .presets{grid-template-columns:1fr}
+.setShell.setNarrow .actions.sticky{bottom:-16px;flex-wrap:wrap}
+.setShell.setNarrow .code{border-left:0;padding-left:0}
 .sec h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:22px 0 8px;font-weight:650}
 .sec>h3:first-child{margin-top:0}
 .secTools{display:flex;align-items:center;gap:8px;margin:22px 0 8px}
@@ -406,17 +418,7 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2
   .popover{right:0}
   .modalWrap{padding:0}
   .modal{height:100%;border-radius:0;border:0;position:relative}
-  /* Narrow: section list is a hamburger drawer, not a permanent side / push stack. */
-  .setNavBtn{display:inline-grid!important}
-  .backBtn{display:none!important}
-  .setNav{display:none;position:absolute;inset:0 auto 0 0;width:min(280px,86vw);z-index:6;border-right:1px solid var(--line);box-shadow:12px 0 40px rgba(0,0,0,.4)}
-  .modal.setNavOpen .setNav{display:flex}
-  .modal.setNavOpen::before{content:"";position:absolute;inset:0;background:rgba(5,8,9,.45);z-index:5}
-  .setHead{padding:10px 12px}
-  .setScroll{padding:16px}
-  .summary,.presets{grid-template-columns:1fr}
-  .actions.sticky{bottom:-16px;flex-wrap:wrap}
-  .code{border-left:0;padding-left:0}
+  /* Settings hamburger lives on .setShell.setNarrow (panel width), not viewport. */
   .modal.small{height:auto;margin:16px;border-radius:14px;border:1px solid var(--line)}
 }
 .note.calm{border:1px solid var(--line);border-radius:var(--r);background:var(--accent-soft);margin:12px 0 6px;color:var(--ink2)}
@@ -720,6 +722,22 @@ input.secret { -webkit-text-security: disc; }
   background: rgba(0,0,0,.55); padding: 16px;
 }
 #setupWizard.show, #vaultCreatingOverlay.show { display: flex; }
+/* First-boot: hide desktop icons/taskbar so only the wizard is clickable. */
+body.setup-active #deskLayer,
+body.setup-active #deskWall,
+body.setup-active #deskIcons,
+body.setup-active #taskbar,
+body.setup-active .deskBar,
+body.setup-active .wallIcon,
+body.setup-active #appsMenu,
+body.setup-active .launcher,
+body.setup-active .deskSplash {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+body.setup-active #setupWizard.show {
+  background: #0b0e14;
+}
 .setup-card, .vault-creating-card {
   background: var(--panel, #1b1f2a); color: var(--fg, #eee);
   border-radius: 12px; padding: 20px 22px; max-width: 560px; width: min(560px, 96vw);

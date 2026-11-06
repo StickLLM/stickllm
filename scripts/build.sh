@@ -13,9 +13,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PROFILE="amd-rtx3090"
-# Next unshipped line. Override: STICKLLM_VERSION=0.6.7 ./scripts/build.sh
-# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9 / v0.4.0 / v0.4.1 / v0.4.2 / v0.5.0 / v0.5.1 / v0.5.2 / v0.6.4 / v0.6.6).
-VERSION="${STICKLLM_VERSION:-0.6.7}"
+# Next unshipped line. Override: STICKLLM_VERSION=0.6.8 ./scripts/build.sh
+# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9 / v0.4.0 / v0.4.1 / v0.4.2 / v0.5.0 / v0.5.1 / v0.5.2 / v0.6.4 / v0.6.6 / v0.6.7).
+VERSION="${STICKLLM_VERSION:-0.6.8}"
 VERSION_DIR="v${VERSION}"
 ISO_NAME="${STICKLLM_ISO_NAME:-StickLLM-v${VERSION}.iso}"
 OUT_DIR="${STICKLLM_OUT_DIR:-out}"
@@ -26,7 +26,7 @@ case "$OUT_DIR" in
   *) OUT_HOST="${ROOT}/${OUT_DIR}" ;;
 esac
 CHECKSUM_FILE="checksums/v${VERSION}.sha256"
-# 0.6.7: baked default is Qwen2.5-7B Instruct Q4_K_M (official split GGUF).
+# 0.6.7+: baked default is Qwen2.5-7B Instruct Q4_K_M (official split GGUF).
 BASE_GGUF_1="qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
 BASE_GGUF_2="qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"
 BASE_SHA_1="dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db"
@@ -35,7 +35,7 @@ BASE_HF_REPO="Qwen/Qwen2.5-7B-Instruct-GGUF"
 VOL_WORK="stickllm-lb-work"
 
 case "$VERSION_DIR" in
-  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8|v0.3.9|v0.4.0|v0.4.1|v0.4.2|v0.5.0|v0.5.1|v0.5.2|v0.6.4)
+  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8|v0.3.9|v0.4.0|v0.4.1|v0.4.2|v0.5.0|v0.5.1|v0.5.2|v0.6.4|v0.6.6|v0.6.7)
     echo "REFUSE: VERSION=${VERSION} would overwrite a shipping artifact" >&2
     exit 1
     ;;
