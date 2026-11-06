@@ -1,3 +1,27 @@
+## 0.6.7 - 2026-11-06
+- Default baked model: **Qwen2.5-7B Instruct Q4_K_M** (~4.4 GB split GGUF on the stick) replaces Qwen3.5-4B; Open model / catalog `base_model_id` / probe default follow it. Q5_K_M stays an optional download (min 10 GB VRAM for 32K headroom). Qwen3.5-4B remains an optional catalog download (not Open default, not baked).
+- VRAM tier recommends (one each): **8 GB** baked 7B Q4 · **12 GB** 14B Q4 · **16 GB** 32B Q3 · **24 GB** 27B Q4 · **32 GB** 32B Q4 · **Dual 24 GB** 72B Q3 (CUDA tensor-split; probe sums NVIDIA VRAM). See `docs/MODELS.md`.
+- First-boot order: mount SSD and look for an existing vault first; if found, ask passcode only and reuse vault settings (no full re-setup).
+- Fresh stick (no vault): first screen is **Open model** with the on-stick base model (Continue loads it, Skip defers); then Network → Storage → Vault → System ready.
+- Vault create: enter Vault mode immediately after create; show recovery phrase with checkbox + Continue only (Cancel removed); then System ready — no second passcode prompt / “vault already exists” loop.
+- Reboot unlock: busy overlay says **Opening vault** (not “Creating vault”); Creating only for first-time create.
+- Vault passcode fields: block browser password-manager save prompts (`autocomplete=off`, readonly-until-focus, masked text inputs).
+- Agent Zero: after reboot unlock, clear stale Open / Retry / Open App Store CTAs, start A0, and upgrade the panel to the embed when running (`stickllm:vault-unlocked`); Open Agent Zero waits until running on the first click.
+- Remote pair: after a successful pair code, show desktop / Agent Zero without a manual refresh (post-pair status + `startChatAgentPoll` upgrades the Install/Unlock panel to the A0 embed; reload a blank/`pair_required` iframe).
+- Desktop icons: click an already-open app (Agent Zero, starters, catalog, panels) to bring its WinBox to the front; restore if minimised — same focus path as the taskbar open-apps bar (no minimise toggle).
+- Quiet Agent Zero Chat “Disconnected” / “Reconnected” (and WS polling-fallback) toasts in the `/agent-zero/` embed shim — those are Socket.IO sync churn, including on kiosk loopback; StickLLM’s own toast coalesce never saw them.
+- Settings → Devices: remove one-click **Copy password** for SSH (password stays selectable/highlightable).
+- Settings: ↑/↓ move between sections; on phone/narrow viewports the section list is a hamburger drawer (not a permanent side list).
+- Boot logo: ignore / reset-failed `stickllm-gpu-skip.service` in `stickllm-bootstatus` so intentional skip never paints “! Problem:”.
+- `stickllm-gpu-skip`: never fail the systemd unit on empty greps (silences Failed on the StickLLM boot logo).
+- Microphone (kiosk + HTTPS): retry getUserMedia a few times on NotAllowed/dismissed prompt; Voice on asks for mic; Voice click or mic button re-triggers Allow; toast site-settings reset when Chromium has Blocked the origin.
+- Docs: advertise minimum hardware **16 GB** system RAM + **8 GB** GPU (do not market 4 GB).
+- Docs: GPU backends — **AMD:** ROCm and Vulkan; **NVIDIA:** CUDA; **Intel GPU:** Vulkan.
+- Docs: Tested hardware — NVIDIA single/dual RTX 3090; AMD single RX 570 / RX 580.
+
+### Later
+- Optimize entire desktop UI for phones — taskbar, windows, launcher and icons currently do not render well on small viewports. See `docs/UI-PHONE.md`.
+
 ## 0.6.6 - 2026-11-06
 - Retire StickLLM Chat chrome and desktop Chat icon; Agent Zero is the only chat window (never mount `#app` into WinBox).
 - `/agent-zero/` embed records LAN prompts so open_app (solitaire, calculator, …) opens on the requesting client, not always the kiosk.

@@ -21,7 +21,7 @@ def chat(url, messages, think=False, temperature=0.0, grammar=None, schema=None,
         raise
     except (urllib.error.URLError, ConnectionError) as e:
         # 0.5.6: the app agent shares the chat model and never loads one itself
-        raise NoModel("No model is loaded. Load one on the Models page (Qwen3.5-4B is on the stick), then try again.")
+        raise NoModel("No model is loaded. Load one on the Models page (Qwen2.5-7B Q4_K_M is on the stick), then try again.")
     m = d["choices"][0]["message"]
     return (m.get("content") or ""), d.get("usage", {}), time.time() - t
 

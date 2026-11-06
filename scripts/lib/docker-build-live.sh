@@ -3,7 +3,7 @@
 # /stickllm = repo (ro), /work = Linux filesystem volume (rw) for live-build.
 set -euo pipefail
 
-# 0.5.6: ISO bakes one model, the Qwen3.5-4B. The 3B and 7B are catalog downloads.
+# 0.6.7: ISO bakes one model, Qwen2.5-7B Instruct Q4_K_M. 4B/Q5 are catalog downloads.
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -89,7 +89,7 @@ rsync -a /stickllm/ui/ config/includes.chroot/opt/stickllm/ui/
 install -m 644 /stickllm/THIRD_PARTY_NOTICES.md config/includes.chroot/opt/stickllm/ui/THIRD_PARTY_NOTICES.md
 
 mkdir -p config/includes.chroot/opt/stickllm/models
-# 0.5.6: the 3B is no longer baked. The Qwen3.5-4B (below) is the base model.
+# 0.6.7: Qwen2.5-7B Instruct Q4_K_M is the baked base model (4B is download-only limp).
 
 mkdir -p config/includes.chroot/etc/stickllm config/includes.chroot/etc/stickllm/models
 cp /stickllm/config/profiles/amd-rtx3090.toml config/includes.chroot/etc/stickllm/profile.toml
@@ -99,24 +99,32 @@ test -x config/includes.chroot/opt/stickllm/bin/llama-server
 test -x config/includes.chroot/opt/stickllm/bin/llama-server-cpu
 test -f config/includes.chroot/opt/stickllm/lib/libllama-server-impl.so
 
-# Base model (0.5.6): Qwen3.5-4B Q4_K_M, ~2.7 GB, shared by chat AND the app agent.
+# Base model (0.6.7): Qwen2.5-7B Instruct Q4_K_M (~4.4 GB split), chat + app agent.
 # Required: never downloaded here (scripts/build.sh fetches it before the build).
-AA_GGUF="Qwen3.5-4B-Q4_K_M.gguf"
-AA_SHA="25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"
-if [[ ! -f "/stickllm/models/appagent/${AA_GGUF}" ]]; then
-  echo "ERROR: models/appagent/${AA_GGUF} missing (the 0.5.6 base model)" >&2
-  exit 1
-fi
-echo "[stickllm] bake base model ${AA_GGUF}…"
+AA_GGUF_1="qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+AA_GGUF_2="qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"
+AA_SHA_1="dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db"
+AA_SHA_2="539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a"
 mkdir -p config/includes.chroot/opt/stickllm/models/appagent
-cp "/stickllm/models/appagent/${AA_GGUF}" config/includes.chroot/opt/stickllm/models/appagent/
-echo "${AA_SHA}  config/includes.chroot/opt/stickllm/models/appagent/${AA_GGUF}" | sha256sum -c -
+for pair in "${AA_GGUF_1}|${AA_SHA_1}" "${AA_GGUF_2}|${AA_SHA_2}"; do
+  f="${pair%%|*}"
+  sha="${pair##*|}"
+  if [[ ! -f "/stickllm/models/appagent/${f}" ]]; then
+    echo "ERROR: models/appagent/${f} missing (the 0.6.7 base model)" >&2
+    exit 1
+  fi
+  echo "[stickllm] bake base model ${f}…"
+  cp "/stickllm/models/appagent/${f}" config/includes.chroot/opt/stickllm/models/appagent/
+  echo "${sha}  config/includes.chroot/opt/stickllm/models/appagent/${f}" | sha256sum -c -
+done
+# Do not also bake the old 4B / 3B next to the 7B.
+rm -f config/includes.chroot/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf
 if compgen -G "config/includes.chroot/opt/stickllm/models/*3b*" >/dev/null; then
-  echo "ERROR: 0.5.6 bakes one model (the 4B); no 3B" >&2
+  echo "ERROR: 0.6.7 bakes one model (the 7B Q4); no 3B at models root" >&2
   exit 1
 fi
-if compgen -G "config/includes.chroot/opt/stickllm/models/*7b*" >/dev/null; then
-  echo "ERROR: 7B GGUF must not be baked into the ISO" >&2
+if compgen -G "config/includes.chroot/opt/stickllm/models/qwen2.5-7b-instruct-q5*" >/dev/null; then
+  echo "ERROR: 7B Q5 must not be baked; Q4 is the default" >&2
   exit 1
 fi
 
@@ -138,7 +146,7 @@ if find config/includes.chroot -path '*vault*' \( -name 'ggml-tiny.en.bin' -o -n
 fi
 test -x config/includes.chroot/usr/local/bin/stickllm-kiosk
 test -f config/includes.chroot/etc/systemd/system/stickllm-kiosk.service
-grep -q 'base_model_id = "qwen35-4b-q4km"' config/includes.chroot/etc/stickllm/models/catalog.toml
+grep -q 'base_model_id = "qwen25-7b-q4km"' config/includes.chroot/etc/stickllm/models/catalog.toml
 grep -q 'stickllm-llama-start' config/includes.chroot/etc/systemd/system/stickllm-llama.service
 grep -q 'STICKLLM_LLAMA_HOST=127.0.0.1' config/includes.chroot/etc/systemd/system/stickllm-llama.service
 test -f config/includes.chroot/usr/local/share/stickllm/agent-zero.pin

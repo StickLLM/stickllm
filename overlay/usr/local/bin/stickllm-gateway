@@ -312,6 +312,58 @@ md.getUserMedia=function(){return Promise.reject(new DOMException(micHttpsMsg(),
 }
 }catch(e){}
 }
+/* Agent Zero sync-store toasts "Disconnected"/"Reconnected" (and degraded WS
+   fallback) on every Socket.IO blip — including kiosk loopback via /agent-zero/.
+   StickLLM's app.js toast coalesce never sees these; quiet them in-embed. */
+(function quietA0ConnToasts(){
+var GROUPS=/^(reconnect|sync-mode)$/i;
+var MSGS=/^(Disconnected|Reconnected|WebSocket connection problems - using polling fallback|WebSocket connection restored)$/i;
+function noisy(message,title,group){
+var g=String(group==null?"":group);
+var m=String(message==null?"":message);
+var t=String(title==null?"":title);
+return GROUPS.test(g)||MSGS.test(m)||(t==="Connection"&&/disconnect|reconnect|websocket|polling/i.test(m));
+}
+function quiet(store){
+if(!store||store.__stickllmQuietConn)return false;
+store.__stickllmQuietConn=true;
+["frontendWarning","frontendSuccess","frontendInfo","frontendError","warning","success","info","error"].forEach(function(name){
+var fn=store[name];
+if(typeof fn!=="function")return;
+store[name]=function(message,title,displayTime,group){
+if(noisy(message,title,group))return Promise.resolve();
+return fn.apply(this,arguments);
+};
+});
+if(typeof store.addFrontendToast==="function"){
+var addFt=store.addFrontendToast.bind(store);
+store.addFrontendToast=function(type,message,title,displayTime,group){
+if(noisy(message,title,group))return Promise.resolve();
+return addFt.apply(this,arguments);
+};
+}
+if(typeof store.addToToastStack==="function"){
+var add=store.addToToastStack.bind(store);
+store.addToToastStack=function(n){
+if(n&&noisy(n.message,n.title,n.group))return;
+return add(n);
+};
+}
+return true;
+}
+var tries=0;
+function tick(){
+tries++;
+try{
+var A=window.Alpine;
+if(A&&typeof A.store==="function"&&quiet(A.store("notificationStore")))return;
+}catch(e){}
+if(tries<80)setTimeout(tick,250);
+}
+document.addEventListener("alpine:init",tick);
+document.addEventListener("alpine:initialized",tick);
+tick();
+})();
 })();</script>"""
 
 

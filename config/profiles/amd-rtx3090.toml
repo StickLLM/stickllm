@@ -29,13 +29,19 @@ n_gpu_layers = -1  # offload all layers to GPU
 threads = 8
 
 [model]
-# 0.5.6: the baked base model is the Qwen3.5-4B (chat and the app agent). 3B/7B are downloads.
-id = "qwen35-4b-q4km"
-filename = "Qwen3.5-4B-Q4_K_M.gguf"
-hf_repo = "unsloth/Qwen3.5-4B-GGUF"
-hf_files = ["Qwen3.5-4B-Q4_K_M.gguf"]
-approx_size_gb = 2.6
-sha256 = "25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"
+# 0.6.7: baked base is Qwen2.5-7B Instruct Q4_K_M (chat and the app agent).
+id = "qwen25-7b-q4km"
+filename = "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+hf_repo = "Qwen/Qwen2.5-7B-Instruct-GGUF"
+hf_files = [
+  "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+  "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+]
+approx_size_gb = 4.4
+sha256 = [
+  "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db",
+  "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a",
+]
 
 [ui]
 bind = "0.0.0.0"

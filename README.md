@@ -11,7 +11,10 @@ to the USB or internal disks unless you explicitly approve a write.
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
 | Current image | **v0.4.2** — `StickLLM-v0.4.2.iso`, hash in [`checksums/v0.4.2.sha256`](checksums/v0.4.2.sha256) |
 | Last GitHub Release | **[v0.3.9](https://github.com/StickLLM/stickllm/releases/tag/v0.3.9)** |
-| Profile | AMD desktop CPU · 32 GB RAM · NVIDIA RTX 3090 (24 GB) |
+| Minimum hardware | **16 GB** system RAM · **8 GB** GPU |
+| GPU backends | **AMD:** ROCm and Vulkan · **NVIDIA:** CUDA · **Intel GPU:** Vulkan |
+| Tested hardware | NVIDIA: single / dual RTX 3090 · AMD: single RX 570 / RX 580 — [HARDWARE.md](docs/HARDWARE.md) |
+| Lab profile | AMD desktop CPU · 32 GB RAM · NVIDIA RTX 3090 (24 GB) |
 | X / Twitter | [@stickllm](https://x.com/stickllm) |
 | Web | [stickllm.org](https://stickllm.org) |
 

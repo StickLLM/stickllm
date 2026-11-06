@@ -1,4 +1,4 @@
-"""0.6.6: one version everywhere + chat-naming deferral bind-mounts."""
+"""0.6.6 version markers — superseded; 0.6.7 is current (see test_v067_version)."""
 import json
 import re
 from pathlib import Path
@@ -8,26 +8,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_stickllm_json_is_066():
     doc = json.loads((ROOT / "overlay/opt/stickllm/ui/stickllm.json").read_text())
-    assert doc["version"] == "0.6.6"
+    assert doc["version"] == "0.6.7"
 
 
 def test_about_and_cache_bust_066():
     html = (ROOT / "ui/index.html").read_text(encoding="utf-8")
-    assert "StickLLM v0.6.6" in html
-    assert len(re.findall(r"\?v=v066", html)) >= 5
+    assert "StickLLM v0.6.7" in html
+    assert len(re.findall(r"\?v=v067", html)) >= 5
 
 
 def test_kiosk_fallback_and_build_default_066():
     kiosk = (ROOT / "overlay/usr/local/bin/stickllm-kiosk").read_text(encoding="utf-8")
-    assert "|| echo v0.6.6" in kiosk
+    assert "|| echo v0.6.7" in kiosk
     build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
-    assert 'VERSION="${STICKLLM_VERSION:-0.6.6}"' in build
+    assert 'VERSION="${STICKLLM_VERSION:-0.6.7}"' in build
 
 
 def test_changelog_top_is_066():
     log = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     first = re.search(r"^## (\S+)", log, re.M).group(1)
-    assert first == "0.6.6"
+    assert first == "0.6.7"
+    assert "## 0.6.6" in log
     for item in ("wifi_connect", "monologue_end", "use-angle=gl", "32k", "Permissions-Policy"):
         assert item.lower() in log.lower()
 

@@ -160,9 +160,9 @@ window.addEventListener("storage", (e) => {
   if (v && v !== token) {
     token = v;
     appsSession.token = ""; appsSession.at = 0;
-    primeAppsSession(true);
+    setPairIcon("paired");
     hideNotPaired();
-    if (!browserPaired) { startAppStatus(); startOpenAppEvents(); }
+    afterPairSuccess().catch(() => {});
   }
   setPairIcon();
 });
@@ -216,10 +216,32 @@ async function pairWithCode(v) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.message || j.error || "Pair failed");
   token = j.token; localStorage.setItem(TOKEN_KEY, token);
-  appsSession.token = token; appsSession.at = Date.now();
+  // Force /api/ui/apps-session on the next prime (do not fake a fresh session).
+  appsSession.token = ""; appsSession.at = 0;
   setPairIcon("paired");
   hideNotPaired();
   return j;
+}
+/** After a successful pair: cookies, status, desktop/A0 — no manual F5. */
+async function afterPairSuccess() {
+  rememberPairCookie();
+  try { await primeAppsSession(true); } catch (_) {}
+  startAppStatus();
+  startOpenAppEvents();
+  try { await refreshStatus(); } catch (_) {}
+  try { await refreshAgentLink(); } catch (_) {}
+  try { await refreshModels(); } catch (_) {}
+  if (state.vaultOpen) {
+    try { ensureAgentZeroStarted(); } catch (_) {}
+  }
+  try { window.dispatchEvent(new CustomEvent("stickllm:paired")); } catch (_) {}
+  try {
+    if (window.stickDesk && typeof window.stickDesk.onPaired === "function") {
+      await window.stickDesk.onPaired();
+    } else if (window.stickDesk && window.stickDesk.openApp) {
+      window.stickDesk.openApp("chat");
+    }
+  } catch (_) {}
 }
 async function requestKioskCode() {
   const out = document.getElementById("npMsg");
@@ -1305,7 +1327,8 @@ function setVaultChrome(open, absent = false) {
   // Open -> locked from anywhere (another browser, the kiosk lock combo, a
   // lock in Settings): clear the screen too, not only the chrome (0.5.4).
   if (!open && state.vaultOpen && !vaultUnlocking && !clearingOnLock) clearOnLock();
-  const vaultChanged = !!open !== !!state.vaultOpen;
+  const wasOpen = !!state.vaultOpen;
+  const vaultChanged = !!open !== wasOpen;
   state.vaultOpen = open;
   // 0.6.1 (item 20): vault models appear/disappear without a manual refresh.
   if (vaultChanged) setTimeout(() => { if (typeof refreshModels === "function") refreshModels().catch(() => {}); }, 300);
@@ -1322,6 +1345,10 @@ function setVaultChrome(open, absent = false) {
   if ($("#lockBtn2")) $("#lockBtn2").hidden = !open;
   if ($("#lockBtn")) $("#lockBtn").hidden = !open;
   if ($("#popVault")) $("#popVault").textContent = open ? "Unlocked" : (none ? "Not set up" : "Locked");
+  // 0.6.7: notify desktop/A0 once when the vault becomes open (listener was orphaned).
+  if (open && vaultChanged) {
+    try { window.dispatchEvent(new CustomEvent("stickllm:vault-unlocked")); } catch (_) {}
+  }
 }
 
 // Lock means nothing from any chat stays readable on this screen: the
@@ -1950,7 +1977,7 @@ function messagesForRequestBase(voiceOn) {
 }
 // ---- App agent (0.5.6): requests aimed at an app go to stickllm-appagent
 // (/appagent/act through the gateway) instead of the chat model. It shares the
-// chat model (one Qwen3.5-4B) and only runs when the user loads it here.
+// chat model (baked Qwen2.5-7B Q4) and only runs when the user loads it here.
 // No picker: the target is the app window used last (focus), "in <App>, ..."
 // names one, a keyword router covers the rest (installed apps only), and a
 // search box + recent-apps row pick one by hand. Browser apps (Notepad,
@@ -2112,9 +2139,9 @@ async function appAgentToggle() {
   try {
     const j = await control(appAgentOn ? "appagent_unload" : "appagent_load", { autoload: true });
     appAgentOn = !!(j && j.running);
-    if (j && j.autoloaded) toast("Loading Qwen3.5-4B for the app agent…");
+    if (j && j.autoloaded) toast("Loading the on-stick model for the app agent…");
     else if (appAgentOn && j && j.model_loaded === false) {
-      toast("App agent loaded. Load a model on the Models page (Qwen3.5-4B is on the stick) before asking an app.");
+      toast("App agent loaded. Load a model on the Models page (Qwen2.5-7B Q4 is on the stick) before asking an app.");
     }
   } catch (e) {
     toast(`App agent: ${e.message || e}`);
@@ -2838,18 +2865,44 @@ let lastFocus;
 // Desktop layout (0.5.6): Settings and Models are desktop windows, so the
 // modal stays hidden and desktop.js shows the right window instead.
 const deskOn = () => !!(window.stickDesk && window.stickDesk.active && window.stickDesk.active());
+const settingsModal = () => $(".modal:not(.small):not(.fp)");
+function setNavButtons() {
+  return $$(".setNav [data-sec]").filter((b) => getComputedStyle(b).display !== "none");
+}
+function setNavMenuOpen(open) {
+  const m = settingsModal();
+  if (!m) return;
+  m.classList.toggle("setNavOpen", !!open);
+  const btn = $("#setNavBtn");
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    const cur = $(".setNav [data-sec].on") || setNavButtons()[0];
+    cur?.focus();
+  }
+}
+function pickSetSec(sec, { closeMenu = true } = {}) {
+  showSec(sec);
+  if (sec === "models" || sec === "downloads") refreshModels().catch((e) => toast(e.message));
+  if (sec === "storage") refreshStorage().catch(() => {});
+  if (["devices", "network", "system", "about"].includes(sec)) refreshStatus().catch(() => {});
+  if (sec === "chats") { renderSaved(); refreshChatStore().catch(() => {}); }
+  refreshSecLive(sec);
+  if (closeMenu) setNavMenuOpen(false);
+}
 function openSettings(sec = "general") {
   const desk = deskOn();
   lastFocus = document.activeElement; if (!desk) $("#settings").hidden = false; $("#statusPop").hidden = true;
   if (mobile()) toggleNav(false);
-  showSec(sec, !mobile() || sec !== "__nav");
+  // Narrow Settings uses a hamburger drawer; always show the section body.
+  showSec(sec === "__nav" ? "general" : sec, true);
+  setNavMenuOpen(sec === "__nav" && mobile());
   if (sec === "models" || sec === "downloads") refreshModels().catch((e) => toast(e.message));
   if (sec === "storage") refreshStorage().catch((e) => showError(e, "Storage"));
   if (sec === "devices" || sec === "network" || sec === "system" || sec === "about")
     refreshStatus().catch(() => {});
   if (sec === "chats") { renderSaved(); refreshChatStore().catch(() => {}); }
-  refreshSecLive(sec);
-  if (desk && window.stickDesk.onSettings) window.stickDesk.onSettings(sec);
+  refreshSecLive(sec === "__nav" ? "general" : sec);
+  if (desk && window.stickDesk.onSettings) window.stickDesk.onSettings(sec === "__nav" ? "general" : sec);
 }
 function showSec(sec, open = true) {
   // Only sections that share a container switch: in the desktop layout the
@@ -2868,29 +2921,72 @@ function showSec(sec, open = true) {
     b.setAttribute("aria-current", b.dataset.sec === sec ? "page" : "false");
   });
   $("#secTitle").innerHTML = $("#sec-" + sec).dataset.title;
-  $(".modal:not(.small):not(.fp)")?.classList.toggle("secOpen", open);
-  $(".setScroll").scrollTop = 0;
+  settingsModal()?.classList.toggle("secOpen", open);
+  const sc = $(".setScroll");
+  if (sc) sc.scrollTop = 0;
 }
 function closeSettings() {
+  setNavMenuOpen(false);
   $("#settings").hidden = true;
   if (deskOn() && window.stickDesk.onSettingsClose) window.stickDesk.onSettingsClose();
   lastFocus?.focus?.();
 }
 $$("[data-open]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openSettings(b.dataset.open); }));
-$$(".setNav [data-sec]").forEach((b) => (b.onclick = () => {
-  showSec(b.dataset.sec);
-  if (b.dataset.sec === "models" || b.dataset.sec === "downloads") refreshModels().catch((e) => toast(e.message));
-  if (b.dataset.sec === "storage") refreshStorage().catch(() => {});
-  if (["devices", "network", "system", "about"].includes(b.dataset.sec)) refreshStatus().catch(() => {});
-  refreshSecLive(b.dataset.sec);
-}));
+$$(".setNav [data-sec]").forEach((b) => (b.onclick = () => pickSetSec(b.dataset.sec)));
 $$("[data-sec-go]").forEach((b) => (b.onclick = () => {
   if (deskOn()) { openSettings(b.dataset.secGo); return; }
-  showSec(b.dataset.secGo);
-  if (b.dataset.secGo === "models") refreshModels().catch((e) => toast(e.message));
+  pickSetSec(b.dataset.secGo);
 }));
 $("#setClose").onclick = closeSettings;
-$("#setBack").onclick = () => $(".modal:not(.small):not(.fp)")?.classList.remove("secOpen");
+$("#setBack").onclick = () => setNavMenuOpen(true);
+$("#setNavBtn").onclick = (e) => {
+  e.stopPropagation();
+  const m = settingsModal();
+  setNavMenuOpen(!(m && m.classList.contains("setNavOpen")));
+};
+$(".setNav")?.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  const bs = setNavButtons();
+  const i = bs.indexOf(document.activeElement);
+  if (i < 0) return;
+  e.preventDefault();
+  const n = bs[(i + (e.key === "ArrowDown" ? 1 : bs.length - 1)) % bs.length];
+  n.focus();
+  // Keep the hamburger open while arrowing through sections; click still closes.
+  const keep = settingsModal()?.classList.contains("setNavOpen");
+  pickSetSec(n.dataset.sec, { closeMenu: !keep });
+});
+// Wide layout: ↑/↓ move sections while Settings is open, unless focus is in a
+// field or the scrollable section body (those keep normal caret / scroll).
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  const t = e.target;
+  if (!t || !t.closest) return;
+  if (t.closest("input, textarea, select, [contenteditable=true]") || t.isContentEditable) return;
+  if (t.closest(".setScroll")) return;
+  if ($(".setNav")?.contains(t)) return; // setNav listener owns these
+  const settingsEl = $("#settings");
+  const m = settingsModal();
+  const settingsVisible = (settingsEl && !settingsEl.hidden) ||
+    (deskOn() && m && document.body.contains(m));
+  if (!settingsVisible || !m) return;
+  if (mobile() && !m.classList.contains("setNavOpen")) return;
+  const bs = setNavButtons();
+  if (!bs.length) return;
+  const cur = bs.findIndex((b) => b.classList.contains("on"));
+  const i = cur < 0 ? 0 : cur;
+  e.preventDefault();
+  const n = bs[(i + (e.key === "ArrowDown" ? 1 : bs.length - 1)) % bs.length];
+  n.focus();
+  pickSetSec(n.dataset.sec, { closeMenu: !m.classList.contains("setNavOpen") });
+});
+document.addEventListener("click", (e) => {
+  const m = settingsModal();
+  if (!m || !m.classList.contains("setNavOpen")) return;
+  if (m.contains(e.target) && (e.target.closest(".setNav") || e.target.closest("#setNavBtn"))) return;
+  setNavMenuOpen(false);
+});
 $("#settings").onclick = (e) => { if (e.target.id === "settings") closeSettings(); };
 
 let cfCb;
@@ -2903,7 +2999,7 @@ const CF_CHECK = {
   "SAVED": "I have written down the recovery phrase",
   "REMOVE": "",
 };
-function confirmBox({ title, text, word, check, ok = "Delete", extra, cb }) {
+function confirmBox({ title, text, word, check, ok = "Delete", extra, cb, noCancel = false, danger = true }) {
   $("#cfTitle").textContent = title; $("#cfText").textContent = text;
   const label = check || (word && CF_CHECK[word]) || "";
   const row = $("#cfCheckRow");
@@ -2911,12 +3007,44 @@ function confirmBox({ title, text, word, check, ok = "Delete", extra, cb }) {
   if ($("#cfCheckLabel")) $("#cfCheckLabel").textContent = label;
   if ($("#cfCheck")) $("#cfCheck").checked = false;
   $("#cfOk").textContent = ok; $("#cfOk").disabled = !!label;
+  $("#cfOk").className = danger ? "btn danger" : "btn primary";
+  if ($("#cfCancel")) $("#cfCancel").hidden = !!noCancel;
   $("#cfExtra").hidden = !extra; $("#cfExtra").textContent = extra || "";
   cfCb = cb; $("#confirm").hidden = false; setTimeout(() => (label ? $("#cfCheck") : $("#cfOk")).focus(), 20);
 }
 if ($("#cfCheck")) $("#cfCheck").onchange = () => ($("#cfOk").disabled = !$("#cfCheck").checked);
-$("#cfCancel").onclick = () => ($("#confirm").hidden = true);
-$("#cfOk").onclick = () => { $("#confirm").hidden = true; cfCb?.(); };
+$("#cfCancel").onclick = () => { $("#confirm").hidden = true; if ($("#cfCancel")) $("#cfCancel").hidden = false; };
+$("#cfOk").onclick = () => {
+  $("#confirm").hidden = true;
+  if ($("#cfCancel")) $("#cfCancel").hidden = false;
+  $("#cfOk").className = "btn danger";
+  cfCb?.();
+};
+
+/** Recovery phrase after vault create: tick + Continue only (no Cancel). */
+function showRecoveryPhraseOnce(phrase) {
+  return new Promise((resolve) => {
+    confirmBox({
+      title: "Save your recovery phrase",
+      text: "This is the only time it's shown. Write it down and keep it somewhere safe.",
+      extra: phrase || "(no phrase in response — check stick logs)",
+      ok: "Continue",
+      check: "I wrote down the recovery phrase.",
+      noCancel: true,
+      danger: false,
+      cb: resolve,
+    });
+  });
+}
+
+/** After create/unlock: vault mode + chrome + A0 start signal. */
+async function enterVaultModeNow() {
+  setVaultChrome(true);
+  try { await setSessionMode("vault"); } catch (_) {}
+  try { window.dispatchEvent(new CustomEvent("stickllm:vault-unlocked")); } catch (_) {}
+  try { ensureAgentZeroStarted(); } catch (_) {}
+  try { await refreshAgentLink(); } catch (_) {}
+}
 
 function fmtBytes(n) {
   if (!n || n < 0) return "—";
@@ -2974,7 +3102,7 @@ function llamaStarting() {
   const s = String(lastLlama?.active_state || "");
   return s === "activating" || (s === "active" && !lastLlama?.stopped);
 }
-// Where an installed model's file lives (0.5.6): the baked 4B is on the stick even
+// Where an installed model's file lives: the baked base model is on the stick even
 // in a vault session.
 function modelWhere(m) {
   const p = String(m.path || m.location || "");
@@ -3066,7 +3194,7 @@ function updateVramBar(m) {
   if ($("#vramWarn")) $("#vramWarn").hidden = fit.k !== "no";
 }
 // A search hit for a file the catalog already lists (server sets id = catalog id,
-// e.g. the baked app-agent Qwen3.5-4B) shows as that catalog row: one card with its
+// e.g. the baked base 7B Q4) shows as that catalog row: one card with its
 // installed/running/Delete state, not an hf: duplicate.
 function searchRows() {
   const seen = new Set();
@@ -4192,18 +4320,49 @@ $("#delModel").onclick = () => {
 };
 
 
-function showVaultCreating(on) {
+/** Busy overlay for vault create vs open/unlock. mode: "create" | "open" */
+function showVaultCreating(on, mode) {
   let el = $("#vaultCreatingOverlay");
   if (!el) {
     el = document.createElement("div");
     el.id = "vaultCreatingOverlay";
-    el.innerHTML = '<div class="vault-creating-card"><div class="spin" aria-hidden="true"></div><div><strong>Creating vault, please wait…</strong><div class="muted small">This can take a few minutes on a USB stick.</div></div></div>';
+    el.innerHTML = '<div class="vault-creating-card"><div class="spin" aria-hidden="true"></div><div><strong id="vaultBusyTitle">Creating vault, please wait…</strong><div class="muted small" id="vaultBusySub">This can take a few minutes on a USB stick.</div></div></div>';
     document.body.appendChild(el);
   }
+  const title = el.querySelector("#vaultBusyTitle");
+  const sub = el.querySelector("#vaultBusySub");
+  const opening = mode === "open" || mode === "unlock" || mode === "opening";
+  if (title) title.textContent = opening ? "Opening vault, please wait…" : "Creating vault, please wait…";
+  if (sub) sub.textContent = opening
+    ? "Unlocking the encrypted vault file."
+    : "This can take a few minutes on a USB stick.";
   el.classList.toggle("show", !!on);
   el.setAttribute("aria-hidden", on ? "false" : "true");
-  ["#createVault", "#pickCreate", "#np1", "#np2"].forEach((sel) => {
+  ["#createVault", "#pickCreate", "#np1", "#np2", "#setupNext"].forEach((sel) => {
     const n = $(sel); if (n) n.disabled = !!on;
+  });
+}
+/** Harden vault passcode inputs so browsers do not offer to save the passcode. */
+function hardenVaultPassFields(...nodes) {
+  nodes.forEach((n) => {
+    if (!n) return;
+    try {
+      n.setAttribute("type", "text");
+      n.classList.add("secret");
+      n.setAttribute("autocomplete", "off");
+      n.setAttribute("autocapitalize", "off");
+      n.setAttribute("autocorrect", "off");
+      n.setAttribute("spellcheck", "false");
+      n.setAttribute("data-lpignore", "true");
+      n.setAttribute("data-1p-ignore", "true");
+      n.setAttribute("data-form-type", "other");
+      n.setAttribute("name", "stickllm-vault-pass-" + Math.random().toString(36).slice(2, 8));
+      // Readonly until focus defeats Chrome's save-password heuristic.
+      n.setAttribute("readonly", "readonly");
+      const unlock = () => { try { n.removeAttribute("readonly"); } catch (_) {} };
+      n.addEventListener("focus", unlock, { once: true });
+      n.addEventListener("pointerdown", unlock, { once: true });
+    } catch (_) {}
   });
 }
 
@@ -4783,9 +4942,8 @@ $("#unlockForm").onsubmit = async (e) => {
     const res = await control("vault_unlock", payload);
     if (!res.ok) throw new Error(res.error || res.stderr || "unlock failed");
     vaultUnlocking = false;
-    setVaultChrome(true);
     toast("Vault unlocked");
-    await setSessionMode("vault");
+    await enterVaultModeNow();
     await refreshStorage();
   } catch (err) {
     vaultUnlocking = false;
@@ -4821,7 +4979,7 @@ $("#createVault").onclick = () => {
     ok: "Create vault", check: "I understand this creates an encrypted vault file (never formats the drive).",
     cb: async () => {
       try {
-        showVaultCreating(true);
+        showVaultCreating(true, "create");
         const onStickData = path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/");
         const res = await control("vault_setup", {
           path, size_gb: size, confirm: "CREATE-VAULT",
@@ -4831,19 +4989,12 @@ $("#createVault").onclick = () => {
         $("#np1").value = $("#np2").value = "";
         showVaultCreating(false);
         if (!res.ok) { const er = new Error(res.error || res.stderr || "setup failed"); er.title = "Could not create vault"; throw er; }
-        const phrase = res.recovery_phrase || "(no phrase in response — check stick logs)";
-        confirmBox({
-          title: "Save your recovery phrase",
-          text: "This is the only time it's shown. Write it down.",
-          extra: phrase, word: "SAVED", ok: "Finish setup",
-          cb: async () => {
-            $("#np1").value = $("#np2").value = "";
-            setVaultChrome(true);
-            toast("Vault created");
-            await setSessionMode("vault");
-            await refreshStorage();
-          },
-        });
+        // 0.6.7: enter vault mode immediately (backend already unlocked), then recovery.
+        toast("Vault created");
+        await enterVaultModeNow();
+        await refreshStorage();
+        await showRecoveryPhraseOnce(res.recovery_phrase || "");
+        $("#np1").value = $("#np2").value = "";
       } catch (e) { showVaultCreating(false); showError(e); }
     },
   });
@@ -5188,16 +5339,15 @@ async function issuePairHotkey() {
 function paintSshDetails(connect) {
   const box = $("#sshDetails");
   const line = $("#sshLine");
-  const copy = $("#sshCopy");
   if (!box || !line) return;
   const c = connect || {};
   const enabled = !!c.ssh_enabled;
   const pass = String(c.ssh_password || "").trim();
   const local = detectLocalHost();
   // Password only exists on loopback health; LAN never gets it.
+  // No one-click Copy — select/highlight manually if needed (0.6.7).
   if (!local || !enabled) {
     box.hidden = true;
-    if (copy) copy.hidden = true;
     return;
   }
   const user = c.ssh_user || "stickllm";
@@ -5205,16 +5355,8 @@ function paintSshDetails(connect) {
   box.hidden = false;
   if (pass) {
     line.textContent = `${user}@${host}  password: ${pass}`;
-    if (copy) {
-      copy.hidden = false;
-      copy.onclick = () => {
-        navigator.clipboard?.writeText(pass).catch(() => {});
-        toast("SSH password copied");
-      };
-    }
   } else {
     line.textContent = `SSH is on (${user}@${host}) — password not ready yet; press F10 or wait a moment.`;
-    if (copy) copy.hidden = true;
   }
 }
 async function issueSshHotkey() {
@@ -5290,9 +5432,7 @@ if ($("#npForm")) $("#npForm").onsubmit = async (e) => {
     await pairWithCode(v);
     err.hidden = true; $("#npCode").value = "";
     toast("Browser paired");
-    startAppStatus();
-    startOpenAppEvents();
-    refreshModels().catch(() => {});
+    await afterPairSuccess();
   } catch (ex) { err.hidden = false; err.textContent = ex.message; }
 };
 for (const el of document.querySelectorAll(".pairLink")) {
@@ -5314,8 +5454,7 @@ $("#pairForm").onsubmit = async (e) => {
     await pairWithCode(v);
     err.hidden = true; $("#pairIn").value = "";
     toast("Browser paired"); closeSettings();
-    startAppStatus();
-    startOpenAppEvents();
+    await afterPairSuccess();
   } catch (ex) { err.hidden = false; err.textContent = ex.message; }
 };
 
@@ -5621,39 +5760,51 @@ wireA0DriveButtons();
 /* 0.6.3: Agent Zero is the main chat — auto-start after vault/model ready. */
 let stickllmAutoStartA0 = false;
 async function ensureAgentZeroStarted() {
-  if (stickllmAutoStartA0) return;
   try {
     const st = await fetch("/api/agent/status", {
       headers: token ? { Authorization: "Bearer " + token } : {},
+      cache: "no-store",
     }).then((r) => r.json());
     renderA0Drive(st);
-    if (st.state === "running" || st.state === "starting" || st.state === "installing") {
-      stickllmAutoStartA0 = st.state === "running";
-      return;
+    // 0.6.7: never start while vault/settings are locked — clears stale "Open Agent Zero".
+    if (!st.vault_unlocked && !state.vaultOpen) {
+      stickllmAutoStartA0 = false;
+      return st;
     }
-    if (st.preinstalled || st.image_present || (st.drive && st.drive.seed_ready) || st.bundled) {
+    if (st.state === "running") {
       stickllmAutoStartA0 = true;
-      toast("Starting Agent Zero…");
+      return st;
+    }
+    if (st.state === "starting" || st.state === "installing") return st;
+    if (st.preinstalled || st.image_present || (st.drive && st.drive.seed_ready) || st.bundled || st.state === "stopped") {
+      if (!stickllmAutoStartA0) toast("Starting Agent Zero…");
+      stickllmAutoStartA0 = true;
       await fetch("/api/agent/start", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) },
         body: "{}",
+        cache: "no-store",
       });
+      agentFastPoll();
     }
-  } catch (_) {}
+    return st;
+  } catch (_) { return null; }
 }
 
-/* ---- 0.6.6 first-time setup wizard (Network → Storage → Vault → Finish) ----
-   Setup-complete is persisted on STICKLLM-DATA (stickllm-setup.json / vault
-   location pointer), not only Chromium localStorage — so a second reboot asks
-   for the vault passcode instead of re-running the wizard. */
-const SETUP_KEY = "stickllm.setup.v066";
-const SETUP_KEY_OLD = "stickllm.setup.v063";
+/* ---- 0.6.7 first-boot / vault setup ----
+   1) Mount SSD if present; look for an existing vault.
+   2) Vault found → passcode only (reuse Wi‑Fi/settings) — no full wizard.
+   3) No vault → Open model (7B Q4) → Network → Storage → Vault → Ready.
+   Setup-complete lives on STICKLLM-DATA (stickllm-setup.json), not only localStorage. */
+const SETUP_KEY = "stickllm.setup.v067";
+const SETUP_KEY_OLD = ["stickllm.setup.v066", "stickllm.setup.v063"];
+const STARTER_MODEL_ID = "qwen25-7b-q4km";
 let setupStateCache = null; // { setup_complete, vault_unlocked, vault_path, … }
 let setupGateBusy = false;
 function setupDoneLocal() {
   try {
-    return localStorage.getItem(SETUP_KEY) === "1" || localStorage.getItem(SETUP_KEY_OLD) === "1";
+    if (localStorage.getItem(SETUP_KEY) === "1") return true;
+    return SETUP_KEY_OLD.some((k) => localStorage.getItem(k) === "1");
   } catch (_) { return false; }
 }
 function setupDone() {
@@ -5663,7 +5814,7 @@ function setupDone() {
 function markSetupDone(extra) {
   try {
     localStorage.setItem(SETUP_KEY, "1");
-    localStorage.setItem(SETUP_KEY_OLD, "1");
+    SETUP_KEY_OLD.forEach((k) => localStorage.setItem(k, "1"));
   } catch (_) {}
   if (setupStateCache) setupStateCache.setup_complete = true;
   control("setup_mark_complete", extra && typeof extra === "object" ? extra : {}).catch(() => {});
@@ -5679,7 +5830,7 @@ async function refreshSetupState(force) {
       if (st.setup_complete) {
         try {
           localStorage.setItem(SETUP_KEY, "1");
-          localStorage.setItem(SETUP_KEY_OLD, "1");
+          SETUP_KEY_OLD.forEach((k) => localStorage.setItem(k, "1"));
         } catch (_) {}
       }
       return setupStateCache;
@@ -5696,13 +5847,65 @@ async function refreshSetupState(force) {
   return setupStateCache;
 }
 
-/** Prior setup found but vault locked: password only (no Wi‑Fi/storage steps). */
+/** Mount host SSDs (never format) and look for stickllm-vault.img. */
+async function probeBootVault() {
+  const out = { found: false, path: "", blob: "", drives: [], unmounted: [] };
+  try {
+    let targets = await control("storage_targets").catch(() => null);
+    if (!targets) return out;
+    out.drives = targets.drives || [];
+    out.unmounted = targets.unmounted || [];
+    for (const u of (out.unmounted || []).slice(0, 6)) {
+      try {
+        await control("mount_host_partition", { device: u.device, path: u.suggested_mount });
+      } catch (_) {}
+    }
+    targets = await control("storage_targets").catch(() => targets);
+    out.drives = (targets && targets.drives) || out.drives;
+    out.unmounted = (targets && targets.unmounted) || [];
+    const order = [...out.drives].sort((a, b) => {
+      const rank = (d) => (d.kind === "ssd" ? 0 : d.kind === "stick" ? 1 : 2);
+      return rank(a) - rank(b);
+    });
+    for (const d of order) {
+      const base = String(d.suggested_vault || d.path || "").replace(/\/+$/, "");
+      if (!base) continue;
+      try {
+        const found = await control("vault_find", { path: base });
+        const hits = (found && (found.vaults || found.hits || found.paths)) || [];
+        const blob = base + "/stickllm-vault.img";
+        const parentBlob = String(d.path || "").replace(/\/+$/, "") + "/stickllm-vault.img";
+        const exists = !!(found && (found.exists || found.blob)) || hits.some((h) => {
+          const p = typeof h === "string" ? h : (h.path || h.blob || "");
+          return p === blob || p === parentBlob || p === base || String(p).endsWith("stickllm-vault.img");
+        });
+        if (exists) {
+          out.found = true;
+          out.path = base;
+          out.blob = String((found && found.blob) || blob);
+          if ($("#vaultPath")) $("#vaultPath").value = base;
+          return out;
+        }
+      } catch (_) {}
+    }
+    const st = await refreshSetupState(true);
+    if (st && (st.blob || (st.vault_configured && st.vault_path))) {
+      out.found = true;
+      out.path = st.vault_path || "";
+      out.blob = st.blob || "";
+    }
+  } catch (_) {}
+  return out;
+}
+
+/** Prior vault found but locked: password only (no Wi‑Fi/storage steps). */
 async function openVaultUnlockOnly(opts) {
   const force = !!(opts && opts.force);
   if ($("#setupWizard")?.classList.contains("show") && !force) return;
   const st = await refreshSetupState(true);
   if (st.vault_unlocked || state.vaultOpen) {
-    markSetupDone({ vault_path: st.vault_path || "" });
+    markSetupDone({ vault_path: st.vault_path || (opts && opts.vaultPath) || "" });
+    await enterVaultModeNow();
     return;
   }
   let overlay = $("#setupWizard");
@@ -5726,17 +5929,21 @@ async function openVaultUnlockOnly(opts) {
   const body = $("#setupBody");
   const err = $("#setupErr");
   const showErr = (m) => { if (!m) { err.hidden = true; err.textContent = ""; return; } err.hidden = false; err.textContent = m; };
-  const vaultPath = (st.vault_path || ($("#vaultPath") && $("#vaultPath").value) || "").trim();
+  const vaultPath = ((opts && opts.vaultPath) || st.vault_path || ($("#vaultPath") && $("#vaultPath").value) || "").trim();
   if (vaultPath && $("#vaultPath")) $("#vaultPath").value = vaultPath;
   $("#setupTitle").textContent = "Welcome back";
   $("#setupBack").hidden = true;
   $("#setupSkip").textContent = "Full setup";
+  $("#setupSkip").hidden = false;
   $("#setupNext").textContent = "Unlock";
   body.innerHTML = `
-<p>This stick is already set up. Enter the vault passcode to continue — settings come back from the vault.</p>
-<label class="field"><span>Vault passcode</span><input id="wizP1" type="password" class="secret" autocomplete="current-password"></label>
-<p class="muted small">Vault: <code id="wizVaultShow"></code></p>`;
+<form autocomplete="off" onsubmit="return false">
+<p>A vault was found on this computer. Enter the passcode to unlock — Wi‑Fi and settings come back from the vault.</p>
+<label class="field"><span>Vault passcode</span><input id="wizP1" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
+<p class="muted small">Vault: <code id="wizVaultShow"></code></p>
+</form>`;
   $("#wizVaultShow").textContent = vaultPath || st.blob || "(saved location)";
+  hardenVaultPassFields($("#wizP1"));
   setTimeout(() => $("#wizP1")?.focus(), 50);
   $("#setupSkip").onclick = () => {
     overlay.classList.remove("show");
@@ -5747,7 +5954,7 @@ async function openVaultUnlockOnly(opts) {
     const pass = ($("#wizP1")?.value || "");
     if (pass.length < 1) { showErr("Enter the vault passcode"); return; }
     try {
-      showVaultCreating(true);
+      showVaultCreating(true, "open");
       if (vaultPath) {
         await control("vault_attach", { path: vaultPath }).catch(() => {});
       }
@@ -5756,9 +5963,8 @@ async function openVaultUnlockOnly(opts) {
       if (!res || res.ok === false) throw new Error((res && (res.error || res.message)) || "Unlock failed");
       markSetupDone({ vault_path: vaultPath });
       overlay.classList.remove("show");
-      setVaultChrome(true);
       toast("Vault unlocked");
-      try { await setSessionMode("vault"); } catch (_) {}
+      await enterVaultModeNow();
       try { await refreshStorage(); } catch (_) {}
       await refreshSetupState(true);
     } catch (e) {
@@ -5780,9 +5986,11 @@ async function openSetupWizard(opts) {
     }
     if (setupDoneLocal()) return;
   }
-  const LAST = 3; // Network, Storage, Vault, Finish (starter-model step removed)
+  // 0.6.7: Open model → Network → Storage → Vault → Ready
+  const STEP_MODEL = 0, STEP_NET = 1, STEP_STOR = 2, STEP_VAULT = 3, STEP_READY = 4;
+  const LAST = STEP_READY;
   let step = 0;
-  const state = {
+  const wiz = {
     drive: null,
     vaultPath: "",
     modelsPath: "",
@@ -5792,6 +6000,7 @@ async function openSetupWizard(opts) {
     ssid: "",
     wpass: "",
     vaultMode: "create", // or "unlock" when stickllm-vault.img already exists
+    vaultDone: false,
   };
   let overlay = $("#setupWizard");
   if (!overlay) {
@@ -5817,11 +6026,11 @@ async function openSetupWizard(opts) {
   const targets = await control("storage_targets").catch(() => ({ drives: [], unmounted: [] }));
   const drives = (targets && targets.drives) || [];
   const unmounted = (targets && targets.unmounted) || [];
-  state.drive = drives.find((d) => d.kind === "ssd") || drives.find((d) => d.kind === "stick") || drives[0] || null;
-  if (state.drive) {
-    state.vaultPath = state.drive.suggested_vault || (state.drive.path + "/vault");
-    state.modelsPath = state.drive.suggested_models || (state.drive.path + "/models");
-    state.dockerPath = state.drive.suggested_docker || (state.drive.path + "/stickllm-docker");
+  wiz.drive = drives.find((d) => d.kind === "ssd") || drives.find((d) => d.kind === "stick") || drives[0] || null;
+  if (wiz.drive) {
+    wiz.vaultPath = wiz.drive.suggested_vault || (wiz.drive.path + "/vault");
+    wiz.modelsPath = wiz.drive.suggested_models || (wiz.drive.path + "/models");
+    wiz.dockerPath = wiz.drive.suggested_docker || (wiz.drive.path + "/stickllm-docker");
   }
 
   async function joinWifi(ssid, password) {
@@ -5847,7 +6056,7 @@ async function openSetupWizard(opts) {
       const b = document.createElement("button");
       b.type = "button";
       b.setAttribute("role", "option");
-      b.classList.toggle("selected", n.ssid === state.ssid);
+      b.classList.toggle("selected", n.ssid === wiz.ssid);
       const name = document.createElement("span");
       name.textContent = n.ssid + (n.in_use ? " (connected)" : "");
       const sig = document.createElement("span");
@@ -5855,7 +6064,7 @@ async function openSetupWizard(opts) {
       sig.textContent = (n.secure ? "🔒 " : "") + (n.signal != null ? n.signal + "%" : "");
       b.append(name, sig);
       b.onclick = () => {
-        state.ssid = n.ssid;
+        wiz.ssid = n.ssid;
         $("#wizSsid").value = n.ssid;
         listEl.querySelectorAll("button").forEach((x) => x.classList.remove("selected"));
         b.classList.add("selected");
@@ -5865,12 +6074,34 @@ async function openSetupWizard(opts) {
     });
   }
 
+  function starterModel() {
+    return findModel(STARTER_MODEL_ID)
+      || (lastCatalog || []).find((m) => m && (m.id === STARTER_MODEL_ID || /qwen2\.?5-?7b.*q4/i.test(String(m.id || "") + " " + String(m.name || ""))))
+      || null;
+  }
+
   function render() {
     showErr("");
     $("#setupBack").disabled = step <= 0;
+    $("#setupBack").hidden = false;
+    $("#setupSkip").hidden = false;
     $("#setupSkip").textContent = step >= LAST ? "Close" : "Skip";
     $("#setupNext").textContent = step >= LAST ? "Finish" : "Continue";
-    if (step === 0) {
+    if (step === STEP_MODEL) {
+      $("#setupTitle").textContent = "Open model";
+      const m = starterModel();
+      const label = (m && (m.name || m.id)) || "Qwen2.5-7B Instruct Q4_K_M";
+      const where = m ? modelWhere(m) : "stick";
+      body.innerHTML = `
+<p>Load the on-stick <strong>${esc(label)}</strong> for chat and apps. Pros can skip and open their own model later.</p>
+<div class="card" style="margin:12px 0;padding:12px">
+  <div><b>${esc(label)}</b></div>
+  <div class="muted small">On the ${esc(where)} · id <code>${esc(STARTER_MODEL_ID)}</code></div>
+</div>
+<p class="muted small">Continue loads this model. Skip leaves the model picker for later.</p>`;
+      $("#setupSkip").textContent = "Skip";
+      $("#setupNext").textContent = "Continue";
+    } else if (step === STEP_NET) {
       $("#setupTitle").textContent = "Network";
       body.innerHTML = `
 <p class="muted">Connect to Wi‑Fi or plug in a cable. Continue joins the selected network before moving on.</p>
@@ -5879,8 +6110,8 @@ async function openSetupWizard(opts) {
 <div id="wizWifiList" class="wifiList" role="listbox" aria-label="Nearby Wi‑Fi networks" hidden></div>
 <div class="actions"><button type="button" id="wizScan" class="btn">Scan</button>
 <button type="button" id="wizJoin" class="btn">Join Wi‑Fi</button></div>`;
-      $("#wizSsid").value = state.ssid;
-      $("#wizWpass").value = state.wpass;
+      $("#wizSsid").value = wiz.ssid;
+      $("#wizWpass").value = wiz.wpass;
       $("#wizScan").onclick = async () => {
         try {
           const j = await control("wifi_scan");
@@ -5888,18 +6119,18 @@ async function openSetupWizard(opts) {
         } catch (e) { showErr(String(e.message || e)); }
       };
       $("#wizJoin").onclick = async () => {
-        state.ssid = $("#wizSsid").value.trim(); state.wpass = $("#wizWpass").value;
+        wiz.ssid = $("#wizSsid").value.trim(); wiz.wpass = $("#wizWpass").value;
         try {
-          if (!state.ssid) throw new Error("Enter or pick a network name");
+          if (!wiz.ssid) throw new Error("Enter or pick a network name");
           showErr("");
-          const res = await joinWifi(state.ssid, state.wpass);
+          const res = await joinWifi(wiz.ssid, wiz.wpass);
           toast(res.online ? "Online via Wi‑Fi" : "Wi‑Fi profile saved — waiting for uplink");
         } catch (e) { showErr(String(e.message || e)); }
       };
-    } else if (step === 1) {
+    } else if (step === STEP_STOR) {
       $("#setupTitle").textContent = "Storage";
       const rows = drives.map((d) => {
-        const sel = state.drive && state.drive.id === d.id;
+        const sel = wiz.drive && wiz.drive.id === d.id;
         return `<button type="button" class="drive-pick${sel ? " selected" : ""}" data-id="${d.id}">
 <strong>${d.label}</strong> · ${d.free_gb != null ? d.free_gb + " GB free" : ""}
 <div class="muted small">${d.path}</div></button>`;
@@ -5920,9 +6151,9 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
   <button type="button" class="btn ghost" id="wizRunStick" hidden>Run from stick</button>
   <div class="progress" id="wizMoveBar" hidden><div id="wizMovePct" style="width:0%"></div></div>
 </div>`;
-      $("#wizVault").value = state.vaultPath;
-      $("#wizModels").value = state.modelsPath;
-      $("#wizDocker").value = state.dockerPath;
+      $("#wizVault").value = wiz.vaultPath;
+      $("#wizModels").value = wiz.modelsPath;
+      $("#wizDocker").value = wiz.dockerPath;
       const wizMove = $("#wizMoveA0");
       const wizStick = $("#wizRunStick");
       if (wizMove) wizMove.onclick = () => moveAgentDrive("ssd");
@@ -5937,11 +6168,11 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
         }).catch(() => {});
       body.querySelectorAll(".drive-pick[data-id]").forEach((b) => {
         b.onclick = () => {
-          state.drive = drives.find((d) => d.id === b.dataset.id);
-          if (state.drive) {
-            state.vaultPath = state.drive.suggested_vault;
-            state.modelsPath = state.drive.suggested_models;
-            state.dockerPath = state.drive.suggested_docker;
+          wiz.drive = drives.find((d) => d.id === b.dataset.id);
+          if (wiz.drive) {
+            wiz.vaultPath = wiz.drive.suggested_vault;
+            wiz.modelsPath = wiz.drive.suggested_models;
+            wiz.dockerPath = wiz.drive.suggested_docker;
             render();
           }
         };
@@ -5957,140 +6188,171 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
           } catch (e) { showErr(String(e.message || e)); }
         };
       });
-    } else if (step === 2) {
-      $("#setupTitle").textContent = state.vaultMode === "unlock" ? "Unlock vault" : "Vault passcode";
+    } else if (step === STEP_VAULT) {
+      $("#setupTitle").textContent = wiz.vaultMode === "unlock" ? "Unlock vault" : "Vault passcode";
+      $("#setupSkip").hidden = true; // vault step: no skip past create/unlock
       body.innerHTML = `
-<p>${state.vaultMode === "unlock"
+<form autocomplete="off" onsubmit="return false">
+<p>${wiz.vaultMode === "unlock"
   ? "A vault file already exists at this path. Enter the passcode to unlock it."
   : "Encrypt chats and settings. Models can live beside the vault on the same drive."}</p>
-<label class="field"><span>Passcode (8+ characters)</span><input id="wizP1" type="text" class="secret"></label>
-<label class="field" ${state.vaultMode === "unlock" ? "hidden" : ""}><span>Confirm passcode</span><input id="wizP2" type="text" class="secret"></label>
+<label class="field"><span>Passcode (8+ characters)</span><input id="wizP1" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
+<label class="field" ${wiz.vaultMode === "unlock" ? "hidden" : ""}><span>Confirm passcode</span><input id="wizP2" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
 <p class="muted small">Vault path: <code id="wizVaultShow"></code></p>
-<p class="muted small" id="wizVaultHint" hidden></p>`;
-      $("#wizVaultShow").textContent = state.vaultPath || "(choose storage first)";
-      $("#wizP1").value = state.pass1;
-      if ($("#wizP2")) $("#wizP2").value = state.pass2;
-      if (state.vaultMode === "unlock") {
+<p class="muted small" id="wizVaultHint" hidden></p>
+</form>`;
+      $("#wizVaultShow").textContent = wiz.vaultPath || "(choose storage first)";
+      $("#wizP1").value = wiz.pass1;
+      if ($("#wizP2")) $("#wizP2").value = wiz.pass2;
+      hardenVaultPassFields($("#wizP1"), $("#wizP2"));
+      if (wiz.vaultMode === "unlock") {
         const h = $("#wizVaultHint");
         if (h) { h.hidden = false; h.textContent = "Existing stickllm-vault.img found — unlock instead of create."; }
       }
     } else {
-      $("#setupTitle").textContent = "You're ready";
+      $("#setupTitle").textContent = "System ready";
+      $("#setupSkip").hidden = true;
       body.innerHTML = `
 <ul class="setup-tour">
-<li><strong>Agent Zero</strong> is the main chat on the desktop.</li>
+<li><strong>Agent Zero</strong> is the main chat on the desktop — open it once the vault is unlocked.</li>
 <li>Open <strong>Settings → Storage</strong> any time to change folders or re-run this wizard.</li>
-<li>Download models from Models when you want a larger one — the baked-in model works offline.</li>
+<li>Load another model from Models when you want a larger one — the on-stick 7B works offline.</li>
 </ul>`;
     }
   }
 
   $("#setupBack").onclick = () => { if (step > 0) { step -= 1; render(); } };
   $("#setupSkip").onclick = () => {
-    if (step >= LAST) { markSetupDone(); overlay.classList.remove("show"); return; }
+    if (step >= LAST) { markSetupDone({ vault_path: wiz.vaultPath || "" }); overlay.classList.remove("show"); return; }
+    if (step === STEP_VAULT) return; // skip hidden on vault
     step += 1; render();
   };
   $("#setupNext").onclick = async () => {
     showErr("");
     try {
-      if (step === 0) {
-        state.ssid = ($("#wizSsid")?.value || "").trim();
-        state.wpass = $("#wizWpass")?.value || "";
-        if (state.ssid) {
-          const res = await joinWifi(state.ssid, state.wpass);
+      if (step === STEP_MODEL) {
+        try { await refreshModels(); } catch (_) {}
+        const m = starterModel();
+        if (m) {
+          try {
+            selectedModelId = m.id;
+            beginModelLoadUi(m.id, m.name || m.id);
+            startLoadPoll();
+            const res = await control("model_activate", {
+              id: m.id,
+              ctx_size: +($("#ctx")?.value || 32768),
+              kv_type: { f16: "f16", q8: "q8_0", q4: "q4_0" }[state.kv] || "f16",
+            });
+            loadActivateSettled = true;
+            if (res && res.ok === false && res.error) throw new Error(res.error);
+            toast("Loading " + (m.name || m.id) + "…");
+          } catch (e) {
+            showErr("Could not start the on-stick model: " + (e.message || e) + " — Continue again or Skip.");
+            return;
+          }
+        } else {
+          toast("On-stick model not listed yet — you can load it from Models later");
+        }
+      }
+      if (step === STEP_NET) {
+        wiz.ssid = ($("#wizSsid")?.value || "").trim();
+        wiz.wpass = $("#wizWpass")?.value || "";
+        if (wiz.ssid) {
+          const res = await joinWifi(wiz.ssid, wiz.wpass);
           toast(res.online ? "Online via Wi‑Fi" : "Wi‑Fi profile saved");
           if (res.ok === false) throw new Error(res.error || "Wi‑Fi join failed");
         }
       }
-      if (step === 1) {
-        state.vaultPath = ($("#wizVault")?.value || "").trim();
-        state.modelsPath = ($("#wizModels")?.value || "").trim();
-        state.dockerPath = ($("#wizDocker")?.value || "").trim();
-        if (!state.vaultPath || !state.modelsPath) throw new Error("Choose vault and models folders");
-        if (state.modelsPath) {
-          const r = await control("set_models_dir", { path: state.modelsPath });
+      if (step === STEP_STOR) {
+        wiz.vaultPath = ($("#wizVault")?.value || "").trim();
+        wiz.modelsPath = ($("#wizModels")?.value || "").trim();
+        wiz.dockerPath = ($("#wizDocker")?.value || "").trim();
+        if (!wiz.vaultPath || !wiz.modelsPath) throw new Error("Choose vault and models folders");
+        if (wiz.modelsPath) {
+          const r = await control("set_models_dir", { path: wiz.modelsPath });
           if (r && r.ok === false) throw new Error(r.error || "Could not set models folder");
         }
-        if ($("#vaultPath")) $("#vaultPath").value = state.vaultPath;
-        // Detect existing vault before the create step.
+        if ($("#vaultPath")) $("#vaultPath").value = wiz.vaultPath;
         try {
-          const found = await control("vault_find", { path: state.vaultPath });
+          const found = await control("vault_find", { path: wiz.vaultPath });
           const hits = (found && (found.vaults || found.hits || found.paths)) || [];
-          const path = state.vaultPath.replace(/\/+$/, "");
+          const path = wiz.vaultPath.replace(/\/+$/, "");
           const blob = path + "/stickllm-vault.img";
           const exists = hits.some((h) => {
             const p = typeof h === "string" ? h : (h.path || h.blob || "");
             return p === blob || p === path || String(p).endsWith("stickllm-vault.img");
           }) || !!(found && found.exists);
-          if (exists || (found && found.ok && found.blob)) state.vaultMode = "unlock";
-          else state.vaultMode = "create";
-        } catch (_) { state.vaultMode = "create"; }
+          if (exists || (found && found.ok && found.blob)) wiz.vaultMode = "unlock";
+          else wiz.vaultMode = "create";
+        } catch (_) { wiz.vaultMode = "create"; }
       }
-      if (step === 2) {
-        state.pass1 = $("#wizP1")?.value || "";
-        state.pass2 = state.vaultMode === "unlock" ? state.pass1 : ($("#wizP2")?.value || "");
-        if (state.pass1.length < 8) throw new Error("Passcode must be at least 8 characters");
-        if (state.vaultMode !== "unlock" && state.pass1 !== state.pass2) throw new Error("Passcodes don't match");
-        const path = state.vaultPath.replace(/\/+$/, "");
-        const onStick = path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/");
-        showVaultCreating(true);
-        try {
-          let res;
-          if (state.vaultMode === "unlock") {
-            await control("vault_attach", { path }).catch(() => {});
-            res = await control("vault_unlock", { passcode: state.pass1 });
-            showVaultCreating(false);
-            if (!res || res.ok === false) throw new Error((res && (res.error || res.message)) || "Unlock failed");
-            toast("Vault unlocked");
-          } else {
-            res = await control("vault_setup", {
-              path, size_gb: "32", confirm: "CREATE-VAULT",
-              recovery_confirm: "SHOW-ONCE", passcode: state.pass1, passcode2: state.pass2,
-              space_confirm: "SPACE-OK",
-              ...(onStick ? { stick_data_confirm: "STICK-DATA" } : {}),
-            });
-            showVaultCreating(false);
-            if (!res || res.ok === false) {
-              const errMsg = String((res && (res.error || res.stderr)) || "vault setup failed");
-              if (/already exists/i.test(errMsg)) {
-                state.vaultMode = "unlock";
-                render();
-                showErr("A vault already exists here — enter the passcode to unlock.");
-                return;
-              }
-              throw new Error(errMsg);
-            }
-            toast("Vault created");
-            const phrase = res.recovery_phrase || "";
-            if (phrase) {
-              await new Promise((resolve) => {
-                confirmBox({
-                  title: "Save your recovery phrase",
-                  text: "This is the only time it's shown. Write it down.",
-                  extra: phrase, ok: "I saved it",
-                  check: "I wrote down the recovery phrase.",
-                  cb: resolve,
-                });
+      if (step === STEP_VAULT) {
+        if (wiz.vaultDone && state.vaultOpen) {
+          // Already created/unlocked this session — do not call setup again.
+        } else {
+          wiz.pass1 = $("#wizP1")?.value || "";
+          wiz.pass2 = wiz.vaultMode === "unlock" ? wiz.pass1 : ($("#wizP2")?.value || "");
+          if (wiz.pass1.length < 8) throw new Error("Passcode must be at least 8 characters");
+          if (wiz.vaultMode !== "unlock" && wiz.pass1 !== wiz.pass2) throw new Error("Passcodes don't match");
+          const path = wiz.vaultPath.replace(/\/+$/, "");
+          const onStick = path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/");
+          showVaultCreating(true, wiz.vaultMode === "unlock" ? "open" : "create");
+          try {
+            let res;
+            if (wiz.vaultMode === "unlock") {
+              await control("vault_attach", { path }).catch(() => {});
+              res = await control("vault_unlock", { passcode: wiz.pass1, path });
+              showVaultCreating(false);
+              if (!res || res.ok === false) throw new Error((res && (res.error || res.message)) || "Unlock failed");
+              toast("Vault unlocked");
+              await enterVaultModeNow();
+              wiz.vaultDone = true;
+            } else {
+              res = await control("vault_setup", {
+                path, size_gb: "32", confirm: "CREATE-VAULT",
+                recovery_confirm: "SHOW-ONCE", passcode: wiz.pass1, passcode2: wiz.pass2,
+                space_confirm: "SPACE-OK",
+                ...(onStick ? { stick_data_confirm: "STICK-DATA" } : {}),
               });
+              showVaultCreating(false);
+              if (!res || res.ok === false) {
+                const errMsg = String((res && (res.error || res.stderr)) || "vault setup failed");
+                if (/already exists/i.test(errMsg)) {
+                  // Created on a prior Continue that hung — switch to unlock, stay on step.
+                  wiz.vaultMode = "unlock";
+                  render();
+                  showErr("A vault already exists here — enter the passcode to unlock.");
+                  return;
+                }
+                throw new Error(errMsg);
+              }
+              // Correct sequence: vault mode immediately → recovery (no Cancel) → ready.
+              toast("Vault created");
+              await enterVaultModeNow();
+              wiz.vaultDone = true;
+              wiz.vaultMode = "unlock"; // never create twice
+              const phrase = res.recovery_phrase || "";
+              if (phrase) await showRecoveryPhraseOnce(phrase);
             }
+          } catch (e) {
+            showVaultCreating(false);
+            const msg = String(e.message || e);
+            if (/already exists/i.test(msg)) {
+              wiz.vaultMode = "unlock";
+              render();
+              showErr("A vault already exists here — enter the passcode to unlock.");
+              return;
+            }
+            throw e;
           }
-        } catch (e) {
-          showVaultCreating(false);
-          const msg = String(e.message || e);
-          if (/already exists/i.test(msg)) {
-            state.vaultMode = "unlock";
-            render();
-            showErr("A vault already exists here — enter the passcode to unlock.");
-            return;
-          }
-          throw e;
         }
       }
       if (step >= LAST) {
-        markSetupDone({ vault_path: state.vaultPath || "" });
+        markSetupDone({ vault_path: wiz.vaultPath || "" });
         overlay.classList.remove("show");
         try { await refreshSetupState(true); } catch (_) {}
         try { await refreshStorage(); } catch (_) {}
+        try { await enterVaultModeNow(); } catch (_) {}
         return;
       }
       step += 1;
@@ -6099,6 +6361,8 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
       showErr(String(e.message || e));
     }
   };
+  // Prefetch catalog so the Open model step can name the 4B.
+  refreshModels().catch(() => {});
   render();
 }
 
@@ -6109,13 +6373,16 @@ async function maybeOfferSetupOrUnlock() {
   if ($("#setupWizard")?.classList.contains("show")) return;
   setupGateBusy = true;
   try {
-    const st = await refreshSetupState(false);
+    // 0.6.7: mount SSD first and prefer an existing vault over full setup.
+    const probe = await probeBootVault();
+    const st = await refreshSetupState(true);
     if (st.vault_unlocked || state.vaultOpen) {
-      if (st.setup_complete || setupDoneLocal()) markSetupDone({ vault_path: st.vault_path || "" });
+      if (st.setup_complete || setupDoneLocal() || probe.found) markSetupDone({ vault_path: st.vault_path || probe.path || "" });
+      try { await enterVaultModeNow(); } catch (_) {}
       return;
     }
-    if (st.setup_complete) {
-      await openVaultUnlockOnly();
+    if (probe.found || st.setup_complete || st.vault_configured) {
+      await openVaultUnlockOnly({ vaultPath: probe.path || st.vault_path || "" });
       return;
     }
     if (!setupDoneLocal()) await openSetupWizard();
@@ -6125,6 +6392,8 @@ async function maybeOfferSetupOrUnlock() {
     setupGateBusy = false;
   }
 }
+
+
 
 async function refreshStatus() {
   // A refresh must not paint Loading until this browser is paired.
@@ -6304,9 +6573,11 @@ window.addEventListener("keydown", (e) => {
   else if (e.ctrlKey && k === "b") { e.preventDefault(); toggleNav(); }
   else if (e.ctrlKey && k === ",") { e.preventDefault(); openSettings(); }
   else if (e.key === "Escape") {
+    const setM = settingsModal();
     if ($("#ablAck") && !$("#ablAck").hidden) $("#ablAck").hidden = true;
     else if (!$("#confirm").hidden) $("#confirm").hidden = true;
     else if (!$("#picker").hidden) $("#picker").hidden = true;
+    else if (setM && setM.classList.contains("setNavOpen")) setNavMenuOpen(false);
     else if (!$("#settings").hidden) closeSettings();
     else if (!$("#statusPop").hidden) $("#statusPop").hidden = true;
     else if ($("#appsMenu") && !$("#appsMenu").hidden) toggleAppsMenu(false);
@@ -6977,6 +7248,138 @@ function secureMicMessage() {
   }
   return "Microphone needs HTTPS. Open https://<stick-ip>/ — trust the stick certificate once, then Allow the mic.";
 }
+// Dismissed Allow prompts can be re-asked; permanent Block cannot.
+let micNeedsAllow = false;
+let micPermBlocked = false;
+const MIC_PERM_RETRIES = 2;
+function micPermDeniedName(name) {
+  return name === "NotAllowedError" || name === "SecurityError" || name === "PermissionDeniedError";
+}
+async function micPermissionState() {
+  try {
+    if (!navigator.permissions || !navigator.permissions.query) return "";
+    const st = await navigator.permissions.query({ name: "microphone" });
+    return (st && st.state) || "";
+  } catch (_) {
+    return "";
+  }
+}
+function micOriginLabel() {
+  try {
+    return location.origin || (location.protocol + "//" + location.host);
+  } catch (_) {
+    return "http://127.0.0.1";
+  }
+}
+function micBlockedHint() {
+  const origin = micOriginLabel();
+  return "Microphone is blocked for " + origin + ". Chromium padlock → Site settings → Microphone → Allow (or chrome://settings/content/microphone), then press the mic or turn Voice off/on.";
+}
+function micRetryHint() {
+  return "Microphone was not allowed. Press the mic, or turn Voice off and on, then Allow when Chromium asks.";
+}
+function markMicNeedsAllow(blocked) {
+  micNeedsAllow = true;
+  micPermBlocked = !!blocked;
+  const btn = $("#micBtn");
+  if (btn) {
+    btn.title = blocked ? "Microphone blocked — open site settings" : "Allow microphone";
+    btn.setAttribute("aria-label", btn.title);
+  }
+  const voiceBtn = $("#voiceModeBtn");
+  if (voiceBtn && voiceMode) {
+    voiceBtn.title = blocked
+      ? "Mic blocked — reset in site settings"
+      : "Allow microphone — click to ask again";
+  }
+}
+function clearMicNeedsAllow() {
+  if (!micNeedsAllow && !micPermBlocked) return;
+  micNeedsAllow = false;
+  micPermBlocked = false;
+  if (micState === "idle") {
+    const btn = $("#micBtn");
+    if (btn && voiceMode) {
+      btn.title = "Voice input";
+      btn.setAttribute("aria-label", "Voice input");
+    }
+  }
+  const voiceBtn = $("#voiceModeBtn");
+  if (voiceBtn && voiceMode) voiceBtn.title = "Voice on";
+}
+async function getUserMediaAudio(audioConstraint, opts) {
+  const retries = opts && opts.retries != null ? opts.retries : MIC_PERM_RETRIES;
+  const shouldAbort = (opts && opts.shouldAbort) || (() => false);
+  let last = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (shouldAbort()) {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
+    } catch (e) {
+      last = e;
+      if (!micPermDeniedName(e && e.name) || attempt >= retries) throw e;
+      // Permanent Block: further getUserMedia calls will not re-prompt.
+      if ((await micPermissionState()) === "denied") throw e;
+      // Short yields — stay near the user gesture when Chromium still allows a re-prompt.
+      await new Promise((r) => setTimeout(r, attempt === 0 ? 120 : 450));
+    }
+  }
+  throw last || new Error("getUserMedia failed");
+}
+async function handleMicPermissionFailure(err) {
+  if (!window.isSecureContext) {
+    const msg = secureMicMessage();
+    speechFail(msg);
+    toast(msg, { warn: true, force: true });
+    return;
+  }
+  const state = await micPermissionState();
+  const blocked = state === "denied";
+  markMicNeedsAllow(blocked);
+  const msg = blocked ? micBlockedHint() : micRetryHint();
+  speechFail(msg);
+  toast(msg, { warn: true, force: true });
+  if (err && err.name) {
+    try { console.warn("mic permission:", err.name, state || "(unknown)"); } catch (_) {}
+  }
+}
+async function ensureMicPermission() {
+  if (!window.isSecureContext) {
+    const msg = secureMicMessage();
+    speechFail(msg);
+    toast(msg, { warn: true, force: true });
+    return false;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    speechFail("This browser cannot use the microphone.");
+    return false;
+  }
+  try {
+    const stream = await getUserMediaAudio(true, { retries: MIC_PERM_RETRIES });
+    stream.getTracks().forEach((t) => t.stop());
+    clearMicNeedsAllow();
+    setMicNote("");
+    return true;
+  } catch (e) {
+    if (e && e.name === "AbortError") return false;
+    if (e && (e.name === "NotFoundError" || e.name === "DevicesNotFoundError")) {
+      speechFail("No microphone was found. Plug in a USB mic (or headset), then try Voice again.");
+      toast("No microphone was found. Plug in a USB mic (or headset), then try Voice again.", { warn: true, force: true });
+      return false;
+    }
+    if (micPermDeniedName(e && e.name)) {
+      await handleMicPermissionFailure(e);
+      return false;
+    }
+    speechFail("Could not use the microphone.");
+    toast("Could not use the microphone.", { warn: true, force: true });
+    return false;
+  }
+}
 function abandonReplyForMic() {
   userStopGen = sendGen;
   if (sendAbort) {
@@ -7039,37 +7442,45 @@ async function startMic() {
         return "";
       }
     };
+    const gumOpts = {
+      retries: MIC_PERM_RETRIES,
+      shouldAbort: () => gen !== micGen || micStopWanted || !voiceMode,
+    };
     try {
       const preferId = await realMicId();
       const withId = preferId ? Object.assign({ deviceId: { exact: preferId } }, micAudio) : micAudio;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: withId });
+        stream = await getUserMediaAudio(withId, gumOpts);
       } catch (err) {
         const name = err && err.name;
         if (name !== "OverconstrainedError" && name !== "NotSupportedError" && name !== "ConstraintNotSatisfiedError") throw err;
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await getUserMediaAudio(true, gumOpts);
       }
       const opened = stream.getAudioTracks()[0];
       if (opened && virtualMic(opened.label)) {
         const id = await realMicId();
         if (id) {
           try {
-            const next = await navigator.mediaDevices.getUserMedia({
-              audio: Object.assign({ deviceId: { exact: id } }, micAudio),
-            });
+            const next = await getUserMediaAudio(
+              Object.assign({ deviceId: { exact: id } }, micAudio),
+              { retries: 0, shouldAbort: gumOpts.shouldAbort }
+            );
             stream.getTracks().forEach((t) => t.stop());
             stream = next;
           } catch (_) {}
         }
       }
+      clearMicNeedsAllow();
     } catch (e) {
+      if (e && e.name === "AbortError") {
+        setMicUi("idle");
+        return;
+      }
       const name = e && e.name;
       if (name === "NotFoundError" || name === "DevicesNotFoundError") {
         speechFail("No microphone was found. Plug in a USB mic (or headset), then try Voice again.");
-      } else if (name === "NotAllowedError" || name === "SecurityError" || name === "PermissionDeniedError") {
-        speechFail(window.isSecureContext
-          ? "Microphone permission was denied. Allow the mic for this site when Chromium asks (or site settings)."
-          : secureMicMessage());
+      } else if (micPermDeniedName(name)) {
+        await handleMicPermissionFailure(e);
       } else speechFail("Could not use the microphone.");
       setMicUi("idle");
       return;
@@ -7219,7 +7630,12 @@ function voiceControls(on) {
   if (stopSpeech) stopSpeech.hidden = !on;
   if (btn) {
     btn.setAttribute("aria-pressed", on ? "true" : "false");
-    btn.title = on ? "Voice on" : "Voice off";
+    if (!on) btn.title = "Voice off";
+    else if (micNeedsAllow) {
+      btn.title = micPermBlocked
+        ? "Mic blocked — reset in site settings"
+        : "Allow microphone — click to ask again";
+    } else btn.title = "Voice on";
   }
 }
 async function setVoiceMode(on) {
@@ -7239,6 +7655,8 @@ async function setVoiceMode(on) {
     voiceHold = false;
     voiceHeard = false;
     voiceSpeechMs = 0;
+    micNeedsAllow = false;
+    micPermBlocked = false;
     const mute = $("#voiceMuteBtn");
     if (mute) mute.classList.remove("muted");
     cancelMic();
@@ -7262,6 +7680,8 @@ async function setVoiceMode(on) {
       toast(j.error || "Could not change voice.");
       return;
     }
+    // Request mic while the Voice click still counts as a user gesture.
+    if (on) await ensureMicPermission();
   } catch (_) {
     voiceMode = false;
     voiceControls(false);
@@ -7677,7 +8097,15 @@ if (micBtn) {
   micBtn.addEventListener("pointercancel", () => { pressDown = false; });
   micBtn.addEventListener("click", (e) => { e.preventDefault(); });
 }
-if ($("#voiceModeBtn")) $("#voiceModeBtn").onclick = () => { setVoiceMode(!voiceMode); };
+if ($("#voiceModeBtn")) $("#voiceModeBtn").onclick = () => {
+  // Re-trigger Allow without turning Voice off when a prior prompt was dismissed.
+  if (voiceMode && micNeedsAllow && !micPermBlocked) {
+    unlockSpeech();
+    ensureMicPermission();
+    return;
+  }
+  setVoiceMode(!voiceMode);
+};
 loadVoicePower();
 if ($("#stopSpeechBtn")) $("#stopSpeechBtn").onclick = () => { stopCurrentSpeech(); };
 if ($("#thread")) {
@@ -8337,7 +8765,8 @@ function deskAgent() {
     message: agentProgressLine(s) || s.message || "", progress: s.progress, step: s.step, steps: s.steps,
     needsInstall: needsInstall,
     busy: s.state === "installing" || s.state === "starting",
-    preinstalled: seed };
+    preinstalled: seed,
+    vaultUnlocked: !!(s.vault_unlocked || state.vaultOpen) };
 }
 window.stickApp = Object.freeze({
   openSettings, closeSettings, showSec, lockVault, showApps, toast,
@@ -8596,5 +9025,9 @@ if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices(
   } catch (_) {}
 })();
 document.addEventListener("stickllm:model-ready", () => { try { ensureAgentZeroStarted(); } catch (_) {} });
-document.addEventListener("stickllm:vault-unlocked", () => { try { ensureAgentZeroStarted(); } catch (_) {} });
+document.addEventListener("stickllm:vault-unlocked", () => {
+  try { ensureAgentZeroStarted(); } catch (_) {}
+  try { refreshAgentLink(); } catch (_) {}
+});
 setTimeout(() => { try { ensureAgentZeroStarted(); } catch (_) {} }, 8000);
+try { hardenVaultPassFields($("#vaultPass"), $("#np1"), $("#np2")); } catch (_) {}

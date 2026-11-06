@@ -3,7 +3,7 @@ Description=StickLLM optional separate app agent model (Qwen3.5-4B llama-server,
 # 0.5.6: disabled. The app agent shares the chat llama-server. Advanced use only:
 # start this and set STICKLLM_APPAGENT_LLM_URL=http://127.0.0.1:8796 in /etc/stickllm/appagent.env.
 After=network.target
-ConditionPathExists=/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf
+ConditionPathExists=/opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
 StartLimitIntervalSec=600
 StartLimitBurst=3
 

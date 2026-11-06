@@ -164,25 +164,27 @@ LLM_WRAPPER = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-appagent-ll
 
 
 def test_appagent_shares_the_chat_model_and_helper_is_optional():
-    """0.5.6: one Qwen3.5-4B for chat AND app control. The app agent talks to the chat llama-server;
+    """One baked base model for chat AND app control. The app agent talks to the chat llama-server;
     the separate 8796 helper stays shipped for advanced use but is never enabled or pulled in."""
     wrap = WRAPPER.read_text(encoding="utf-8")
     assert "STICKLLM_LLAMA_PORT:-8080" in wrap and "STICKLLM_APPAGENT_LLM_PORT" not in wrap
     src = LLM_WRAPPER.read_text(encoding="utf-8")
-    assert "/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf" in src
+    assert "/opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf" in src
     assert "--host 127.0.0.1" in src and "8796" in src and "--jinja" in src
     assert "--n-gpu-layers 99" in src and "--n-gpu-layers 0" in src
     assert "llama-server-vulkan" in src and "mem_info_vram_total" in src  # AMD/Intel via Vulkan
     unit = LLM_UNIT.read_text(encoding="utf-8")
     assert "ExecStart=/usr/local/bin/stickllm-appagent-llm" in unit and "DynamicUser=yes" in unit
+    assert "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf" in unit
     agent_unit = UNIT.read_text(encoding="utf-8")
     assert "stickllm-appagent-llm" not in agent_unit.split("[Service]")[0].replace("Description", "")
     assert "Wants=stickllm-appagent-llm" not in agent_unit
     hook = HOOK.read_text(encoding="utf-8")
     assert "systemctl enable stickllm-appagent-llm.service" not in hook
     build = BUILD.read_text(encoding="utf-8")
-    assert "models/appagent/${AA_GGUF}" in build and "sha256sum -c" in build
-    assert "25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c" in build
+    assert "models/appagent/${f}" in build and "sha256sum -c" in build
+    assert "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db" in build
+    assert 'base_model_id = "qwen25-7b-q4km"' in (ROOT / "config/models/catalog.toml").read_text(encoding="utf-8")
     gw = GATEWAY.read_text(encoding="utf-8")
     assert "8796" not in gw.replace("APPAGENT_PORT = 8795", "")  # not exposed by the gateway
 

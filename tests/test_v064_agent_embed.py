@@ -110,3 +110,19 @@ def test_embed_shim_warns_insecure_microphone():
     assert "stickllm.micHttpsHint" in app
     desk = (ROOT / "ui/desktop.js").read_text(encoding="utf-8")
     assert 'allow", "microphone' in desk or "allow\",\"microphone" in desk or 'allow", "microphone;' in desk
+
+
+def test_embed_shim_quiets_a0_connection_toasts():
+    """A0 sync-store toasts Disconnected/Reconnected even on kiosk loopback."""
+    text = GATEWAY.read_text(encoding="utf-8")
+    assert "quietA0ConnToasts" in text
+    assert '"Disconnected"' in text or "Disconnected" in text
+    assert "Reconnected" in text
+    assert "notificationStore" in text
+    mod = _load_gateway()
+    out = mod.rewrite_agent_embed_payload(
+        b"<head><title>a0</title></head>",
+        "text/html",
+    ).decode()
+    assert "quietA0ConnToasts" in out
+    assert "notificationStore" in out

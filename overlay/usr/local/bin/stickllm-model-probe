@@ -23,8 +23,10 @@ done
 
 vram_gb=0
 if command -v nvidia-smi >/dev/null 2>&1; then
-  vram_mb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk 'BEGIN{m=0}{if($1+0>m)m=$1+0} END{print m+0}' || true)"
+  # 0.6.7: CUDA can tensor-split across cards (see stickllm-control suitable_gpus),
+  # so sum NVIDIA VRAM for probe recommends (dual 24 GB → ~48 GB pooled).
   # nvidia-smi present but no driver/GPU exits non-zero (e.g. 9); with pipefail that killed the probe.
+  vram_mb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk 'BEGIN{s=0}{s+=$1+0} END{print s+0}' || true)"
   vram_mb="${vram_mb:-0}"
   vram_gb=$(( (vram_mb + 512) / 1024 ))
 fi
@@ -61,11 +63,11 @@ PROBE_OUT="$STATUS_DIR/model-probe.json"
 python3 - "$CATALOG" "$vram_gb" "$free_gb" "$dest" "$PROBE_OUT" <<'PY'
 import json, re, sys
 path, vram, free, dest, out = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4], sys.argv[5]
-# 0.5.6: the baked Qwen3.5-4B is the base model (chat AND app control).
+# 0.6.7: the baked Qwen2.5-7B Q4_K_M is the base model (chat AND app control).
 best = {
-    "recommend_id": "qwen35-4b-q4km",
-    "recommend_name": "Qwen3.5-4B Q4_K_M",
-    "recommend_size_gb": 2.6,
+    "recommend_id": "qwen25-7b-q4km",
+    "recommend_name": "Qwen2.5-7B Instruct Q4_K_M",
+    "recommend_size_gb": 4.4,
 }
 try:
     text = open(path, encoding="utf-8").read()

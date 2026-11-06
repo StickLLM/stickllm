@@ -5,8 +5,9 @@ version = 1
 family = "qwen"
 
 base_image = "lite"
-base_model_id = "qwen35-4b-q4km"
-base_model_target_id = "qwen35-4b-q4km"
+# 0.6.7: baked default is Qwen2.5-7B Instruct Q4_K_M (8 GB GPU @ 32K floor).
+base_model_id = "qwen25-7b-q4km"
+base_model_target_id = "qwen25-7b-q4km"
 optional_fat_default_id = "qwen38-27b-q4km"
 family_policy = "qwen_only"
 vision_requires_min_vram_gb = 6
@@ -26,37 +27,80 @@ id = "ram_only"
 label = "RAM only (no GPU)"
 min_vram_gb = 0
 series = "qwen3.5"
+# Optional weak-host download; not baked (min host is 8 GB GPU).
 entries = ["qwen35-4b-q4km"]
 
 [[tier]]
 id = "vram_8gb"
-label = "8 GB VRAM"
+label = "8 GB VRAM (installed default)"
 min_vram_gb = 8
 series = "qwen2.5"
-entries = ["qwen25-7b-q5km", "qwen35-4b-q4km"]
+# One recommend: baked 7B Q4. Q5 is an optional alternate download.
+entries = ["qwen25-7b-q4km", "qwen25-7b-q5km"]
 
 [[tier]]
 id = "vram_12gb"
 label = "12 GB VRAM"
 min_vram_gb = 12
 series = "qwen2.5"
-entries = ["qwen25-7b-q5km"]
+entries = ["qwen25-14b-q4km"]
 
 [[tier]]
 id = "vram_16gb"
 label = "16 GB VRAM"
 min_vram_gb = 16
-series = "qwen3.8"
-entries = ["qwen38-27b-q4km"]
+series = "qwen2.5"
+entries = ["qwen25-32b-q3km"]
 
 [[tier]]
 id = "vram_24gb"
 label = "24 GB VRAM (RTX 3090 class)"
 min_vram_gb = 24
 series = "qwen3.8"
-entries = ["qwen38-27b-q4km", "qwen25-7b-q5km"]
+entries = ["qwen38-27b-q4km"]
+
+[[tier]]
+id = "vram_32gb"
+label = "32 GB VRAM"
+min_vram_gb = 32
+series = "qwen2.5"
+entries = ["qwen25-32b-q4km"]
+
+[[tier]]
+id = "vram_dual_24gb"
+label = "Dual 24 GB VRAM (CUDA tensor-split)"
+min_vram_gb = 48
+series = "qwen2.5"
+# Probe sums NVIDIA VRAM across cards; CUDA loads with --tensor-split.
+entries = ["qwen25-72b-q3km"]
 
 # --- pinned (downloadable) ---
+
+[[model]]
+id = "qwen25-72b-q3km"
+name = "Qwen2.5-72B Instruct Q3_K_M"
+tier = "vram_dual_24gb"
+quality_rank = 120
+approx_size_gb = 37.7
+min_vram_gb = 40
+hf_repo = "bartowski/Qwen2.5-72B-Instruct-GGUF"
+hf_files = ["Qwen2.5-72B-Instruct-Q3_K_M.gguf"]
+sha256 = ["52c15684755c9b5254ba11ff79c541134657d17592c6e1c302519ab1e36299c2"]
+vision = false
+notes = "Dual 24 GB recommend (CUDA multi-GPU / tensor-split). Q4_K_M (~47 GB) is too tight for 48 GB + 32K KV; Q3 leaves headroom. Vulkan stays one-card."
+
+[[model]]
+id = "qwen25-32b-q4km"
+name = "Qwen2.5-32B Instruct Q4_K_M"
+tier = "vram_32gb"
+quality_rank = 110
+approx_size_gb = 19.9
+min_vram_gb = 28
+hf_repo = "bartowski/Qwen2.5-32B-Instruct-GGUF"
+hf_files = ["Qwen2.5-32B-Instruct-Q4_K_M.gguf"]
+sha256 = ["2e5f6daea180dbc59f65a40641e94d3973b5dbaa32b3c0acf54647fa874e519e"]
+vision = false
+notes = "32 GB recommend. Comfortable at Agent Zero Minimum 32K on a 32 GB card."
 
 [[model]]
 id = "qwen38-27b-q4km"
@@ -69,15 +113,60 @@ hf_repo = "bartowski/Qwen3.8-27B-GGUF"
 hf_files = ["Qwen3.8-27B-Q4_K_M.gguf"]
 sha256 = ["880a52af8317974f7b4b064a6bc29ff49e188b91aa218e08eea3078b6b1cc673"]
 vision = false
-notes = "Optimum text model for 24 GB; ~17.4 GB download"
+notes = "24 GB recommend (RTX 3090 class). ~17.4 GB download; 32K with headroom."
+
+[[model]]
+id = "qwen25-32b-q3km"
+name = "Qwen2.5-32B Instruct Q3_K_M"
+tier = "vram_16gb"
+quality_rank = 85
+approx_size_gb = 15.9
+min_vram_gb = 16
+hf_repo = "bartowski/Qwen2.5-32B-Instruct-GGUF"
+hf_files = ["Qwen2.5-32B-Instruct-Q3_K_M.gguf"]
+sha256 = ["c87acbeeba9fca2c92952fc94fb1691b07a0dc6b43cacf61e7f798f31414dd54"]
+vision = false
+notes = "16 GB recommend. Weights fill most of a 16 GB card — expect Minimum 32K / fit-check shrink or light partial offload."
+
+[[model]]
+id = "qwen25-14b-q4km"
+name = "Qwen2.5-14B Instruct Q4_K_M"
+tier = "vram_12gb"
+quality_rank = 70
+approx_size_gb = 9.0
+min_vram_gb = 12
+hf_repo = "bartowski/Qwen2.5-14B-Instruct-GGUF"
+hf_files = ["Qwen2.5-14B-Instruct-Q4_K_M.gguf"]
+sha256 = ["e47ad95dad6ff848b431053b375adb5d39321290ea2c638682577dafca87c008"]
+vision = false
+notes = "12 GB recommend. Fits Agent Zero Minimum 32K on a 12 GB card."
+
+[[model]]
+id = "qwen25-7b-q4km"
+name = "Qwen2.5-7B Instruct Q4_K_M"
+tier = "vram_8gb"
+quality_rank = 46
+approx_size_gb = 4.4
+min_vram_gb = 8
+hf_repo = "Qwen/Qwen2.5-7B-Instruct-GGUF"
+hf_files = [
+  "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+  "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+]
+sha256 = [
+  "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db",
+  "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a",
+]
+vision = false
+notes = "On the stick (/opt/stickllm/models/appagent). 8 GB installed default @ 32K. Protected from Delete."
 
 [[model]]
 id = "qwen25-7b-q5km"
 name = "Qwen2.5-7B Instruct Q5_K_M"
 tier = "vram_8gb"
-quality_rank = 45
+quality_rank = 44
 approx_size_gb = 5.1
-min_vram_gb = 8
+min_vram_gb = 10
 hf_repo = "Qwen/Qwen2.5-7B-Instruct-GGUF"
 hf_files = [
   "qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf",
@@ -88,7 +177,8 @@ sha256 = [
   "beba9d4f2f5a1fe7d144dcae332e68b52c26705c5310dece2e5d1997e091e134",
 ]
 vision = false
-notes = "Download only. Not baked on the stick."
+probe_recommend = false
+notes = "Optional download. Slightly higher quality than Q4, but tight on 8 GB at 32K (prefer Q4 for Minimum context)."
 
 [[model]]
 id = "qwen25-3b-q4km"
@@ -102,23 +192,22 @@ hf_files = ["qwen2.5-3b-instruct-q4_k_m.gguf"]
 sha256 = ["626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"]
 vision = false
 probe_recommend = false
-notes = "Download only (0.5.6: not baked; the Qwen3.5-4B is the base model)."
+notes = "Download only (not baked)."
 
 [[model]]
 id = "qwen35-4b-q4km"
 name = "Qwen3.5-4B Q4_K_M"
 tier = "ram_only"
-# 0.5.6: base model on the stick, for chat AND app control (one model, no hidden
-# second helper). The probe recommends it for 6 GB+ cards, and below that it is
-# the fallback (already on the stick). Bigger cards get the 7B/27B.
+# 0.6.7: no longer baked. Optional catalog download for weak GPU / RAM-only.
 quality_rank = 16
 approx_size_gb = 2.6
-min_vram_gb = 6
+min_vram_gb = 0
 hf_repo = "unsloth/Qwen3.5-4B-GGUF"
 hf_files = ["Qwen3.5-4B-Q4_K_M.gguf"]
 sha256 = ["25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"]
 vision = false
-notes = "On the stick (/opt/stickllm/models/appagent). Chat and the app agent share it. Protected from Delete."
+probe_recommend = false
+notes = "Optional download only (not baked, not Open default). For weak GPU / RAM-only hosts below the 8 GB minimum."
 
 [usb_data]
 label = "STICKLLM-DATA"

@@ -53,6 +53,7 @@ def test_ram_warning_on_big_model(monkeypatch, tmp_path):
     ctl = _load(monkeypatch)
     big = tmp_path / "Big-Q4_K_M.gguf"
     big.write_bytes(b"GGUF" + b"\0" * 16)
+    monkeypatch.setattr(ctl, "BAKED_BASE", tmp_path / "none-base.gguf")
     monkeypatch.setattr(ctl, "BAKED_4B", tmp_path / "none.gguf")
     monkeypatch.setattr(ctl, "find_file", lambda name: None)
     monkeypatch.setattr(ctl, "discover_local_ggufs", lambda: [])
@@ -68,8 +69,9 @@ def test_ram_warning_on_big_model(monkeypatch, tmp_path):
     monkeypatch.setattr(ctl, "find_mmproj", lambda p: "")
     rows = {m["id"]: m for m in ctl.enrich_models()}
     assert "system RAM" in rows["qwen38-27b-q4km"]["ram_warning"]  # 16 GB model, 8 GB card, 6 GB RAM
+    assert rows["qwen25-7b-q4km"]["ram_warning"] == ""
+    assert rows["qwen25-7b-q4km"]["backend"] == "vulkan"
     assert rows["qwen35-4b-q4km"]["ram_warning"] == ""
-    assert rows["qwen35-4b-q4km"]["backend"] == "vulkan"
 
 
 def _node(code: str):

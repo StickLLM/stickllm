@@ -1,7 +1,10 @@
 /* StickLLM desktop layout (desktop.js). Everything is scoped to
    body.deskMode, so the classic and mobile layouts are untouched.
    Window chrome: WinBox.js 0.2.82 (vendor/winbox-0.2.82, Apache-2.0);
-   these rules only restyle it to the StickLLM theme. */
+   these rules only restyle it to the StickLLM theme.
+   TODO(0.6.7+): optimize entire desktop UI for phones — taskbar, WinBox
+   chrome, launcher and wall icons do not render well on small viewports.
+   Tracked in docs/UI-PHONE.md and CHANGELOG 0.6.7 Later. */
 body.deskMode{overflow:hidden;background:
   radial-gradient(1400px 700px at 12% -12%, rgba(43,181,168,.20), transparent 60%),
   radial-gradient(900px 600px at 100% 110%, rgba(108,142,240,.12), transparent 60%),
@@ -161,6 +164,7 @@ body.deskMode .wb-body > .modal .setNav [data-sec="models"],
 body.deskMode .wb-body > .modal .setNav [data-sec="downloads"],
 body.deskMode .wb-body > .modal #setClose,
 body.deskMode .wb-body > .modal #setBack{display:none!important}
+/* setNavBtn stays available on narrow viewports (style.css @media). */
 body.deskMode .deskPanel{height:100%;display:flex;flex-direction:column;background:var(--panel);color:var(--ink)}
 body.deskMode .deskScroll{flex:1;min-height:0;overflow:auto;padding:18px 26px 26px}
 body.deskMode .deskTabs{display:flex;gap:4px;padding:10px 18px 0;border-bottom:1px solid var(--line2);background:var(--bg2)}

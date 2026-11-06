@@ -9,6 +9,8 @@ Type=oneshot
 ExecStart=/usr/local/bin/stickllm-gpu-skip
 RemainAfterExit=yes
 TimeoutStartSec=20
+# Best-effort helper — never paint Failed on the StickLLM boot logo.
+SuccessExitStatus=0 1
 
 [Install]
 WantedBy=multi-user.target

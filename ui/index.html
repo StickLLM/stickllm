@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v066" />
-<link rel="stylesheet" href="desktop.css?v=v066" />
+<link rel="stylesheet" href="style.css?v=v067c" />
+<link rel="stylesheet" href="desktop.css?v=v067c" />
 </head>
 <body>
 <div class="app" id="app">
@@ -236,24 +236,27 @@
   <!-- Settings modal -->
   <div class="modalWrap" id="settings" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setTitle">
-      <nav class="setNav" aria-label="Settings sections">
+      <nav class="setNav" id="setNav" aria-label="Settings sections">
         <div class="setNavHead" id="setTitle">Settings</div>
-        <button data-sec="general">General</button>
-        <button data-sec="models">Models</button>
-        <button data-sec="downloads">Downloads</button>
-        <button data-sec="storage">Storage &amp; Vault</button>
-        <button data-sec="chats">Chats</button>
-        <button data-sec="devices">Devices &amp; Pairing</button>
-        <button data-sec="network">Network</button>
-        <button data-sec="system">System</button>
-        <button data-sec="advanced">Advanced</button>
-        <button data-sec="about">About</button>
+        <button type="button" data-sec="general">General</button>
+        <button type="button" data-sec="models">Models</button>
+        <button type="button" data-sec="downloads">Downloads</button>
+        <button type="button" data-sec="storage">Storage &amp; Vault</button>
+        <button type="button" data-sec="chats">Chats</button>
+        <button type="button" data-sec="devices">Devices &amp; Pairing</button>
+        <button type="button" data-sec="network">Network</button>
+        <button type="button" data-sec="system">System</button>
+        <button type="button" data-sec="advanced">Advanced</button>
+        <button type="button" data-sec="about">About</button>
       </nav>
       <div class="setBody">
         <header class="setHead">
-          <button class="iconBtn backBtn" id="setBack" aria-label="Back to sections"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+          <button type="button" class="iconBtn setNavBtn" id="setNavBtn" aria-label="Settings sections" aria-controls="setNav" aria-expanded="false" title="Sections">
+            <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          </button>
+          <button type="button" class="iconBtn backBtn" id="setBack" aria-label="Back to sections"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
           <h2 id="secTitle">General</h2>
-          <button class="iconBtn" id="setClose" aria-label="Close settings (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          <button type="button" class="iconBtn" id="setClose" aria-label="Close settings (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
         </header>
         <div class="setScroll">
 
@@ -276,6 +279,7 @@
     <div class="row"><span>New chat</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>O</kbd></span></div>
     <div class="row"><span>Toggle sidebar</span><span><kbd>Ctrl</kbd> <kbd>B</kbd></span></div>
     <div class="row"><span>Settings</span><span><kbd>Ctrl</kbd> <kbd>,</kbd></span></div>
+    <div class="row"><span>Settings sections</span><span><kbd>&uarr;</kbd> <kbd>&darr;</kbd></span></div>
     <div class="row"><span>Lock vault</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>L</kbd></span></div>
     <div class="row"><span>New PAIR CODE (stick screen)</span><span><kbd>F9</kbd></span></div>
     <div class="row"><span>Show SSH password (stick screen)</span><span><kbd>F10</kbd></span></div>
@@ -407,7 +411,7 @@
   <div class="vaultCard" id="vaultCard">
     <div class="vcIcon"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg></div>
     <div class="vcText"><b id="vcState">Checking vault…</b><small id="vcSub"></small></div>
-    <form class="vcUnlock" id="unlockForm" autocomplete="off"><input type="text" id="vaultPass" class="secret" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
+    <form class="vcUnlock" id="unlockForm" autocomplete="off"><input type="text" id="vaultPass" class="secret" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
     <button class="btn" id="lockBtn2" hidden>Lock</button>
     <small class="unlockMsg" id="unlockMsg" role="alert" hidden></small>
     <div class="vaultOther" id="vaultOther" hidden><button class="btn sm primary" id="vaultOtherSearch" type="button">Search for vault</button><button class="btn sm" id="vaultOtherPick" type="button">Pick drive…</button></div>
@@ -438,8 +442,8 @@
       <div class="row2">
         <div class="field"><span>Folder</span><div class="pathPick"><input class="mono" id="vaultPath" value="" autocomplete="off" placeholder="/mnt/…/stickllm" readonly aria-label="Vault folder"><button class="btn sm" id="pickCreate">Choose…</button></div></div>
         <label class="field" id="sizeField"><span>Size (GiB)</span><input type="number" id="vaultSize" value="32" min="1" max="2000"></label>
-        <label class="field"><span>Passcode (min 8)</span><input type="text" id="np1" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
-        <label class="field"><span>Confirm passcode</span><input type="text" id="np2" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
+        <label class="field"><span>Passcode (min 8)</span><input type="text" id="np1" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
+        <label class="field"><span>Confirm passcode</span><input type="text" id="np2" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
       </div>
       <div class="row" style="gap:8px;flex-wrap:wrap">
         <button class="btn" id="setupWizardBtn" type="button">First-time setup…</button>
@@ -496,7 +500,6 @@
     <div class="sshDetails" id="sshDetails" hidden>
       <small>SSH (GRUB Test / Terminal boots only — stick screen)</small>
       <p class="mono" id="sshLine"></p>
-      <button type="button" class="btn sm" id="sshCopy" hidden>Copy password</button>
     </div>
   </div>
   <div class="secTools"><h3>Enter a code</h3></div>
@@ -607,7 +610,7 @@
     <h3>StickLLM</h3>
     <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
     <div class="group">
-      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.6</span></div>
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.7</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono" id="aboutLlama">—</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
@@ -735,8 +738,8 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v066"></script>
-<script src="desktop-core.js?v=v066"></script>
-<script src="desktop.js?v=v066"></script>
+<script src="app.js?v=v067c"></script>
+<script src="desktop-core.js?v=v067c"></script>
+<script src="desktop.js?v=v067c"></script>
 </body>
 </html>

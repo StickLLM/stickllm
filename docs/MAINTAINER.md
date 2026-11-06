@@ -43,7 +43,13 @@ patch helpers, and `smoke-iso-verify.sh`.
 
 Development and HW confirm often use an AMD desktop (e.g. ROMED8 board) +
 RTX 3090, plus an ASUS laptop for no-NVIDIA / Vulkan checks. That gear is an
-**example**, not a product requirement for end users — see [HARDWARE.md](HARDWARE.md).
+**example**, not a product requirement for end users — see [HARDWARE.md](HARDWARE.md)
+for the **Tested hardware** list (NVIDIA single/dual 3090; AMD single RX 570 / RX 580).
+
+Advertised minimum is **16 GB RAM + 8 GB GPU**. Baked default is **Qwen2.5-7B
+Instruct Q4_K_M** (~4.4 GB). Keep Qwen3.5-4B as an optional catalog download for
+weak-GPU / RAM-only hosts (not baked, not Open default); do **not** market 4 GB
+as a supported tier. VRAM recommend table: [MODELS.md](MODELS.md).
 
 ## Local restore paths
 

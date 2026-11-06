@@ -5,44 +5,34 @@
 **Problem:** Baking a 24 GB–tier model into every ISO forces a fast **64 GB** stick even
 when the user only has an **8 GB** GPU. That is expensive and wasteful.
 
-**Design:** ship a **small base image** that runs on almost anything; upgrade models
-on demand from a **pinned Hugging Face catalog**, with hashes that live on the USB.
+**Design:** ship a **small base image**; upgrade models on demand from a **pinned
+Hugging Face catalog**, with hashes that live on the USB.
+
+**Advertised minimum host:** **16 GB** system RAM + **8 GB** GPU
+([HARDWARE.md](HARDWARE.md)). Do not market weaker GPUs (e.g. 4 GB) as supported.
 
 | Image | Approx size | Stick | What’s on it |
 |---|---|---|---|
-| **Base (default ship)** | ~4–6 GB ISO | **16 GB** USB is enough | OS + runtime + **lite** model (anything / RAM / 8 GB class) |
+| **Base (default ship)** | ~6–8 GB ISO | **16 GB** USB is enough; **32 GB** preferred | OS + runtime + **7B Q4_K_M** (~4.4 GB; 8 GB GPU @ 32K) |
 | **Optional fat build** | ~18–22 GB | 32–64 GB | Base + large model pre-baked (power users / air-gap) |
 
-**v0.3.8** and earlier 0.3.x ships bake both the **3B** and the **7B**. Current ship
-**v0.3.9** bakes the 3B only and downloads larger catalog entries (including the 7B
-and 27B-class models) to `STICKLLM-DATA` when space and VRAM allow. Optional durable
-store: encrypted SSD vault ([VAULT.md](VAULT.md)). Target retail base still moves
-toward a cheaper **16 GB** stick + lite GGUF.
+**v0.6.7+** bakes **Qwen2.5-7B Instruct Q4_K_M** (official split GGUF under
+`/opt/stickllm/models/appagent/`, catalog id `qwen25-7b-q4km`). That is the Open
+model / probe default. **Q5_K_M** stays a pinned optional download (catalog
+`min_vram_gb = 10`) — slightly better quality, but tight on a true 8 GB card at
+the Agent Zero **32K** floor. **Qwen3.5-4B** stays an **optional catalog download**
+(`probe_recommend = false`); it is **not** baked and not on the Open model screen.
 
-Future: replace built-in Qwen2.5-3B with Qwen3.5-4B (Nink 2026-10-29).
-
-**App-agent Qwen3.5-4B in the Models page (0.5.5).** Images that bake the app agent ship
-`/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf`. It is now catalog row
-`qwen35-4b-q4km` (`unsloth/Qwen3.5-4B-GGUF`, sha256 pinned to the baked file), so
-**On this machine** lists it as installed, it can be loaded for chat, and Delete is
-blocked (the app agent's own llama-server on :8796 depends on it). Hugging Face search
-hits for that same file show as this catalog card, and installed hits sort first. It
-has `probe_recommend = false` and `quality_rank` below the 3B, so the **3B stays the
-default and recommended model**. Swapping the default 3B for the 4B (and dropping the
-3B from the image) is **still future work**, not done.
-
-**v0.3.9** ships the **~2 GB Qwen2.5-3B Q4_K_M** only. **Qwen2.5-7B Instruct Q5_K_M**
-stays in `catalog.toml` as a pinned download (ISS-020, done). Hugging Face search,
-the download queue, hash checks, and VRAM fit labels ship in that image. **Still open
-(ISS-021):** those filters on **installed models** when choosing what to load, and
-Advanced controls that are on screen but not applied (sampling, KV cache type, backend).
-Do **not** change v0.3.8 or v0.3.9 artifacts while doing that later work.
+**v0.3.8** and earlier 0.3.x ships baked both the **3B** and the **7B**. **v0.3.9**
+baked the 3B only. Mid-0.5.x / 0.6.x through 0.6.6 baked **Qwen3.5-4B**. Optional
+durable store: encrypted SSD vault ([VAULT.md](VAULT.md)).
 
 ## First boot / “upgrade models” flow
 
 When StickLLM has network (and the user is not in pure offline mode):
 
-1. Detect **GPU VRAM** (`nvidia-smi` / fail → RAM-only tier).  
+1. Detect **GPU VRAM** (NVIDIA: **sum** of cards for CUDA multi-GPU; Vulkan/AMD:
+   largest single card only / fail → RAM-only tier).  
 2. Detect **free space on the USB** (and optional host cache — see below).  
 3. Contact **Hugging Face** only for catalog entries we already list (allow-list URLs).  
 4. Show **suitable models** for that VRAM + free space.  
@@ -88,32 +78,33 @@ rewrites the StickLLM image (at which point they already own the stick).
 See [THREAT-MODEL.md](THREAT-MODEL.md) — open weights ≠ safe weights; abliterated
 merges stay out of the default catalog unless we pin and test them ourselves.
 
-## VRAM / RAM tiers (target catalog)
+## VRAM / RAM tiers (supported recommends)
 
 StickLLM stays on the **Qwen** family only (no Moondream / SmolVLM / random merges).
+One **recommend** per advertised tier (probe picks the highest `quality_rank` that
+fits detected VRAM + free disk). Other catalog rows may still download manually.
 
-| Host | What we ship / offer |
-|---|---|
-| **CPU / no usable VRAM** | **Text-only** Qwen (lite). **No mmproj** — vision not offered. |
-| **~8 GB+ NVIDIA VRAM** | Qwen text and/or **Qwen2.5-VL** (GGUF + mmproj) when pinned |
-| **16–24 GB** | Qwen **3.8** line; optimum **27B + vision** when pinned |
-
-- **Lite / small VRAM / RAM:** Qwen **3.5** text (base stick target)  
-- **Small vision (optional upgrade / later base on GPU sticks):** **Qwen2.5-VL-3B** + mmproj — only if VRAM allows  
-- **Larger VRAM (16–24 GB):** Qwen **3.8** line  
-- **Optimum on 24 GB (RTX 3090):** **Qwen3.8-27B Q4_K_M + vision (mmproj)** — downloaded, not baked into the cheap stick  
-
-Rule: **never load or advertise mmproj on RAM-only / failsafe paths.**
-
-| Tier | Hardware | Target model (Qwen) | Quant (typical) | Approx size | Notes |
+| Tier | Role | Catalog id | Model | Approx size | Notes |
 |---|---|---|---|---|---|
-| **RAM-only** | No usable GPU / CUDA failed | Qwen3.5 tiny/small instruct | Q4_K_M | ~1–3 GB | Baked into base ISO |
-| **8 GB** | 8 GB VRAM | Qwen3.5 ~7–8B class | Q4_K_M / Q5_K_M | ~4–6 GB | Fits 16 GB stick after download |
-| **12 GB** | 12 GB VRAM | Qwen3.5 ~14B class | Q4_K_M | ~8–10 GB | Needs ~32 GB stick or host cache |
-| **16 GB** | 16 GB VRAM | Qwen3.8 mid / 27B IQ4_XS | Q4 / IQ4_XS | ~12–15 GB | 32–64 GB stick or SSD cache |
-| **24 GB** | RTX 3090 class | **Qwen3.8-27B + vision** | **Q4_K_M** + mmproj | ~15–18 GB + ~1 GB | Highlighted when VRAM ≥ 24 and space allows |
+| **8 GB** | **Installed default (baked)** | `qwen25-7b-q4km` | Qwen2.5-7B Instruct **Q4_K_M** | ~4.4 GB | Open model / probe default @ 32K |
+| **12 GB** | Optional download | `qwen25-14b-q4km` | Qwen2.5-14B Instruct **Q4_K_M** | ~9.0 GB | 32K on a 12 GB card |
+| **16 GB** | Optional download | `qwen25-32b-q3km` | Qwen2.5-32B Instruct **Q3_K_M** | ~15.9 GB | 32K may shrink / light offload |
+| **24 GB** | Optional download | `qwen38-27b-q4km` | Qwen3.8-27B **Q4_K_M** | ~16.3 GB | RTX 3090 class; 32K headroom |
+| **32 GB** | Optional download | `qwen25-32b-q4km` | Qwen2.5-32B Instruct **Q4_K_M** | ~19.9 GB | Comfortable 32K on 32 GB |
+| **Dual 24 GB** | Optional download | `qwen25-72b-q3km` | Qwen2.5-72B Instruct **Q3_K_M** | ~37.7 GB | CUDA **tensor-split** across both cards (~48 GB pooled). Probe **sums** NVIDIA VRAM. Vulkan stays one-card (no cross-GPU split). Q4 (~47 GB) is too tight for 48 GB + KV. |
 
-Exact filenames and hashes go in `config/models/catalog.toml` when pinned.
+**Also in catalog (not tier recommends):**
+
+| Catalog id | Role |
+|---|---|
+| `qwen35-4b-q4km` | Optional download for weak GPU / RAM-only — **not** baked, **not** Open default, `probe_recommend = false` |
+| `qwen25-7b-q5km` | Optional 7B Q5 (needs ~10 GB); prefer Q4 on true 8 GB @ 32K |
+| `qwen25-3b-q4km` | Optional small download |
+
+Rule: **never load or advertise mmproj on RAM-only / failsafe paths.** Vision pins
+(Qwen2.5-VL + mmproj) remain separate when added later.
+
+Exact filenames and hashes: `config/models/catalog.toml`.
 
 ### Optimum picker (sketch)
 

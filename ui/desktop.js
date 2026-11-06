@@ -171,6 +171,13 @@
     wall.id = "deskWall";
     wall.setAttribute("role", "list");
     wall.setAttribute("aria-label", "Desktop");
+    // Single click: if that app's window is already open, raise it (and restore
+    // when minimised) — same path as the taskbar's focus/restore half. Double-
+    // click / Enter still open when nothing is open yet.
+    wall.addEventListener("click", (e) => {
+      const b = e.target.closest(".wallIcon");
+      if (b) raiseApp(b.dataset.app);
+    });
     wall.addEventListener("dblclick", (e) => {
       const b = e.target.closest(".wallIcon");
       if (b) openApp(b.dataset.app);
@@ -300,7 +307,7 @@
       b.dataset.app = id;
       if (catalogApp(id)) b.dataset.catalog = "1";
       b.setAttribute("role", "listitem");
-      b.title = "Open " + title + " (double-click)";
+      b.title = "Open " + title + " (double-click; click brings an open window to the front)";
       b.appendChild(iconFor(id));
       b.appendChild(el("span", "wallLabel")).textContent = title;
       ui.wall.appendChild(b);
@@ -470,11 +477,17 @@
     pop.setAttribute("aria-label", "Vault");
     pop.innerHTML =
       '<div class="vpHead"><span class="vpIcon"></span><div><b class="vpTitle"></b><small class="vpSub"></small></div></div>' +
-      '<form class="vpUnlock" autocomplete="off"><input type="text" class="secret vpPass" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-label="Vault passcode"><button class="btn primary sm">Unlock</button></form>' +
+      '<form class="vpUnlock" autocomplete="off"><input type="text" class="secret vpPass" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly aria-label="Vault passcode"><button class="btn primary sm">Unlock</button></form>' +
       '<small class="vpMsg" role="alert" hidden></small>' +
       '<div class="vpActs"><button type="button" class="btn sm vpLock">Lock vault</button><button type="button" class="btn sm ghost vpEph">Use Ephemeral</button><button type="button" class="btn sm ghost vpSet">Storage &amp; Vault settings\u2026</button></div>' +
       '<small class="vpKeys">Ctrl+Shift+L locks the vault and clears the chat.</small>';
     pop.addEventListener("mousedown", (e) => e.stopPropagation());
+    const vpPass = pop.querySelector(".vpPass");
+    if (vpPass) {
+      const unlock = () => { try { vpPass.removeAttribute("readonly"); } catch (_) {} };
+      vpPass.addEventListener("focus", unlock, { once: true });
+      vpPass.addEventListener("pointerdown", unlock, { once: true });
+    }
     pop.querySelector(".vpUnlock").addEventListener("submit", (e) => {
       e.preventDefault();
       const v = pop.querySelector(".vpPass");
@@ -773,6 +786,21 @@
     const a = SYS[id];
     return { id: id, title: a.title, w: a.w, h: a.h, mountNode: node };
   }
+  // Wall icon id → WindowManager id. Agent Zero's desktop icon is "agent";
+  // its WinBox is the pinned "chat" window.
+  function winIdFor(id) {
+    return id === "agent" ? CHAT : id;
+  }
+  // Raise an already-open WinBox (restore if minimised) — same as the
+  // taskbar's focus/restore path (wm.focus), without the "click again to
+  // minimise" toggle. Returns true when a window was found.
+  function raiseApp(id) {
+    if (!on || !wm) return false;
+    const wid = winIdFor(id);
+    if (!wm.has(wid)) return false;
+    if (browserCovers()) yieldBrowser();
+    return wm.focus(wid);
+  }
   function openApp(id) {
     if (!on || !wm) return null;
     // 0.6.2: opening/raising an app must bring it above any Chrome window.
@@ -846,6 +874,101 @@
   let agentPoll = null;
   function stopAgentPoll() { if (agentPoll) { clearInterval(agentPoll); agentPoll = null; } }
   function agentWinIsPanel() { const w = wm && wm.get("agent"); return !!(w && w.agentPanel); }
+  // 0.6.7: Chat (pinned Agent Zero) used startChatAgentPoll without a
+  // definition — after a remote pair the Install/Unlock panel stayed forever
+  // until F5. Poll like the legacy Agent window and swap in the embed.
+  let chatAgentPoll = null;
+  function stopChatAgentPoll() {
+    if (chatAgentPoll) { clearInterval(chatAgentPoll); chatAgentPoll = null; }
+  }
+  function chatWinIsPanel() {
+    const w = wm && wm.get(CHAT);
+    return !!(w && w.agentPanel);
+  }
+  function upgradeChatToAgent(ag) {
+    if (!wm) return null;
+    stopChatAgentPoll();
+    const cur = wm.get(CHAT);
+    if (cur && cur.agentPanel) wm.close(CHAT, true);
+    return wm.open(chatSpec(ag || (appApi().deskAgent ? appApi().deskAgent() : {})));
+  }
+  function startChatAgentPoll() {
+    const api = appApi();
+    stopChatAgentPoll();
+    let kicks = 0;
+    const tick = () => {
+      if (!wm || !wm.has(CHAT) || !chatWinIsPanel()) { stopChatAgentPoll(); return; }
+      const kick = () => {
+        // Reboot unlock: keep asking A0 to start while the panel is up.
+        if (kicks < 8 && api.ensureAgentZeroStarted) {
+          kicks += 1;
+          try { api.ensureAgentZeroStarted(); } catch (_) {}
+        }
+      };
+      kick();
+      if (!api.refreshAgentLink) return;
+      Promise.resolve(api.refreshAgentLink()).then(() => {
+        const now = api.deskAgent ? api.deskAgent() : {};
+        if (!chatWinIsPanel()) return;
+        if (now.installed && now.running) upgradeChatToAgent(now);
+        else renderAgentPanel(now);
+      }).catch(() => {});
+    };
+    tick();
+    chatAgentPoll = setInterval(tick, 1500);
+  }
+  /** Same-origin /agent-zero/ that loaded before pair cookies → blank / pair_required. */
+  function chatFrameNeedsReload(frame) {
+    if (!frame) return false;
+    try {
+      const href = String((frame.contentWindow && frame.contentWindow.location && frame.contentWindow.location.href) || "");
+      if (!href || href === "about:blank") return true;
+      const text = String((frame.contentDocument && frame.contentDocument.body && frame.contentDocument.body.innerText) || "");
+      return /pair_required|not paired|pair this browser|unauthorized/i.test(text);
+    } catch (_) {
+      return false;
+    }
+  }
+  function reloadChatAgentFrame() {
+    if (!wm || !wm.has(CHAT)) return false;
+    const cur = wm.get(CHAT);
+    if (!cur || cur.agentPanel) return false;
+    const frame = cur.body && cur.body.querySelector ? cur.body.querySelector("iframe") : null;
+    if (!chatFrameNeedsReload(frame)) return false;
+    wm.close(CHAT, true);
+    const api = appApi();
+    const ag = api.deskAgent ? api.deskAgent() : {};
+    wm.open(chatSpec(ag.installed && ag.running ? ag : { installed: true, running: true }));
+    return true;
+  }
+  /** After remote pair: show desktop Chat / A0 embed without a manual refresh. */
+  async function onPaired() {
+    if (!on) {
+      evaluate();
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    if (!on || !wm) return;
+    const api = appApi();
+    try { if (api.refreshAgentLink) await api.refreshAgentLink(); } catch (_) {}
+    const ag = api.deskAgent ? api.deskAgent() : {};
+    if (!wm.has(CHAT)) {
+      openApp(CHAT);
+      return;
+    }
+    const cur = wm.get(CHAT);
+    if (cur && cur.agentPanel) {
+      renderAgentPanel(ag);
+      if (ag.installed && ag.running) upgradeChatToAgent(ag);
+      else startChatAgentPoll();
+      try { wm.focus(CHAT); } catch (_) {}
+      return;
+    }
+    if (reloadChatAgentFrame()) {
+      try { wm.focus(CHAT); } catch (_) {}
+      return;
+    }
+    try { wm.focus(CHAT); } catch (_) {}
+  }
   function openAgent() {
     const api = appApi();
     const go = (ag) => {
@@ -883,14 +1006,23 @@
     const p = ui && ui.agentPanel;
     if (!p) return;
     ag = ag || {};
+    const api = appApi();
+    const vaultOpen = !!(api.vaultOpen && api.vaultOpen()) || !!ag.vaultUnlocked;
     const st = String(ag.status || "");
-    const working = st === "installing" || st === "starting" || (ag.installed && !ag.running && st !== "error" && st !== "pull_failed");
+    // Prefer live vault chrome over a stale agent status after create/unlock.
+    const needsUnlock = !vaultOpen;
+    const settingsGap = vaultOpen && st === "settings_missing";
+    const working = !needsUnlock && !settingsGap && (st === "installing" || st === "starting" || st === "locked"
+      || (ag.installed && !ag.running && st !== "error" && st !== "pull_failed" && st !== "stopped"));
     const pct = Number.isFinite(Number(ag.progress)) && ag.progress !== null && ag.progress !== "" ? Math.max(0, Math.min(99, Math.round(Number(ag.progress)))) : null;
     let line;
-    if (working) line = ag.message || (ag.step ? "Starting… step " + ag.step + " of " + (ag.steps || 6) : "Starting Agent Zero…");
+    if (needsUnlock) line = "Unlock the vault to use Agent Zero.";
+    else if (settingsGap) line = ag.message || "USB settings still locked — unlock the vault again.";
+    else if (st === "locked" || working) line = ag.message || (ag.step ? "Starting… step " + ag.step + " of " + (ag.steps || 6) : "Starting Agent Zero…");
     else if (st === "error" || st === "pull_failed") line = ag.message || "Agent Zero did not start.";
-    else if (!ag.installed) line = ag.state && ag.state !== "Not installed" ? ag.state : "Agent Zero is not installed yet.";
-    else line = ag.message || ag.state || "";
+    else if (!ag.installed && !ag.preinstalled) line = ag.state && ag.state !== "Not installed" ? ag.state : "Agent Zero is not installed yet.";
+    else if (ag.running) line = "Agent Zero is ready.";
+    else line = ag.message || ag.state || "Agent Zero is installed — open to start.";
     p.querySelector(".apState").textContent = line;
     const bar = p.querySelector(".apBar");
     if (bar) {
@@ -901,21 +1033,47 @@
     }
     const inst = p.querySelector(".apInstall");
     const retry = p.querySelector(".apRetry");
+    const store = p.querySelector(".apStore");
     if (inst) {
-      const showInstall = !!ag.needsInstall && !ag.installed;
-      const showOpen = (!!ag.installed || !!ag.preinstalled) && !ag.running && !ag.needsInstall;
-      inst.hidden = !(showInstall || showOpen);
-      inst.disabled = !!ag.busy;
-      inst.classList.toggle("busy", !!ag.busy);
-      inst.dataset.mode = showOpen ? "open" : "install";
-      inst.textContent = showOpen
-        ? (ag.busy ? "Starting…" : "Open Agent Zero")
-        : (ag.busy ? "Installing…" : "Install Agent Zero");
+      if (needsUnlock || settingsGap) {
+        // 0.6.7: stale Install/Open/Retry while locked confused first-boot.
+        inst.hidden = false;
+        inst.disabled = false;
+        inst.classList.remove("busy");
+        inst.dataset.mode = "unlock";
+        inst.textContent = "Unlock vault";
+      } else if (ag.running) {
+        // Running: CTAs clear — Chat poll upgrades to the embed.
+        inst.hidden = true;
+        inst.disabled = false;
+        inst.classList.remove("busy");
+        inst.dataset.mode = "";
+      } else if (working || ag.busy) {
+        inst.hidden = false;
+        inst.disabled = true;
+        inst.classList.add("busy");
+        inst.dataset.mode = "open";
+        inst.textContent = "Starting…";
+      } else {
+        const showInstall = !!ag.needsInstall && !ag.installed && !ag.preinstalled;
+        const showOpen = (!!ag.installed || !!ag.preinstalled) && !ag.running && !ag.needsInstall;
+        inst.hidden = !(showInstall || showOpen);
+        inst.disabled = !!ag.busy;
+        inst.classList.toggle("busy", !!ag.busy);
+        inst.dataset.mode = showOpen ? "open" : "install";
+        inst.textContent = showOpen
+          ? (ag.busy ? "Starting…" : "Open Agent Zero")
+          : (ag.busy ? "Installing…" : "Install Agent Zero");
+      }
     }
     if (retry) {
-      retry.hidden = !ag.installed || !!ag.needsInstall || !!ag.running;
-      retry.disabled = st === "installing" || st === "starting";
+      // Hide Retry while locked, starting, or already running — reboot unlock
+      // must not leave Open/Retry/Store looking like a failed install.
+      retry.hidden = needsUnlock || settingsGap || working || !!ag.busy || !ag.installed
+        || !!ag.needsInstall || !!ag.running || st === "installing" || st === "starting";
+      retry.disabled = st === "installing" || st === "starting" || working;
     }
+    if (store) store.hidden = needsUnlock || settingsGap || working || !!ag.busy || !!ag.running;
   }
   // The Browser is a real Chrome window on the stick's screen (kiosk),
   // placed over the desktop like the other windows (stickllm-control). On a
@@ -1045,10 +1203,38 @@
     ag.querySelector(".apInstall").addEventListener("click", (e) => {
       const api = appApi();
       const b = e.currentTarget;
+      if (b.dataset.mode === "unlock") {
+        if (api.focusVaultUnlock) Promise.resolve(api.focusVaultUnlock()).catch(() => {});
+        else if (api.openSettings) api.openSettings("storage");
+        if (api.toast) api.toast("Unlock the vault to use Agent Zero");
+        return;
+      }
       if (b.dataset.mode === "open") {
-        if (api.ensureAgentZeroStarted) Promise.resolve(api.ensureAgentZeroStarted()).catch(() => {});
-        openOutside("agent");
-        startChatAgentPoll();
+        // 0.6.7: start A0 then wait until running before opening (first click).
+        b.disabled = true; b.classList.add("busy"); b.textContent = "Starting…";
+        const finishOpen = (agNow) => {
+          b.disabled = false; b.classList.remove("busy"); b.textContent = "Open Agent Zero";
+          if (wm && wm.has(CHAT) && wm.get(CHAT) && wm.get(CHAT).agentPanel && agNow && agNow.running) {
+            wm.close(CHAT, true);
+            wm.open(chatSpec(agNow));
+            stopChatAgentPoll();
+          } else {
+            openOutside("agent");
+            startChatAgentPoll();
+          }
+        };
+        const waitRunning = (n) => {
+          Promise.resolve(api.refreshAgentLink ? api.refreshAgentLink() : null).then(() => {
+            const now = api.deskAgent ? api.deskAgent() : {};
+            if (now.running) { finishOpen(now); return; }
+            if (n >= 40) { finishOpen(now); return; }
+            renderAgentPanel(now);
+            setTimeout(() => waitRunning(n + 1), 500);
+          }).catch(() => finishOpen({}));
+        };
+        Promise.resolve(api.ensureAgentZeroStarted ? api.ensureAgentZeroStarted() : null)
+          .then(() => waitRunning(0))
+          .catch(() => { b.disabled = false; b.classList.remove("busy"); b.textContent = "Open Agent Zero"; });
         return;
       }
       b.disabled = true; b.classList.add("busy"); b.textContent = "Installing…";
@@ -1152,6 +1338,8 @@
   function leave() {
     if (!on) return;
     on = false;
+    stopChatAgentPoll();
+    stopAgentPoll();
     toggleLauncher(false);
     try { wm.closeAll(true); } catch (e) {}
     const appNode = $("#app");
@@ -1267,11 +1455,48 @@
     refreshCatalog: scheduleCatalog,
     openApp: (id) => openApp(id),
     openBrowser: (url, title) => openBrowser(url, title),
+    onPaired: () => onPaired(),
     closeAll: () => { if (wm) wm.closeAll(false); toggleLauncher(false); },
     list: () => (wm ? wm.list() : []),
     _wm: () => wm,
     evaluate: evaluate,
   };
+
+  // Vault / agent status: upgrade the Chat panel → A0 embed without F5.
+  // Pair success calls stickDesk.onPaired() from app.js afterPairSuccess (awaited).
+  // 0.6.7 reboot: unlock must start A0 and clear Open/Retry/Store — do not
+  // require a second click when the panel was left open while locked.
+  window.addEventListener("stickllm:vault-unlocked", () => {
+    if (!on || !wm) return;
+    const api = appApi();
+    if (!wm.has(CHAT)) {
+      try { openApp(CHAT); } catch (_) {}
+    }
+    const after = () => {
+      const ag = api.deskAgent ? api.deskAgent() : {};
+      if (!wm.has(CHAT)) return;
+      const cur = wm.get(CHAT);
+      if (cur && cur.agentPanel) {
+        renderAgentPanel(ag);
+        if (ag.installed && ag.running) upgradeChatToAgent(ag);
+        else startChatAgentPoll();
+      } else if (ag.installed && ag.running) {
+        try { wm.focus(CHAT); } catch (_) {}
+      } else {
+        startChatAgentPoll();
+      }
+    };
+    Promise.resolve(api.ensureAgentZeroStarted ? api.ensureAgentZeroStarted() : null)
+      .then(() => api.refreshAgentLink ? api.refreshAgentLink() : null)
+      .then(after)
+      .catch(after);
+  });
+  window.addEventListener("stickllm:agent-status", () => {
+    if (!on || !wm || !chatWinIsPanel()) return;
+    const ag = appApi().deskAgent ? appApi().deskAgent() : {};
+    renderAgentPanel(ag);
+    if (ag.installed && ag.running) upgradeChatToAgent(ag);
+  });
 
   ["(pointer:fine)", "(hover:hover)"].forEach((q) => {
     try { matchMedia(q).addEventListener("change", evaluate); } catch (e) {}

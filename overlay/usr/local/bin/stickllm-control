@@ -33,7 +33,12 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("STICKLLM_CONTROL_PORT", "8091"))
 BAKED_3B = Path("/opt/stickllm/models/qwen2.5-3b-instruct-q4_k_m.gguf")
 BAKED_7B = Path("/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf")
-# App agent model (stickllm-appagent-llm). Catalog row qwen35-4b-q4km; never deletable.
+# 0.6.7 baked default (chat + app agent). Catalog row qwen25-7b-q4km; never deletable.
+BAKED_BASE = Path(
+    "/opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+)
+BAKED_BASE_ID = "qwen25-7b-q4km"
+# Legacy limp path (may be absent; 0.6.7 no longer bakes the 4B).
 BAKED_4B = Path("/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf")
 BAKED_4B_ID = "qwen35-4b-q4km"
 SESSION_MODES = frozenset({"ephemeral", "vault"})
@@ -660,6 +665,7 @@ def discover_local_ggufs() -> list[dict]:
     # Also treat baked names as catalog-covered
     catalog_files.add(BAKED_3B.name.lower())
     catalog_files.add(BAKED_7B.name.lower())
+    catalog_files.add(BAKED_BASE.name.lower())
     catalog_files.add(BAKED_4B.name.lower())
 
     roots = [d for d in _gguf_search_roots() if not str(d).startswith("/opt/stickllm/models")]
@@ -1741,20 +1747,20 @@ def appagent_status() -> dict:
         "state": state,
         "model_loaded": bool(ok),
         "model": os.path.basename(active) if active else "",
-        "base_model_id": BAKED_4B_ID,
-        "base_model_on_stick": BAKED_4B.is_file(),
+        "base_model_id": BAKED_BASE_ID,
+        "base_model_on_stick": BAKED_BASE.is_file(),
     }
 
 
 def appagent_set(on: bool, autoload: bool = False) -> dict:
     """0.5.9: with autoload, turning the agent on with no model loaded loads the
-    baked-in Qwen3.5-4B as the chat model first (when it is on the stick)."""
+    baked-in base model as the chat model first (when it is on the stick)."""
     loaded_now = None
     if on and autoload:
         ok, _ = llama_health_ok()
-        if not ok and not active_model_path() and BAKED_4B.is_file():
+        if not ok and not active_model_path() and BAKED_BASE.is_file():
             try:
-                loaded_now = activate_model(BAKED_4B_ID)
+                loaded_now = activate_model(BAKED_BASE_ID)
             except Exception as e:  # never block the agent toggle on this
                 loaded_now = {"ok": False, "error": str(e)[:200]}
     r = sh(["systemctl", "start" if on else "stop", APPAGENT_UNIT], timeout=60)
@@ -1768,7 +1774,7 @@ def appagent_set(on: bool, autoload: bool = False) -> dict:
     if not r.get("ok", True):
         st["error"] = (r.get("stderr") or r.get("error") or "systemctl failed")[-300:]
     if loaded_now is not None:
-        st["autoloaded"] = BAKED_4B_ID if loaded_now.get("ok") else ""
+        st["autoloaded"] = BAKED_BASE_ID if loaded_now.get("ok") else ""
         if not loaded_now.get("ok"):
             st["autoload_error"] = str(loaded_now.get("error") or "load failed")[:200]
     return st
@@ -3799,7 +3805,7 @@ def _hf_local_row(model_id: str) -> dict | None:
     """Map a Hugging Face search id (hf:<repo>:<file>) to the GGUF already on disk.
 
     hf_search marks a hit "installed" when its filename exists in any model_dirs()
-    root, including baked /opt/stickllm/models/** (e.g. appagent/Qwen3.5-4B). Those
+    root, including baked /opt/stickllm/models/** (e.g. appagent/7B Q4). Those
     files are not in parse_catalog()/discover_local_ggufs(), so Load used to fail
     with "unknown model". Build a one-off row for the matching file instead.
     """
@@ -3982,8 +3988,12 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
         if not installed and m["id"] == "qwen25-3b-q4km" and BAKED_3B.is_file():
             installed = True
             paths = [BAKED_3B]
+        if m["id"] == BAKED_BASE_ID and BAKED_BASE.is_file():
+            # Prefer the baked stick copy so the row is "on this stick" and protected.
+            installed = True
+            paths = [BAKED_BASE]
         if m["id"] == BAKED_4B_ID and BAKED_4B.is_file():
-            # Prefer the baked app-agent copy so the row is "on this stick" and protected.
+            # Legacy limp if someone left the old 4B on the stick image.
             installed = True
             paths = [BAKED_4B]
         first = next((str(p) for p in paths if p), "")
@@ -4010,7 +4020,9 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
                 is_active = Path(active).resolve() == Path(first).resolve()
             except Exception:
                 is_active = os.path.basename(active) == os.path.basename(first)
-        elif active and m["id"] == "qwen25-7b-q5km" and "qwen2.5-7b" in active.lower():
+        elif active and m["id"] == BAKED_BASE_ID and "qwen2.5-7b" in active.lower() and "q4_k_m" in active.lower():
+            is_active = True
+        elif active and m["id"] == "qwen25-7b-q5km" and "qwen2.5-7b" in active.lower() and "q5_k_m" in active.lower():
             is_active = True
         elif (
             active
@@ -4031,6 +4043,7 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
             installed
             and first
             and not str(first).startswith("/opt/stickllm/models/")
+            and m["id"] != BAKED_BASE_ID
             and m["id"] != BAKED_4B_ID
         )
         backend = ("vulkan" if vk_host else "cuda") if gpu else "cpu"
@@ -4570,7 +4583,11 @@ def delete_model(model_id: str) -> dict:
     removed: list[str] = []
     blocked: list[str] = []
     for p in targets:
-        if str(p).startswith("/opt/stickllm/models/") or _same_file(p, BAKED_4B):
+        if (
+            str(p).startswith("/opt/stickllm/models/")
+            or _same_file(p, BAKED_BASE)
+            or _same_file(p, BAKED_4B)
+        ):
             blocked.append(str(p))
             continue
         try:

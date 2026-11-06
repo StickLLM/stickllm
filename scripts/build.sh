@@ -13,9 +13,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PROFILE="amd-rtx3090"
-# Next unshipped line. Override: STICKLLM_VERSION=0.6.6 ./scripts/build.sh
-# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9 / v0.4.0 / v0.4.1 / v0.4.2 / v0.5.0 / v0.5.1 / v0.5.2 / v0.6.4).
-VERSION="${STICKLLM_VERSION:-0.6.6}"
+# Next unshipped line. Override: STICKLLM_VERSION=0.6.7 ./scripts/build.sh
+# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9 / v0.4.0 / v0.4.1 / v0.4.2 / v0.5.0 / v0.5.1 / v0.5.2 / v0.6.4 / v0.6.6).
+VERSION="${STICKLLM_VERSION:-0.6.7}"
 VERSION_DIR="v${VERSION}"
 ISO_NAME="${STICKLLM_ISO_NAME:-StickLLM-v${VERSION}.iso}"
 OUT_DIR="${STICKLLM_OUT_DIR:-out}"
@@ -26,8 +26,12 @@ case "$OUT_DIR" in
   *) OUT_HOST="${ROOT}/${OUT_DIR}" ;;
 esac
 CHECKSUM_FILE="checksums/v${VERSION}.sha256"
-BASE_GGUF="Qwen3.5-4B-Q4_K_M.gguf"
-BASE_SHA="25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c"
+# 0.6.7: baked default is Qwen2.5-7B Instruct Q4_K_M (official split GGUF).
+BASE_GGUF_1="qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+BASE_GGUF_2="qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"
+BASE_SHA_1="dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db"
+BASE_SHA_2="539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a"
+BASE_HF_REPO="Qwen/Qwen2.5-7B-Instruct-GGUF"
 VOL_WORK="stickllm-lb-work"
 
 case "$VERSION_DIR" in
@@ -40,15 +44,19 @@ esac
 echo "=== StickLLM build (${ISO_NAME}) ==="
 ./scripts/verify-host.sh
 
-# 0.5.6: one baked model, the Qwen3.5-4B (chat + app agent). No 3B.
-if [[ ! -f "models/appagent/${BASE_GGUF}" ]]; then
-  echo "Base model missing — fetching ${BASE_GGUF}…"
-  mkdir -p models/appagent
-  curl -fL --retry 3 -o "models/appagent/${BASE_GGUF}.part" \
-    "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/${BASE_GGUF}"
-  mv "models/appagent/${BASE_GGUF}.part" "models/appagent/${BASE_GGUF}"
-fi
-echo "${BASE_SHA}  models/appagent/${BASE_GGUF}" | sha256sum -c -
+# 0.6.7: one baked model, Qwen2.5-7B Instruct Q4_K_M (chat + app agent).
+mkdir -p models/appagent
+for pair in "${BASE_GGUF_1}|${BASE_SHA_1}" "${BASE_GGUF_2}|${BASE_SHA_2}"; do
+  f="${pair%%|*}"
+  sha="${pair##*|}"
+  if [[ ! -f "models/appagent/${f}" ]]; then
+    echo "Base model missing — fetching ${f}…"
+    curl -fL --retry 3 -o "models/appagent/${f}.part" \
+      "https://huggingface.co/${BASE_HF_REPO}/resolve/main/${f}"
+    mv "models/appagent/${f}.part" "models/appagent/${f}"
+  fi
+  echo "${sha}  models/appagent/${f}" | sha256sum -c -
+done
 
 echo "Speech assets (image build only; the stick does not download these)…"
 if [[ -x /c/Python314/python.exe ]]; then

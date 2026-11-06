@@ -414,11 +414,14 @@ say() {
 
 refresh_failed() {
   # Ignore optional/noisy units - do not scare users with nvidia/USB DATA soft-fails.
+  # stickllm-gpu-skip is intentional best-effort (empty greps / no bad GPU); never
+  # paint "! Problem: stickllm-gpu-skip.service" on the StickLLM boot logo.
   local u
   u="$(systemctl --failed --no-legend --no-pager --plain 2>/dev/null \
     | awk 'NF && $1 !~ /^UNIT$/ \
       && $1 !~ /nvidia-persistenced/ \
       && $1 !~ /stickllm-usb/ \
+      && $1 !~ /stickllm-gpu-skip/ \
       && $1 !~ /plymouth/ \
       && $1 !~ /ModemManager/ \
       && $1 !~ /systemd-modules-load/ \
@@ -433,6 +436,7 @@ refresh_failed() {
   systemctl reset-failed systemd-modules-load.service 2>/dev/null || true
   # USB DATA claim is best-effort - never dominate the product loading screen.
   systemctl reset-failed stickllm-usb.service 2>/dev/null || true
+  systemctl reset-failed stickllm-gpu-skip.service 2>/dev/null || true
 }
 
 probe_services() {
@@ -1079,7 +1083,8 @@ dump_svc_diag() {
     printf 'passwd stickllm-llama: '; getent passwd stickllm-llama || echo MISSING
     ls -la /usr/local/bin/stickllm-llama-start 2>&1 || true
     ls -lad /var/lib/stickllm /mnt/stickllm-data 2>&1 || true
-    ls -la /opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf 2>&1 || true
+    ls -la /opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf 2>&1 || true
+    ls -la /opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf 2>&1 || true
     systemctl status stickllm-ui.service --no-pager -l 2>&1 | head -50 || true
     systemctl status stickllm-llama.service --no-pager -l 2>&1 | head -50 || true
     journalctl -b -u stickllm-ui.service --no-pager -n 50 2>&1 || true

@@ -251,10 +251,11 @@ details.reasoning>:not(summary){border-left:2px solid var(--line,rgba(127,127,12
 .setNav button{text-align:left;background:none;border:0;padding:8px 12px;border-radius:8px;color:var(--ink2);cursor:pointer;font-size:14px}
 .setNav button:hover{background:var(--panel)}
 .setNav button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.setNav button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .setBody{flex:1;min-width:0;display:flex;flex-direction:column}
 .setHead{display:flex;align-items:center;gap:8px;padding:14px 18px 10px 26px;border-bottom:1px solid var(--line2)}
 .setHead h2{margin:0;font-size:18px;font-weight:620;flex:1}
-.backBtn{display:none!important}
+.backBtn,.setNavBtn{display:none!important}
 .setScroll{flex:1;overflow:auto;padding:18px 26px 26px}
 .sec h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:22px 0 8px;font-weight:650}
 .sec>h3:first-child{margin-top:0}
@@ -404,11 +405,13 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2
   .msg.user .body{max-width:88%}
   .popover{right:0}
   .modalWrap{padding:0}
-  .modal{height:100%;border-radius:0;border:0}
-  .setNav{width:100%;border:0}
-  .modal.secOpen .setNav{display:none}
-  .modal:not(.secOpen) .setBody{display:none}
-  .backBtn{display:inline-grid!important}
+  .modal{height:100%;border-radius:0;border:0;position:relative}
+  /* Narrow: section list is a hamburger drawer, not a permanent side / push stack. */
+  .setNavBtn{display:inline-grid!important}
+  .backBtn{display:none!important}
+  .setNav{display:none;position:absolute;inset:0 auto 0 0;width:min(280px,86vw);z-index:6;border-right:1px solid var(--line);box-shadow:12px 0 40px rgba(0,0,0,.4)}
+  .modal.setNavOpen .setNav{display:flex}
+  .modal.setNavOpen::before{content:"";position:absolute;inset:0;background:rgba(5,8,9,.45);z-index:5}
   .setHead{padding:10px 12px}
   .setScroll{padding:16px}
   .summary,.presets{grid-template-columns:1fr}

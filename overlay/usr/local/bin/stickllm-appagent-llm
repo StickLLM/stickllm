@@ -1,15 +1,14 @@
 #!/bin/bash
-# StickLLM app agent model: a small llama-server (Qwen3.5-4B Q4_K_M, thinking off per
-# request) on 127.0.0.1:8796 for stickllm-appagent only, so app actions do not depend
-# on which chat model is activated (or on any being active).
+# StickLLM app agent model: optional dedicated llama-server on 127.0.0.1:8796
+# (default path is the baked Qwen2.5-7B Instruct Q4_K_M). Normally unused:
+# 0.5.6+ the app agent shares the chat llama-server.
 # GPU (CUDA, all layers) when one NVIDIA GPU has enough free VRAM, else Vulkan (AMD/
 # Intel, one card, VRAM from amdgpu sysfs), else CPU.
-# 0.5.6: optional and disabled by default; the app agent shares the chat llama-server.
 set -u
-MODEL="${STICKLLM_APPAGENT_MODEL:-/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf}"
+MODEL="${STICKLLM_APPAGENT_MODEL:-/opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf}"
 PORT="${STICKLLM_APPAGENT_LLM_PORT:-8796}"
 CTX="${STICKLLM_APPAGENT_CTX:-8192}"
-NEED_MIB="${STICKLLM_APPAGENT_VRAM_MIB:-4500}"
+NEED_MIB="${STICKLLM_APPAGENT_VRAM_MIB:-6500}"
 CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
 CPU_BIN="${STICKLLM_LLAMA_CPU:-/opt/stickllm/bin/llama-server-cpu}"
 LIB="${STICKLLM_LIB:-/opt/stickllm/lib}"
