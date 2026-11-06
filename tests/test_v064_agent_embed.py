@@ -32,11 +32,21 @@ def test_gateway_has_thin_embed_markers():
 def test_ui_chat_uses_same_origin_embed():
     app = (ROOT / "ui/app.js").read_text(encoding="utf-8")
     desk = (ROOT / "ui/desktop.js").read_text(encoding="utf-8")
+    html = (ROOT / "ui/index.html").read_text(encoding="utf-8")
     assert 'return "/agent-zero/"' in app
     assert "opts.embed === false" in app
+    assert "agentUrlIsLoopback" in app
+    assert "detectLocalHost()" in app
+    assert "http://127.0.0.1:5099/" not in app or "never open raw" in app.lower() or "Never open raw" in app
+    # Kiosk must not be sent to raw :5099 (Chromium connection-refused page).
+    assert "can't connect to 127.0.0.1" in app
     assert "deskAppUrl(id, opts)" in app or "deskAppUrl(id,opts)" in app
     assert "urlFor(id, opts)" in desk or "urlFor(id,opts)" in desk
     assert 'embed: false' in desk
+    assert 'href="/agent-zero/"' in html
+    assert "https://127.0.0.1:5443/" not in html
+    # No UI default to loopback Agent ports.
+    assert "http://127.0.0.1:5099/" not in html
 
 
 def test_rewrite_html_css_not_js():
@@ -83,3 +93,20 @@ def test_rewrite_idempotent_on_already_injected_html():
     assert second == first
     assert first.decode().count("data-stickllm-a0-embed") >= 1
     assert first.decode().count("/agent-zero/agent-zero") == 0
+
+
+def test_embed_shim_warns_insecure_microphone():
+    text = GATEWAY.read_text(encoding="utf-8")
+    assert "isSecureContext" in text
+    assert "stickllm-mic-https" not in text
+    assert "#7a1f1f" not in text
+    assert "Microphone needs HTTPS" in text
+    assert "_redirect_remote_http_to_https" in text
+    assert 'microphone=*' in text
+    app = (ROOT / "ui/app.js").read_text(encoding="utf-8")
+    assert "function secureMicMessage()" in app
+    assert "function httpsStickUrl()" in app
+    assert "trust the stick certificate" in app
+    assert "stickllm.micHttpsHint" in app
+    desk = (ROOT / "ui/desktop.js").read_text(encoding="utf-8")
+    assert 'allow", "microphone' in desk or "allow\",\"microphone" in desk or 'allow", "microphone;' in desk

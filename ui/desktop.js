@@ -30,24 +30,24 @@
   // StickLLM's own apps (0.5.6). Settings, Models and the App Store mount the
   // existing panels from index.html; Agent and catalog apps are iframes.
   const SYS = {
-    // 0.6.3: Chat is Agent Zero (StickLLM thread UI retired).
-    chat: { title: "Chat", w: 1180, h: 800 },
+    // 0.6.5: one Agent Zero window (legacy StickLLM Chat chrome + icon retired).
+    chat: { title: "Agent Zero", w: 1180, h: 800 },
     browser: { title: "Browser", w: 1180, h: 780 },
-    agent: { title: "Agent", w: 1180, h: 800 },
+    agent: { title: "Agent Zero", w: 1180, h: 800 },
     store: { title: "App Store", w: 1000, h: 700 },
     models: { title: "Models", w: 1060, h: 740 },
     settings: { title: "Settings", w: 1000, h: 720 },
   };
   const GLYPH = {
-    chat: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>',
+    agent: '<svg viewBox="0 0 24 24"><rect x="5" y="7" width="14" height="11" rx="2"/><path d="M12 3v4M9 12h.01M15 12h.01"/></svg>',
     browser: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>',
     store: '<svg viewBox="0 0 24 24"><path d="M5 8h14l-1 12H6z"/><path d="M9 8V6a3 3 0 016 0v2"/></svg>',
     models: '<svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>',
     settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>',
   };
-  // Desktop order: StickLLM apps first, starter apps, catalog apps, then
-  // the two "system" apps at the end (like a dock).
-  const FRONT = ["chat", "browser", "agent", "store"];
+  // Desktop order: Agent Zero once (no separate Chat icon), then Browser /
+  // Store; starter + catalog apps; Models/Settings at the end.
+  const FRONT = ["agent", "browser", "store"];
   const BACK = ["models", "settings"];
   let catalog = [];         // [{id,title,label,color,svg,frame,running,state}] from app.js
   const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -77,7 +77,7 @@
       s.innerHTML = GLYPH[id];
       return s;
     }
-    if (id === "agent") {
+    if (id === "agent" || id === CHAT) {
       const s = document.createElement("span");
       s.className = "deskGlyph deskGlyphImg";
       s.innerHTML = '<img src="agent-zero.png?v=desk4" alt="">';
@@ -709,7 +709,12 @@
       if (spec.url && typeof spec.url.then === "function") {
         spec.url.then((u) => { f.src = u || "about:blank"; }, () => { f.src = "about:blank"; });
       } else f.src = spec.url;
-      f.setAttribute("allow", "fullscreen; clipboard-read; clipboard-write; autoplay");
+      // Explicit feature allow-list so Chat/Agent embeds can call getUserMedia
+      // when the top page is a secure context (https://stick-ip/).
+      f.setAttribute("allow", "microphone *; camera *; autoplay; clipboard-read; clipboard-write; fullscreen");
+      f.setAttribute("allowfullscreen", "");
+      // Paint containment: A0 token/tool DOM thrash stays inside the frame.
+      f.style.cssText = "width:100%;height:100%;border:0;display:block;contain:strict;isolation:isolate";
       frameHooks(f, spec.id);
       wb.body.appendChild(f);
       // 0.6.1 (item 24): on a LAN browser the Agent window loads
@@ -732,16 +737,16 @@
   }
 
   function chatSpec(ag) {
-    // 0.6.3: main Chat window loads Agent Zero (same URL as the old Agent app).
-    // StickLLM #app stays for Settings/Models panel mounts only.
+    // 0.6.5: Agent Zero window only — never mount StickLLM #app into WinBox
+    // (that pulled the old thread UI onto the kiosk and distorted the desk).
     ag = ag || (appApi().deskAgent ? appApi().deskAgent() : { installed: false, running: false });
     if (ag.installed && ag.running) {
       return {
-        id: CHAT, title: "Chat", w: 1180, h: 800, pinned: true,
+        id: CHAT, title: "Agent Zero", w: 1180, h: 800, pinned: true,
         url: urlFor("agent"), popOut: () => openOutside("agent"),
       };
     }
-    return { id: CHAT, title: "Chat", w: 1000, h: 720, pinned: true, mountNode: ui.agentPanel || $("#app") };
+    return { id: CHAT, title: "Agent Zero", w: 1000, h: 720, pinned: true, mountNode: ui.agentPanel };
   }
   const POP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.2'%3E%3Cpath d='M14 4h6v6M20 4l-9 9M18 14v6H4V6h6'/%3E%3C/svg%3E";
   function isLocal() {
@@ -1129,7 +1134,13 @@
       if (al) ui.catObs.observe(al, { attributes: true });
       if (appApi().refreshApps) appApi().refreshApps().then(scheduleCatalog, () => {});
       ui.catT = setInterval(() => { if (appApi().refreshApps) appApi().refreshApps().then(scheduleCatalog, () => {}); }, 60000);
-      chatSidebar();
+      // 0.6.5: #app is no longer the Chat window content. Park the legacy shell
+      // in deskHold so composer / New chat / chat-slide cannot paint through the
+      // transparent desktop wall. Chat opens Agent Zero (or the Agent panel).
+      try {
+        const appEl = $("#app");
+        if (appEl && ui.hold) move(appEl, ui.hold);
+      } catch (e) {}
       openApp(CHAT);
       pollBrowser();
       window.addEventListener("resize", onResize);

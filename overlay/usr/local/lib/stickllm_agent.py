@@ -3352,13 +3352,29 @@ def _model_kwargs() -> dict[str, object]:
     return {"api_base": LLAMA_BASE, "api_key": "dummy", "timeout": MODEL_TIMEOUT}
 
 
+def _util_model_kwargs() -> dict[str, object]:
+    """Utility calls (chat naming, memory) need a non-empty ``content`` field.
+
+    Qwen3.5 thinking mode fills ``reasoning_content`` and often leaves
+    ``content`` empty within a short completion; Agent Zero's
+    ``call_utility_model`` returns only ``content`` and the chat-naming
+    plugin then toasts "Utility Model was not reachable". Disable thinking
+    for the utility slot only (chat can keep native reasoning).
+    """
+    kwargs = dict(_model_kwargs())
+    # LiteLLM openai-compatible path: unknown top-level keys are dropped.
+    kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+    return kwargs
+
+
 def model_settings(model_name: str) -> dict[str, object]:
     """Legacy settings.json fields this Agent Zero image still migrates.
 
     v2.14 reads the active model from the model-config preset. On first start
     it also copies these fields into the plugin config when they are present.
     """
-    kwargs = _model_kwargs()
+    chat_kwargs = _model_kwargs()
+    util_kwargs = _util_model_kwargs()
     return {
         "chat_model_provider": LOCAL_PROVIDER,
         "chat_model_name": model_name,
@@ -3366,13 +3382,13 @@ def model_settings(model_name: str) -> dict[str, object]:
         "chat_model_ctx_length": 32768,
         "chat_model_ctx_history": 0.7,
         "chat_model_vision": False,
-        "chat_model_kwargs": dict(kwargs),
+        "chat_model_kwargs": dict(chat_kwargs),
         "util_model_provider": LOCAL_PROVIDER,
         "util_model_name": model_name,
         "util_model_api_base": LLAMA_BASE,
         "util_model_ctx_length": 32768,
         "util_model_ctx_input": 0.7,
-        "util_model_kwargs": dict(kwargs),
+        "util_model_kwargs": dict(util_kwargs),
     }
 
 
@@ -3412,6 +3428,10 @@ def preset_text(model_name: str) -> str:
         f"      api_base: {LLAMA_BASE}\n"
         "      api_key: dummy\n"
         f"      timeout: {MODEL_TIMEOUT}\n"
+        # Qwen3.5: naming/memory need content, not reasoning_content (see _util_model_kwargs).
+        "      extra_body:\n"
+        "        chat_template_kwargs:\n"
+        "          enable_thinking: false\n"
         "  embedding:\n"
         "    provider: huggingface\n"
         f"    name: {EMBED_REPO}\n"
@@ -3508,10 +3528,10 @@ def _sync_plugin_model_config(root: Path, model_name: str) -> None:
         return
     changed = False
     slots = (
-        ("chat_model", "ctx_history", 0.7),
-        ("utility_model", "ctx_input", 0.7),
+        ("chat_model", "ctx_history", 0.7, _model_kwargs),
+        ("utility_model", "ctx_input", 0.7, _util_model_kwargs),
     )
-    for section, ratio_key, ratio in slots:
+    for section, ratio_key, ratio, kwargs_fn in slots:
         slot = data.get(section)
         if not isinstance(slot, dict):
             continue
@@ -3525,7 +3545,7 @@ def _sync_plugin_model_config(root: Path, model_name: str) -> None:
         kwargs = slot.get("kwargs")
         if not isinstance(kwargs, dict):
             kwargs = {}
-        kwargs.update(_model_kwargs())
+        kwargs.update(kwargs_fn())
         slot["kwargs"] = kwargs
         data[section] = slot
         changed = True

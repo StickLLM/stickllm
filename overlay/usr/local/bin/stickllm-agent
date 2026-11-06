@@ -24,6 +24,8 @@ INSTALL_LOCK="${RUN_DIR}/agent-install.lock"
 CONTAINER="stickllm-agent-zero"
 NETWORK="stickllm-agent"
 ENTRY="/usr/local/bin/stickllm-agent-entrypoint"
+# 0.6.6: defer A0 auto chat-rename to monologue_end (bind-mounted over image).
+CHAT_NAMING_DIR="${STICKLLM_A0_CHAT_NAMING:-/usr/local/share/stickllm/a0-chat-naming}"
 DOCKER_DIR=""
 
 # Attach /opt/stickllm/docker layer diffs (RO) at the writable data-root.
@@ -672,6 +674,16 @@ cmd_run_container() {
   if [[ -f /usr/local/share/stickllm/agent-zero-seccomp.json ]]; then
     SECCOMP_OPT=(--security-opt "seccomp=/usr/local/share/stickllm/agent-zero-seccomp.json")
   fi
+  # 0.6.6: replace monologue_start rename with no-op; run naming at monologue_end.
+  local CHAT_NAMING_ARGS=()
+  if [[ -f "${CHAT_NAMING_DIR}/monologue_start/_60_rename_chat.py" && -d "${CHAT_NAMING_DIR}/monologue_end" ]]; then
+    CHAT_NAMING_ARGS=(
+      -v "${CHAT_NAMING_DIR}/monologue_start/_60_rename_chat.py:/git/agent-zero/plugins/_chat_naming/extensions/python/monologue_start/_60_rename_chat.py:ro"
+      -v "${CHAT_NAMING_DIR}/monologue_end:/git/agent-zero/plugins/_chat_naming/extensions/python/monologue_end:ro"
+    )
+  else
+    echo "stickllm-agent: chat-naming deferral files missing under ${CHAT_NAMING_DIR}" >&2
+  fi
   : >>/run/stickllm/a0-init.log
   docker_cli run -d --name "$CONTAINER" \
     --log-driver local \
@@ -731,6 +743,7 @@ cmd_run_container() {
     -v "${ADDON}/plugin-data/_orchestrator/data:/a0/usr/plugins/_orchestrator/data" \
     -v "${ADDON}/empty-ro:/a0/usr/api:ro" \
     -v "${ADDON}/empty-ro:/a0/usr/extensions:ro" \
+    "${CHAT_NAMING_ARGS[@]}" \
     -v "${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}/agent-zero/open-app.token:/stickllm-open-app.token:ro" \
     -v /run/stickllm/a0-init.log:/tmp/a0-init.log \
     -v "${ENTRY}:/stickllm-entrypoint.sh:ro" \

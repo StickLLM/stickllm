@@ -248,6 +248,17 @@ def _rewrite_embed_html(html: str, pref: str) -> str:
 
 _EMBED_SHIM = """<script data-stickllm-a0-embed="1">(function(){
 var P=__PREFIX__;
+/* Swallow native alerts of raw auth status (Cursor Simple Browser spam). */
+try{
+var _a=window.alert;
+if(typeof _a==="function"){
+window.alert=function(m){
+var s=String(m==null?"":m).trim();
+if(/^(pair_required|vault_locked|unauthorized)(:.*)?$/i.test(s))return;
+return _a.apply(this,arguments);
+};
+}
+}catch(e){}
 try{Object.defineProperty(navigator,"serviceWorker",{configurable:true,value:undefined});}catch(e){}
 function abs(u){
 try{
@@ -283,6 +294,23 @@ function WS(u,p){try{u=abs(String(u));}catch(e){}return (p===undefined)?new W(u)
 WS.prototype=W.prototype;
 WS.CONNECTING=W.CONNECTING;WS.OPEN=W.OPEN;WS.CLOSING=W.CLOSING;WS.CLOSED=W.CLOSED;
 window.WebSocket=WS;
+}
+/* Chromium blocks getUserMedia on http://LAN. Prefer https:// (gateway redirects
+   remote navigations). No banner — fail early with a clear message if still insecure. */
+if(!window.isSecureContext){
+function micHttpsMsg(){
+try{
+var h=String(location.hostname||"").trim();
+if(h&&h!=="localhost"&&h!=="127.0.0.1")return "Microphone needs HTTPS. Open https://"+h+"/ — trust the stick certificate once, then Allow the mic.";
+}catch(e){}
+return "Microphone needs HTTPS. Open https://<stick-ip>/ — trust the stick certificate once, then Allow the mic.";
+}
+try{
+var md=navigator.mediaDevices;
+if(md&&typeof md.getUserMedia==="function"){
+md.getUserMedia=function(){return Promise.reject(new DOMException(micHttpsMsg(),"NotAllowedError"));};
+}
+}catch(e){}
 }
 })();</script>"""
 
@@ -392,11 +420,11 @@ def _target_log(target: str) -> str:
     return f" target={safe}"
 
 
-# A LAN browser that SENT A CHAT MESSAGE to Agent on :5443 this recently is
-# the screen open_app goes to; otherwise the kiosk. An Agent tab merely left
-# open (it polls and keeps a websocket) does not count: that is how open_app
-# from a kiosk chat went to a background desktop tab. The kiosk talks to Agent
-# on 127.0.0.1:5099 directly, so its own messages are never seen here.
+# A LAN browser that SENT A CHAT MESSAGE to Agent (via :5443 or /agent-zero/
+# embed) this recently is the screen open_app goes to; otherwise the kiosk.
+# An Agent tab merely left open (it polls and keeps a websocket) does not
+# count: that is how open_app from a kiosk chat went to a background desktop
+# tab. Loopback kiosk prompts are never recorded (always open on the stick).
 AGENT_TARGET_WINDOW = 300.0
 # Agent Zero's web UI posts chat messages to /api/message_async (api.js puts
 # every call under /api/); the bare paths are older builds.
@@ -3017,6 +3045,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Security-Policy", csp_for_path(self.path, (getattr(self, "headers", None) or {}).get("Host") or ""))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
+            # Mic needs HTTPS (or localhost). Allow getUserMedia for this origin
+            # and embeds that opt in via iframe allow=; camera stays off.
+            self.send_header("Permissions-Policy", "microphone=*, camera=()")
             path = urllib.parse.urlparse(self.path).path
             if path.endswith((".js", ".css", ".html")) or path in ("/", ""):
                 self.send_header("Cache-Control", "no-store, max-age=0")
@@ -4407,6 +4438,22 @@ class Handler(SimpleHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
+        # Same open_app routing as :5443: a LAN chat via /agent-zero/ must
+        # mark this browser as the screen that just prompted (else apps open
+        # on the kiosk).
+        if not self._is_loopback():
+            AGENT_CLIENTS.note(self._ui_client_ip())
+            if method == "POST" and upstream in AGENT_PROMPT_PATHS:
+                screen = self._ui_screen_key()
+                AGENT_CLIENTS.prompt(screen)
+                safe_ip = self._ui_client_ip()
+                safe_ip = safe_ip if re.fullmatch(r"[0-9A-Fa-f:.]+", safe_ip or "") else "-"
+                try:
+                    UI_OPEN._write_log(
+                        f"STICKLLM_AGENT_PROMPT ip={safe_ip}{_target_log(screen).replace(' target=', ' screen=')} path={upstream} via=embed\n"
+                    )
+                except Exception:
+                    pass
         if agent_lib().agent_request_denied(method, upstream, body):
             self._json(403, {"ok": False, "error": "plugins_locked",
                              "message": "Plugins are locked on StickLLM."})
@@ -4445,6 +4492,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header(key, value)
         if not sent_csp:
             self.send_header("Content-Security-Policy", "frame-ancestors " + framers)
+        self.send_header("Permissions-Policy", "microphone=*, camera=()")
         if changed:
             self.send_header("ETag", '"' + hashlib.sha256(rewritten).hexdigest() + '"')
             self.send_header("Cache-Control", "no-store, max-age=0")
@@ -4992,6 +5040,8 @@ class Handler(SimpleHTTPRequestHandler):
         if self._is_agent_server():
             self._serve_agent_gateway("HEAD")
             return
+        if self._redirect_remote_http_to_https():
+            return
         if self._docs_container_refused():
             return
         path = urllib.parse.urlparse(self.path).path
@@ -5126,6 +5176,52 @@ class Handler(SimpleHTTPRequestHandler):
         host = (self.client_address[0] if self.client_address else "") or ""
         return host in ("127.0.0.1", "::1", "localhost")
 
+    def _https_public_location(self) -> str | None:
+        """https://<lan-host><path> when TLS is up; None for loopback / no TLS."""
+        if self._is_tls() or self._is_loopback():
+            return None
+        if not (RUN_DIR / "tls.enabled").is_file():
+            return None
+        host = _host_only(self.headers.get("Host") or "")
+        if not host or host in ("127.0.0.1", "localhost", "::1"):
+            return None
+        return f"https://{host}{self.path}"
+
+    def _is_browser_document(self) -> bool:
+        """Top-level / iframe HTML navigations (not XHR, scripts, or /api)."""
+        path = urllib.parse.urlparse(self.path).path or "/"
+        if path.startswith("/api/") or path in ("/health", "/api/health"):
+            return False
+        mode = (self.headers.get("Sec-Fetch-Mode") or "").lower()
+        dest = (self.headers.get("Sec-Fetch-Dest") or "").lower()
+        if dest in ("document", "iframe", "frame", "embed"):
+            return True
+        if mode == "navigate":
+            return True
+        if mode in ("cors", "no-cors", "same-origin", "websocket") or dest in (
+            "empty", "script", "style", "image", "font", "audio", "video", "worker", "manifest",
+        ):
+            return False
+        accept = (self.headers.get("Accept") or "").lower()
+        if "text/html" in accept:
+            return True
+        if path in ("/", "/index.html") or path.endswith(".html"):
+            return not mode and not dest
+        return False
+
+    def _redirect_remote_http_to_https(self) -> bool:
+        """Send LAN browsers to HTTPS so getUserMedia is allowed. Kiosk stays on HTTP."""
+        if not self._is_browser_document():
+            return False
+        loc = self._https_public_location()
+        if not loc:
+            return False
+        self.send_response(307)
+        self.send_header("Location", loc)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        return True
+
     def _may_show_secrets(self) -> bool:
         """Stick screen only. A LAN browser never gets the pair code or SSH
         password, paired or not (the code must only appear on the kiosk)."""
@@ -5201,6 +5297,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self._is_agent_server():
             self._serve_agent_gateway("GET")
+            return
+        if self._redirect_remote_http_to_https():
             return
         if self._docs_container_refused():
             return

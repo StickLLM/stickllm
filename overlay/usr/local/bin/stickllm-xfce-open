@@ -15,9 +15,26 @@ BASE="${STICKLLM_SESSION_URL:-http://127.0.0.1/}"
 BASE="${BASE%/}"
 PROFILE="${STICKLLM_SESSION_PROFILE:-$HOME/.config/stickllm-kiosk}"
 id="${1:-home}"
-common=(
-  --ozone-platform=x11
-  --use-gl=angle --use-angle=swiftshader
+# X11 + amdgpu/i915: use real GL (ANGLE/GL). SwiftShader pegs the gpu-process
+# at 400%+ CPU whenever Agent Zero streams DOM updates and the HDMI kiosk
+# flickers. (SwiftShader was for opaque menus on Wayland; Xfce/X11 does not
+# need it. Override Debian's --enable-gpu-rasterization when software GL is
+# forced via STICKLLM_KIOSK_SW_GL=1.)
+if [[ "${STICKLLM_KIOSK_SW_GL:-0}" == "1" ]]; then
+  common=(
+    --ozone-platform=x11
+    --use-gl=angle --use-angle=swiftshader
+    --disable-gpu-rasterization
+    --num-raster-threads=1
+  )
+else
+  common=(
+    --ozone-platform=x11
+    --use-gl=angle --use-angle=gl
+    --disable-gpu-driver-bug-workarounds
+  )
+fi
+common+=(
   --no-first-run
   --disable-infobars
   --disable-session-crashed-bubble

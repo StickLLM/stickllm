@@ -80,3 +80,31 @@ can still read and play it. Switch to the StickLLM tab to watch, or click
 - Reload the StickLLM tab with Ctrl+F5 after a StickLLM update.
 - Only one paired device at a time is supported. If two devices both chatted
   with Agent Zero in the last 5 minutes, the most recent one gets the app.
+
+## Microphone fails on a remote LAN browser
+
+**What you see:** Agent Zero says something like "Failed to access microphone.
+Please check permissions," or StickLLM toasts that the microphone needs HTTPS.
+Windows Sound settings show the mic working.
+
+**Why:** Chromium only allows `getUserMedia` in a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts)
+(`https://` or `http://localhost` / `127.0.0.1`). Plain `http://192.168.x.x/`
+is not secure, so the browser blocks the mic even when the OS mic is fine.
+
+### Fix
+
+Use the stick IP from Settings → Devices (example `192.168.72.50`). Remote
+`http://` page loads redirect to `https://` when TLS is up; the stick kiosk
+(`http://127.0.0.1/`) stays on HTTP.
+
+1. Open **`https://192.168.72.50/`** (or follow the redirect from `http://`).
+2. In Chrome: **Advanced → Proceed to 192.168.72.50 (unsafe)** once so the
+   self-signed stick certificate is trusted for this IP. (Or install the cert
+   under Settings → Privacy → Security → Manage certificates.)
+3. Pair this browser if prompted (code on the stick screen). HTTPS uses a
+   separate pair cookie from plain HTTP — re-pair after switching.
+4. Reload, open Chat / Agent Zero, and **Allow** the microphone when asked
+   (padlock → Site settings → Microphone → Allow).
+
+If the mic still fails after HTTPS + Allow: clear a prior Block for this IP
+under `chrome://settings/content/microphone`, then retry.

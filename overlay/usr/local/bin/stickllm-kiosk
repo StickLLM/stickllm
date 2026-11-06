@@ -452,7 +452,9 @@ prepare_kiosk_user() {
     fail_note "STICKLLM_KIOSK_NO_USER"
     return 1
   fi
-  local groups="video,render,input"
+  # audio: /dev/snd capture (USB mic / onboard). Without it Chromium getUserMedia
+  # fails even when a mic is plugged in (devices are root:audio 0660).
+  local groups="video,render,input,audio"
   if getent group seat >/dev/null 2>&1; then
     groups="${groups},seat"
   fi
@@ -1068,7 +1070,7 @@ hold_error() {
 # --- main ---
 # Chat (stickllm.chat) shares the on-stick browser; local/kiosk are aliases.
 CHAT_MODE=0
-STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.6.3)"
+STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.6.6)"
 if grep -Eqw 'stickllm\.chat' /proc/cmdline 2>/dev/null; then
   CHAT_MODE=1
 elif ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then

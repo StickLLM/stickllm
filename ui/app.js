@@ -4,6 +4,19 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const app = $("#app");
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// 0.6.5: never native-alert raw gateway status codes (Cursor Simple Browser
+// was popping window.alert("pair_required") on reconnect). Keep confirm/prompt.
+(function gateNativeDialogs() {
+  const raw = /^(pair_required|vault_locked|not_paired|unauthorized|plugins_locked|no_model|app_not_open)(:.*)?$/i;
+  const wrap = (fn) => function gatedAlert(msg) {
+    const s = String(msg == null ? "" : msg).trim();
+    if (raw.test(s) || /^\{[\s\S]*"error"\s*:\s*"pair_required"/i.test(s)) return;
+    return fn.apply(this, arguments);
+  };
+  try {
+    if (typeof window.alert === "function") window.alert = wrap(window.alert.bind(window));
+  } catch (_) {}
+})();
 const TOKEN_KEY = "stickllm_pair_token";
 let token = localStorage.getItem(TOKEN_KEY) || "";
 let isLocalMode = false;
@@ -57,7 +70,7 @@ const state = {
   mode: "ephemeral", vaultOpen: false, web: true, theme: "dark",
   chats: [], ephemeral: [], current: null, attach: [],
   mtab: "browse", ablAck: false, kv: "f16",
-  mf: { target: "this", fits: false, ctx: 8192, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", vis: "any", q: "", sort: "fit" },
+  mf: { target: "this", fits: false, ctx: 32768, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", vis: "any", q: "", sort: "fit" },
   policy: { verifiedOnly: false, hideUnc: false },
 };
 
@@ -168,7 +181,12 @@ function setPairIcon(stateName) {
   }
 }
 /** 401 anywhere: drop this tab's token and show the re-pair screen. */
+let pairLostAt = 0;
 function pairLost(msg) {
+  const now = Date.now();
+  // Debounce: reconnect blips must not re-flash the pair overlay every few seconds.
+  if (pairUiState === "unpaired" && now - pairLostAt < 20000) return;
+  pairLostAt = now;
   clearPairSession();
   setPairIcon("unpaired");
   showNotPaired(msg);
@@ -277,21 +295,31 @@ function openNamedTab(target, url, resolve, force) {
   return focusAppTab(w);
 }
 const AGENT_TAB = "stickllm-agent-zero";
+function agentUrlIsLoopback(u) {
+  try {
+    const h = new URL(String(u), location.href).hostname;
+    return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+  } catch (_) {
+    return /127\.0\.0\.1|localhost|\[::1\]/.test(String(u || ""));
+  }
+}
 function agentPageUrl(status, opts) {
-  // Same-origin /agent-zero/ is the Chat iframe URL (no second self-signed
-  // origin). :5443 remains for pop-out tabs after the cert is trusted.
+  // Same-origin /agent-zero/ for Chat iframe AND the stick kiosk.
+  // Never open raw http://127.0.0.1:5099/ from the UI — while Agent Zero is
+  // starting, Chromium shows "can't connect to 127.0.0.1" on the kiosk and on
+  // laptops. The gateway embed returns a proper status instead.
+  // LAN pop-out (embed:false off-stick) may still use :5443 after cert trust.
   const embed = !(opts && opts.embed === false);
-  if (embed) {
+  if (embed || detectLocalHost()) {
     if (status && status.agent_embed) return status.agent_embed;
     if (status && status.agent_url && String(status.agent_url).indexOf("/agent-zero") >= 0) return status.agent_url;
     return "/agent-zero/";
   }
   const advertised = status && (status.agent_popout_url || status.agent_url);
-  if (advertised && String(advertised).indexOf("/agent-zero") < 0) return advertised;
-  const host = location.hostname || "127.0.0.1";
-  if (host === "127.0.0.1" || host === "localhost" || host === "::1") {
-    return "http://127.0.0.1:5099/";
+  if (advertised && String(advertised).indexOf("/agent-zero") < 0 && !agentUrlIsLoopback(advertised)) {
+    return advertised;
   }
+  const host = location.hostname || "127.0.0.1";
   return "https://" + host + ":5443/";
 }
 function agentIsInstalled(s) {
@@ -356,7 +384,9 @@ async function refreshAgentLink() {
     const s = await r.json();
     agentLastStatus = s;
     const installed = agentIsInstalled(s);
-    const href = agentPageUrl(s);
+    // Prefer /agent-zero/ (kiosk + LAN). Avoid raw :5099 — kiosk Chromium
+    // shows "can't connect to 127.0.0.1" while A0 is still starting.
+    const href = agentPageUrl(s, { embed: true });
     agentZeroNote = agentZeroStatusNote(installed, s);
     agentZeroInstalled = installed;
     if (link) {
@@ -915,8 +945,15 @@ async function control(action, params = {}) {
     body: JSON.stringify({ action, params }),
   });
   if (r.status === 401) {
-    pairLost("This browser is no longer paired with the stick.");
-    throw new Error("Pair required");
+    // Confirm before wiping the session — a brief gateway blip must not
+    // spam the re-pair overlay on a still-paired LAN browser.
+    let stillPaired = false;
+    try {
+      const st = await fetch("/api/pair/status", { cache: "no-store", headers: authHeaders() }).then((x) => x.json());
+      stillPaired = !!(st && (st.local || st.this_paired || !st.require_pair));
+    } catch (_) { /* offline blip */ }
+    if (!stillPaired) pairLost("This browser is no longer paired with the stick.");
+    throw new Error(stillPaired ? "Temporary auth error — retry" : "Pair required");
   }
   const j = await r.json().catch(() => ({ error: `HTTP ${r.status} (no JSON)` }));
   if (!r.ok) {
@@ -970,8 +1007,24 @@ let tt;
 // 0.6.2: toasts stack (newest at the bottom), each has a close X, and a new
 // one never replaces an older message (so a warning cannot hide an error).
 // Errors use showError()'s persistent box.
+// 0.6.5: coalesce disconnect / Failed-to-fetch spam so remote clients are not
+// flooded while EventSource or health briefly drop.
+const toastRecent = new Map();
 function toast(msg, opts) {
   opts = opts || {};
+  const text = String(msg == null ? "" : msg);
+  const flaky = /failed to fetch|networkerror|load failed|err_network|err_connection|connection (reset|refused|closed|lost)|disconnected|no longer paired|temporary auth|stick not answering|waiting…/i.test(text);
+  const now = Date.now();
+  const prev = toastRecent.get(text) || 0;
+  if (!opts.force && (now - prev) < (flaky ? 20000 : 4000)) {
+    const stack0 = document.getElementById("toastStack");
+    if (stack0 && Array.from(stack0.children).some((n) => n.dataset.msg === text)) return;
+    if (flaky) return;
+  }
+  toastRecent.set(text, now);
+  if (toastRecent.size > 40) {
+    for (const [k, at] of toastRecent) { if (now - at > 60000) toastRecent.delete(k); }
+  }
   let stack = document.getElementById("toastStack");
   if (!stack) {
     stack = document.createElement("div");
@@ -979,7 +1032,6 @@ function toast(msg, opts) {
     stack.setAttribute("role", "status"); stack.setAttribute("aria-live", "polite");
     document.body.appendChild(stack);
   }
-  const text = String(msg == null ? "" : msg);
   const dup = Array.from(stack.children).find((n) => n.dataset.msg === text);
   if (dup) dup.remove();
   const item = document.createElement("div");
@@ -3475,12 +3527,12 @@ function stopDlPoll() { if (dlPollTimer) { clearInterval(dlPollTimer); dlPollTim
 // Models > Preset / Advanced. A preset is ctx + KV type + temperature; the
 // highlight follows the knobs, so moving one away from a preset shows "Custom".
 const TUNE_PRESETS = {
-  fast: { ctx: 4096, kv: "q8", temp: 0.7 },
-  balanced: { ctx: 32768, kv: "f16", temp: 0.7 },
-  long: { ctx: 65536, kv: "q8", temp: 0.6 },
+  // 0.6.5: Minimum 32k / Balanced 64k / Long 128k (Agent Zero wants >= 32K).
+  fast: { ctx: 32768, kv: "q8", temp: 0.7 },
+  balanced: { ctx: 65536, kv: "f16", temp: 0.7 },
+  long: { ctx: 131072, kv: "q8", temp: 0.6 },
 };
-// 0.6.1 (item 16): presets follow free VRAM for the selected model. Big GPUs:
-// Long 64K / Balanced 32K (Agent Zero wants >= 32K). Smaller GPUs scale down.
+// Presets follow free VRAM for the selected model; floor stays 32K when it fits.
 const KV_MUL = { f16: 1, q8: 0.53, q4: 0.28 };
 const CTX_STEPS = [2048, 4096, 8192, 16384, 32768, 65536, 131072];
 function vramPoolGb() {
@@ -3505,16 +3557,16 @@ function pickCtx(m, target, kvs, max, poolGb) {
   return { ctx: Math.max(2048, Math.min(max, roundCtxDown(ctxThatFits(m, kv, poolGb)))), kv };
 }
 function dynamicPresets(m, poolGb = vramPoolGb()) {
-  const max = Number(m?.ctx_max || m?.ctxMax || 32768) || 32768;
+  const max = Number(m?.ctx_max || m?.ctxMax || 131072) || 131072;
   if (!(poolGb > 0)) {
-    return { fast: { ctx: Math.min(4096, max), kv: "q8", temp: 0.7 },
-             balanced: { ctx: Math.min(8192, max), kv: "f16", temp: 0.7 },
-             long: { ctx: Math.min(32768, max), kv: "q4", temp: 0.6 } };
+    return { fast: { ctx: Math.min(32768, max), kv: "q8", temp: 0.7 },
+             balanced: { ctx: Math.min(65536, max), kv: "f16", temp: 0.7 },
+             long: { ctx: Math.min(131072, max), kv: "q4", temp: 0.6 } };
   }
   return {
-    fast: { ctx: Math.min(4096, max), kv: "q8", temp: 0.7 },
-    balanced: { ...pickCtx(m, 32768, ["f16", "q8", "q4"], max, poolGb), temp: 0.7 },
-    long: { ...pickCtx(m, 65536, ["q8", "q4"], max, poolGb), temp: 0.6 },
+    fast: { ...pickCtx(m, 32768, ["q8", "f16", "q4"], max, poolGb), temp: 0.7 },
+    balanced: { ...pickCtx(m, 65536, ["f16", "q8", "q4"], max, poolGb), temp: 0.7 },
+    long: { ...pickCtx(m, 131072, ["q8", "q4"], max, poolGb), temp: 0.6 },
   };
 }
 function ctxLabel(n) { return n >= 1024 ? Math.round(n / 1024) + "k" : String(n); }
@@ -3581,7 +3633,12 @@ function setKv(kv) {
 function applyTune(t) {
   if (!t) return;
   const set = (sel, v) => { const el = $(sel); if (el && v != null && Number.isFinite(Number(v))) el.value = v; };
-  set("#ctx", Math.min(Number(t.ctx) || 8192, +$("#ctx").max || 32768));
+  const max = +$("#ctx").max || 131072;
+  // 0.6.5: floor context at Minimum (32K) for Agent Zero unless the model max is lower.
+  let ctx = Number(t.ctx);
+  if (!Number.isFinite(ctx) || ctx < 256) ctx = LLAMA_CTX_FLOOR;
+  else if (ctx < LLAMA_CTX_FLOOR && max >= LLAMA_CTX_FLOOR) ctx = LLAMA_CTX_FLOOR;
+  set("#ctx", Math.min(ctx, max));
   set("#temp", t.temp); set("#topp", t.top_p); set("#topk", t.top_k); set("#rep", t.repeat_penalty); set("#maxtok", t.max_tokens);
   if (t.kv) setKv(t.kv);
   if ($("#tempVal")) $("#tempVal").textContent = $("#temp").value;
@@ -5128,26 +5185,58 @@ async function issuePairHotkey() {
     await refreshStatus();
   } catch (e) { showError(e); }
 }
+function paintSshDetails(connect) {
+  const box = $("#sshDetails");
+  const line = $("#sshLine");
+  const copy = $("#sshCopy");
+  if (!box || !line) return;
+  const c = connect || {};
+  const enabled = !!c.ssh_enabled;
+  const pass = String(c.ssh_password || "").trim();
+  const local = detectLocalHost();
+  // Password only exists on loopback health; LAN never gets it.
+  if (!local || !enabled) {
+    box.hidden = true;
+    if (copy) copy.hidden = true;
+    return;
+  }
+  const user = c.ssh_user || "stickllm";
+  const host = c.ssh_host || c.ip || "(LAN IP not up yet)";
+  box.hidden = false;
+  if (pass) {
+    line.textContent = `${user}@${host}  password: ${pass}`;
+    if (copy) {
+      copy.hidden = false;
+      copy.onclick = () => {
+        navigator.clipboard?.writeText(pass).catch(() => {});
+        toast("SSH password copied");
+      };
+    }
+  } else {
+    line.textContent = `SSH is on (${user}@${host}) — password not ready yet; press F10 or wait a moment.`;
+    if (copy) copy.hidden = true;
+  }
+}
 async function issueSshHotkey() {
   // F10 from any StickLLM screen. The server only returns the password to this UI.
   try {
     const r = await fetch("/api/health", { cache: "no-store", headers: authHeaders() });
     const j = await r.json().catch(() => ({}));
     const c = j.connect || {};
+    paintSshDetails(c);
     const pass = String(c.ssh_password || "").trim();
     const enabled = !!c.ssh_enabled;
     const user = c.ssh_user || "stickllm";
     // 0.6.1: real LAN IP only (never 127.0.0.1); say so while the network is not up.
     const host = c.ssh_host || c.ip || "<LAN IP not up yet - press F10 again in a moment>";
     if (enabled && pass) {
-      pushSystemMsg(`SSH: ${user}@${host}  password: ${pass}`);
-      toast("SSH password posted in chat");
+      if (detectLocalHost()) toast("SSH details updated under Pair code in Settings");
+      else toast("SSH password is only shown on the stick screen");
+      try { pushSystemMsg(`SSH: ${user}@${host}  password: ${pass}`); } catch (_) {}
     } else if (enabled) {
-      pushSystemMsg("SSH is enabled but password is not in this response yet — check READY/Term, or reboot menu 3 Test - SSH Enabled.");
-      toast("SSH on — password not available here");
+      toast("SSH on — password not available here yet");
     } else {
-      pushSystemMsg("SSH is off on this boot. Reboot → GRUB → 2 Terminal or 3 Test - SSH Enabled to get a password.");
-      toast("SSH disabled on this boot");
+      toast("SSH disabled on this boot (use GRUB Test / Terminal)");
     }
   } catch (e) { showError(e); }
 }
@@ -5554,14 +5643,25 @@ async function ensureAgentZeroStarted() {
   } catch (_) {}
 }
 
-/* ---- 0.6.3 first-time setup wizard ---- */
-const SETUP_KEY = "stickllm.setup.v063";
-function setupDone() { try { return localStorage.getItem(SETUP_KEY) === "1"; } catch (_) { return false; } }
-function markSetupDone() { try { localStorage.setItem(SETUP_KEY, "1"); } catch (_) {} }
+/* ---- 0.6.5 first-time setup wizard (Network → Storage → Vault → Finish) ---- */
+const SETUP_KEY = "stickllm.setup.v066";
+const SETUP_KEY_OLD = "stickllm.setup.v063";
+function setupDone() {
+  try {
+    return localStorage.getItem(SETUP_KEY) === "1" || localStorage.getItem(SETUP_KEY_OLD) === "1";
+  } catch (_) { return false; }
+}
+function markSetupDone() {
+  try {
+    localStorage.setItem(SETUP_KEY, "1");
+    localStorage.setItem(SETUP_KEY_OLD, "1");
+  } catch (_) {}
+}
 
 async function openSetupWizard(opts) {
   const force = !!(opts && opts.force);
   if (!force && setupDone()) return;
+  const LAST = 3; // Network, Storage, Vault, Finish (starter-model step removed)
   let step = 0;
   const state = {
     drive: null,
@@ -5572,6 +5672,7 @@ async function openSetupWizard(opts) {
     pass2: "",
     ssid: "",
     wpass: "",
+    vaultMode: "create", // or "unlock" when stickllm-vault.img already exists
   };
   let overlay = $("#setupWizard");
   if (!overlay) {
@@ -5597,7 +5698,6 @@ async function openSetupWizard(opts) {
   const targets = await control("storage_targets").catch(() => ({ drives: [], unmounted: [] }));
   const drives = (targets && targets.drives) || [];
   const unmounted = (targets && targets.unmounted) || [];
-  // Prefill: SSD if found else stick
   state.drive = drives.find((d) => d.kind === "ssd") || drives.find((d) => d.kind === "stick") || drives[0] || null;
   if (state.drive) {
     state.vaultPath = state.drive.suggested_vault || (state.drive.path + "/vault");
@@ -5605,39 +5705,76 @@ async function openSetupWizard(opts) {
     state.dockerPath = state.drive.suggested_docker || (state.drive.path + "/stickllm-docker");
   }
 
+  async function joinWifi(ssid, password) {
+    if (!ssid) return { ok: true, skipped: true };
+    const res = await control("wifi_connect", { ssid, password: password || "" });
+    if (res && res.ok === false) throw new Error(res.error || res.message || "Wi‑Fi join failed");
+    return res || { ok: true };
+  }
+
+  function paintWifiList(listEl, nets) {
+    listEl.hidden = false;
+    listEl.textContent = "";
+    listEl.className = "wifiList";
+    if (!nets.length) {
+      const p = document.createElement("p");
+      p.className = "muted small";
+      p.style.padding = "8px 12px";
+      p.textContent = "No networks found. Type a name above (works for hidden SSIDs too).";
+      listEl.appendChild(p);
+      return;
+    }
+    nets.forEach((n) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "option");
+      b.classList.toggle("selected", n.ssid === state.ssid);
+      const name = document.createElement("span");
+      name.textContent = n.ssid + (n.in_use ? " (connected)" : "");
+      const sig = document.createElement("span");
+      sig.className = "sig";
+      sig.textContent = (n.secure ? "🔒 " : "") + (n.signal != null ? n.signal + "%" : "");
+      b.append(name, sig);
+      b.onclick = () => {
+        state.ssid = n.ssid;
+        $("#wizSsid").value = n.ssid;
+        listEl.querySelectorAll("button").forEach((x) => x.classList.remove("selected"));
+        b.classList.add("selected");
+        (n.secure ? $("#wizWpass") : $("#wizJoin")).focus();
+      };
+      listEl.appendChild(b);
+    });
+  }
+
   function render() {
     showErr("");
     $("#setupBack").disabled = step <= 0;
-    $("#setupSkip").textContent = step >= 4 ? "Close" : "Skip";
-    $("#setupNext").textContent = step >= 4 ? "Finish" : "Continue";
+    $("#setupSkip").textContent = step >= LAST ? "Close" : "Skip";
+    $("#setupNext").textContent = step >= LAST ? "Finish" : "Continue";
     if (step === 0) {
       $("#setupTitle").textContent = "Network";
       body.innerHTML = `
-<p class="muted">Connect to Wi‑Fi or plug in a cable. You can type a hidden network name.</p>
+<p class="muted">Connect to Wi‑Fi or plug in a cable. Continue joins the selected network before moving on.</p>
 <label class="field"><span>Network name (SSID)</span><input id="wizSsid" autocomplete="off"></label>
 <label class="field"><span>Password</span><input id="wizWpass" type="text" class="secret" autocomplete="off"></label>
-<div id="wizWifiList" class="wifi-list" hidden></div>
-<button type="button" id="wizScan" class="ghost">Scan for networks</button>
-<button type="button" id="wizJoin" class="ghost">Join Wi‑Fi</button>`;
+<div id="wizWifiList" class="wifiList" role="listbox" aria-label="Nearby Wi‑Fi networks" hidden></div>
+<div class="actions"><button type="button" id="wizScan" class="btn">Scan</button>
+<button type="button" id="wizJoin" class="btn">Join Wi‑Fi</button></div>`;
       $("#wizSsid").value = state.ssid;
       $("#wizWpass").value = state.wpass;
       $("#wizScan").onclick = async () => {
         try {
           const j = await control("wifi_scan");
-          const list = $("#wizWifiList"); list.hidden = false; list.textContent = "";
-          ((j && j.networks) || []).forEach((n) => {
-            const b = document.createElement("button"); b.type = "button";
-            b.textContent = n.ssid + (n.secure ? " 🔒" : "") + " " + n.signal + "%";
-            b.onclick = () => { $("#wizSsid").value = n.ssid; };
-            list.appendChild(b);
-          });
+          paintWifiList($("#wizWifiList"), (j && j.networks) || []);
         } catch (e) { showErr(String(e.message || e)); }
       };
       $("#wizJoin").onclick = async () => {
         state.ssid = $("#wizSsid").value.trim(); state.wpass = $("#wizWpass").value;
         try {
-          await control("wifi_join", { ssid: state.ssid, password: state.wpass });
-          toast("Joining Wi‑Fi…");
+          if (!state.ssid) throw new Error("Enter or pick a network name");
+          showErr("");
+          const res = await joinWifi(state.ssid, state.wpass);
+          toast(res.online ? "Online via Wi‑Fi" : "Wi‑Fi profile saved — waiting for uplink");
         } catch (e) { showErr(String(e.message || e)); }
       };
     } else if (step === 1) {
@@ -5702,34 +5839,36 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
         };
       });
     } else if (step === 2) {
-      $("#setupTitle").textContent = "Vault passcode";
+      $("#setupTitle").textContent = state.vaultMode === "unlock" ? "Unlock vault" : "Vault passcode";
       body.innerHTML = `
-<p>Encrypt chats and settings. Models can live beside the vault on the same drive.</p>
+<p>${state.vaultMode === "unlock"
+  ? "A vault file already exists at this path. Enter the passcode to unlock it."
+  : "Encrypt chats and settings. Models can live beside the vault on the same drive."}</p>
 <label class="field"><span>Passcode (8+ characters)</span><input id="wizP1" type="text" class="secret"></label>
-<label class="field"><span>Confirm passcode</span><input id="wizP2" type="text" class="secret"></label>
-<p class="muted small">Vault path: <code id="wizVaultShow"></code></p>`;
+<label class="field" ${state.vaultMode === "unlock" ? "hidden" : ""}><span>Confirm passcode</span><input id="wizP2" type="text" class="secret"></label>
+<p class="muted small">Vault path: <code id="wizVaultShow"></code></p>
+<p class="muted small" id="wizVaultHint" hidden></p>`;
       $("#wizVaultShow").textContent = state.vaultPath || "(choose storage first)";
-      $("#wizP1").value = state.pass1; $("#wizP2").value = state.pass2;
-    } else if (step === 3) {
-      $("#setupTitle").textContent = "Starter model";
-      body.innerHTML = `
-<p>You can download a starter model after setup from Models. Downloads go to:</p>
-<p><code>${state.modelsPath || "(models folder)"}</code></p>
-<p class="muted">Skip for now if you are offline — the baked-in small model still works.</p>`;
+      $("#wizP1").value = state.pass1;
+      if ($("#wizP2")) $("#wizP2").value = state.pass2;
+      if (state.vaultMode === "unlock") {
+        const h = $("#wizVaultHint");
+        if (h) { h.hidden = false; h.textContent = "Existing stickllm-vault.img found — unlock instead of create."; }
+      }
     } else {
       $("#setupTitle").textContent = "You're ready";
       body.innerHTML = `
 <ul class="setup-tour">
-<li>Chat is the easy front door; Agent Zero is the advanced agent.</li>
+<li><strong>Agent Zero</strong> is the main chat on the desktop.</li>
 <li>Open <strong>Settings → Storage</strong> any time to change folders or re-run this wizard.</li>
-<li>System monitor and Models refresh from the stick — give USB a moment after big downloads.</li>
+<li>Download models from Models when you want a larger one — the baked-in model works offline.</li>
 </ul>`;
     }
   }
 
   $("#setupBack").onclick = () => { if (step > 0) { step -= 1; render(); } };
   $("#setupSkip").onclick = () => {
-    if (step >= 4) { markSetupDone(); overlay.classList.remove("show"); return; }
+    if (step >= LAST) { markSetupDone(); overlay.classList.remove("show"); return; }
     step += 1; render();
   };
   $("#setupNext").onclick = async () => {
@@ -5738,6 +5877,11 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
       if (step === 0) {
         state.ssid = ($("#wizSsid")?.value || "").trim();
         state.wpass = $("#wizWpass")?.value || "";
+        if (state.ssid) {
+          const res = await joinWifi(state.ssid, state.wpass);
+          toast(res.online ? "Online via Wi‑Fi" : "Wi‑Fi profile saved");
+          if (res.ok === false) throw new Error(res.error || "Wi‑Fi join failed");
+        }
       }
       if (step === 1) {
         state.vaultPath = ($("#wizVault")?.value || "").trim();
@@ -5749,42 +5893,81 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
           if (r && r.ok === false) throw new Error(r.error || "Could not set models folder");
         }
         if ($("#vaultPath")) $("#vaultPath").value = state.vaultPath;
+        // Detect existing vault before the create step.
+        try {
+          const found = await control("vault_find", { path: state.vaultPath });
+          const hits = (found && (found.vaults || found.hits || found.paths)) || [];
+          const path = state.vaultPath.replace(/\/+$/, "");
+          const blob = path + "/stickllm-vault.img";
+          const exists = hits.some((h) => {
+            const p = typeof h === "string" ? h : (h.path || h.blob || "");
+            return p === blob || p === path || String(p).endsWith("stickllm-vault.img");
+          }) || !!(found && found.exists);
+          if (exists || (found && found.ok && found.blob)) state.vaultMode = "unlock";
+          else state.vaultMode = "create";
+        } catch (_) { state.vaultMode = "create"; }
       }
       if (step === 2) {
         state.pass1 = $("#wizP1")?.value || "";
-        state.pass2 = $("#wizP2")?.value || "";
+        state.pass2 = state.vaultMode === "unlock" ? state.pass1 : ($("#wizP2")?.value || "");
         if (state.pass1.length < 8) throw new Error("Passcode must be at least 8 characters");
-        if (state.pass1 !== state.pass2) throw new Error("Passcodes don't match");
+        if (state.vaultMode !== "unlock" && state.pass1 !== state.pass2) throw new Error("Passcodes don't match");
         const path = state.vaultPath.replace(/\/+$/, "");
         const onStick = path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/");
         showVaultCreating(true);
         try {
-          const res = await control("vault_setup", {
-            path, size_gb: "32", confirm: "CREATE-VAULT",
-            recovery_confirm: "SHOW-ONCE", passcode: state.pass1, passcode2: state.pass2,
-            space_confirm: "SPACE-OK",
-            ...(onStick ? { stick_data_confirm: "STICK-DATA" } : {}),
-          });
-          showVaultCreating(false);
-          if (!res.ok) throw new Error(res.error || res.stderr || "vault setup failed");
-          const phrase = res.recovery_phrase || "";
-          if (phrase) {
-            await new Promise((resolve) => {
-              confirmBox({
-                title: "Save your recovery phrase",
-                text: "This is the only time it's shown. Write it down.",
-                extra: phrase, ok: "I saved it",
-                check: "I wrote down the recovery phrase.",
-                cb: resolve,
-              });
+          let res;
+          if (state.vaultMode === "unlock") {
+            await control("vault_attach", { path }).catch(() => {});
+            res = await control("vault_unlock", { passcode: state.pass1 });
+            showVaultCreating(false);
+            if (!res || res.ok === false) throw new Error((res && (res.error || res.message)) || "Unlock failed");
+            toast("Vault unlocked");
+          } else {
+            res = await control("vault_setup", {
+              path, size_gb: "32", confirm: "CREATE-VAULT",
+              recovery_confirm: "SHOW-ONCE", passcode: state.pass1, passcode2: state.pass2,
+              space_confirm: "SPACE-OK",
+              ...(onStick ? { stick_data_confirm: "STICK-DATA" } : {}),
             });
+            showVaultCreating(false);
+            if (!res || res.ok === false) {
+              const errMsg = String((res && (res.error || res.stderr)) || "vault setup failed");
+              if (/already exists/i.test(errMsg)) {
+                state.vaultMode = "unlock";
+                render();
+                showErr("A vault already exists here — enter the passcode to unlock.");
+                return;
+              }
+              throw new Error(errMsg);
+            }
+            toast("Vault created");
+            const phrase = res.recovery_phrase || "";
+            if (phrase) {
+              await new Promise((resolve) => {
+                confirmBox({
+                  title: "Save your recovery phrase",
+                  text: "This is the only time it's shown. Write it down.",
+                  extra: phrase, ok: "I saved it",
+                  check: "I wrote down the recovery phrase.",
+                  cb: resolve,
+                });
+              });
+            }
           }
         } catch (e) {
           showVaultCreating(false);
+          const msg = String(e.message || e);
+          if (/already exists/i.test(msg)) {
+            state.vaultMode = "unlock";
+            render();
+            showErr("A vault already exists here — enter the passcode to unlock.");
+            return;
+          }
           throw e;
         }
       }
-      if (step >= 4) {
+      if (step >= LAST) {
         markSetupDone();
         overlay.classList.remove("show");
         try { await refreshStorage(); } catch (_) {}
@@ -5923,7 +6106,10 @@ async function refreshStatus() {
       $("#popCtx").textContent = loadedCtx > 0 ? `${loadedCtx.toLocaleString()} tokens` : "—";
       if (lastPerf) updatePerfStrip(lastPerf);
     }
-    const url = j.connect?.url || (j.connect?.ip ? `http://${j.connect.ip}/` : location.origin + "/");
+    const url = j.connect?.url
+      || (j.connect?.ip ? `https://${j.connect.ip}/` : "")
+      || (location.protocol === "https:" ? location.origin + "/" : httpsStickUrl())
+      || location.origin + "/";
     if ($("#lanUrl2")) $("#lanUrl2").textContent = url;
     const code = j.connect?.pair_code;
     if (detectLocalHost() && $("#pairCodeShow")) {
@@ -5937,6 +6123,8 @@ async function refreshStatus() {
       const shown = String($("#pairCodeShow").textContent || "").replace(/\s/g, "");
       if (!/^\d{4,8}$/.test(shown)) $("#pairCodeShow").textContent = "(see stick screen)";
     }
+    // 0.6.5: SSH password under pair code on the stick screen (GRUB test/term only).
+    paintSshDetails(j.connect);
     try {
       const m = await fetch("/stickllm.json", { cache: "no-store" });
       if (m.ok) {
@@ -6012,13 +6200,17 @@ $$("#kvSeg button").forEach((b) => (b.onclick = () => {
 });
 if ($("#resetPreset")) {
   $("#resetPreset").onclick = () => {
-    const hit = syncPresetHighlight() || "balanced";
+    const hit = syncPresetHighlight() || "fast";
     applyTune({ ctx: TUNE_PRESETS[hit].ctx, kv: TUNE_PRESETS[hit].kv, temp: TUNE_PRESETS[hit].temp, top_p: 0.9, top_k: 40, repeat_penalty: 1.1, max_tokens: CHAT_TOKENS });
     saveTune(); renderModelsList();
     toast("Reset to preset");
   };
 }
-try { applyTune(JSON.parse(localStorage.getItem(TUNE_KEY) || "null")); } catch (_) { syncPresetHighlight(); }
+try {
+  const saved = JSON.parse(localStorage.getItem(TUNE_KEY) || "null");
+  if (saved) applyTune(saved);
+  else applyPreset("fast");
+} catch (_) { applyPreset("fast"); }
 let modelVision = false;
 function syncAttach() {
   const btn = $("#attachBtn");
@@ -6441,14 +6633,12 @@ function appendTranscript(text, sent) {
   const input = $("#input");
   const add = String(text || "").replace(/\s+/g, " ").trim();
   const prefix = sent ? sent + " " : "";
-  if (!add) {
-    speechFail(prefix + "No speech detected.");
+  if (!add || micHallucination(add)) {
+    // Voice listen: quiet miss — composerNote height changes flicker the kiosk.
+    if (!voiceMode) speechFail(prefix + "No speech detected.");
     return false;
   }
-  if (micHallucination(add)) {
-    speechFail(prefix + "No speech detected.");
-    return false;
-  }
+  if (sent) showComposerLine(sent, false);
   const cur = input.value;
   input.value = !cur || composerFromMic ? add : (/\s$/.test(cur) ? cur + add : cur + " " + add);
   composerFromMic = true;
@@ -6493,21 +6683,26 @@ function startVad(stream) {
   if (!voiceMode) return;
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new Ctx();
+    // Do not connect to ctx.destination: on the HDMI kiosk that opens ALSA
+    // playback while MediaRecorder holds capture → "Device or resource busy"
+    // retries and compositor flicker (SwiftShader). A silent MediaStream sink
+    // keeps the analyser graph alive without touching the hardware output.
+    const ctx = new Ctx({ latencyHint: "interactive" });
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
-    analyser.fftSize = 2048;
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.4;
     source.connect(analyser);
-    // The meter has to reach the destination or Chrome reports silence.
-    // Gain stays at 0 so the microphone is not played back.
     const tap = ctx.createGain();
     tap.gain.value = 0;
+    const sink = ctx.createMediaStreamDestination();
     analyser.connect(tap);
-    tap.connect(ctx.destination);
+    tap.connect(sink);
     micCtx = ctx;
     micSource = source;
     micAnalyser = analyser;
     const buf = new Float32Array(analyser.fftSize);
+    const tickMs = 250;
     ctx.resume().catch(() => {});
     micVadTimer = setInterval(() => {
       if (micState !== "recording" || !voiceMode || !micAnalyser) return;
@@ -6518,20 +6713,20 @@ function startVad(stream) {
       const rms = Math.sqrt(sum / buf.length);
       if (rms >= VOICE_SPEECH_RMS) {
         voiceHeard = true;
-        voiceSpeechMs += 100;
+        voiceSpeechMs += tickMs;
         voiceQuietMs = 0;
       } else if (voiceSpeechMs >= VOICE_MIN_SPEECH_MS) {
-        voiceQuietMs += 100;
+        voiceQuietMs += tickMs;
         if (voiceQuietMs >= VOICE_SILENCE_MS) finishMic();
       } else if (voiceHeard) {
-        voiceQuietMs += 100;
+        voiceQuietMs += tickMs;
         if (voiceQuietMs >= VOICE_SILENCE_MS) {
           voiceHeard = false;
           voiceSpeechMs = 0;
           voiceQuietMs = 0;
         }
       }
-    }, 100);
+    }, tickMs);
   } catch (_) {}
 }
 function finishMic(reason) {
@@ -6571,12 +6766,13 @@ async function finishMicBody(reason, parts, rec, mime) {
   }
   if (!parts || !parts.length || !raw.length) {
     setMicUi("idle");
+    // Voice mode: skip empty-note thrash (composer height flicker).
     if (stop || !voiceMode) speechFail("The recording was empty");
     if (!stop && voiceMode) resumeVoiceListen();
     return;
   }
   const sent = sentLabel(raw.length);
-  showComposerLine(sent, false);
+  // Defer "Sent N KB" until a real transcript — avoids layout thrash on noise.
   const postedMime = mime || blob.type || "audio/webm";
   const ctrl = new AbortController();
   micAbort = ctrl;
@@ -6597,10 +6793,9 @@ async function finishMicBody(reason, parts, rec, mime) {
     }
     if (!r.ok || !j.ok) {
       const msg = j.message || j.error || "Speech recognition failed.";
-      speechFail(sent + " " + msg);
+      if (stop || !voiceMode) speechFail(sent + " " + msg);
       return;
     }
-    showComposerLine(sent, false);
     const heard = appendTranscript(j.text || "", sent);
     // Stop, or a finished voice-mode phrase, sends the transcript.
     // Empty audio and the "you" hallucination never get here.
@@ -6623,10 +6818,24 @@ async function finishMicBody(reason, parts, rec, mime) {
     if (!handed && !stop && voiceMode && !sendBusy && !voiceHold && !speakAudio) resumeVoiceListen();
   }
 }
-function secureMicMessage() {
+function httpsStickUrl() {
   const shown = ($("#lanUrl2") && $("#lanUrl2").textContent || "").trim();
-  if (/^https:\/\//i.test(shown)) return "Open " + shown + " in this browser to use the microphone.";
-  return "Open this page with https to use the microphone.";
+  if (/^https:\/\//i.test(shown)) return shown.replace(/\/?$/, "/");
+  if (/^http:\/\//i.test(shown)) return shown.replace(/^http/i, "https").replace(/\/?$/, "/");
+  try {
+    const u = new URL(location.href);
+    const host = String(u.hostname || "").trim();
+    if (host && host !== "localhost" && host !== "127.0.0.1") return "https://" + host + "/";
+  } catch (_) {}
+  return "";
+}
+function secureMicMessage() {
+  // Chromium blocks getUserMedia on plain http://LAN — only HTTPS or localhost.
+  const https = httpsStickUrl();
+  if (https) {
+    return "Microphone needs HTTPS. Open " + https + " — trust the stick certificate once, then Allow the mic.";
+  }
+  return "Microphone needs HTTPS. Open https://<stick-ip>/ — trust the stick certificate once, then Allow the mic.";
 }
 function abandonReplyForMic() {
   userStopGen = sendGen;
@@ -6662,7 +6871,9 @@ async function startMic() {
     }
     if (gen !== micGen || micStopWanted) return;
     if (!window.isSecureContext) {
-      speechFail(secureMicMessage());
+      const msg = secureMicMessage();
+      speechFail(msg);
+      toast(msg, { warn: true, force: true });
       setMicUi("idle");
       return;
     }
@@ -6713,9 +6924,13 @@ async function startMic() {
       }
     } catch (e) {
       const name = e && e.name;
-      if (name === "NotFoundError" || name === "DevicesNotFoundError") speechFail("No microphone was found.");
-      else if (name === "NotAllowedError" || name === "SecurityError" || name === "PermissionDeniedError") speechFail("Microphone permission was denied.");
-      else speechFail("Could not use the microphone.");
+      if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        speechFail("No microphone was found. Plug in a USB mic (or headset), then try Voice again.");
+      } else if (name === "NotAllowedError" || name === "SecurityError" || name === "PermissionDeniedError") {
+        speechFail(window.isSecureContext
+          ? "Microphone permission was denied. Allow the mic for this site when Chromium asks (or site settings)."
+          : secureMicMessage());
+      } else speechFail("Could not use the microphone.");
       setMicUi("idle");
       return;
     }
@@ -6748,7 +6963,9 @@ async function startMic() {
       parts.push(ev.data);
     };
     try {
-      rec.start(250);
+      // 250 ms timeslices hammer GC/compositor on the SwiftShader kiosk.
+      // 1 s is enough for VAD end-of-utterance; final stop still flushes.
+      rec.start(1000);
     } catch (_) {
       try { rec.start(); } catch (_) {
         stream.getTracks().forEach((t) => t.stop());
@@ -6869,7 +7086,9 @@ async function setVoiceMode(on) {
   if (voicePowerBusy) return;
   on = !!on;
   if (on && !window.isSecureContext) {
-    speechFail(secureMicMessage());
+    const msg = secureMicMessage();
+    speechFail(msg);
+    toast(msg, { warn: true, force: true });
     return;
   }
   voicePowerBusy = true;
@@ -7463,6 +7682,17 @@ ensurePaired(false).then((ok) => {
   startOpenAppEvents();
 });
 if (detectLocalHost()) startOpenAppEvents();
+// Remote LAN on plain HTTP cannot use the mic (Chromium secure-context rule).
+// Gateway redirects navigations to https:// when TLS is up; one quiet tip if not.
+if (!window.isSecureContext && !detectLocalHost()) {
+  try {
+    const key = "stickllm.micHttpsHint";
+    if (!sessionStorage.getItem(key)) {
+      sessionStorage.setItem(key, "1");
+      setTimeout(() => toast(secureMicMessage(), { warn: true }), 1500);
+    }
+  } catch (_) {}
+}
 
 // window.stickllmApp hooks are later.
 const APP_LABELS = {
@@ -7734,6 +7964,7 @@ function startOpenAppEvents() {
   let delay = 1000;
   let timer = null;
   let gen = 0;
+  let authStop = false;
 
   function teardown() {
     if (!es) return;
@@ -7743,10 +7974,21 @@ function startOpenAppEvents() {
     es = null;
   }
 
+  function stopReconnect() {
+    authStop = true;
+    clearTimeout(timer);
+    timer = null;
+    teardown();
+    gen++;
+  }
+
   async function connect() {
     const mine = ++gen;
     clearTimeout(timer);
     teardown();
+    // Abandoned Cursor Simple Browser / background tab: do not reconnect.
+    if (document.visibilityState === "hidden") return;
+    if (authStop || pairUiState === "unpaired") return;
     syncToken();
     let url = "/api/ui/events";
     try {
@@ -7759,14 +8001,20 @@ function startOpenAppEvents() {
       if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opts.signal = AbortSignal.timeout(4000);
       const r = await fetch("/api/ui/events-ticket", opts);
       if (mine !== gen) return;
+      if (r.status === 401) {
+        // Unpaired / lost session: stop the reconnect storm (no alert spam).
+        stopReconnect();
+        if (!detectLocalHost()) pairLost("This browser is no longer paired with the stick.");
+        return;
+      }
       if (r.ok) {
         const j = await r.json();
         if (j && j.t) url = "/api/ui/events?t=" + encodeURIComponent(j.t);
       }
     } catch (e) { /* cookie or loopback can still subscribe */ }
-    if (mine !== gen) return;
+    if (mine !== gen || document.visibilityState === "hidden") return;
     es = new EventSource(url);
-    es.onopen = () => { delay = 1000; };
+    es.onopen = () => { delay = 1000; authStop = false; };
     es.addEventListener("open_app", (ev) => {
       let data = {};
       try { data = JSON.parse(ev.data || "{}"); } catch (err) { return; }
@@ -7790,8 +8038,11 @@ function startOpenAppEvents() {
     es.onerror = () => {
       if (mine !== gen) return;
       teardown();
+      if (document.visibilityState === "hidden" || pairUiState === "unpaired" || authStop) return;
+      // 0.6.5: slower reconnect so flaky Wi‑Fi does not hammer the gateway
+      // (and the remote client) with connection noise.
       const wait = delay;
-      delay = Math.min(delay * 2, 15000);
+      delay = Math.min(Math.max(delay * 2, 2000), 30000);
       clearTimeout(timer);
       timer = setTimeout(connect, wait);
     };
@@ -7799,16 +8050,25 @@ function startOpenAppEvents() {
 
   function resubscribe() {
     if (document.visibilityState === "hidden") return;
+    if (pairUiState === "unpaired") return;
+    authStop = false;
     if (es && es.readyState !== EventSource.CLOSED) return;
     delay = 1000;
     connect();
   }
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") resubscribe();
+    if (document.visibilityState === "hidden") {
+      stopReconnect();
+      authStop = false; // allow resume when visible again
+      return;
+    }
+    resubscribe();
   });
+  window.addEventListener("pagehide", () => { stopReconnect(); });
   window.addEventListener("focus", resubscribe);
   startOpenAppEvents.resubscribe = resubscribe;
+  startOpenAppEvents.stop = stopReconnect;
   connect();
 }
 
@@ -7875,23 +8135,28 @@ async function followAgentInstall(id, name) {
 }
 async function deskAppUrl(id, opts) {
   if (id === "agent") {
-    // Chat iframe: same-origin /agent-zero/. Pop-out still mints a :5443 handoff.
-    if (!(opts && opts.embed === false)) return agentPageUrl(agentLastStatus, { embed: true });
+    // Chat iframe + stick kiosk: always /agent-zero/ (never raw :5099).
+    // LAN pop-out only: mint :5443 handoff.
+    if (!(opts && opts.embed === false) || detectLocalHost()) {
+      return agentPageUrl(agentLastStatus, { embed: true });
+    }
     let fallback = ($("#agentLink") && $("#agentLink").href) || "";
     if (fallback.indexOf("/agent-zero") >= 0) fallback = "";
+    if (agentUrlIsLoopback(fallback)) fallback = "";
     if (!fallback) fallback = agentPageUrl(agentLastStatus, { embed: false });
     if (fallback && fallback.indexOf("/agent-zero") >= 0) fallback = "";
-    if (!detectLocalHost() && token) {
+    if (agentUrlIsLoopback(fallback)) fallback = agentPageUrl(null, { embed: false });
+    if (token) {
       try {
         const r = await fetch("/api/agent/handoff", {
           method: "POST", cache: "no-store",
           headers: authHeaders({ "Content-Type": "application/json" }), body: "{}",
         });
         const j = await r.json().catch(() => ({}));
-        if (r.ok && j.url) return j.url;
+        if (r.ok && j.url && !agentUrlIsLoopback(j.url)) return j.url;
       } catch (_) {}
     }
-    return fallback;
+    return fallback || agentPageUrl(agentLastStatus, { embed: true });
   }
   const a = catalogApps.get(id);
   if (!a || !a.open_url) return "";
@@ -8142,20 +8407,50 @@ async function loadVaultChoices() {
 if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices();
 
 
-/* 0.6.3: StickLLM chat UI retired — Agent Zero is the main Chat window.
-   Keep #app in DOM for Settings/Models mounts; hide the thread/composer. */
+/* 0.6.5: StickLLM chat UI + Chat icon retired — Agent Zero is the only chat.
+   Hide composer / New chat / chat-slide chrome (not merely disable). In deskMode
+   #app is no longer mounted as Chat, so park/hide the whole shell so it cannot
+   paint through the transparent desktop wall. */
 (function hideStickllmChatChrome() {
   try {
     document.documentElement.classList.add("a0-main-chat");
     const style = document.createElement("style");
+    style.id = "a0-main-chat-hide";
     style.textContent = `
-      html.a0-main-chat #app .chatThread,
+      html.a0-main-chat #app .thread,
       html.a0-main-chat #app #thread,
+      html.a0-main-chat #app .chatThread,
       html.a0-main-chat #app .composer,
       html.a0-main-chat #app #composer,
+      html.a0-main-chat #app #composerNote,
+      html.a0-main-chat #app #composerPerf,
+      html.a0-main-chat #app .composerNote,
+      html.a0-main-chat #app .top,
+      html.a0-main-chat #app .chatTitle,
+      html.a0-main-chat #app #chatTitle,
+      html.a0-main-chat #app #menuBtn,
+      html.a0-main-chat #app #collapseBtn,
+      html.a0-main-chat #app .sidebar,
+      html.a0-main-chat #app #sidebar,
+      html.a0-main-chat #app #newChatBtn,
+      html.a0-main-chat #app #convList,
+      html.a0-main-chat #app .convList,
+      html.a0-main-chat #app .sideHint,
+      html.a0-main-chat #app .modeSeg,
       html.a0-main-chat #app .a0Toggle,
       html.a0-main-chat #a0Toggle,
-      html.a0-main-chat .a0Full { display: none !important; }
+      html.a0-main-chat .a0Full,
+      html.a0-main-chat body.deskMode > #app,
+      html.a0-main-chat body.deskMode #app.collapsed #menuBtn,
+      body.deskMode #app > .main > .thread,
+      body.deskMode #app > .main > #thread,
+      body.deskMode #app > .main > .composer,
+      body.deskMode #app > .main > .top,
+      body.deskMode #app > .sidebar,
+      body.deskMode .wallIcon[data-app="chat"] { display: none !important; }
+      .sshDetails{margin-top:10px;padding-top:10px;border-top:1px solid var(--line,rgba(255,255,255,.12))}
+      .sshDetails .mono{font-size:13px;word-break:break-all;margin:6px 0}
+      .wifiList button.selected{background:rgba(58,160,255,.18)}
     `;
     document.head.appendChild(style);
   } catch (_) {}

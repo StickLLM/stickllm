@@ -26,8 +26,9 @@ StandardError=journal
 TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
-# video/render for /dev/dri; do not DeviceAllow-pin cardN (breaks when nodes differ).
-SupplementaryGroups=video render
+# video/render for /dev/dri; audio for /dev/snd capture (USB mic).
+# Do not DeviceAllow-pin cardN (breaks when nodes differ).
+SupplementaryGroups=video render input audio
 Environment=STICKLLM_KIOSK_URL=http://127.0.0.1/
 Environment=STICKLLM_TTY=/dev/tty1
 Environment=XDG_RUNTIME_DIR=/run/user/0

@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v063" />
-<link rel="stylesheet" href="desktop.css?v=v063" />
+<link rel="stylesheet" href="style.css?v=v066" />
+<link rel="stylesheet" href="desktop.css?v=v066" />
 </head>
 <body>
 <div class="app" id="app">
@@ -35,7 +35,7 @@
       <button class="navBtn" data-open="general"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
       <nav class="sideApps" aria-label="Apps">
         <p class="sideAppsLabel">Apps</p>
-        <a class="navBtn" id="agentLink" href="https://127.0.0.1:5443/" target="stickllm-agent-zero" hidden><img class="agentMark" src="agent-zero.png?v=desk4" alt=""><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
+        <a class="navBtn" id="agentLink" href="/agent-zero/" target="stickllm-agent-zero" hidden><img class="agentMark" src="agent-zero.png?v=desk4" alt=""><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
         <button class="navBtn" id="appsLink" type="button"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span class="appName"><span>Apps</span><small>Desktop</small></span></button>
       </nav>
     </div>
@@ -318,7 +318,7 @@
         <small class="hwWarn" id="hwWarn" role="status" hidden></small>
         <div class="customHw" id="customHw" hidden><label>VRAM <input type="number" id="cVram" value="16" min="0" max="512"> GB</label><label>RAM <input type="number" id="cRam" value="32" min="0" max="2048"> GB</label></div>
         <label class="check1"><input type="checkbox" id="mfFits"> Fits this hardware</label>
-        <label class="fSub">Context for fit check<select id="mfCtx"><option value="8192">8k tokens</option><option value="16384">16k tokens</option><option value="32768">32k tokens</option><option value="65536">64k tokens</option><option value="131072">128k tokens</option></select></label>
+        <label class="fSub">Context for fit check<select id="mfCtx"><option value="8192">8k tokens</option><option value="16384">16k tokens</option><option value="32768" selected>32k tokens</option><option value="65536">64k tokens</option><option value="131072">128k tokens</option></select></label>
       </div>
       <div class="fBlock"><div class="fTitle">Trust</div><div class="vchecks" id="mfTrust">
         <label title="On StickLLM's verified list (sha256 pinned)"><input type="checkbox" data-t="verified" checked><i class="tdot ok"></i>Verified</label>
@@ -354,9 +354,9 @@
   <div id="localTune" hidden>
   <h3>Preset</h3>
   <div class="presets" id="presets" role="radiogroup" aria-label="Preset">
-    <button type="button" data-preset="fast"><b>Fast</b><small>4k ctx · q8 KV · temp 0.7</small></button>
-    <button type="button" data-preset="balanced" class="on"><b>Balanced</b><small>32k ctx · f16 KV · temp 0.7</small></button>
-    <button type="button" data-preset="long"><b>Long context</b><small>64k ctx · q8 KV · temp 0.6</small></button>
+    <button type="button" data-preset="fast" class="on"><b>Minimum</b><small>32k ctx · q8 KV · temp 0.7</small></button>
+    <button type="button" data-preset="balanced"><b>Balanced</b><small>64k ctx · f16 KV · temp 0.7</small></button>
+    <button type="button" data-preset="long"><b>Long</b><small>128k ctx · q8 KV · temp 0.6</small></button>
   </div>
   <p class="muted small" id="presetCustom" hidden>Custom settings (no preset matches).</p>
 
@@ -364,7 +364,7 @@
     <summary>Advanced</summary>
     <div class="advBody">
       <label class="field"><span>Context size <b id="ctxVal">8,192</b> tokens</span>
-        <input type="range" id="ctx" min="2048" max="32768" step="1024" value="8192"></label>
+        <input type="range" id="ctx" min="2048" max="131072" step="1024" value="32768"></label>
       <p class="muted small" id="ctxNote">The model runs with this context. Agent Zero works best with 32,768 tokens or more.</p>
       <div class="vram">
         <div class="vramBar" aria-label="VRAM usage"><i class="w" id="vW"></i><i class="kv" id="vKV"></i><i class="free" id="vFree"></i></div>
@@ -493,6 +493,11 @@
     <div><small>Pair a phone or laptop</small><p>On the new device, open the address below and enter the code shown <b>on the stick's screen</b>.</p>
       <div class="mono big" id="lanUrl2">http://…/</div></div>
     <div class="code"><small>Pair code (press F9 on the kiosk)</small><b class="mono" id="pairCodeShow">······</b><button class="btn sm" id="remint">New code</button></div>
+    <div class="sshDetails" id="sshDetails" hidden>
+      <small>SSH (GRUB Test / Terminal boots only — stick screen)</small>
+      <p class="mono" id="sshLine"></p>
+      <button type="button" class="btn sm" id="sshCopy" hidden>Copy password</button>
+    </div>
   </div>
   <div class="secTools"><h3>Enter a code</h3></div>
   <form class="inline" id="pairForm"><input id="pairIn" class="mono" inputmode="numeric" maxlength="6" placeholder="123456" aria-label="Pair code"><button class="btn primary">Pair this browser</button><span class="err" id="pairErr" hidden></span></form>
@@ -602,7 +607,7 @@
     <h3>StickLLM</h3>
     <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
     <div class="group">
-      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.3</span></div>
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.6</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono" id="aboutLlama">—</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
@@ -730,8 +735,8 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v063"></script>
-<script src="desktop-core.js?v=v063"></script>
-<script src="desktop.js?v=v063"></script>
+<script src="app.js?v=v066"></script>
+<script src="desktop-core.js?v=v066"></script>
+<script src="desktop.js?v=v066"></script>
 </body>
 </html>

@@ -287,6 +287,9 @@ def test_agent_page_is_not_rewritten_under_agent():
     assert "llama_cpp" in preset
     assert "timeout: 90" in preset
     assert "api_key: dummy" in preset
+    assert "enable_thinking: false" in preset
+    assert preset.index("  utility:") < preset.index("enable_thinking: false")
+    assert preset.index("enable_thinking: false") < preset.index("  embedding:")
     script = _script()
     assert "HF_HUB_OFFLINE" in script
     assert "embedding-cached" in script
@@ -831,6 +834,10 @@ def test_model_settings_merge_keeps_user_fields_and_uses_the_relay(tmp_path):
     assert merged["chat_model_ctx_length"] == 32768
     assert merged["chat_model_kwargs"]["api_key"] == "dummy"
     assert merged["chat_model_kwargs"]["timeout"] == 90
+    assert "extra_body" not in merged["chat_model_kwargs"]
+    assert merged["util_model_kwargs"]["extra_body"]["chat_template_kwargs"][
+        "enable_thinking"
+    ] is False
     headers = agent.agent_proxy_headers(
         {
             "Host": "192.168.72.70:5443",

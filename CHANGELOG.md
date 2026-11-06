@@ -1,3 +1,14 @@
+## 0.6.6 - 2026-11-06
+- Retire StickLLM Chat chrome and desktop Chat icon; Agent Zero is the only chat window (never mount `#app` into WinBox).
+- `/agent-zero/` embed records LAN prompts so open_app (solitaire, calculator, …) opens on the requesting client, not always the kiosk.
+- Microphone: remote HTTP→HTTPS redirect when TLS is up; no red embed banner; `Permissions-Policy: microphone=*`; iframe `allow=microphone`; quiet secure-context toast; stickllm/kiosk in `audio` group; VAD via MediaStreamDestination.
+- Settings → Devices: SSH user/host/password under the pair code on GRUB Test/Terminal boots (stick screen only).
+- Model presets: Minimum 32k / Balanced 64k / Long 128k; fit-check default and context floor 32k (Agent Zero).
+- Remote client: coalesce disconnect/pair toasts; slower EventSource backoff; no `window.alert("pair_required")`; EventSource stops when unpaired/hidden.
+- First-boot wizard: scrollable Wi‑Fi scan + `wifi_connect` (not `wifi_join`); Continue joins before advance; vault create/unlock flow; starter-model step removed.
+- Kiosk Chromium: `--use-angle=gl` on Xfce/X11 (SwiftShader only via `STICKLLM_KIOSK_SW_GL=1`); WinBox inactive filter removed (compositor flicker).
+- Agent Zero chat auto-rename: defer from `monologue_start` to `monologue_end` with backoff so utility naming no longer races the busy llama slot (“Utility Model was not reachable”).
+
 ## 0.6.4 - 2026-11-05
 - Paired LAN Chat embeds Agent Zero same-origin at `/agent-zero/` (thin gateway: HTML/CSS path prefix, splash boot rewrite, fetch/XHR/WS shim; JS bodies untouched).
 - Chat iframe uses `/agent-zero/`; pop-out / handoff still uses `:5443` after the stick cert is trusted.

@@ -48,11 +48,11 @@ body.deskMode .winbox .wb-title{font:600 13px/35px var(--font);color:var(--muted
 body.deskMode .winbox.focus .wb-title{color:var(--accent-ink)}
 body.deskMode .winbox .wb-body{background:var(--bg);margin:0 1px 1px;border-radius:0 0 7px 7px}
 body.deskMode .winbox.max .wb-body{border-radius:0}
-/* Inactive windows: muted title bar and slightly dimmed contents. */
-body.deskMode .winbox:not(.focus) .wb-body{filter:brightness(.86) saturate(.85)}
+/* Inactive windows: mute chrome only. Never filter .wb-body — CSS filter on
+   a WinBox that holds the Agent Zero iframe forces a full-layer recomposite
+   on every A0 DOM paint and flickers the kiosk compositor. */
 body.deskMode .winbox:not(.focus) .wb-control{opacity:.65}
-html[data-theme="light"] body.deskMode .winbox:not(.focus) .wb-body{filter:brightness(.95) saturate(.8)}
-html[data-theme="light"] body.deskMode .winbox:not(.focus) .wb-control *{filter:invert(.55)}
+html[data-theme="light"] body.deskMode .winbox:not(.focus) .wb-control{opacity:.7}
 body.deskMode .winbox .wb-control *{border-radius:6px;transition:background-color .1s}
 body.deskMode .winbox .wb-control *:hover{background-color:rgba(255,255,255,.18)}
 body.deskMode .winbox .wb-close:hover{background-color:#e2675f}
@@ -60,12 +60,13 @@ body.deskMode .winbox .wb-close:hover{background-color:#e2675f}
 body.deskMode .winbox.max .wb-max{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.2'%3E%3Crect x='4' y='8' width='12' height='12'/%3E%3Cpath d='M8 8V4h12v12h-4'/%3E%3C/svg%3E");background-size:15px auto}
 /* Minimised windows live on the taskbar only. */
 body.deskMode .winbox.min{display:none!important}
-body.deskMode .winbox iframe{background:#fff}
-body.deskMode .winbox .wb-body > #app{height:100%;width:100%}
+body.deskMode .winbox iframe{background:#fff;width:100%;height:100%;border:0;display:block;contain:strict;content-visibility:auto;isolation:isolate}
+body.deskMode .winbox .wb-body{contain:layout paint style;isolation:isolate}
+body.deskMode .winbox .wb-body > #app{height:100%;width:100%;contain:layout paint}
 
 /* ---- Taskbar ---- */
 body.deskMode .taskbar{position:fixed;left:0;right:0;bottom:0;height:48px;z-index:5;display:flex;align-items:center;gap:6px;padding:0 8px;
-  background:color-mix(in srgb,var(--bg2) 88%,transparent);border-top:1px solid var(--line);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+  background:var(--bg2);border-top:1px solid var(--line)}
 body.deskMode .startBtn{display:flex;align-items:center;gap:8px;height:36px;padding:0 14px 0 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);font-weight:650;cursor:pointer}
 body.deskMode .startBtn:hover,body.deskMode .startBtn.on{border-color:var(--accent);background:var(--accent-soft)}
 body.deskMode .startBtn .logo{width:20px;height:20px}
@@ -102,7 +103,7 @@ body.deskMode .trayClock{min-width:54px;padding:0 6px 0 8px;text-align:right;fon
 
 /* ---- Launcher ---- */
 body.deskMode .launcher{position:fixed;left:8px;bottom:56px;z-index:30;width:452px;max-width:calc(100vw - 16px);max-height:calc(100vh - 72px);overflow:auto;padding:14px;
-  background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.5);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.5)}
 body.deskMode .launchSearch{width:100%;height:38px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);outline:none}
 body.deskMode .launchSearch:focus{border-color:var(--accent)}
 body.deskMode .launchHead{margin:14px 4px 8px;font-size:12px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
@@ -127,8 +128,18 @@ body.deskMode #app #themeBtn,
 body.deskMode #app .top [data-open],
 body.deskMode #app #appsView,
 body.deskMode #app #thread > .empty{display:none!important}
-/* Chat list: collapsible sidebar inside the Chat window (desktop.js). */
-body.deskMode #app.collapsed #menuBtn{display:inline-grid}
+/* 0.6.5: Agent Zero is Chat — do not show StickLLM #app chrome through the desk.
+   Legacy menuBtn rule removed (it forced the chat-slide control visible). */
+html.a0-main-chat body.deskMode > #app,
+html.a0-main-chat body.deskMode #app > .sidebar,
+html.a0-main-chat body.deskMode #app > .main > .top,
+html.a0-main-chat body.deskMode #app > .main > .thread,
+html.a0-main-chat body.deskMode #app > .main > #thread,
+html.a0-main-chat body.deskMode #app > .main > .composer,
+html.a0-main-chat body.deskMode #app #menuBtn,
+html.a0-main-chat body.deskMode #app #collapseBtn,
+html.a0-main-chat body.deskMode #app #chatTitle,
+html.a0-main-chat body.deskMode #app.collapsed #menuBtn{display:none!important}
 body.deskMode #app .sidebar{overflow:hidden}
 body.deskMode #settings{display:none!important}
 body.deskMode #deskHold{display:none!important}
@@ -191,7 +202,7 @@ body.deskMode .trayModel.none{border-style:dashed;color:var(--accent)}
 body.deskMode .trayModel .tmLoad{left:8px;right:8px;bottom:3px;height:3px}
 
 /* ---- Vault popover ---- */
-body.deskMode .vaultPop{position:fixed;right:8px;bottom:56px;z-index:30;width:340px;padding:14px;background:color-mix(in srgb,var(--panel) 96%,transparent);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:10px;backdrop-filter:blur(16px)}
+body.deskMode .vaultPop{position:fixed;right:8px;bottom:56px;z-index:30;width:340px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:10px}
 body.deskMode .vaultPop[hidden]{display:none}
 body.deskMode .vpHead{display:flex;gap:12px;align-items:center}
 body.deskMode .vpHead b{display:block;font-size:15px}
