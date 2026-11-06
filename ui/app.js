@@ -5643,24 +5643,143 @@ async function ensureAgentZeroStarted() {
   } catch (_) {}
 }
 
-/* ---- 0.6.5 first-time setup wizard (Network → Storage → Vault → Finish) ---- */
+/* ---- 0.6.6 first-time setup wizard (Network → Storage → Vault → Finish) ----
+   Setup-complete is persisted on STICKLLM-DATA (stickllm-setup.json / vault
+   location pointer), not only Chromium localStorage — so a second reboot asks
+   for the vault passcode instead of re-running the wizard. */
 const SETUP_KEY = "stickllm.setup.v066";
 const SETUP_KEY_OLD = "stickllm.setup.v063";
-function setupDone() {
+let setupStateCache = null; // { setup_complete, vault_unlocked, vault_path, … }
+let setupGateBusy = false;
+function setupDoneLocal() {
   try {
     return localStorage.getItem(SETUP_KEY) === "1" || localStorage.getItem(SETUP_KEY_OLD) === "1";
   } catch (_) { return false; }
 }
-function markSetupDone() {
+function setupDone() {
+  if (setupStateCache && setupStateCache.setup_complete) return true;
+  return setupDoneLocal();
+}
+function markSetupDone(extra) {
   try {
     localStorage.setItem(SETUP_KEY, "1");
     localStorage.setItem(SETUP_KEY_OLD, "1");
   } catch (_) {}
+  if (setupStateCache) setupStateCache.setup_complete = true;
+  control("setup_mark_complete", extra && typeof extra === "object" ? extra : {}).catch(() => {});
+}
+async function refreshSetupState(force) {
+  if (!force && setupStateCache && (Date.now() - (setupStateCache._at || 0)) < 15000) {
+    return setupStateCache;
+  }
+  try {
+    const st = await control("setup_status");
+    if (st && st.ok !== false) {
+      setupStateCache = { ...st, _at: Date.now() };
+      if (st.setup_complete) {
+        try {
+          localStorage.setItem(SETUP_KEY, "1");
+          localStorage.setItem(SETUP_KEY_OLD, "1");
+        } catch (_) {}
+      }
+      return setupStateCache;
+    }
+  } catch (_) {}
+  setupStateCache = {
+    ok: true,
+    setup_complete: setupDoneLocal(),
+    vault_unlocked: !!state.vaultOpen,
+    vault_path: "",
+    source: setupDoneLocal() ? "local" : "none",
+    _at: Date.now(),
+  };
+  return setupStateCache;
+}
+
+/** Prior setup found but vault locked: password only (no Wi‑Fi/storage steps). */
+async function openVaultUnlockOnly(opts) {
+  const force = !!(opts && opts.force);
+  if ($("#setupWizard")?.classList.contains("show") && !force) return;
+  const st = await refreshSetupState(true);
+  if (st.vault_unlocked || state.vaultOpen) {
+    markSetupDone({ vault_path: st.vault_path || "" });
+    return;
+  }
+  let overlay = $("#setupWizard");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "setupWizard";
+    overlay.innerHTML = `
+<div class="setup-card" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+  <h2 id="setupTitle">Unlock vault</h2>
+  <div id="setupBody"></div>
+  <div class="setup-actions">
+    <button type="button" id="setupBack" class="ghost" hidden>Back</button>
+    <button type="button" id="setupSkip" class="ghost">Full setup</button>
+    <button type="button" id="setupNext" class="primary">Unlock</button>
+  </div>
+  <p id="setupErr" class="err persistent" hidden></p>
+</div>`;
+    document.body.appendChild(overlay);
+  }
+  overlay.classList.add("show");
+  const body = $("#setupBody");
+  const err = $("#setupErr");
+  const showErr = (m) => { if (!m) { err.hidden = true; err.textContent = ""; return; } err.hidden = false; err.textContent = m; };
+  const vaultPath = (st.vault_path || ($("#vaultPath") && $("#vaultPath").value) || "").trim();
+  if (vaultPath && $("#vaultPath")) $("#vaultPath").value = vaultPath;
+  $("#setupTitle").textContent = "Welcome back";
+  $("#setupBack").hidden = true;
+  $("#setupSkip").textContent = "Full setup";
+  $("#setupNext").textContent = "Unlock";
+  body.innerHTML = `
+<p>This stick is already set up. Enter the vault passcode to continue — settings come back from the vault.</p>
+<label class="field"><span>Vault passcode</span><input id="wizP1" type="password" class="secret" autocomplete="current-password"></label>
+<p class="muted small">Vault: <code id="wizVaultShow"></code></p>`;
+  $("#wizVaultShow").textContent = vaultPath || st.blob || "(saved location)";
+  setTimeout(() => $("#wizP1")?.focus(), 50);
+  $("#setupSkip").onclick = () => {
+    overlay.classList.remove("show");
+    openSetupWizard({ force: true }).catch(() => {});
+  };
+  $("#setupNext").onclick = async () => {
+    showErr("");
+    const pass = ($("#wizP1")?.value || "");
+    if (pass.length < 1) { showErr("Enter the vault passcode"); return; }
+    try {
+      showVaultCreating(true);
+      if (vaultPath) {
+        await control("vault_attach", { path: vaultPath }).catch(() => {});
+      }
+      const res = await control("vault_unlock", { passcode: pass, ...(vaultPath ? { path: vaultPath } : {}) });
+      showVaultCreating(false);
+      if (!res || res.ok === false) throw new Error((res && (res.error || res.message)) || "Unlock failed");
+      markSetupDone({ vault_path: vaultPath });
+      overlay.classList.remove("show");
+      setVaultChrome(true);
+      toast("Vault unlocked");
+      try { await setSessionMode("vault"); } catch (_) {}
+      try { await refreshStorage(); } catch (_) {}
+      await refreshSetupState(true);
+    } catch (e) {
+      showVaultCreating(false);
+      showErr(String(e.message || e));
+    }
+  };
 }
 
 async function openSetupWizard(opts) {
   const force = !!(opts && opts.force);
-  if (!force && setupDone()) return;
+  if (!force) {
+    const st = await refreshSetupState(false);
+    if (st.setup_complete) {
+      if (!st.vault_unlocked && !state.vaultOpen) {
+        return openVaultUnlockOnly();
+      }
+      return;
+    }
+    if (setupDoneLocal()) return;
+  }
   const LAST = 3; // Network, Storage, Vault, Finish (starter-model step removed)
   let step = 0;
   const state = {
@@ -5968,8 +6087,9 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
         }
       }
       if (step >= LAST) {
-        markSetupDone();
+        markSetupDone({ vault_path: state.vaultPath || "" });
         overlay.classList.remove("show");
+        try { await refreshSetupState(true); } catch (_) {}
         try { await refreshStorage(); } catch (_) {}
         return;
       }
@@ -5983,13 +6103,33 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
 }
 
 
+async function maybeOfferSetupOrUnlock() {
+  const stickLocalUi = !!(isLocalMode) || !!(detectLocalHost && detectLocalHost());
+  if (!stickLocalUi || setupGateBusy) return;
+  if ($("#setupWizard")?.classList.contains("show")) return;
+  setupGateBusy = true;
+  try {
+    const st = await refreshSetupState(false);
+    if (st.vault_unlocked || state.vaultOpen) {
+      if (st.setup_complete || setupDoneLocal()) markSetupDone({ vault_path: st.vault_path || "" });
+      return;
+    }
+    if (st.setup_complete) {
+      await openVaultUnlockOnly();
+      return;
+    }
+    if (!setupDoneLocal()) await openSetupWizard();
+  } catch (_) {
+    if (!setupDoneLocal()) openSetupWizard().catch(() => {});
+  } finally {
+    setupGateBusy = false;
+  }
+}
+
 async function refreshStatus() {
   // A refresh must not paint Loading until this browser is paired.
   if (!browserPaired) return;
-  const stickLocalUi = !!(isLocalMode) || !!(detectLocalHost && detectLocalHost());
-  if (!$("#setupWizard")?.classList.contains("show") && !setupDone() && stickLocalUi) {
-    openSetupWizard().catch(() => {});
-  }
+  maybeOfferSetupOrUnlock().catch(() => {});
   const ep = vaultEpoch;
   const vaultFresh = () => ep === vaultEpoch && !vaultBusy();
   try {

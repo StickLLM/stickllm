@@ -6,6 +6,7 @@
 - Model presets: Minimum 32k / Balanced 64k / Long 128k; fit-check default and context floor 32k (Agent Zero).
 - Remote client: coalesce disconnect/pair toasts; slower EventSource backoff; no `window.alert("pair_required")`; EventSource stops when unpaired/hidden.
 - First-boot wizard: scrollable Wi‑Fi scan + `wifi_connect` (not `wifi_join`); Continue joins before advance; vault create/unlock flow; starter-model step removed.
+- Reboot after setup: detect prior setup via `stickllm-setup.json` / vault location on STICKLLM-DATA (not Chromium localStorage); ask for vault passcode only and restore from vault — do not re-run the full wizard.
 - Kiosk Chromium: `--use-angle=gl` on Xfce/X11 (SwiftShader only via `STICKLLM_KIOSK_SW_GL=1`); WinBox inactive filter removed (compositor flicker).
 - Agent Zero chat auto-rename: defer from `monologue_start` to `monologue_end` with backoff so utility naming no longer races the busy llama slot (“Utility Model was not reachable”); utility preset disables Qwen thinking (`enable_thinking: false`) so naming gets `content` not empty `reasoning_content`.
 

@@ -23,6 +23,11 @@ from socketserver import ThreadingMixIn
 RUN = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
 CATALOG = Path(os.environ.get("STICKLLM_CATALOG", "/etc/stickllm/models/catalog.toml"))
 MNT = Path(os.environ.get("STICKLLM_DATA_MNT", "/mnt/stickllm-data"))
+# Survives reboot when STICKLLM-DATA is claimed (not Chromium localStorage / RAM).
+SETUP_FILE = Path(os.environ.get("STICKLLM_SETUP_FILE", str(MNT / "stickllm-setup.json")))
+VAULT_LOCATION_FILE = Path(
+    os.environ.get("STICKLLM_VAULT_LOCATION", str(MNT / "stickllm-vault-location.json"))
+)
 SESSION_MODE_PATH = RUN / "session-mode.json"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("STICKLLM_CONTROL_PORT", "8091"))
@@ -38,6 +43,137 @@ QUEUE_LOCK = threading.Lock()
 # Keep this much free on the models disk after every queued file.
 DOWNLOAD_SPARE_BYTES = 2 * 1024 ** 3
 DOWNLOAD_QUEUE_MAX = 32
+
+
+def _data_mounted() -> bool:
+    try:
+        return MNT.is_dir() and bool(
+            subprocess.run(
+                ["findmnt", "-n", str(MNT)],
+                capture_output=True,
+                timeout=3,
+                check=False,
+            ).stdout
+        )
+    except Exception:
+        return False
+
+
+def setup_status() -> dict:
+    """0.6.6: did this stick already finish first-boot (survives reboot)?
+
+    Sources (no secrets): stickllm-setup.json on STICKLLM-DATA, vault location
+    pointer, vault-meta container path, or a live unlocked vault.
+    """
+    vault = _vault_status_cached(force=False)
+    unlocked = str(vault.get("status") or "").lower() in ("unlocked", "open", "mounted")
+    if vault.get("mounted") is True:
+        unlocked = True
+
+    marker = False
+    marker_ts = ""
+    if SETUP_FILE.is_file():
+        try:
+            doc = json.loads(SETUP_FILE.read_text(encoding="utf-8"))
+            if isinstance(doc, dict):
+                marker = bool(doc.get("setup_complete"))
+                marker_ts = str(doc.get("updated_utc") or "")
+        except (OSError, ValueError, TypeError):
+            marker = False
+
+    vault_path = ""
+    blob = ""
+    source = "none"
+    if VAULT_LOCATION_FILE.is_file():
+        try:
+            loc = json.loads(VAULT_LOCATION_FILE.read_text(encoding="utf-8"))
+            if isinstance(loc, dict):
+                vault_path = str(loc.get("root") or "").strip()
+                blob = str(loc.get("blob") or "").strip()
+                if blob or vault_path:
+                    source = "location"
+        except (OSError, ValueError, TypeError):
+            pass
+
+    meta_dir = MNT / "vault-meta"
+    if not blob and (meta_dir / "container").is_file():
+        try:
+            blob = (meta_dir / "container").read_text(encoding="utf-8").strip()
+            if (meta_dir / "root").is_file():
+                vault_path = vault_path or (meta_dir / "root").read_text(encoding="utf-8").strip()
+            if blob:
+                source = source if source != "none" else "meta"
+        except OSError:
+            pass
+
+    blob_exists = bool(blob) and Path(blob).is_file()
+    if not blob_exists and vault_path:
+        candidate = Path(vault_path.rstrip("/")) / "stickllm-vault.img"
+        if candidate.is_file():
+            blob = str(candidate)
+            blob_exists = True
+            source = source if source != "none" else "path"
+
+    configured = bool(marker or blob_exists or unlocked)
+    if marker:
+        source = "marker"
+    elif unlocked and source == "none":
+        source = "unlocked"
+
+    return {
+        "ok": True,
+        "setup_complete": configured,
+        "vault_configured": bool(blob_exists or marker or unlocked),
+        "vault_unlocked": unlocked,
+        "vault_path": vault_path,
+        "blob": blob if blob_exists else "",
+        "data_mounted": _data_mounted(),
+        "source": source,
+        "updated_utc": marker_ts or None,
+        "note": (
+            "Setup is remembered on STICKLLM-DATA (not the browser). "
+            "Reboot asks for the vault passcode only."
+            if configured
+            else "No prior setup found — first-boot wizard will run."
+        ),
+    }
+
+
+def setup_mark_complete(params: dict | None = None) -> dict:
+    """Write stickllm-setup.json on STICKLLM-DATA after wizard / unlock."""
+    params = params or {}
+    if not _data_mounted():
+        return {
+            "ok": False,
+            "error": "data_not_mounted",
+            "message": "STICKLLM-DATA is not mounted; setup cannot be persisted across reboot.",
+        }
+    vault_path = str(params.get("vault_path") or params.get("path") or "").strip()
+    blob = str(params.get("blob") or "").strip()
+    if not vault_path or not blob:
+        st = setup_status()
+        vault_path = vault_path or str(st.get("vault_path") or "")
+        blob = blob or str(st.get("blob") or "")
+    doc = {
+        "version": 1,
+        "setup_complete": True,
+        "vault_path": vault_path or None,
+        "blob_name": Path(blob).name if blob else "stickllm-vault.img",
+        "updated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "safety": "flag only — never stores passcode or recovery phrase",
+    }
+    try:
+        MNT.mkdir(parents=True, exist_ok=True)
+        tmp = SETUP_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, SETUP_FILE)
+        try:
+            os.chmod(SETUP_FILE, 0o644)
+        except OSError:
+            pass
+    except OSError as exc:
+        return {"ok": False, "error": "write_failed", "message": str(exc)}
+    return {"ok": True, "path": str(SETUP_FILE), **doc}
 
 
 def session_mode() -> str:
@@ -5332,6 +5468,10 @@ def handle(action: str, params: dict) -> dict:
                             bool(params.get("hidden")))
     if action == "wifi_scan":
         return wifi_scan()
+    if action == "setup_status":
+        return setup_status()
+    if action == "setup_mark_complete":
+        return setup_mark_complete(params)
     if action == "catalog":
         return {"ok": True, "models": enrich_models()}
     if action == "ssd_status":
@@ -5353,13 +5493,25 @@ def handle(action: str, params: dict) -> dict:
     if action == "vault_mount":
         return vault_action("mount-host", params)
     if action == "vault_setup":
-        return vault_action("setup", params)
+        res = vault_action("setup", params)
+        if res.get("ok"):
+            setup_mark_complete({
+                "vault_path": str(params.get("path") or ""),
+                "blob": str(res.get("blob") or res.get("container") or ""),
+            })
+        return res
     if action == "vault_use" or action == "vault_attach":
         return vault_action("use", params)
     if action == "vault_find" or action == "vault_find_existing":
         return vault_action("find-vault", params)
     if action == "vault_create_file":
-        return vault_action("setup", params)
+        res = vault_action("setup", params)
+        if res.get("ok"):
+            setup_mark_complete({
+                "vault_path": str(params.get("path") or ""),
+                "blob": str(res.get("blob") or res.get("container") or ""),
+            })
+        return res
     if action == "vault_create_partition":
         # Hard refuse — never partition/format host disks (v0.3.3).
         return {
@@ -5372,7 +5524,13 @@ def handle(action: str, params: dict) -> dict:
             ),
         }
     if action == "vault_unlock":
-        return vault_action("unlock", params)
+        res = vault_action("unlock", params)
+        if res.get("ok"):
+            setup_mark_complete({
+                "vault_path": str(params.get("path") or ""),
+                "blob": str(res.get("blob") or res.get("container") or ""),
+            })
+        return res
     if action == "vault_lock":
         return vault_action("lock", params)
     if action == "vault_move_model":

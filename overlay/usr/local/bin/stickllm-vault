@@ -50,6 +50,8 @@ MAX_SIZE_GB=2000
 # Survives ISO reflash when STICKLLM-DATA partition is kept (Claim USB free space).
 # Never stores passcode — path/disk hints only.
 LOCATION_FILE="${STICKLLM_VAULT_LOCATION:-$DATA_MNT/stickllm-vault-location.json}"
+# 0.6.6: first-boot complete flag on STICKLLM-DATA (survives reboot; no secrets).
+SETUP_FILE="${STICKLLM_SETUP_FILE:-$DATA_MNT/stickllm-setup.json}"
 HOST_MNT_ROOT="${STICKLLM_HOST_MNT:-/mnt/stickllm-host}"
 
 mkdir -p "$RUN" 2>/dev/null || true
@@ -2186,6 +2188,46 @@ write_meta() {
   chmod 600 "$META_DIR"/* 2>/dev/null || true
   # Best-effort durable pointer on USB DATA (survives ISO reflash if DATA kept).
   write_location_pointer "$root" "$blob" >/dev/null 2>&1 || true
+  write_setup_complete "$root" "$blob" >/dev/null 2>&1 || true
+}
+
+write_setup_complete() {
+  # 0.6.6: mark first-boot done on STICKLLM-DATA so reboot skips the wizard.
+  local root="$1" blob="$2"
+  STICKLLM_SETUP_ROOT="$root" STICKLLM_SETUP_BLOB="$blob" \
+    STICKLLM_SETUP_FILE="$SETUP_FILE" STICKLLM_SETUP_DATA="$DATA_MNT" \
+    python3 <<'PY'
+import json, os, subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+data_mnt = Path(os.environ["STICKLLM_SETUP_DATA"])
+setup_file = Path(os.environ["STICKLLM_SETUP_FILE"])
+root = Path(os.environ.get("STICKLLM_SETUP_ROOT") or "")
+blob = Path(os.environ.get("STICKLLM_SETUP_BLOB") or "")
+
+def sh(*a):
+    p = subprocess.run(a, capture_output=True, text=True, check=False)
+    return (p.stdout or "").strip()
+
+if not data_mnt.is_dir() or not sh("findmnt", "-n", str(data_mnt)):
+    raise SystemExit(0)
+
+doc = {
+    "version": 1,
+    "setup_complete": True,
+    "vault_path": str(root) if root else None,
+    "blob_name": blob.name if blob.name else "stickllm-vault.img",
+    "updated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "safety": "flag only — never stores passcode or recovery phrase",
+}
+setup_file.parent.mkdir(parents=True, exist_ok=True)
+tmp = setup_file.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+os.replace(tmp, setup_file)
+os.chmod(setup_file, 0o644)
+print(str(setup_file))
+PY
 }
 
 gen_recovery() {
