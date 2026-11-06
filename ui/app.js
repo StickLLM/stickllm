@@ -277,13 +277,22 @@ function openNamedTab(target, url, resolve, force) {
   return focusAppTab(w);
 }
 const AGENT_TAB = "stickllm-agent-zero";
-function agentPageUrl(status) {
-  if (status && status.agent_url) return status.agent_url;
+function agentPageUrl(status, opts) {
+  // Same-origin /agent-zero/ is the Chat iframe URL (no second self-signed
+  // origin). :5443 remains for pop-out tabs after the cert is trusted.
+  const embed = !(opts && opts.embed === false);
+  if (embed) {
+    if (status && status.agent_embed) return status.agent_embed;
+    if (status && status.agent_url && String(status.agent_url).indexOf("/agent-zero") >= 0) return status.agent_url;
+    return "/agent-zero/";
+  }
+  const advertised = status && (status.agent_popout_url || status.agent_url);
+  if (advertised && String(advertised).indexOf("/agent-zero") < 0) return advertised;
   const host = location.hostname || "127.0.0.1";
   if (host === "127.0.0.1" || host === "localhost" || host === "::1") {
     return "http://127.0.0.1:5099/";
   }
-  return location.origin.replace(/\/$/, "") + "/agent-zero/";
+  return "https://" + host + ":5443/";
 }
 function agentIsInstalled(s) {
   return !!(s && (s.image_present || s.state === "running" || s.state === "starting" || s.state === "error"));
@@ -7864,14 +7873,25 @@ async function followAgentInstall(id, name) {
     agentInstalls.delete(id);
   }
 }
-async function deskAppUrl(id) {
+async function deskAppUrl(id, opts) {
   if (id === "agent") {
-    const fallback = ($("#agentLink") && $("#agentLink").href) || agentPageUrl(agentLastStatus);
-    if (!detectLocalHost()) {
-      // Same-origin embed proxy (pair cookie / Bearer already on this origin).
-      return location.origin.replace(/\/$/, "") + "/agent-zero/";
+    // Chat iframe: same-origin /agent-zero/. Pop-out still mints a :5443 handoff.
+    if (!(opts && opts.embed === false)) return agentPageUrl(agentLastStatus, { embed: true });
+    let fallback = ($("#agentLink") && $("#agentLink").href) || "";
+    if (fallback.indexOf("/agent-zero") >= 0) fallback = "";
+    if (!fallback) fallback = agentPageUrl(agentLastStatus, { embed: false });
+    if (fallback && fallback.indexOf("/agent-zero") >= 0) fallback = "";
+    if (!detectLocalHost() && token) {
+      try {
+        const r = await fetch("/api/agent/handoff", {
+          method: "POST", cache: "no-store",
+          headers: authHeaders({ "Content-Type": "application/json" }), body: "{}",
+        });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j.url) return j.url;
+      } catch (_) {}
     }
-    return fallback || "http://127.0.0.1:5099/";
+    return fallback;
   }
   const a = catalogApps.get(id);
   if (!a || !a.open_url) return "";

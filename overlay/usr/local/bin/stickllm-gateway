@@ -3,6 +3,7 @@
 
 Agent Zero is not under /agent. A second TLS listener on :5443 proxies 1:1 to
 127.0.0.1:5099, including websockets, behind the same pairing check.
+Paired LAN Chat embeds that same UI at /agent-zero/ on this origin.
 """
 from __future__ import annotations
 
@@ -138,13 +139,11 @@ def _host_only(host: str) -> str:
 
 def ui_frame_sources(host: str = "") -> str:
     """Origins the StickLLM page may frame: itself, the loopback add-on relays
-    and Agent Zero (console), and this same host's HTTP/TLS ports (LAN).
-    LAN Chat embeds A0 via same-origin /agent-zero/ ('self'); https://host:5443
-    remains for pop-out after cert trust."""
+    and Agent Zero (console), and this same host's TLS ports (LAN)."""
     out = ["'self'", "http://127.0.0.1:*", "http://localhost:*"]
     h = _host_only(host)
     if h and h not in ("127.0.0.1", "localhost"):
-        out += [f"https://{h}:*", f"http://{h}:*"]
+        out.append(f"https://{h}:*")
     return " ".join(out)
 
 
@@ -184,87 +183,180 @@ def addon_frame_headers(pairs, framers: str):
     return out
 
 
+_EMBED_ATTR_RE = re.compile(
+    r"""(?P<attr>\b(?:src|href|action|poster|formaction))(?P<eq>\s*=\s*)(?P<q>["'])(?P<url>/(?!/)[^"'>\s]*)(?P=q)""",
+    re.I,
+)
+_EMBED_BLOCK_RE = re.compile(r"(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>")
+_EMBED_OPEN_RE = re.compile(r"(?is)(<(script|style)\b[^>]*>)(.*?)(</\2>)$")
+_CSS_URL_RE = re.compile(
+    r"""url\(\s*(?P<q>['"]?)(?P<url>/(?!/)[^)'"\s]*)(?P=q)\s*\)""",
+    re.I,
+)
+
+
+def _prefix_abs_path(url: str, pref: str) -> str:
+    if url == pref or url.startswith(pref + "/"):
+        return url
+    if url.startswith("/") and not url.startswith("//"):
+        return pref + url
+    return url
+
+
+def _prefix_html_attrs(text: str, pref: str) -> str:
+    def repl(match: re.Match) -> str:
+        url = _prefix_abs_path(match.group("url"), pref)
+        if url == match.group("url"):
+            return match.group(0)
+        return f"{match.group('attr')}{match.group('eq')}{match.group('q')}{url}{match.group('q')}"
+
+    return _EMBED_ATTR_RE.sub(repl, text)
+
+
+def _prefix_css_urls(text: str, pref: str) -> str:
+    def repl(match: re.Match) -> str:
+        url = _prefix_abs_path(match.group("url"), pref)
+        if url == match.group("url"):
+            return match.group(0)
+        quote = match.group("q")
+        return f"url({quote}{url}{quote})"
+
+    return _CSS_URL_RE.sub(repl, text)
+
+
+def _rewrite_embed_html(html: str, pref: str) -> str:
+    """Prefix path-absolute HTML attributes and CSS url(/) inside <style>.
+
+    Script bodies stay byte-for-byte so a regex flag such as /g is never rewritten.
+    The src/href on a script's opening tag is an HTML attribute and is prefixed.
+    """
+    out: list[str] = []
+    pos = 0
+    for match in _EMBED_BLOCK_RE.finditer(html):
+        out.append(_prefix_html_attrs(html[pos:match.start()], pref))
+        block = match.group(0)
+        opened = _EMBED_OPEN_RE.match(block)
+        if opened and opened.group(2).lower() == "style":
+            block = opened.group(1) + _prefix_css_urls(opened.group(3), pref) + opened.group(4)
+        elif opened:
+            block = _prefix_html_attrs(opened.group(1), pref) + opened.group(3) + opened.group(4)
+        out.append(block)
+        pos = match.end()
+    out.append(_prefix_html_attrs(html[pos:], pref))
+    return "".join(out)
+
+
+_EMBED_SHIM = """<script data-stickllm-a0-embed="1">(function(){
+var P=__PREFIX__;
+try{Object.defineProperty(navigator,"serviceWorker",{configurable:true,value:undefined});}catch(e){}
+function abs(u){
+try{
+var x=new URL(String(u),location.href);
+if(x.hostname!==location.hostname)return u;
+var p=x.pathname||"";
+if(p===P||p.indexOf(P+"/")===0)return u;
+if(p.charAt(0)!=="/")return u;
+return P+p+(x.search||"")+(x.hash||"");
+}catch(e){return u;}
+}
+var f=window.fetch.bind(window);
+window.fetch=function(i,n){
+try{
+if(typeof i==="string")i=abs(i);
+else if(i&&typeof i.url==="string"){
+var nu=abs(i.url);
+if(nu!==i.url)i=new Request(nu,i);
+}
+}catch(e){}
+return f(i,n);
+};
+if(window.XMLHttpRequest){
+var XO=XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open=function(m,u){
+try{if(typeof u==="string")arguments[1]=abs(u);}catch(e){}
+return XO.apply(this,arguments);
+};
+}
+if(window.WebSocket){
+var W=window.WebSocket;
+function WS(u,p){try{u=abs(String(u));}catch(e){}return (p===undefined)?new W(u):new W(u,p);}
+WS.prototype=W.prototype;
+WS.CONNECTING=W.CONNECTING;WS.OPEN=W.OPEN;WS.CLOSING=W.CLOSING;WS.CLOSED=W.CLOSED;
+window.WebSocket=WS;
+}
+})();</script>"""
+
+
+def _embed_import_map(pref: str) -> str:
+    pairs = (
+        "/js/",
+        "/components/",
+        "/plugins/",
+        "/vendor/",
+        "/public/",
+        "/ui/",
+        "/extensions/",
+        "/socket.io/",
+        "/index.js",
+        "/index.css",
+    )
+    imports = ",".join(f'"{item}":"{pref}{item}"' for item in pairs)
+    return f'<script type="importmap" data-stickllm-a0-embed="1">{{"imports":{{{imports}}}}}</script>'
+
+
+def _prefix_splash_boot_paths(html: str, pref: str) -> str:
+    """Exact splash bootstrap strings only. Not a general JavaScript rewriter.
+
+    Chrome still requested bare /ui/index from the splash even with the inject
+    present; these three literals are the splash's documented boot URLs.
+    """
+    reps = (
+        ('const APP_DOCUMENT_PATH = "/ui/index"', f'const APP_DOCUMENT_PATH = "{pref}/ui/index"'),
+        ('fetch("/ui/asset-bundle"', f'fetch("{pref}/ui/asset-bundle"'),
+        ("`/sw.js?version=", f"`{pref}/sw.js?version="),
+    )
+    for old, new in reps:
+        html = html.replace(old, new)
+    return html
+
+
+def _inject_embed_runtime(html: str, pref: str) -> str:
+    """Runtime prefix for path-absolute fetches. Import map only on module pages.
+
+    The splash fetches "/ui/index" from a script string, then document.write
+    replaces that document. Module pages need the map because import specifiers
+    ignore both <base> and a fetch wrapper.
+    """
+    html = _prefix_splash_boot_paths(html, pref)
+    if "data-stickllm-a0-embed" in html:
+        return html
+    block = _EMBED_SHIM.replace("__PREFIX__", repr(pref))
+    if re.search(r"""(?i)\btype\s*=\s*["']module["']""", html):
+        block = _embed_import_map(pref) + block
+    if re.search(r"(?i)<head\b", html):
+        return re.sub(r"(?i)<head([^>]*)>", lambda match: match.group(0) + block, html, count=1)
+    return block + html
+
 
 def rewrite_agent_embed_payload(data: bytes, ctype: str, prefix: str = AGENT_EMBED_PREFIX) -> bytes:
-    """Make A0 HTML work under /agent-zero/ without rewriting JS bodies.
-
-    Blind string rewrite of JS corrupted A0's _normalizeApiUrl and short
-    API paths (e.g. fetchApi("/poll") became /agent-zero/api/agent-zero/poll),
-    leaving the remote Chat iframe on skeleton placeholders forever. HTML gets
-    a base tag, import map for absolute ES modules, and a same-origin fetch /
-    WebSocket patch so /api and /js hit the embed proxy. JS/CSS bytes pass
-    through unchanged.
-    """
+    """Prefix path-absolute URLs in HTML and CSS. JavaScript bodies pass through."""
     if not data:
         return data
     low = (ctype or "").split(";")[0].strip().lower()
-    if low != "text/html":
+    if low not in ("text/html", "text/css"):
         return data
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return data
-    pref = prefix.rstrip("/") or "/agent-zero"
-    if "data-stickllm-a0-embed" in text:
-        return data
-    inject = (
-        f'<base href="{pref}/" data-stickllm-a0-embed="1">'
-        '<script type="importmap">'
-        '{"imports":{'
-        f'"/js/":"{pref}/js/",'
-        f'"/components/":"{pref}/components/",'
-        f'"/plugins/":"{pref}/plugins/",'
-        f'"/vendor/":"{pref}/vendor/",'
-        f'"/public/":"{pref}/public/",'
-        f'"/ui/":"{pref}/ui/",'
-        f'"/index.js":"{pref}/index.js",'
-        f'"/index.css":"{pref}/index.css"'
-        "}}</script>"
-        "<script data-stickllm-a0-embed=\"1\">(function(){"
-        f"var P={pref!r};"
-        "var f=window.fetch;"
-        "function fix(u){"
-        "try{"
-        "var x=new URL(u,location.origin);"
-        "if(x.origin!==location.origin)return u;"
-        "var p=x.pathname;"
-        "if(p===P||p.indexOf(P+\"/\")===0)return u;"
-        "if(p.charAt(0)!==\"/\")return u;"
-        "x.pathname=P+p;return x.toString();"
-        "}catch(e){return u;}"
-        "}"
-        "window.fetch=function(i,n){"
-        "try{"
-        "if(typeof i===\"string\")i=fix(i);"
-        "else if(i&&typeof i.url===\"string\"){"
-        "var nu=fix(i.url);"
-        "if(nu!==i.url)i=new Request(nu,i);"
-        "}"
-        "}catch(e){}"
-        "return f.call(this,i,n);"
-        "};"
-        "if(window.WebSocket){"
-        "var W=window.WebSocket;"
-        "window.WebSocket=function(u,p){"
-        "try{u=fix(u);}catch(e){}"
-        "return p===undefined?new W(u):new W(u,p);"
-        "};"
-        "window.WebSocket.prototype=W.prototype;"
-        "window.WebSocket.CONNECTING=W.CONNECTING;"
-        "window.WebSocket.OPEN=W.OPEN;"
-        "window.WebSocket.CLOSING=W.CLOSING;"
-        "window.WebSocket.CLOSED=W.CLOSED;"
-        "}"
-        "})();</script>"
-    )
-    if re.search(r"(?i)<head\b", text):
-        text = re.sub(r"(?i)<head([^>]*)>", r"<head\1>" + inject, text, count=1)
+    pref = prefix.rstrip("/") or AGENT_EMBED_PREFIX
+    if low == "text/css":
+        rewritten = _prefix_css_urls(text, pref)
     else:
-        text = inject + text
-    return text.encode("utf-8")
-
-
-
+        rewritten = _inject_embed_runtime(_rewrite_embed_html(text, pref), pref)
+    if rewritten == text:
+        return data
+    return rewritten.encode("utf-8")
 
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
@@ -2981,12 +3073,9 @@ class Handler(SimpleHTTPRequestHandler):
                 saved=mod.read_status(),
             )
             doc["agent_url"] = self._agent_public_url()
+            doc["agent_embed"] = AGENT_EMBED_PREFIX + "/"
+            doc["agent_popout_url"] = doc["agent_url"]
             doc["gateway_port"] = AGENT_TLS_PORT
-            # Same-origin embed for LAN iframes (avoids self-signed :5443 in Chrome).
-            if not self._is_loopback():
-                doc["agent_url"] = AGENT_EMBED_PREFIX + "/"
-                doc["agent_embed"] = AGENT_EMBED_PREFIX + "/"
-                doc["agent_popout_url"] = self._agent_public_url()
         except Exception:
             self._json(500, {"ok": False, "error": "agent status failed"})
             return
@@ -4279,16 +4368,14 @@ class Handler(SimpleHTTPRequestHandler):
             saved=mod.read_status(),
         )
 
+    def _agent_embed_requested(self) -> bool:
+        path = urllib.parse.urlparse(self.path).path
+        return path == AGENT_EMBED_PREFIX or path.startswith(AGENT_EMBED_PREFIX + "/")
 
     def _agent_embed_proxy(self, method: str) -> None:
-        """Same-origin /agent-zero/* -> loopback A0 :5099 for paired LAN iframes.
+        """Paired /agent-zero/* -> loopback :5099. HTML and CSS paths are prefixed.
 
-        Remote Chrome parents are http://<lan>/ (Not secure). Embedding
-        https://<lan>:5443/ fails on the self-signed stickllm cert inside an
-        iframe (broken-page icon) and unauth :5443 responses use
-        frame-ancestors 'none'. This path keeps pair auth on the StickLLM
-        origin, proxies 1:1 to A0, rewrites absolute URLs, and allows framing
-        only by this stick's pages.
+        JavaScript bodies are not rewritten. The :5443 listener does not use this.
         """
         if self._agent_refused():
             return
@@ -4302,8 +4389,11 @@ class Handler(SimpleHTTPRequestHandler):
             upstream = "/" + upstream
         target = upstream + (("?" + parsed.query) if parsed.query else "")
         upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
-        # Pair already checked; present loopback Origin so A0 CSRF accepts embed.
-        incoming = dict(self.headers)
+        incoming = {
+            key: value
+            for key, value in dict(self.headers).items()
+            if key.lower() not in ("if-none-match", "if-modified-since", "accept-encoding")
+        }
         incoming["Origin"] = "http://127.0.0.1:5099"
         incoming["Referer"] = "http://127.0.0.1:5099" + upstream
         headers = agent_lib().agent_proxy_headers(incoming, websocket=upgrade)
@@ -4313,7 +4403,7 @@ class Handler(SimpleHTTPRequestHandler):
             headers["X-Forwarded-Host"] = host
             headers["X-Forwarded-Prefix"] = AGENT_EMBED_PREFIX
         if upgrade and method == "GET":
-            self._relay_websocket(upstream, parsed.query)
+            self._relay_websocket(upstream, parsed.query, headers)
             return
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
@@ -4332,28 +4422,37 @@ class Handler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
         ctype = resp.getheader("Content-Type") or ""
-        data = rewrite_agent_embed_payload(data, ctype)
+        rewritten = rewrite_agent_embed_payload(data, ctype)
+        changed = rewritten != data
         self._skip_stick_headers = True
         self.send_response(resp.status)
         framers = addon_framers(self.headers.get("Host") or "")
+        sent_csp = False
         for key, value in addon_frame_headers(resp.getheaders(), framers):
             low = key.lower()
             if low in ("transfer-encoding", "connection", "content-length") + TAB_REUSE_DROP:
                 continue
+            if changed and low in ("etag", "last-modified", "content-md5"):
+                continue
             if low == "location":
                 loc = str(value)
-                if loc.startswith("/") and not loc.startswith(AGENT_EMBED_PREFIX):
+                if loc.startswith("/") and loc != AGENT_EMBED_PREFIX and not loc.startswith(AGENT_EMBED_PREFIX + "/"):
                     value = AGENT_EMBED_PREFIX + loc
                 elif loc.startswith("http://127.0.0.1:5099"):
-                    value = AGENT_EMBED_PREFIX + loc.split("5099", 1)[-1]
+                    value = AGENT_EMBED_PREFIX + loc[len("http://127.0.0.1:5099"):]
+            if low == "content-security-policy":
+                sent_csp = True
             self.send_header(key, value)
-        # Ensure embeddable even if upstream omitted framing headers.
-        if not any(k.lower() == "content-security-policy" for k, _ in resp.getheaders()):
+        if not sent_csp:
             self.send_header("Content-Security-Policy", "frame-ancestors " + framers)
-        self.send_header("Content-Length", str(len(data)))
+        if changed:
+            self.send_header("ETag", '"' + hashlib.sha256(rewritten).hexdigest() + '"')
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
+        self.send_header("Content-Length", str(len(rewritten)))
         self.end_headers()
-        if method != "HEAD" and data:
-            self.wfile.write(data)
+        if method != "HEAD" and rewritten:
+            self.wfile.write(rewritten)
 
     def _serve_agent_gateway(self, method: str) -> None:
         """1:1 proxy to the loopback UI. No path or body rewriting."""
@@ -4822,7 +4921,7 @@ class Handler(SimpleHTTPRequestHandler):
         if method != "HEAD" and data:
             self.wfile.write(data)
 
-    def _relay_websocket(self, upstream: str, query: str) -> None:
+    def _relay_websocket(self, upstream: str, query: str, headers: dict | None = None) -> None:
         target = upstream + (("?" + query) if query else "")
         try:
             sock = socket.create_connection(("127.0.0.1", 5099), timeout=10)
@@ -4830,7 +4929,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(502, {"ok": False, "error": "Agent is not running"})
             return
         lines = [f"GET {target} HTTP/1.1"]
-        for key, value in agent_lib().agent_proxy_headers(dict(self.headers), websocket=True).items():
+        relay_headers = headers if headers is not None else agent_lib().agent_proxy_headers(dict(self.headers), websocket=True)
+        for key, value in relay_headers.items():
             lines.append(f"{key}: {value}")
         try:
             sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1", errors="replace"))
@@ -4898,6 +4998,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/docs-server" or path.startswith("/docs-server/"):
             self._docs_proxy("HEAD")
             return
+        if self._agent_embed_requested():
+            self._agent_embed_proxy("HEAD")
+            return
         super().do_HEAD()
 
     def do_PUT(self) -> None:  # noqa: N802
@@ -4908,6 +5011,9 @@ class Handler(SimpleHTTPRequestHandler):
             self._serve_agent_gateway("PUT")
             return
         if self._docs_container_refused():
+            return
+        if self._agent_embed_requested():
+            self._agent_embed_proxy("PUT")
             return
         self._json(405, {"error": "method not allowed"})
 
@@ -4920,6 +5026,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self._docs_container_refused():
             return
+        if self._agent_embed_requested():
+            self._agent_embed_proxy("DELETE")
+            return
         self._json(405, {"error": "method not allowed"})
 
     def do_PATCH(self) -> None:  # noqa: N802
@@ -4931,6 +5040,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self._docs_container_refused():
             return
+        if self._agent_embed_requested():
+            self._agent_embed_proxy("PATCH")
+            return
         self._json(405, {"error": "method not allowed"})
 
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -4941,6 +5053,9 @@ class Handler(SimpleHTTPRequestHandler):
             self._serve_agent_gateway("OPTIONS")
             return
         if self._docs_container_refused():
+            return
+        if self._agent_embed_requested():
+            self._agent_embed_proxy("OPTIONS")
             return
         self._json(405, {"error": "method not allowed"})
 
@@ -5117,7 +5232,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/appagent" or path.startswith("/appagent/"):
             self._appagent_proxy("GET")
             return
-        if path == "/agent-zero" or path.startswith("/agent-zero/"):
+        if self._agent_embed_requested():
             self._agent_embed_proxy("GET")
             return
         if path in ("/health", "/api/health"):
@@ -5329,7 +5444,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/appagent" or path.startswith("/appagent/"):
             self._appagent_proxy("POST")
             return
-        if path == "/agent-zero" or path.startswith("/agent-zero/"):
+        if self._agent_embed_requested():
             self._agent_embed_proxy("POST")
             return
         if path.startswith("/api/files"):

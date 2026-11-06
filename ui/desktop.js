@@ -748,14 +748,15 @@
     const h = location.hostname;
     return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
   }
-  function urlFor(id) {
+  function urlFor(id, opts) {
     const api = appApi();
-    return Promise.resolve(api.deskAppUrl ? api.deskAppUrl(id) : "").then((u) => u || "");
+    return Promise.resolve(api.deskAppUrl ? api.deskAppUrl(id, opts) : "").then((u) => u || "");
   }
   // An app that refuses to be framed opens outside the desktop: a kiosk
   // Chrome window on the stick's own screen, a named tab on a paired laptop.
   function openOutside(id) {
-    return urlFor(id).then((u) => {
+    const pop = id === "agent" || id === CHAT ? { embed: false } : undefined;
+    return urlFor(id, pop).then((u) => {
       if (!u) return;
       if (isLocal()) openBrowser(u, appTitle(id), true);
       else window.open(u, "stickllm-" + id);

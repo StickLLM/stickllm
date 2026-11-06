@@ -1,3 +1,8 @@
+## 0.6.4 - 2026-11-05
+- Paired LAN Chat embeds Agent Zero same-origin at `/agent-zero/` (thin gateway: HTML/CSS path prefix, splash boot rewrite, fetch/XHR/WS shim; JS bodies untouched).
+- Chat iframe uses `/agent-zero/`; pop-out / handoff still uses `:5443` after the stick cert is trusted.
+- ETag/`no-store` on rewritten embed responses; loopback Origin on HTTP+WS relay so upstream accepts paired clients.
+
 ## 0.6.3 - 2026-11-05
 - Agent Zero is an OS-installed docker graph at /opt/stickllm/docker (in filesystem.squashfs); no ISO tar installer; DATA attaches RO layer diffs (no first-boot bulk copy)
 - Agent Zero runnable endpoint: RO-bind squashfs layer diffs into DATA docker root (no first-boot full seed copy); Move to SSD materializes explicitly
