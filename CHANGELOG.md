@@ -7,7 +7,7 @@
 - Remote client: coalesce disconnect/pair toasts; slower EventSource backoff; no `window.alert("pair_required")`; EventSource stops when unpaired/hidden.
 - First-boot wizard: scrollable Wi‑Fi scan + `wifi_connect` (not `wifi_join`); Continue joins before advance; vault create/unlock flow; starter-model step removed.
 - Kiosk Chromium: `--use-angle=gl` on Xfce/X11 (SwiftShader only via `STICKLLM_KIOSK_SW_GL=1`); WinBox inactive filter removed (compositor flicker).
-- Agent Zero chat auto-rename: defer from `monologue_start` to `monologue_end` with backoff so utility naming no longer races the busy llama slot (“Utility Model was not reachable”).
+- Agent Zero chat auto-rename: defer from `monologue_start` to `monologue_end` with backoff so utility naming no longer races the busy llama slot (“Utility Model was not reachable”); utility preset disables Qwen thinking (`enable_thinking: false`) so naming gets `content` not empty `reasoning_content`.
 
 ## 0.6.4 - 2026-11-05
 - Paired LAN Chat embeds Agent Zero same-origin at `/agent-zero/` (thin gateway: HTML/CSS path prefix, splash boot rewrite, fetch/XHR/WS shim; JS bodies untouched).
