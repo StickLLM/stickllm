@@ -11,7 +11,6 @@
     --ink: #e8f2f0;
     --muted: #8aa3a0;
     --accent: #2bb5a8;
-    --accent-ink: #04211e;
     --ok: #3ecf8e;
     --warn: #e6b84d;
     --danger: #e06b6b;
@@ -41,28 +40,29 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 18px;
+    gap: 16px;
   }
-  .logo {
-    width: 88px; height: 88px; border-radius: 22px;
-    background: var(--accent);
-    position: relative;
-    box-shadow: 0 12px 40px rgba(43,181,168,.28);
-  }
-  .logo::after {
-    content: "";
-    position: absolute;
-    inset: 22px 28px 16px;
-    border: 5px solid var(--accent-ink);
-    border-top-width: 10px;
-    border-radius: 4px;
-  }
-  h1 {
+  /* Same block mark as deskSplash / stickllm-bootstatus BANNER. */
+  .mark {
     margin: 0;
-    font-size: clamp(2.4rem, 6vw, 3.6rem);
-    font-weight: 700;
-    letter-spacing: -0.03em;
-    line-height: 1.05;
+    padding: 0;
+    border: 0;
+    background: none;
+    white-space: pre;
+    text-align: left;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+    font-size: clamp(9px, 1.85vw, 18px);
+    line-height: 1.12;
+    letter-spacing: 0;
+    color: color-mix(in srgb, var(--accent) 82%, var(--ink));
+    user-select: none;
+  }
+  .tag {
+    margin: 0;
+    color: var(--muted);
+    font-size: clamp(1rem, 2.2vw, 1.25rem);
+    font-weight: 500;
+    letter-spacing: 0.02em;
   }
   .mode {
     display: inline-flex;
@@ -103,8 +103,13 @@
 <body>
 <main>
   <div class="brand">
-    <span class="logo" role="img" aria-label="StickLLM"></span>
-    <h1>StickLLM</h1>
+    <pre class="mark" role="img" aria-label="StickLLM">███████╗████████╗██╗ ██████╗██╗  ██╗██╗     ██╗     ███╗   ███╗
+██╔════╝╚══██╔══╝██║██╔════╝██║ ██╔╝██║     ██║     ████╗ ████║
+███████╗   ██║   ██║██║     █████╔╝ ██║     ██║     ██╔████╔██║
+╚════██║   ██║   ██║██║     ██╔═██╗ ██║     ██║     ██║╚██╔╝██║
+███████║   ██║   ██║╚██████╗██║  ██╗███████╗███████╗██║ ╚═╝ ██║
+╚══════╝   ╚═╝   ╚═╝ ╚══════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚═╝</pre>
+    <p class="tag">Privacy AI USB</p>
   </div>
   <div class="mode" id="modePill" data-mode="internet" aria-live="polite">
     <span class="dot" aria-hidden="true"></span>

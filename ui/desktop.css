@@ -166,12 +166,16 @@ body.deskMode #deskHold{display:none!important}
 /* System app colours. */
 body.deskMode [data-app="browser"] .deskGlyph,body.deskMode .taskExt .deskGlyph{background:#0ea5e9}
 body.deskMode [data-app="agent"] .deskGlyph{background:#0f172a}
+body.deskMode [data-app="agent"] .deskGlyphImg{background:transparent;padding:0;overflow:hidden}
+/* Same tile size; zoom the A mark (PNG has generous padding). */
+body.deskMode [data-app="agent"] .deskGlyphImg img{
+  width:100%;height:100%;object-fit:cover;transform:scale(1.45);transform-origin:center}
 body.deskMode [data-app="store"] .deskGlyph{background:#db2777}
 body.deskMode [data-app="models"] .deskGlyph{background:#4f46e5}
 body.deskMode [data-app="settings"] .deskGlyph{background:#475569}
 body.deskMode .deskGlyph{display:grid;place-items:center;color:#fff}
 body.deskMode .deskGlyph svg{fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-body.deskMode .deskGlyphImg img{width:72%;height:72%;object-fit:contain}
+body.deskMode .deskGlyphImg img{width:100%;height:100%;object-fit:cover;border-radius:12px;display:block}
 body.deskMode .deskGlyphCat{font-weight:700;font-size:15px;letter-spacing:.02em;text-transform:uppercase}
 
 /* Mounted panels fill their window. */

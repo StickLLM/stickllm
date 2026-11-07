@@ -87,7 +87,7 @@ html[data-theme="light"] .appsView{background:
 .deskIcon[data-starter="monitor"] .deskGlyph{background:#7c3aed}
 .deskGlyph svg{width:32px;height:32px;stroke:#fff;fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .deskGlyphLogo{background:transparent;padding:0;overflow:hidden}
-.deskGlyphLogo img{width:64px;height:64px;border-radius:16px;object-fit:cover;display:block}
+.deskGlyphLogo img{width:64px;height:64px;border-radius:16px;object-fit:cover;display:block;transform:scale(1.45);transform-origin:center}
 .deskGlyph svg [fill="#fff"]{fill:#fff}
 .deskIcon:hover .deskGlyph,.deskIcon:focus-visible .deskGlyph{filter:brightness(1.14);transform:translateY(-2px);box-shadow:0 8px 16px rgba(0,0,0,.32)}
 .deskIcon:active .deskGlyph{filter:brightness(.86);transform:translateY(1px) scale(.96);box-shadow:none}

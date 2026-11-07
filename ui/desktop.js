@@ -40,7 +40,7 @@
     settings: { title: "Settings", w: 1000, h: 720 },
   };
   const GLYPH = {
-    agent: '<svg viewBox="0 0 24 24"><rect x="5" y="7" width="14" height="11" rx="2"/><path d="M12 3v4M9 12h.01M15 12h.01"/></svg>',
+    // agent: use agent-zero.png via iconFor() — not this SVG robot.
     browser: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>',
     store: '<svg viewBox="0 0 24 24"><path d="M5 8h14l-1 12H6z"/><path d="M9 8V6a3 3 0 016 0v2"/></svg>',
     models: '<svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>',
@@ -81,7 +81,7 @@
     if (id === "agent" || id === CHAT) {
       const s = document.createElement("span");
       s.className = "deskGlyph deskGlyphImg";
-      s.innerHTML = '<img src="agent-zero.png?v=desk5" alt="Agent Zero">';
+      s.innerHTML = '<img src="agent-zero.png?v=desk7" alt="Agent Zero">';
       return s;
     }
     const c = catalogApp(id);
@@ -1414,7 +1414,7 @@
     ui.store = st;
     // Agent window while Agent Zero is not installed.
     const ag = el("div", "deskPanel deskAgentPanel");
-    ag.innerHTML = '<div class="apCard"><img src="agent-zero.png?v=desk5" alt="Agent Zero"><h2>Agent Zero</h2><p>Agent Zero works on tasks for you with the local model. The program installs to the StickLLM data drive (/mnt/stickllm-data/stickllm-docker); its chats, memory and settings stay in your encrypted vault.</p><p class="apState" aria-live="polite"></p><div class="apBar" hidden><i></i></div><div class="apActs"><button type="button" class="btn primary apInstall">Install Agent Zero</button><button type="button" class="btn apRetry" hidden>Retry</button><button type="button" class="btn ghost apStore">Open App Store</button></div></div>';
+    ag.innerHTML = '<div class="apCard"><img src="agent-zero.png?v=desk7" alt="Agent Zero"><h2>Agent Zero</h2><p>Agent Zero works on tasks for you with the local model. The program installs to the StickLLM data drive (/mnt/stickllm-data/stickllm-docker); its chats, memory and settings stay in your encrypted vault.</p><p class="apState" aria-live="polite"></p><div class="apBar" hidden><i></i></div><div class="apActs"><button type="button" class="btn primary apInstall">Install Agent Zero</button><button type="button" class="btn apRetry" hidden>Retry</button><button type="button" class="btn ghost apStore">Open App Store</button></div></div>';
     ag.querySelector(".apInstall").addEventListener("click", (e) => {
       const api = appApi();
       const b = e.currentTarget;

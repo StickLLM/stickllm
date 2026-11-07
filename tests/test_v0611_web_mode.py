@@ -78,6 +78,9 @@ def test_browser_home_page_and_start_url():
     home = (UI / "browser-home.html").read_text(encoding="utf-8")
     js = (UI / "browser-home.js").read_text(encoding="utf-8")
     assert "StickLLM" in home
+    assert "Privacy AI USB" in home
+    assert "███████╗████████╗██╗" in home  # bootstatus / deskSplash banner
+    assert "agent-zero" not in home.lower()
     # Gateway CSP is script-src 'self' — no inline script on this page.
     assert "<script src=\"/browser-home.js\">" in home
     assert "fetch(" not in home

@@ -363,7 +363,7 @@ function syncAgentDesktop(installed, href) {
     icon.id = "agentDeskIcon";
     icon.className = "deskIcon";
     icon.target = AGENT_TAB;
-    icon.innerHTML = '<span class="deskGlyph deskGlyphLogo" aria-hidden="true"><img src="agent-zero.png?v=desk5" alt=""></span><span class="deskLabel">Agent Zero</span>';
+    icon.innerHTML = '<span class="deskGlyph deskGlyphLogo" aria-hidden="true"><img src="agent-zero.png?v=desk7" alt=""></span><span class="deskLabel">Agent Zero</span>';
     desk.appendChild(icon);
   }
   icon.href = href;
