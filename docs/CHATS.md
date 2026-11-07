@@ -12,9 +12,10 @@ Chats live only in an encrypted store. Both open with the vault passcode.
 | `ssd` | `<vault>/chats` | LUKS vault blob, usually on the host SSD |
 | `usb` | `/mnt/stickllm-settings/chats` | LUKS settings partition on the stick |
 
-Settings > Chats picks the active store. Ephemeral mode keeps chats in the
-browser only; switching Ephemeral/Vault changes only where chats are read and
-written (it does not lock the vault or stop the model, add-ons or Agent Zero).
+Settings > Chats picks the active store. StickLLM chat APIs stay RAM/browser-only
+in Ephemeral mode. Switching Ephemeral/Vault changes where chats are read and
+written: it does **not** lock the vault or stop the model / other add-ons, but it
+**does** try-restart Agent Zero so its chats bind remounts (see below).
 
 ## Layout of a store
 
@@ -28,10 +29,15 @@ chats/
 
 ## How the two views share
 
-- **Agent Zero writes into the store.** `stickllm-agent` bind-mounts
-  `<active store>/agent-zero` onto `/a0/usr/chats` in the container
-  (`stickllm_chats.py a0-chats-dir`). Chats that 0.5.x Agent Zero kept in its
-  private state folder are moved there once.
+- **Agent Zero chats follow session mode.** `stickllm-agent` bind-mounts
+  `stickllm_chats.py a0-chats-dir` onto `/a0/usr/chats`:
+  - **Vault mode:** `<active store>/agent-zero` (encrypted; persists).
+  - **Ephemeral mode:** `/run/stickllm/a0-chats` (host tmpfs/RAM; reboot clears;
+    never `<vault>/chats/agent-zero`).
+  Mode switch (or chat-store change) `systemctl try-restart`s Agent Zero so the
+  bind remounts. Lock vault still stops A0 cleanly. Chats that 0.5.x Agent Zero
+  kept in its private state folder migrate into the vault store only (not into
+  ephemeral RAM).
 - **StickLLM lists both kinds.** The gateway lists `<id>.json` and
   `agent-zero/<ctxid>/chat.json`; an Agent Zero chat opens read-through in the
   chat app.
@@ -54,6 +60,6 @@ private as the store: they never leave the encrypted folder.
 
 ## Not verified on hardware
 
-Agent Zero restarting while the store switches (it is restarted with the new
-bind mount), and a vault locked while Agent Zero writes, are covered by unit
-tests only.
+Agent Zero restarting while the store or session mode switches (it is
+try-restarted with the new bind mount), and a vault locked while Agent Zero
+writes, are covered by unit tests only.

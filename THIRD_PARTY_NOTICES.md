@@ -11,6 +11,12 @@ Debian/Linux packages, llama.cpp, Agent Zero, drivers, model weights and the
 optional companion apps installed from the Apps catalog are covered by their own
 packages and are not listed here.
 
+## Agent Zero logo
+
+The official Agent Zero “A0” mark is used on the StickLLM desktop icon and
+related UI with permission from Agent Zero (Jan Tomášek). Approval screenshot
+and asset notes: [docs/legal/AGENT-ZERO-LOGO.md](docs/legal/AGENT-ZERO-LOGO.md).
+
 ## WinBox.js 0.2.82
 
 - Used for: the desktop (windowed) layout, `ui/desktop.js`

@@ -363,7 +363,7 @@ function syncAgentDesktop(installed, href) {
     icon.id = "agentDeskIcon";
     icon.className = "deskIcon";
     icon.target = AGENT_TAB;
-    icon.innerHTML = '<span class="deskGlyph deskGlyphLogo" aria-hidden="true"><img src="agent-zero.png?v=desk4" alt=""></span><span class="deskLabel">Agent</span>';
+    icon.innerHTML = '<span class="deskGlyph deskGlyphLogo" aria-hidden="true"><img src="agent-zero.png?v=desk5" alt=""></span><span class="deskLabel">Agent Zero</span>';
     desk.appendChild(icon);
   }
   icon.href = href;
@@ -4614,6 +4614,9 @@ async function refreshStorage() {
   if ($("#wipeN") && document.activeElement !== $("#wipeN")) $("#wipeN").value = String(wipe);
   await refreshDrivesLive();
   await refreshMovableLive();
+  if ($("#deleteVaultPanel")?.open) {
+    try { await refreshDeleteVaultList(); } catch (_) {}
+  }
 }
 let vaultStickData = false;  // 0.6.1: user confirmed "store vault on this drive"
 async function refreshDrivesLive() {
@@ -5263,6 +5266,127 @@ $("#wipeBtn").onclick = () => {
     },
   });
 };
+
+/** Label a vault blob path for the Delete vault picker (SSD / USB DATA / …). */
+function vaultDeleteLabel(blob, root, source) {
+  const p = String(blob || root || "");
+  let kind = "Vault";
+  if (/\/mnt\/stickllm-data(\/|$)/.test(p) || source === "usb_data_pointer") kind = "USB DATA";
+  else if (/\/mnt\/stickllm-host(\/|$)/.test(p) || source === "host_scan") kind = "Host SSD";
+  else if (/\/mnt\/stickllm-settings(\/|$)/.test(p) || source === "usb_settings") kind = "USB settings hint";
+  else if (source) kind = String(source).replace(/_/g, " ");
+  const short = p.length > 64 ? "…" + p.slice(-60) : p;
+  return kind + " — " + (short || "(unknown path)");
+}
+
+function syncDeleteVaultBtn() {
+  const btn = $("#deleteVaultBtn");
+  if (!btn) return;
+  const sel = $("#deleteVaultSelect");
+  const conf = ($("#deleteVaultConfirm")?.value || "").trim();
+  const pass = ($("#deleteVaultPass")?.value || "");
+  btn.disabled = !(sel && sel.value && pass.length >= 1 && conf === "DELETE_VAULT");
+}
+
+async function refreshDeleteVaultList() {
+  const sel = $("#deleteVaultSelect");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Searching…</option>';
+  syncDeleteVaultBtn();
+  const opts = [];
+  const seen = new Set();
+  const add = (blob, root, source) => {
+    const b = String(blob || "").trim();
+    if (!b || seen.has(b)) return;
+    seen.add(b);
+    opts.push({ blob: b, root: root || "", source: source || "" });
+  };
+  try {
+    const st = await control("vault_status");
+    if (st && st.blob) add(st.blob, st.root || "", "active");
+  } catch (_) {}
+  try {
+    const res = await control("vault_find");
+    const list = Array.isArray(res.candidates) ? res.candidates
+      : (Array.isArray(res.hits) ? res.hits : []);
+    for (const c of list) {
+      add(c.blob || c.path, c.root || "", c.source || c.note || "");
+    }
+    if (res.best) add(res.best.blob || res.best.path, res.best.root || "", res.best.source || "best");
+  } catch (_) {}
+  if (!opts.length) {
+    sel.innerHTML = '<option value="">No vault file found</option>';
+    syncDeleteVaultBtn();
+    return;
+  }
+  sel.innerHTML = opts.map((o) =>
+    `<option value="${esc(o.blob)}">${esc(vaultDeleteLabel(o.blob, o.root, o.source))}</option>`
+  ).join("");
+  if (prev && seen.has(prev)) sel.value = prev;
+  syncDeleteVaultBtn();
+}
+
+async function deleteVaultAction() {
+  const blob = ($("#deleteVaultSelect")?.value || "").trim();
+  const pass = $("#deleteVaultPass")?.value || "";
+  const conf = ($("#deleteVaultConfirm")?.value || "").trim();
+  const msg = $("#deleteVaultMsg");
+  if (msg) { msg.hidden = true; msg.textContent = ""; }
+  if (!blob) { toast("Select a vault location"); return; }
+  if (conf !== "DELETE_VAULT") { toast("Type DELETE_VAULT to confirm"); return; }
+  if (!pass) { toast("Vault passcode required"); return; }
+  const btn = $("#deleteVaultBtn");
+  if (btn) btn.disabled = true;
+  // Reuse lock teardown: blank A0 embeds before control stops the agent + LUKS.
+  if (vaultBusy()) { toast("Vault busy — wait for unlock/lock to finish"); syncDeleteVaultBtn(); return; }
+  vaultLocking = true;
+  try { stickllmAutoStartA0 = false; } catch (_) {}
+  try {
+    if (window.stickDesk && window.stickDesk.prepareForVaultLock) window.stickDesk.prepareForVaultLock();
+    else if (window.stickDesk && window.stickDesk.closeAll) window.stickDesk.closeAll();
+  } catch (_) {}
+  try { clearOnLock(); } catch (_) {}
+  try {
+    const res = await control("vault_delete", {
+      path: blob,
+      passcode: pass,
+      confirm: "DELETE_VAULT",
+    });
+    try { $("#deleteVaultPass").value = ""; } catch (_) {}
+    try { $("#deleteVaultConfirm").value = ""; } catch (_) {}
+    if (!res || res.ok === false) {
+      const err = (res && (res.error || res.stderr)) || "delete failed";
+      throw new Error(String(err));
+    }
+    toast("Vault deleted");
+    setVaultChrome(false, true);
+    try { await refreshStorage(); } catch (_) {}
+    try { await refreshDeleteVaultList(); } catch (_) {}
+    if (msg) {
+      msg.hidden = false;
+      msg.textContent = "Blob removed. Create or attach a vault to continue.";
+    }
+  } catch (e) {
+    showError(e, "Could not delete vault");
+    syncDeleteVaultBtn();
+  } finally {
+    vaultLocking = false;
+    vaultEpoch += 1;
+    syncDeleteVaultBtn();
+  }
+}
+
+if ($("#deleteVaultConfirm")) $("#deleteVaultConfirm").oninput = syncDeleteVaultBtn;
+if ($("#deleteVaultPass")) $("#deleteVaultPass").oninput = syncDeleteVaultBtn;
+if ($("#deleteVaultSelect")) $("#deleteVaultSelect").onchange = syncDeleteVaultBtn;
+if ($("#deleteVaultRefresh")) $("#deleteVaultRefresh").onclick = () => refreshDeleteVaultList().catch((e) => showError(e));
+if ($("#deleteVaultBtn")) $("#deleteVaultBtn").onclick = () => deleteVaultAction();
+if ($("#deleteVaultPanel")) {
+  $("#deleteVaultPanel").addEventListener("toggle", () => {
+    if ($("#deleteVaultPanel").open) refreshDeleteVaultList().catch(() => {});
+  });
+}
 async function refreshMovableLive() {
   const box = $("#movable");
   if (!state.vaultOpen) {
@@ -5763,10 +5887,10 @@ async function setWebMode(mode, opts) {
   paintWebMode(j);
   if (!j.ok) throw new Error(j.error || j.note || "Web mode failed");
   if (!quiet) {
-    if (mode === "tor" && !j.tor_ready) toast("Tor mode on — waiting for a circuit");
-    else if (mode === "tor") toast("Tor mode — stick browser is anonymized");
-    else if (mode === "none") toast("No internet — stick browser blocked from the public web");
-    else toast("Internet — stick browser uses the normal uplink");
+    if (mode === "tor" && !j.tor_ready) toast("Tor starting — verifying a Tor exit…");
+    else if (mode === "tor") toast("Tor verified — open Browser for Tor tabs (Settings stay on Wi‑Fi)");
+    else if (mode === "none") toast("No internet — public web blocked in Browser");
+    else toast("Internet — normal uplink");
   }
   return j;
 }
@@ -9611,4 +9735,4 @@ if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices(
 document.addEventListener("stickllm:vault-unlocked", () => {
   try { refreshAgentLink(); } catch (_) {}
 });
-try { hardenVaultPassFields($("#vaultPass"), $("#np1"), $("#np2")); } catch (_) {}
+try { hardenVaultPassFields($("#vaultPass"), $("#np1"), $("#np2"), $("#deleteVaultPass")); } catch (_) {}

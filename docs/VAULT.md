@@ -9,12 +9,26 @@ Shipping ISO: **v0.3.6** on Google Drive — see [RESTORE.md](RESTORE.md) / [REA
 
 | Mode | Behavior |
 |---|---|
-| **Ephemeral** (default) | No SSD/vault writes. Chats stay RAM-only as today. Downloads use USB DATA or baked RAM paths only. |
-| **Vault** | User must switch consciously. Downloads/chats may use the encrypted blob after unlock/setup. |
+| **Ephemeral** (default) | No SSD/vault writes. StickLLM chats stay RAM/browser-only; Agent Zero chats bind `/run/stickllm/a0-chats` (tmpfs), not `<vault>/chats/agent-zero`. Downloads use USB DATA or baked RAM paths only. |
+| **Vault** | User must switch consciously. Downloads/chats may use the encrypted blob after unlock/setup; A0 chats remount to the active encrypted store. |
 
-Switching to Vault opens Settings unlock/setup if the vault is locked or absent. Switching back to Ephemeral stops new vault writes (does not auto-lock; use **Lock** / Ctrl+Shift+L to close LUKS).
+Switching to Vault opens Settings unlock/setup if the vault is locked or absent. Switching back to Ephemeral stops new vault writes (does not auto-lock; use **Lock** / Ctrl+Shift+L to close LUKS). If Agent Zero is running, mode switch try-restarts it so the chats bind remounts — it does not stop llama or other add-ons.
 
 **Boot:** no vault password/skip prompt. Session Mode stays **Ephemeral**; the vault stays locked until the user unlocks (or creates/attaches) in the UI. Headless Server/Local must not wait on tty for vault input. Chats APIs refuse to write unless Mode is Vault **and** the vault is mounted.
+
+## Delete vault (Settings → Storage & Vault)
+
+**Delete vault** permanently removes one StickLLM-owned vault blob. Control action: `vault_delete` → `stickllm-vault destroy`. Exact typed confirm: **`DELETE_VAULT`** (plus the vault passcode). UI picks among locations StickLLM already knows (active meta, USB DATA pointer, host scan — labeled USB DATA / Host SSD / …).
+
+Before destroy, StickLLM reuses the same clean lock teardown as **Lock vault** (stop Agent Zero / vault add-ons, umount LUKS) when that blob is open.
+
+| Deleted | Survives |
+|---|---|
+| That location’s `stickllm-vault.img` (LUKS header + file) — chats, vault-side settings, Agent Zero memory inside the blob | Sibling `<root>/models/` beside the blob (product keeps models outside LUKS) |
+| `vault-meta` for that blob; `stickllm-vault-location.json` / `stickllm-setup.json` when they pointed here (wizard/create can run again) | STICKLLM-DATA models; USB settings LUKS (`/mnt/stickllm-settings` — pairing hints, portable secrets, per-computer path hints); `vault.key` on DATA |
+| — | Host disks / partitions — **never** formatted; refuse `/dev/sd*` and other block devices |
+
+Wrong passcode or missing `DELETE_VAULT` → no disk changes. Never prints the passcode.
 
 ## Lock while using the computer
 
@@ -27,7 +41,7 @@ Intended UX:
 3. **After lock:** session mode is Ephemeral. The desktop stays usable for non-vault work (browser, models still in RAM if loaded, Settings). Chat history on screen is cleared. No spam popups from a dead Agent Zero embed.
 4. **Unlock:** opens the vault and USB settings; does **not** auto-open Agent Zero. When you open Agent Zero later, it starts fresh (no leftover dead iframe pointing at loopback).
 
-**Ephemeral vs Vault:** Ephemeral never writes chats to the SSD blob. Switching Ephemeral ↔ Vault alone does not lock or unlock LUKS — only **Lock** / **Unlock** does. Lock always stops Agent Zero because A0’s chats/memory are vault-backed.
+**Ephemeral vs Vault:** Ephemeral never writes StickLLM or Agent Zero chats to the SSD blob (A0 uses tmpfs under `/run`). Switching Ephemeral ↔ Vault alone does not lock or unlock LUKS — only **Lock** / **Unlock** does. Lock always stops Agent Zero because A0’s memory/settings/addons stay vault-backed even when chats are ephemeral.
 
 ## Safety (fail-closed)
 
@@ -88,6 +102,8 @@ sudo stickllm-vault attach /mnt/stickllm-host/<ssd-mount>/models
 # (aliases: use | setup --existing)
 sudo stickllm-vault unlock
 sudo stickllm-vault lock
+# Destroy ONE blob file (never formats disks). Env confirm + passcode; no TTY secrets in logs:
+# STICKLLM_VAULT_CONFIRM=DELETE_VAULT STICKLLM_VAULT_PASS='…' sudo -E stickllm-vault destroy [/path/to/dir|stickllm-vault.img]
 sudo stickllm-vault grow 16
 sudo stickllm-vault move-model /path/model.gguf
 ```

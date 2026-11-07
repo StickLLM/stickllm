@@ -424,6 +424,8 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2
 }
 .note.calm{border:1px solid var(--line);border-radius:var(--r);background:var(--accent-soft);margin:12px 0 6px;color:var(--ink2)}
 .note.calm svg{width:18px;height:18px;color:var(--accent)}
+.note.warn{border:1px solid color-mix(in srgb,var(--danger) 45%,var(--line));border-radius:var(--r);background:color-mix(in srgb,var(--danger) 10%,var(--bg2));margin:8px 0;color:var(--ink);align-items:flex-start}
+.note.warn svg{width:18px;height:18px;flex:none;color:var(--danger);stroke:currentColor;fill:none;stroke-width:1.75}
 .pathPick{display:flex;gap:8px}.pathPick input{flex:1}
 /* File picker */
 .modal.fp{width:min(920px,100%);height:min(600px,100%);flex-direction:column}

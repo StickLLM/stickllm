@@ -129,6 +129,27 @@ def test_migrate_private_a0_chats(tmp_path):
     assert (tmp_path / "shared" / "ctx1" / "chat.json").is_file()
 
 
+def test_a0_chats_dir_ephemeral_avoids_vault(tmp_path):
+    """0.6.12: ephemeral A0 chats are tmpfs/RAM, never <vault>/chats/agent-zero."""
+    c = _lib()
+    vault, settings, eph = tmp_path / "vault", tmp_path / "settings", tmp_path / "a0-eph"
+    (vault / "chats").mkdir(parents=True)
+    (settings / "chats").mkdir(parents=True)
+    vault_a0 = c.a0_chats_dir(vault, settings, lambda p: True, session_mode="vault")
+    assert vault_a0 == vault / "chats" / "agent-zero"
+    eph_a0 = c.a0_chats_dir(
+        vault, settings, lambda p: True, session_mode="ephemeral", ephemeral_dir=eph
+    )
+    assert eph_a0 == eph
+    assert eph_a0 != vault_a0
+    # Default / missing mode is ephemeral even if vault stores are open.
+    mode_file = tmp_path / "session-mode.json"
+    mode_file.write_text('{"mode":"ephemeral"}\n', encoding="utf-8")
+    assert c.get_session_mode(mode_file) == "ephemeral"
+    mode_file.write_text('{"mode":"vault"}\n', encoding="utf-8")
+    assert c.get_session_mode(mode_file) == "vault"
+
+
 def test_ephemeral_toggle_never_locks_or_stops():
     gw = GW.read_text(encoding="utf-8")
     body = gw[gw.index("def set_session_mode("):gw.index("VAULT_MNT = Path(")]
@@ -138,7 +159,10 @@ def test_ephemeral_toggle_never_locks_or_stops():
     assert "stickllm-vault\", \"ensure-addons\"" not in body
     assert '["/usr/local/bin/stickllm-vault", "ensure-addons"]' not in body
     assert "addons_restart" in body
-    assert "Popen" not in body
+    # 0.6.12: may Popen try-restart of stickllm-agent only (chats remount).
+    assert "try-restart" in body and "stickllm-agent.service" in body
+    assert "agent_chats_remount" in body
+    assert "ensure-addons" not in body
     js = (ROOT / "ui/app.js").read_text(encoding="utf-8")
     sm = js[js.index("async function setSessionMode("):]
     sm = sm[: sm.index("\n}\n")]
@@ -155,6 +179,12 @@ def test_ephemeral_toggle_never_locks_or_stops():
     cbody = cbody[: cbody.index("\ndef vault_host_root(")]
     assert "vault_action(\"lock\"" not in cbody
     assert "Never lock" in cbody or "never lock" in cbody.lower()
+    assert "try-restart" in cbody and "stickllm-agent.service" in cbody
+    # Lock path still stops A0 (unchanged) — vault_action("lock").
+    lock = ctl[ctl.index('if cmd == "lock":'):]
+    lock = lock[: lock.index("\n    if cmd ==")]
+    assert "stickllm-agent" in lock and "stop" in lock
+    assert 'if action == "vault_lock":' in ctl and 'vault_action("lock"' in ctl
 
 
 def test_lock_keeps_gateway_view_when_umount_fails():

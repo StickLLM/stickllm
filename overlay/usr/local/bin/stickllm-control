@@ -210,8 +210,15 @@ def set_session_mode(mode: str) -> dict:
     # 0.6.0 (B3) / v069f: Ephemeral only changes where chats go. Never lock the
     # vault here (old control path locked on ephemeral and fought the UI toggle).
     # Explicit Lock vault uses vault_lock. Matches stickllm-gateway set_session_mode.
+    # 0.6.12: remount A0 chats (tmpfs ↔ vault store) without stopping other add-ons.
     doc["vault_locked"] = False
+    doc["agent_chats_remount"] = False
     SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    try:
+        r = sh(["systemctl", "try-restart", "--no-block", "stickllm-agent.service"], timeout=15)
+        doc["agent_chats_remount"] = r.get("code", 1) == 0
+    except Exception:
+        pass
     return doc
 
 
@@ -5102,7 +5109,10 @@ def wifi_connect(ssid: str, password: str, hidden: bool = False) -> dict:
 # The gateway only forwards browser_* from the stick itself (loopback).
 BROWSER_ROOT = RUN / "browser"
 BROWSER_MAX = 4
-BROWSER_START_URL = "about:blank"
+# Local StickLLM Browser home (logo + Web mode). Served by the gateway from UI_ROOT.
+BROWSER_START_URL = os.environ.get(
+    "STICKLLM_BROWSER_HOME", "http://127.0.0.1/browser-home.html"
+)
 _BROWSERS: dict[str, dict] = {}
 _BROWSER_LOCK = threading.Lock()
 _BROWSER_URL_RE = re.compile(r"[\x00-\x20\x7f]")
@@ -5197,12 +5207,18 @@ def web_mode_status() -> dict:
     mode = str(doc.get("mode") or "internet").strip().lower()
     if mode not in WEB_MODE_MODES:
         mode = "internet"
+    note = str(doc.get("note") or "")
+    if mode == "tor" and not note:
+        note = "Tor is on for new Browser windows. StickLLM Settings / Wi-Fi stay direct."
     out = {
         "ok": True,
         "mode": mode,
         "modes": list(WEB_MODE_MODES),
         "scope": "stick_browser",
-        "scope_note": "Applies to the stick kiosk browser and stick-local Chromium only.",
+        "scope_note": (
+            "Tor / No-internet steer stick Browser windows (and stick-origin fetches). "
+            "The StickLLM desktop / Settings stay on the normal Wi-Fi uplink."
+        ),
         "remote_clients": "own_network",
         "remote_note": (
             "Remote LAN clients use their own network; StickLLM cannot force "
@@ -5211,7 +5227,7 @@ def web_mode_status() -> dict:
         "tor_active": bool(doc.get("tor_active")),
         "tor_ready": bool(doc.get("tor_ready")),
         "applied": bool(doc.get("applied", True)),
-        "note": str(doc.get("note") or ""),
+        "note": note,
         "cli_ok": bool(r.get("ok")),
     }
     return out
@@ -5221,8 +5237,8 @@ def web_mode_set(mode: str) -> dict:
     mode = str(mode or "").strip().lower()
     if mode not in WEB_MODE_MODES:
         return {"ok": False, "error": "mode must be internet, tor, or none"}
-    # Tor bootstrap wait can take ~15s inside the helper.
-    r = sh([WEB_MODE_BIN, "set", mode], timeout=90)
+    # Helper writes policy + starts/stops Tor without a long bootstrap wait.
+    r = sh([WEB_MODE_BIN, "set", mode], timeout=45)
     st = web_mode_status()
     st["ok"] = bool(r.get("ok")) and bool(st.get("applied", True))
     if not r.get("ok"):
@@ -5256,6 +5272,15 @@ def browser_seed_prefs(profile: Path) -> None:
         prefs.write_text(json.dumps(BROWSER_FIRST_PREFS), encoding="utf-8")
 
 
+def _web_mode_for_browser() -> str:
+    """Tor SOCKS is only for stickllm-control Browser windows — never the kiosk UI."""
+    doc = read_json(WEB_MODE_STATE) if WEB_MODE_STATE.is_file() else {}
+    if not isinstance(doc, dict):
+        return "internet"
+    mode = str(doc.get("mode") or "internet").strip().lower()
+    return mode if mode in WEB_MODE_MODES else "internet"
+
+
 def browser_command(bin_path: str, profile: Path, url: str, app: bool, geo: dict | None, bid: str) -> list[str]:
     cmd = [
         bin_path,
@@ -5267,6 +5292,13 @@ def browser_command(bin_path: str, profile: Path, url: str, app: bool, geo: dict
         f"--user-data-dir={profile}", f"--disk-cache-dir={profile / 'cache'}",
         f"--class=stickllm-browser-{bid}",
     ]
+    # Tor mode: SOCKS only on these Browser windows. Kiosk StickLLM stays direct
+    # (managed stickllm-proxy.json is ProxyMode=direct while Tor runs).
+    if _web_mode_for_browser() == "tor":
+        cmd += [
+            "--proxy-server=socks5://127.0.0.1:9050",
+            "--proxy-bypass-list=<-loopback>;<local>;10.0.0.0/8;172.16.0.0/12;192.168.0.0/16;169.254.0.0/16",
+        ]
     if geo:
         cmd += [f"--window-size={geo['w']},{geo['h']}", f"--window-position={geo['x']},{geo['y']}"]
     cmd += [f"--app={url}"] if app else ["--new-window", url]
@@ -5512,6 +5544,7 @@ def browser_focus(params: dict) -> dict:
 _GGUF_INVALIDATE_ACTIONS = {
     "model_delete", "set_models_dir", "set_session_mode", "vault_unlock", "vault_lock",
     "vault_use", "vault_attach", "vault_setup", "vault_move_model", "vault_find_models",
+    "vault_delete", "vault_destroy",
     "model_download", "mmproj_download",
 }
 
@@ -5952,6 +5985,8 @@ def handle(action: str, params: dict) -> dict:
         return res
     if action == "vault_lock":
         return vault_action("lock", params)
+    if action == "vault_delete" or action == "vault_destroy":
+        return vault_action("destroy", params)
     if action == "vault_move_model":
         return vault_action("move-model", params)
     if action == "vault_list_movable":
@@ -6109,6 +6144,98 @@ def vault_action(cmd: str, params: dict) -> dict:
         # 0.5.6: Office alone can take ~60-150s to flush and stop (TimeoutStopSec=150),
         # then Agent Zero, add-ons and dockerd stop; 120s killed the lock midway.
         r = sh([script, "lock"], timeout=360)
+        return merge_vault_run(r)
+    if cmd == "destroy":
+        # Settings → Delete vault. Typed DELETE_VAULT + passcode. Blob file only.
+        confirm = str(params.get("confirm") or "").strip()
+        passcode = str(params.get("passcode") or "")
+        path = str(params.get("path") or params.get("blob") or params.get("dir") or "").strip()
+        if confirm != "DELETE_VAULT":
+            return {
+                "ok": False,
+                "error": "typed confirm must be DELETE_VAULT",
+            }
+        if not passcode:
+            return {"ok": False, "error": "passcode required"}
+        if path and _looks_like_block_device(path):
+            return {
+                "ok": False,
+                "error": "Refusing block device path. Delete only stickllm-vault.img.",
+            }
+        # Same clean teardown as Lock when the vault is open (A0 / llama / add-ons).
+        st = read_json(RUN / "vault.json")
+        status_l = str(st.get("status") or "").lower()
+        vault_mnt = Path(os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault"))
+        host_mounted = False
+        try:
+            fm = subprocess.run(
+                ["findmnt", "-n", str(vault_mnt)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            host_mounted = fm.returncode == 0
+        except Exception:
+            host_mounted = False
+        openish = bool(st.get("mounted")) or host_mounted or status_l in (
+            "unlocked",
+            "open",
+            "mounted",
+            "mapper-open",
+        )
+        if openish:
+            sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
+            sh(["/usr/local/bin/stickllm-agent", "stop"], timeout=120)
+            try:
+                time.sleep(1.0)
+            except Exception:
+                pass
+            lock_r = sh([script, "lock"], timeout=360)
+            lock_ok = bool(lock_r.get("ok")) or lock_r.get("code") == 0
+            if not lock_ok and status_l not in ("locked", "absent"):
+                err = lock_r.get("error") or lock_r.get("stderr") or "lock failed before delete"
+                return merge_vault_run({"ok": False, "error": str(err)[:500], **lock_r})
+        env = os.environ.copy()
+        env["STICKLLM_VAULT_CONFIRM"] = "DELETE_VAULT"
+        env["STICKLLM_VAULT_PASS"] = passcode
+        cmd_args = [script, "destroy"]
+        if path:
+            cmd_args.append(path)
+        try:
+            p = subprocess.run(
+                cmd_args,
+                capture_output=True,
+                text=True,
+                timeout=420,
+                check=False,
+                env=env,
+            )
+            r = {
+                "ok": p.returncode == 0,
+                "code": p.returncode,
+                "stdout": (p.stdout or "")[-4000:],
+                "stderr": (p.stderr or "")[-2000:],
+                "deleted": path or st.get("blob") or "",
+                "kept": [
+                    "sibling models/ beside the blob",
+                    "STICKLLM-DATA models",
+                    "USB settings LUKS (pairing / secrets / computer hints)",
+                    "vault.key on DATA",
+                ],
+                "cleared": [
+                    "stickllm-vault.img (LUKS header + file)",
+                    "vault-meta for this blob",
+                    "stickllm-vault-location.json / stickllm-setup.json when pointed here",
+                ],
+            }
+            if p.returncode != 0 and not r.get("error"):
+                err = (p.stderr or "").strip().splitlines()
+                r["error"] = (err[-1] if err else "vault delete failed")[:500]
+        except Exception as e:
+            r = {"ok": False, "error": str(e)}
+        env.pop("STICKLLM_VAULT_PASS", None)
+        passcode = ""
         return merge_vault_run(r)
     if cmd == "find-vault":
         data = parse_vault_json(

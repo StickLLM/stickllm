@@ -103,7 +103,14 @@ if [[ -d "$SRC/opt/stickllm/ui" ]]; then
         installed=1
         continue
         ;;
-      app.js|index.html|style.css|stickllm.json|favicon.svg|desktop.js|desktop-core.js|desktop.css) ;;
+      agent-zero.svg|favicon.svg)
+        sed -i 's/\r$//' "$f" 2>/dev/null || true
+        install -m 644 "$f" "/opt/stickllm/ui/$base"
+        echo "installed /opt/stickllm/ui/$base"
+        installed=1
+        continue
+        ;;
+      app.js|index.html|style.css|stickllm.json|desktop.js|desktop-core.js|desktop.css|browser-home.html|browser-home.js) ;;
       *) echo "skipping non-UI file: $base" >&2; continue ;;
     esac
     sed -i 's/\r$//' "$f" 2>/dev/null || true

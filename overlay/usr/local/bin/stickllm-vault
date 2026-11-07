@@ -427,7 +427,7 @@ confirm_phrase() {
   local expect="$1" prompt="$2"
   local got=""
   case "$expect" in
-    CREATE-VAULT|GROW-VAULT|MOVE-MODEL) got="${STICKLLM_VAULT_CONFIRM:-}" ;;
+    CREATE-VAULT|GROW-VAULT|MOVE-MODEL|DELETE_VAULT) got="${STICKLLM_VAULT_CONFIRM:-}" ;;
     SPACE-OK) got="${STICKLLM_VAULT_CONFIRM_SPACE:-}" ;;
     SAVED) got="${STICKLLM_VAULT_CONFIRM_SAVED:-}" ;;
     WIPE-OK) got="${STICKLLM_VAULT_CONFIRM_WIPE:-${STICKLLM_VAULT_CONFIRM:-}}" ;;
@@ -2980,6 +2980,149 @@ cmd_lock() {
   echo "Vault locked."
 }
 
+# Clear setup / location markers so wizard + create can run again for this stick.
+# Never stores or prints passcodes. Only removes StickLLM-owned JSON/meta files.
+clear_config_after_destroy() {
+  local tgt="$1"
+  local cleared_meta=0
+  mkdir -p "$META_DIR" 2>/dev/null || true
+  if [[ -f "$META_DIR/container" ]]; then
+    local cur="" cur_r="" tgt_r=""
+    cur="$(tr -d '\n' <"$META_DIR/container" 2>/dev/null || true)"
+    cur_r="$(readlink -f "$cur" 2>/dev/null || printf '%s' "$cur")"
+    tgt_r="$(readlink -f "$tgt" 2>/dev/null || printf '%s' "$tgt")"
+    if [[ -n "$cur" && ( "$cur" == "$tgt" || "$cur_r" == "$tgt_r" ) ]]; then
+      rm -f "$META_DIR/container" "$META_DIR/root" "$META_DIR/kind" \
+        "$META_DIR/wipe_after" "$META_DIR/unlock_fails" "$META_DIR/recovery.sha256" \
+        "$META_DIR/machine_id" "$META_DIR/machine_label" "$META_DIR/note" \
+        "$META_DIR/device" 2>/dev/null || true
+      cleared_meta=1
+    fi
+  fi
+  STICKLLM_CLR_BLOB="$tgt" STICKLLM_CLR_LOC="$LOCATION_FILE" \
+    STICKLLM_CLR_SETUP="$SETUP_FILE" STICKLLM_CLR_META="$cleared_meta" \
+    python3 <<'PY'
+import json, os
+from pathlib import Path
+
+raw = os.environ.get("STICKLLM_CLR_BLOB") or ""
+try:
+    blob = Path(raw).resolve()
+except Exception:
+    blob = Path(raw)
+cleared_meta = os.environ.get("STICKLLM_CLR_META") == "1"
+
+def same(path_s: str) -> bool:
+    if not path_s:
+        return False
+    try:
+        return Path(path_s).resolve() == blob
+    except Exception:
+        return str(path_s) == str(blob)
+
+def unlink(p: Path) -> None:
+    try:
+        p.unlink()
+    except OSError:
+        pass
+
+for key in ("STICKLLM_CLR_LOC", "STICKLLM_CLR_SETUP"):
+    p = Path(os.environ.get(key) or "")
+    if not p.is_file():
+        continue
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        unlink(p)
+        continue
+    if not isinstance(doc, dict):
+        unlink(p)
+        continue
+    candidate = str(doc.get("blob") or "")
+    if not candidate and doc.get("vault_path"):
+        candidate = str(Path(str(doc["vault_path"])) / str(doc.get("blob_name") or "stickllm-vault.img"))
+    if same(candidate):
+        unlink(p)
+    elif key == "STICKLLM_CLR_SETUP" and cleared_meta and doc.get("setup_complete"):
+        # Active vault meta was cleared; drop the reboot wizard skip flag.
+        unlink(p)
+PY
+}
+
+cmd_destroy() {
+  # Delete ONE StickLLM vault blob file. Never formats disks / host partitions.
+  # Survives: sibling <root>/models/, STICKLLM-DATA models, USB settings LUKS
+  # (pairing / secrets / computer hints), vault.key. Dies: the .img blob
+  # (chats, vault-side settings, A0 memory inside LUKS) + meta/setup pointers.
+  need_root
+  confirm_phrase "DELETE_VAULT" "Type DELETE_VAULT to permanently erase this vault blob: "
+
+  local raw="${1:-}"
+  local tgt="" root=""
+  if [[ -n "$raw" ]]; then
+    is_block_device_path "$raw" && die "refusing block device path — delete only stickllm-vault.img"
+    if [[ -f "$raw" ]]; then
+      tgt="$(readlink -f "$raw" 2>/dev/null || printf '%s' "$raw")"
+      root="$(dirname "$tgt")"
+    elif [[ -d "$raw" ]]; then
+      root="$(readlink -f "$raw" 2>/dev/null || printf '%s' "$raw")"
+      tgt="$root/$BLOB_NAME"
+    else
+      die "usage: destroy [dir|stickllm-vault.img]  (passcode via STICKLLM_VAULT_PASS)"
+    fi
+  else
+    tgt="$(vault_target || true)"
+    [[ -n "$tgt" ]] || die "no vault configured — pass a path to stickllm-vault.img"
+    root="$(dirname "$tgt")"
+    if [[ -f "$META_DIR/root" ]]; then
+      root="$(tr -d '\n' <"$META_DIR/root" || printf '%s' "$root")"
+    fi
+  fi
+
+  is_block_device_path "$tgt" && die "refusing block device — delete only the vault file blob"
+  [[ -f "$tgt" ]] || die "vault blob missing: $tgt"
+  [[ "$(basename "$tgt")" == "$BLOB_NAME" || "$tgt" == *.img ]] || die "refusing unexpected blob name (want $BLOB_NAME)"
+  cryptsetup isLuks "$tgt" >/dev/null 2>&1 || die "not a LUKS vault blob: $tgt"
+
+  local pass="${STICKLLM_VAULT_PASS:-}"
+  if [[ -z "$pass" ]]; then
+    if [[ -t 0 ]]; then
+      read -r -s -p "Vault passcode: " pass; echo
+    else
+      die "passcode required (STICKLLM_VAULT_PASS)"
+    fi
+  fi
+  if ! luks_pass "$pass" open --test-passphrase --type luks2 "$tgt" 2>/dev/null; then
+    unset pass
+    die "wrong passcode — vault not deleted"
+  fi
+  unset pass
+
+  # If this blob is the open vault, reuse clean lock teardown (addons stop + umount).
+  local active=""
+  active="$(vault_target 2>/dev/null || true)"
+  if is_mounted || mapper_open; then
+    if [[ -z "$active" || "$(readlink -f "$active" 2>/dev/null || printf '%s' "$active")" == "$(readlink -f "$tgt" 2>/dev/null || printf '%s' "$tgt")" ]]; then
+      cmd_lock || die "could not lock/umount vault before delete"
+    fi
+  fi
+
+  echo "stickllm-vault: destroying vault blob file only: $tgt" >&2
+  # Header wipe then unlink — never wipefs/partition/format the parent FS.
+  cryptsetup luksErase --batch-mode "$tgt" 2>/dev/null \
+    || dd if=/dev/zero of="$tgt" bs=1M count=16 conv=notrunc status=none 2>/dev/null \
+    || true
+  rm -f "$tgt" || die "could not remove vault blob (file still present)"
+  [[ ! -e "$tgt" ]] || die "vault blob still present after delete"
+
+  clear_config_after_destroy "$tgt"
+  download_policy locked 2>/dev/null || true
+  json_state absent "vault deleted — create or attach again"
+  echo "Vault deleted: $tgt"
+  echo "Kept: sibling models/ (if any), STICKLLM-DATA models, USB settings LUKS, pairing."
+  echo "Cleared: vault-meta for this blob, stickllm-vault-location.json / stickllm-setup.json when they pointed here."
+}
+
 cmd_set_wipe_after() {
   need_root
   local n="${1:-0}"
@@ -3118,6 +3261,7 @@ StickLLM encrypted vault (LUKS2 Argon2id file blob — never formats disks)
   stickllm-vault grow <add_gb>       # expand blob (free-space checked)
   stickllm-vault unlock
   stickllm-vault lock
+  stickllm-vault destroy [dir|img]   # DELETE_VAULT + passcode; blob file only
   stickllm-vault ui-mount-status     # host vs stickllm-ui mount namespace
   stickllm-vault ui-refresh          # re-mount the vault into the gateway view
   stickllm-vault ensure-addons       # start installed add-ons (vault open)
@@ -3167,6 +3311,7 @@ main() {
     grow) cmd_grow "$@" ;;
     unlock) cmd_unlock "$@" ;;
     lock) cmd_lock "$@" ;;
+    destroy|delete|delete-vault) cmd_destroy "$@" ;;
     ui-mount-status|ui-ns) cmd_ui_mount_status ;;
     ui-refresh) cmd_ui_refresh ;;
     ensure-addons) cmd_ensure_addons ;;

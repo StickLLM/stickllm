@@ -81,7 +81,7 @@
     if (id === "agent" || id === CHAT) {
       const s = document.createElement("span");
       s.className = "deskGlyph deskGlyphImg";
-      s.innerHTML = '<img src="agent-zero.png?v=desk4" alt="">';
+      s.innerHTML = '<img src="agent-zero.png?v=desk5" alt="Agent Zero">';
       return s;
     }
     const c = catalogApp(id);
@@ -499,7 +499,7 @@
       '<button type="button" class="wpMode" data-web="tor"><span class="wpDot tor"></span><span class="wpLabel"><b>Tor</b><small>Anonymous via Tor</small></span></button>' +
       '<button type="button" class="wpMode" data-web="none"><span class="wpDot none"></span><span class="wpLabel"><b>No internet</b><small>Block public web</small></span></button>' +
       "</div>" +
-      '<small class="wpNote">Applies to the stick kiosk browser and stick-local Chromium. Remote LAN clients use their own network.</small>' +
+      '<small class="wpNote">Tor applies to new Browser windows on the stick. StickLLM Settings / Wi-Fi stay direct. Remote LAN clients use their own network.</small>' +
       '<small class="wpStatus" hidden></small>' +
       '<button type="button" class="btn sm ghost wpSet">Network settings\u2026</button>';
     pop.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -563,7 +563,7 @@
     const sub = pop.querySelector(".wpSub");
     if (sub) {
       sub.textContent = mode === "tor"
-        ? (webState.tor_ready ? "Tor — stick browser anonymized" : "Tor — waiting for a circuit")
+        ? (webState.tor_ready ? "Tor verified — use Browser app" : "Tor — verifying exit\u2026")
         : mode === "none" ? "No internet — public web blocked" : "Internet — normal uplink";
     }
     pop.querySelector(".wpIcon").innerHTML = SVG.web;
@@ -665,7 +665,7 @@
     if (web) {
       const wm = curWebMode();
       let st = wm, label = "Web: Internet (stick browser)";
-      if (wm === "tor") label = webState.tor_ready ? "Web: Tor (stick browser)" : "Web: Tor starting\u2026";
+      if (wm === "tor") label = webState.tor_ready ? "Web: Tor (verified)" : "Web: Tor verifying\u2026";
       else if (wm === "none") label = "Web: No internet (stick browser)";
       web.dataset.state = st;
       web.innerHTML = SVG.web;
@@ -1414,7 +1414,7 @@
     ui.store = st;
     // Agent window while Agent Zero is not installed.
     const ag = el("div", "deskPanel deskAgentPanel");
-    ag.innerHTML = '<div class="apCard"><img src="agent-zero.png?v=desk4" alt=""><h2>Agent</h2><p>Agent Zero works on tasks for you with the local model. The program installs to the StickLLM data drive (/mnt/stickllm-data/stickllm-docker); its chats, memory and settings stay in your encrypted vault.</p><p class="apState" aria-live="polite"></p><div class="apBar" hidden><i></i></div><div class="apActs"><button type="button" class="btn primary apInstall">Install Agent Zero</button><button type="button" class="btn apRetry" hidden>Retry</button><button type="button" class="btn ghost apStore">Open App Store</button></div></div>';
+    ag.innerHTML = '<div class="apCard"><img src="agent-zero.png?v=desk5" alt="Agent Zero"><h2>Agent Zero</h2><p>Agent Zero works on tasks for you with the local model. The program installs to the StickLLM data drive (/mnt/stickllm-data/stickllm-docker); its chats, memory and settings stay in your encrypted vault.</p><p class="apState" aria-live="polite"></p><div class="apBar" hidden><i></i></div><div class="apActs"><button type="button" class="btn primary apInstall">Install Agent Zero</button><button type="button" class="btn apRetry" hidden>Retry</button><button type="button" class="btn ghost apStore">Open App Store</button></div></div>';
     ag.querySelector(".apInstall").addEventListener("click", (e) => {
       const api = appApi();
       const b = e.currentTarget;

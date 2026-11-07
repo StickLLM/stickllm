@@ -74,6 +74,10 @@ APPS_BRIDGE_PORT = 8081
 OPEN_APP_PORT = 8082
 EGRESS_PROXY_PORT = int(os.environ.get("STICKLLM_EGRESS_PROXY_PORT", "18080"))
 EGRESS_EVENTS = Path(os.environ.get("STICKLLM_EGRESS_EVENTS", "/run/stickllm/agent-egress-events.json"))
+WEB_MODE_PATH = Path(os.environ.get("STICKLLM_WEB_MODE_PATH", "/run/stickllm/web-mode.json"))
+# Host-local Tor HTTP CONNECT tunnel (stickllm-web-mode). Egress runs on the host.
+TOR_HTTP_TUNNEL = os.environ.get("STICKLLM_TOR_HTTP", "127.0.0.1:9080")
+WEB_MODE_MODES = ("internet", "tor", "none")
 SECCOMP_PROFILE = Path(os.environ.get(
     "STICKLLM_AGENT_SECCOMP",
     "/usr/local/share/stickllm/agent-zero-seccomp.json",
@@ -1326,13 +1330,28 @@ def _load_egress_scan():
     return mod
 
 
+def stickllm_web_mode() -> str:
+    """Stick Web mode from runtime JSON (internet|tor|none). Default internet."""
+    try:
+        doc = json.loads(WEB_MODE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return "internet"
+    if not isinstance(doc, dict):
+        return "internet"
+    mode = str(doc.get("mode") or "internet").strip().lower()
+    return mode if mode in WEB_MODE_MODES else "internet"
+
+
 def agent_web_fetch_enabled(settings: Path | None = None) -> bool:
     """Whether the agent egress proxy may fetch the public web (SearXNG).
 
     Default True so Agent Zero's built-in search works. Set
     ``{"web_fetch": false}`` in the portable egress.json to shut it off.
-    Metadata, Alibaba Cloud, and uploads stay blocked either way.
+    Stick Web mode **No internet** forces this off. Metadata, Alibaba Cloud,
+    and uploads stay blocked either way.
     """
+    if stickllm_web_mode() == "none":
+        return False
     root = settings if settings is not None else PORTABLE
     for path in (root / "egress.json", Path("/run/stickllm/agent-egress.json")):
         try:
@@ -1342,6 +1361,60 @@ def agent_web_fetch_enabled(settings: Path | None = None) -> bool:
         if isinstance(doc, dict) and "web_fetch" in doc:
             return bool(doc["web_fetch"])
     return True
+
+
+def _tor_http_tunnel_endpoint() -> tuple[str, int]:
+    raw = (TOR_HTTP_TUNNEL or "127.0.0.1:9080").strip()
+    host, _, port_s = raw.partition(":")
+    try:
+        port = int(port_s or "9080")
+    except ValueError:
+        port = 9080
+    return (host or "127.0.0.1", port)
+
+
+def connect_via_tor_http_tunnel(host: str, port: int, timeout: float = 20) -> socket.socket:
+    """Open TCP to host:port through Tor's local HTTPTunnelPort (CONNECT)."""
+    th, tp = _tor_http_tunnel_endpoint()
+    s = socket.create_connection((th, tp), timeout=timeout)
+    req = (
+        f"CONNECT {host}:{int(port)} HTTP/1.1\r\n"
+        f"Host: {host}:{int(port)}\r\n"
+        "Proxy-Connection: keep-alive\r\n"
+        "\r\n"
+    ).encode("ascii", "strict")
+    s.sendall(req)
+    buf = b""
+    while b"\r\n\r\n" not in buf and len(buf) < 65536:
+        chunk = s.recv(4096)
+        if not chunk:
+            s.close()
+            raise OSError("tor HTTP tunnel closed before CONNECT reply")
+        buf += chunk
+    head = buf.split(b"\r\n\r\n", 1)[0]
+    status = head.split(b"\r\n", 1)[0]
+    parts = status.split()
+    if len(parts) < 2 or parts[1] != b"200":
+        try:
+            s.close()
+        except OSError:
+            pass
+        raise OSError(f"tor CONNECT failed: {status.decode('latin-1', 'replace')}")
+    return s
+
+
+def egress_upstream_connect(host: str, port: int, timeout: float = 20) -> socket.socket:
+    """Direct uplink, or Tor CONNECT when Stick Web mode is Tor.
+
+    Read live from web-mode.json so toggling Tor affects Agent Zero without
+    restarting the egress proxy. No-internet refuses the socket.
+    """
+    mode = stickllm_web_mode()
+    if mode == "none":
+        raise OSError("web mode is No internet — agent egress blocked")
+    if mode == "tor":
+        return connect_via_tor_http_tunnel(host, port, timeout=timeout)
+    return socket.create_connection((host, port), timeout=timeout)
 
 
 _EGRESS_LOCK = threading.Lock()
@@ -1475,7 +1548,17 @@ def run_egress_proxy(listen_host: str = LLAMA_BRIDGE_HOST, listen_port: int = EG
                     conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
                     conn.close()
                     return
-                remote = socket.create_connection((host, port), timeout=20)
+                try:
+                    remote = egress_upstream_connect(host, port, timeout=20)
+                except OSError as e:
+                    body = (f"upstream connect failed: {e}\n").encode()
+                    conn.sendall(
+                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n"
+                        + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                        + body
+                    )
+                    conn.close()
+                    return
                 conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 t = threading.Thread(target=pump, args=(conn, remote), daemon=True)
                 t.start()
@@ -1523,7 +1606,17 @@ def run_egress_proxy(listen_host: str = LLAMA_BRIDGE_HOST, listen_port: int = EG
             out_headers.append(f"Host: {host}" if not any(h.lower().startswith("host:") for h in out_headers) else "")
             out_headers = [h for h in out_headers if h]
             req = f"{method} {path} HTTP/1.1\r\n" + "\r\n".join(out_headers) + "\r\n\r\n"
-            remote = socket.create_connection((host, port), timeout=20)
+            try:
+                remote = egress_upstream_connect(host, port, timeout=20)
+            except OSError as e:
+                body = (f"upstream connect failed: {e}\n").encode()
+                conn.sendall(
+                    b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n"
+                    + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                    + body
+                )
+                conn.close()
+                return
             if split.scheme == "https":
                 import ssl
                 remote = ssl.create_default_context().wrap_socket(remote, server_hostname=host)

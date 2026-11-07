@@ -267,12 +267,14 @@ for anonymity. See [Tails: Limitations of the Tor network](https://tails.net/doc
 
 Users may run their own VPN outside StickLLM; we do not make that the product story.
 
-## Web mode (0.6.11): stick browser only
+## Web mode (0.6.11+): stick browser only
 
 Taskbar **Web** / Settings → Network offers **Internet**, **Tor**, and **No internet**.
 That policy steers **stick-local Chromium** (HDMI kiosk + Browser windows from
 `stickllm-control`) and stick-origin gateway fetches. It does **not** wrap a paired
-phone or PC browser — those clients keep their own network path. Full notes:
+phone or PC browser — those clients keep their own network path. Tor mode (0.6.12+)
+bypasses loopback and private LAN so StickLLM / Wi-Fi UI never go through SOCKS.
+Full notes:
 [WEB-MODE.md](WEB-MODE.md).
 
 ## Out of scope (not implemented)

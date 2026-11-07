@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v0611" />
-<link rel="stylesheet" href="desktop.css?v=v0611" />
+<link rel="stylesheet" href="style.css?v=v0612" />
+<link rel="stylesheet" href="desktop.css?v=v0612" />
 </head>
 <body>
 <!-- Exact stickllm-bootstatus BANNER (block "STICKLLM"); deskMode backdrop only. -->
@@ -42,7 +42,7 @@
       <button class="navBtn" data-open="general"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
       <nav class="sideApps" aria-label="Apps">
         <p class="sideAppsLabel">Apps</p>
-        <a class="navBtn" id="agentLink" href="/agent-zero/" target="stickllm-agent-zero" hidden><img class="agentMark" src="agent-zero.png?v=desk4" alt=""><span class="appName"><span id="agentLinkLabel">Agent</span><small id="agentLinkState">Opens in a new tab</small></span></a>
+        <a class="navBtn" id="agentLink" href="/agent-zero/" target="stickllm-agent-zero" hidden><img class="agentMark" src="agent-zero.png?v=desk5" alt="Agent Zero"><span class="appName"><span id="agentLinkLabel">Agent Zero</span><small id="agentLinkState">Opens in a new tab</small></span></a>
         <button class="navBtn" id="appsLink" type="button"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span class="appName"><span>Apps</span><small>Desktop</small></span></button>
       </nav>
     </div>
@@ -476,6 +476,28 @@
     </div>
   </details>
 
+  <details class="adv" id="deleteVaultPanel">
+    <summary>Delete vault</summary>
+    <div class="advBody">
+      <p class="note warn" role="alert"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>This will erase all your data! There is no backup. Your data will be lost.</p>
+      <p class="muted small">Deletes only the selected <span class="mono">stickllm-vault.img</span> (chats, vault settings, Agent Zero memory inside the blob). Keeps sibling <span class="mono">models/</span>, STICKLLM-DATA models, USB settings LUKS (pairing / secrets), and the stick. Never formats whole disks. Clears setup markers so Create / Attach can run again for that location.</p>
+      <div class="row2">
+        <label class="field"><span>Vault location</span>
+          <select id="deleteVaultSelect" aria-label="Vault to delete">
+            <option value="">Searching…</option>
+          </select>
+        </label>
+        <div class="field" style="align-self:end"><button class="btn sm" id="deleteVaultRefresh" type="button">Refresh list</button></div>
+        <label class="field"><span>Vault passcode</span><input type="text" id="deleteVaultPass" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly aria-label="Vault passcode for delete"></label>
+        <label class="field"><span>Type <span class="mono">DELETE_VAULT</span></span><input type="text" id="deleteVaultConfirm" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="DELETE_VAULT" aria-label="Type DELETE_VAULT to confirm"></label>
+      </div>
+      <div class="row" style="gap:8px;margin-top:8px">
+        <button class="btn danger" id="deleteVaultBtn" type="button" disabled>Delete vault…</button>
+        <small class="muted" id="deleteVaultMsg" hidden></small>
+      </div>
+    </div>
+  </details>
+
   <div class="secTools"><h3>StickLLM stick</h3></div>
   <div class="row card"><div><b>Use free space on the stick</b><small>Turns unused space on the StickLLM USB stick into a DATA area. This only affects the StickLLM stick, never your computer's drives.</small></div><button class="btn sm" id="actClaim" type="button" title="Create a data partition on the StickLLM USB stick only">Set up…</button></div>
 
@@ -624,7 +646,7 @@
     <h3>StickLLM</h3>
     <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
     <div class="group">
-      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.11</span></div>
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.12</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono" id="aboutLlama">—</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
@@ -752,8 +774,8 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v0611"></script>
-<script src="desktop-core.js?v=v0611"></script>
-<script src="desktop.js?v=v0611"></script>
+<script src="app.js?v=v0612"></script>
+<script src="desktop-core.js?v=v0612"></script>
+<script src="desktop.js?v=v0612"></script>
 </body>
 </html>

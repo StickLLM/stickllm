@@ -2297,16 +2297,29 @@ def set_session_mode(mode: str) -> dict:
         ),
     }
     # 0.6.0 (bug B3) / v069i: toggle only switches where chats are read/written.
-    # Never stop llama/Docker/add-ons; never unmount the vault; never spawn
+    # Never stop llama / other add-ons; never unmount the vault; never spawn
     # addon/model restore on mode change (that OOMed on ephemeral→vault).
     # Unlock already starts add-ons via refresh_gateway_vault_view.
+    # 0.6.12: if Agent Zero is up, try-restart so /a0/usr/chats remounts —
+    # ephemeral → /run/stickllm/a0-chats (tmpfs); vault → encrypted store.
     doc["vault_locked"] = False
     doc["addons_restart"] = False
+    doc["agent_chats_remount"] = False
     SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     try:
         os.chmod(SESSION_MODE_PATH, 0o644)
     except Exception:
         pass
+    if _agent_port_open(5099):
+        try:
+            subprocess.Popen(
+                ["systemctl", "try-restart", "--no-block", "stickllm-agent.service"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            doc["agent_chats_remount"] = True
+        except OSError:
+            pass
     return {"ok": True, **doc}
 
 
@@ -6394,8 +6407,8 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 if action == "model_download":
                     timeout = 7200
-                elif action in ("vault_lock", "set_session_mode", "session_mode"):
-                    # Model stop (60s) + vault lock (control allows 360s).
+                elif action in ("vault_lock", "vault_delete", "vault_destroy", "set_session_mode", "session_mode"):
+                    # Model stop (60s) + vault lock/delete (control allows 360s+).
                     timeout = 480
                 elif action in ("web_mode_set", "set_web_mode"):
                     # Tor bootstrap inside stickllm-web-mode can take ~15–30s.

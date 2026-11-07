@@ -1,13 +1,18 @@
 # Web mode (Internet / Tor / No internet)
 
-StickLLM can steer **stick-local Chromium** — the HDMI kiosk browser and any
-Browser window started by `stickllm-control` — through three modes:
+StickLLM steers **stick Browser windows** (opened from the desktop Browser app via
+`stickllm-control`) and stick-origin gateway fetches. The HDMI **StickLLM desktop /
+Settings / Wi-Fi** stay on the normal uplink so Tor cannot trap networking UI.
 
-| Mode | Tray colour | Effect on stick Chromium |
+| Mode | Tray colour | Effect |
 |---|---|---|
-| **Internet** | Green | Direct uplink (normal browsing) |
-| **Tor** | Yellow | Local Tor SOCKS; Chromium uses `socks5://127.0.0.1:9050` |
-| **No internet** | Red | Chromium URL blocklist blocks the public web; loopback StickLLM still works |
+| **Internet** | Green | Browser windows + stick-origin fetches use the normal uplink |
+| **Tor** | Yellow | Chromium PAC: public sites → `SOCKS5 127.0.0.1:9050`; loopback/LAN (Settings / Wi-Fi) → `DIRECT` |
+| **No internet** | Red | Chromium URL blocklist blocks the public web; StickLLM on loopback **and** private LAN still works |
+
+Toggling Tor **closes** open Browser windows; open Browser again so the new
+window gets SOCKS (or direct). `tor_ready` is only true after StickLLM fetches
+`https://check.torproject.org/api/ip` **through Tor** and sees `"IsTor": true`.
 
 Stick-origin fetches the gateway makes itself (optional web lookup / URL fetch)
 follow the same mode: blocked in **No internet**, HTTP-tunneled through Tor in
@@ -37,13 +42,37 @@ stickllm-web-mode set internet|tor|none
 stickllm-web-mode apply
 ```
 
-Runtime JSON for the UI: `/run/stickllm/web-mode.json`.
+If the stick browser is stuck in Tor (cannot leave / cannot scan Wi-Fi), from a
+phone on the LAN or a TTY:
+
+```bash
+sudo stickllm-web-mode set internet
+```
+
+That writes a direct Chromium policy and stops Tor. Mode changes do **not**
+restart the kiosk or kill Chromium (that blanked HDMI and broke mid model-load).
+If a Browser window still looks stuck on Tor, use Reload desktop. Runtime JSON:
+`/run/stickllm/web-mode.json`.
+
+## Tor vs Wi-Fi
+
+Managed `ProxyMode=direct` **overrides** Chromium `--proxy-server`, so Tor mode
+uses a **PAC** instead: loopback + RFC1918 → `DIRECT` (Settings / Wi-Fi); all
+other hosts → `SOCKS5 127.0.0.1:9050`. Re-open Browser after toggling Tor so the
+new process loads the PAC. `tor_ready` requires check.torproject `"IsTor": true`
+through Tor. Model load / llama are untouched by Web mode.
+
+## Browser home
+
+Desktop **Browser** opens `http://127.0.0.1/browser-home.html` (local file under
+`/opt/stickllm/ui/`). It shows the StickLLM logo and the current Web mode from
+`GET /api/web-mode` (polls every few seconds).
 
 ## Test on the next bake
 
 1. Boot the new image. Tray **Web** should show Internet (green).
-2. Open Browser → `https://check.torproject.org` → not using Tor.
-3. Tray **Web** → **Tor**. Wait until status says ready. Reload check.torproject.org → Tor.
-4. Tray **Web** → **No internet**. Public sites fail; `http://127.0.0.1/` still works.
-5. From a phone on the LAN: confirm the Web menu note that remote clients use
-   their own network; phone browsing is unchanged by stick Tor / No internet.
+2. Open Browser → home page shows StickLLM + **Internet**; then try `https://check.torproject.org` → not using Tor.
+3. Tray **Web** → **Tor**. Wait until ready. **Close and reopen Browser** → home shows Tor; check.torproject.org → Tor.
+4. While in Tor: Settings → Network Wi-Fi scan still works; switch back to **Internet**.
+5. Tray **Web** → **No internet**. Re-open Browser → home shows No internet; public sites fail; StickLLM UI still works.
+6. From a phone on the LAN: remote browsing is unchanged by stick Tor / No internet.

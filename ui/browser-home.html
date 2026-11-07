@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StickLLM Browser</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #0e1416;
+    --ink: #e8f2f0;
+    --muted: #8aa3a0;
+    --accent: #2bb5a8;
+    --accent-ink: #04211e;
+    --ok: #3ecf8e;
+    --warn: #e6b84d;
+    --danger: #e06b6b;
+    --card: rgba(255,255,255,.04);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100%;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 640px at 18% -8%, rgba(43,181,168,.22), transparent 58%),
+      radial-gradient(900px 520px at 100% 100%, rgba(108,142,240,.10), transparent 55%),
+      linear-gradient(180deg, #121a1c 0%, var(--bg) 55%);
+  }
+  main {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px;
+    text-align: center;
+    gap: 28px;
+  }
+  .brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+  }
+  .logo {
+    width: 88px; height: 88px; border-radius: 22px;
+    background: var(--accent);
+    position: relative;
+    box-shadow: 0 12px 40px rgba(43,181,168,.28);
+  }
+  .logo::after {
+    content: "";
+    position: absolute;
+    inset: 22px 28px 16px;
+    border: 5px solid var(--accent-ink);
+    border-top-width: 10px;
+    border-radius: 4px;
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(2.4rem, 6vw, 3.6rem);
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+  }
+  .mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 22px;
+    border-radius: 999px;
+    background: var(--card);
+    border: 1px solid rgba(255,255,255,.08);
+    font-size: 1.15rem;
+    font-weight: 600;
+  }
+  .dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--muted);
+    box-shadow: 0 0 0 4px rgba(255,255,255,.06);
+  }
+  .mode[data-mode="internet"] .dot { background: var(--ok); }
+  .mode[data-mode="tor"] .dot { background: var(--warn); }
+  .mode[data-mode="none"] .dot { background: var(--danger); }
+  .mode[data-mode="internet"] { color: var(--ok); }
+  .mode[data-mode="tor"] { color: var(--warn); }
+  .mode[data-mode="none"] { color: var(--danger); }
+  .note {
+    max-width: 34rem;
+    margin: 0;
+    color: var(--muted);
+    font-size: 1rem;
+    line-height: 1.45;
+  }
+  .hint {
+    margin: 0;
+    color: color-mix(in srgb, var(--muted) 80%, transparent);
+    font-size: 0.9rem;
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">
+    <span class="logo" role="img" aria-label="StickLLM"></span>
+    <h1>StickLLM</h1>
+  </div>
+  <div class="mode" id="modePill" data-mode="internet" aria-live="polite">
+    <span class="dot" aria-hidden="true"></span>
+    <span id="modeLabel">Checking Web mode…</span>
+  </div>
+  <p class="note" id="modeNote">Loading status from this stick…</p>
+  <p class="hint">Type an address above to browse. This page stays on the stick (loopback).</p>
+</main>
+<script src="/browser-home.js"></script>
+</body>
+</html>

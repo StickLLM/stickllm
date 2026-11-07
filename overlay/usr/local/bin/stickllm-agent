@@ -617,9 +617,10 @@ cmd_run_container() {
   "$PYBIN" "$LIB" prepare-portable
   # llama may still be loading: finish the preset once it reports its id.
   ( "$PYBIN" "$LIB" sync-model 600 >/dev/null 2>&1 & ) || true
-  # 0.6.0 (A2): one chat list. A0's usr/chats is the "agent-zero" folder of
-  # the active encrypted chat store (SSD vault or USB settings vault). Chats
-  # A0 kept in its private state/chats move there once.
+  # 0.6.0 (A2) / 0.6.12: one chat list. a0-chats-dir picks the path from
+  # session mode — vault → <store>/agent-zero; ephemeral → /run/stickllm/a0-chats
+  # (tmpfs). Mode switch try-restarts this unit so the bind remounts. Private
+  # 0.5.x state/chats migrate into the vault store only (not into RAM).
   local CHATS_ARGS=() shared_chats
   if shared_chats="$("$PYBIN" "$CHATS_LIB" a0-chats-dir "${ADDON}/state/chats" 2>/dev/null)" && [[ -d "$shared_chats" ]]; then
     CHATS_ARGS=(-v "${shared_chats}:/a0/usr/chats")

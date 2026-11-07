@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""StickLLM 0.6.0 chat store: one chat list for the chat app and Agent Zero.
+"""StickLLM chat store: one chat list for the chat app and Agent Zero.
 
 Design (docs/CHATS.md):
-  * Chats live only in an encrypted store. Two stores exist:
+  * Durable chats live only in an encrypted store. Two stores exist:
       ssd -> <vault>/chats                 (LUKS blob, usually on the host SSD)
       usb -> /mnt/stickllm-settings/chats  (LUKS settings partition on the stick)
     Settings > Chat picks the active one. Both open with the vault passcode.
-  * Agent Zero's /a0/usr/chats is bind-mounted from <active store>/agent-zero,
-    so A0 writes its chats into the same encrypted folder.
+  * Session mode gates Agent Zero's bind mount:
+      vault     -> <active store>/agent-zero  (persist)
+      ephemeral -> /run/stickllm/a0-chats     (tmpfs/RAM; reboot clears)
+    Mode switch remounts via stickllm-agent try-restart (does not lock LUKS).
   * The gateway lists both kinds: StickLLM chats (<id>.json) and A0 chats
     (agent-zero/<ctxid>/chat.json). Each StickLLM chat is also exported as an
     A0 chat (agent-zero/stickllm-<id>/chat.json) so the A0 panel lists it too.
@@ -33,7 +35,16 @@ from typing import Callable
 
 VAULT_MNT = Path(os.environ.get("STICKLLM_VAULT_MNT", "/var/lib/stickllm/vault"))
 SETTINGS_MNT = Path(os.environ.get("STICKLLM_SETTINGS_MNT", "/mnt/stickllm-settings"))
+RUN_DIR = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
+SESSION_MODE_PATH = Path(
+    os.environ.get("STICKLLM_SESSION_MODE_PATH", str(RUN_DIR / "session-mode.json"))
+)
+# Ephemeral A0 chats: host /run is tmpfs. Never under the LUKS vault.
+EPHEMERAL_A0_CHATS = Path(
+    os.environ.get("STICKLLM_A0_EPHEMERAL_CHATS", str(RUN_DIR / "a0-chats"))
+)
 STORES = ("ssd", "usb")
+SESSION_MODES = frozenset({"ephemeral", "vault"})
 A0_SUBDIR = "agent-zero"
 EXPORT_PREFIX = "stickllm-"
 TOMBSTONES = ".deleted"
@@ -553,8 +564,32 @@ def sync_stores(a: Path, b: Path) -> dict:
 
 # --- Agent Zero bind mount -----------------------------------------------------
 
+def get_session_mode(path: Path = SESSION_MODE_PATH) -> str:
+    """UI header mode: ephemeral (default) or vault. Gates A0 chat persistence."""
+    env = str(os.environ.get("STICKLLM_SESSION_MODE") or "").strip().lower()
+    if env in SESSION_MODES:
+        return env
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "ephemeral"
+    if not isinstance(doc, dict):
+        return "ephemeral"
+    mode = str(doc.get("mode") or "ephemeral").strip().lower()
+    return mode if mode in SESSION_MODES else "ephemeral"
+
+
 def a0_chats_dir(vault_mnt: Path = VAULT_MNT, settings_mnt: Path = SETTINGS_MNT,
-                 mounted: Callable[[Path], bool] = is_mount) -> Path | None:
+                 mounted: Callable[[Path], bool] = is_mount,
+                 session_mode: str | None = None,
+                 ephemeral_dir: Path = EPHEMERAL_A0_CHATS) -> Path | None:
+    """Host path bind-mounted at /a0/usr/chats.
+
+    Ephemeral → tmpfs under /run (never the vault). Vault mode → active store.
+    """
+    mode = (session_mode or get_session_mode()).strip().lower()
+    if mode != "vault":
+        return ephemeral_dir
     roots = store_roots(vault_mnt, settings_mnt, mounted)
     _, root, _ = active_root(load_pref(vault_mnt, settings_mnt), roots)
     if root is None:
@@ -581,7 +616,8 @@ def migrate_a0_state_chats(state_chats: Path, target: Path) -> int:
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "a0-chats-dir":
-        d = a0_chats_dir()
+        mode = get_session_mode()
+        d = a0_chats_dir(session_mode=mode)
         if d is None:
             return 3
         d.mkdir(parents=True, exist_ok=True)
@@ -589,7 +625,9 @@ def main(argv: list[str]) -> int:
             os.chmod(d, 0o700)
         except OSError:
             pass
-        if len(argv) > 2:
+        # Only migrate private vault state chats into the encrypted store.
+        # Never yank them into ephemeral RAM.
+        if len(argv) > 2 and mode == "vault":
             moved = migrate_a0_state_chats(Path(argv[2]), d)
             if moved:
                 print(f"moved {moved} Agent Zero chat(s) into the shared chat folder", file=sys.stderr)

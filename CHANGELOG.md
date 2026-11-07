@@ -1,3 +1,32 @@
+## 0.6.12 - WIP (tree only — not baked/flashed)
+- **Official Agent Zero logo.** Desktop / nav icon uses the Agent Zero A0 mark
+  (from agent0ai/agent-zero); Discord approval from Jan Tomášek is filed at
+  [docs/legal/AGENT-ZERO-LOGO.md](docs/legal/AGENT-ZERO-LOGO.md).
+- **Browser home page.** Opening the desktop Browser lands on a local
+  `http://127.0.0.1/browser-home.html` with the StickLLM logo and live Web mode
+  (Internet / Tor / No internet) from `/api/web-mode`.
+- **Tor no longer traps Wi-Fi / mode switching.** Tor used to set a system-wide
+  Chromium SOCKS policy, so StickLLM Settings / Wi-Fi looked dead. Tor mode now
+  installs a Chromium **PAC** (LAN/loopback DIRECT, else SOCKS5) because managed
+  `ProxyMode=direct` overrode Browser `--proxy-server` and “what’s my IP” showed
+  the real address. No-internet allowlist still includes private LAN StickLLM.
+  Mode changes do not restart kiosk. `tor_ready` requires check.torproject.org
+  `"IsTor": true`. Toggling Tor closes desktop Browser windows. Docs:
+  [docs/WEB-MODE.md](docs/WEB-MODE.md).
+- **Delete vault in Settings → Storage & Vault.** Pick a known location (SSD / USB
+  DATA / …), enter the vault passcode, type **`DELETE_VAULT`**. Strong warning:
+  erases your data with no backup. Reuses Lock teardown (stop A0, umount) then
+  destroys only that `stickllm-vault.img` (never whole disks). Sibling `models/`,
+  DATA models, USB settings LUKS / pairing survive; setup markers clear so
+  create/attach can run again. Control: `vault_delete` → `stickllm-vault destroy`.
+  Docs: [docs/VAULT.md](docs/VAULT.md).
+- **Ephemeral Agent Zero chats stay off the vault.** `a0_chats_dir` / `stickllm-agent`
+  previously bind-mounted `<vault>/chats/agent-zero` whenever a store was open,
+  even with session mode Ephemeral (gateway StickLLM chat APIs already gated).
+  Ephemeral now mounts `/run/stickllm/a0-chats` (tmpfs); Vault mode mounts the
+  encrypted store. Mode switch try-restarts A0 to remount; Lock vault still stops
+  A0 cleanly. Docs: [docs/CHATS.md](docs/CHATS.md), [docs/VAULT.md](docs/VAULT.md).
+
 ## 0.6.11 - 2026-11-07
 - **Kiosk mic/camera: no Allow prompt.** Stick Chromium enterprise policy
   `AudioCaptureAllowedUrls` / `VideoCaptureAllowedUrls` (`stickllm-media.json`,

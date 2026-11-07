@@ -92,19 +92,55 @@ PY
   mv -f "$tmp" "$path"
 }
 
+# CLI bypass for Browser --proxy-bypass-list (belt-and-suspenders with PAC).
+TOR_BYPASS='<-loopback>;<local>;10.0.0.0/8;172.16.0.0/12;192.168.0.0/16;169.254.0.0/16'
+
+# No-internet: allow StickLLM on loopback AND private LAN (kiosk sometimes uses the stick IP).
+NONE_ALLOW='["http://127.0.0.1","http://127.0.0.1:*","https://127.0.0.1","https://127.0.0.1:*","http://localhost","http://localhost:*","https://localhost","https://localhost:*","http://10.*","https://10.*","http://172.16.*","http://172.17.*","http://172.18.*","http://172.19.*","http://172.20.*","http://172.21.*","http://172.22.*","http://172.23.*","http://172.24.*","http://172.25.*","http://172.26.*","http://172.27.*","http://172.28.*","http://172.29.*","http://172.30.*","http://172.31.*","https://172.16.*","https://172.17.*","https://172.18.*","https://172.19.*","https://172.20.*","https://172.21.*","https://172.22.*","https://172.23.*","https://172.24.*","https://172.25.*","https://172.26.*","https://172.27.*","https://172.28.*","https://172.29.*","https://172.30.*","https://172.31.*","http://192.168.*","https://192.168.*","http://169.254.*","https://169.254.*"]'
+
+# PAC: StickLLM/LAN DIRECT (Settings + Wi-Fi stay up); everything else SOCKS5 Tor.
+# Managed ProxyMode=direct previously overrode Browser --proxy-server, so "what's
+# my IP" showed the real address while the tray claimed Tor.
+tor_pac_policy_json() {
+  TOR_SOCKS="$TOR_SOCKS" python3 - <<'PY'
+import json, os, urllib.parse
+socks = os.environ.get("TOR_SOCKS", "127.0.0.1:9050")
+pac = f"""function FindProxyForURL(url, host) {{
+  if (isPlainHostName(host) || host === "localhost" || host === "127.0.0.1" || host === "[::1]")
+    return "DIRECT";
+  if (/^10\\.\\d+\\.\\d+\\.\\d+$/.test(host)) return "DIRECT";
+  if (/^192\\.168\\.\\d+\\.\\d+$/.test(host)) return "DIRECT";
+  if (/^169\\.254\\.\\d+\\.\\d+$/.test(host)) return "DIRECT";
+  if (/^172\\.(1[6-9]|2\\d|3[0-1])\\.\\d+\\.\\d+$/.test(host)) return "DIRECT";
+  return "SOCKS5 {socks}";
+}}
+"""
+pac_url = "data:application/x-ns-proxy-autoconfig," + urllib.parse.quote(pac)
+print(json.dumps({
+    "ProxyMode": "pac_script",
+    "ProxyPacUrl": pac_url,
+    "ProxyPacMandatory": True,
+    "ProxyServer": "",
+    "ProxyBypassList": "",
+    "URLBlocklist": [],
+    "URLAllowlist": [],
+}))
+PY
+}
+
 write_policy() {
   local mode="$1" body
   case "$mode" in
     internet)
       # Clear StickLLM proxy/block policies so Chromium uses a direct uplink.
-      body='{"ProxyMode":"direct","ProxyServer":"","ProxyBypassList":"","URLBlocklist":[],"URLAllowlist":[]}'
+      body='{"ProxyMode":"direct","ProxyServer":"","ProxyPacUrl":"","ProxyPacMandatory":false,"ProxyBypassList":"","URLBlocklist":[],"URLAllowlist":[]}'
       ;;
     tor)
-      body=$(printf '{"ProxyMode":"fixed_servers","ProxyServer":"socks5://%s","ProxyBypassList":"<-loopback>","URLBlocklist":[],"URLAllowlist":[]}' "$TOR_SOCKS")
+      body="$(tor_pac_policy_json)" || return 1
+      [[ -n "$body" ]] || return 1
       ;;
     none)
-      # Block every URL except loopback StickLLM / local app ports.
-      body='{"ProxyMode":"direct","ProxyServer":"","ProxyBypassList":"","URLBlocklist":["*"],"URLAllowlist":["http://127.0.0.1","http://127.0.0.1:*","https://127.0.0.1","https://127.0.0.1:*","http://localhost","http://localhost:*","https://localhost","https://localhost:*"]}'
+      body=$(printf '{"ProxyMode":"direct","ProxyServer":"","ProxyPacUrl":"","ProxyPacMandatory":false,"ProxyBypassList":"","URLBlocklist":["*"],"URLAllowlist":%s}' "$NONE_ALLOW")
       ;;
     *) return 1 ;;
   esac
@@ -119,6 +155,15 @@ write_policy() {
     fi
   done
   return "$rc"
+}
+
+reload_stick_browser() {
+  # Intentionally a no-op. Chromium managed ProxyMode/URLBlocklist refresh
+  # without a process kill (ProxySettings dynamic_refresh). Killing Chromium
+  # mid model-load / vault unlock looked like "everything broke"; restarting
+  # stickllm-kiosk blanked HDMI and could disturb NVIDIA/llama. Users can
+  # Reload desktop if a sticky proxy ever remains.
+  return 0
 }
 
 ensure_tor_conf() {
@@ -148,71 +193,88 @@ tor_is_active() {
   systemctl is-active --quiet "$TOR_UNIT" 2>/dev/null
 }
 
+tor_check_istor_body() {
+  # Print check.torproject.org/api/ip body via Tor, or empty on failure.
+  local body=""
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+  body="$(curl -sS --max-time 8 -A 'StickLLM' --proxy "http://${TOR_HTTP}" \
+    https://check.torproject.org/api/ip 2>/dev/null || true)"
+  if [[ -z "$body" ]]; then
+    body="$(curl -sS --max-time 8 -A 'StickLLM' --socks5-hostname "$TOR_SOCKS" \
+      https://check.torproject.org/api/ip 2>/dev/null || true)"
+  fi
+  printf '%s' "$body"
+}
+
 tor_bootstrap_ok() {
-  # Prefer Tor's HTTP tunnel; fall back to SOCKS via curl.
-  if command -v curl >/dev/null 2>&1; then
-    local code
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 \
-      --proxy "http://${TOR_HTTP}" https://check.torproject.org/api/ip 2>/dev/null || true)"
-    [[ "$code" == "200" ]] && return 0
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 \
-      --socks5-hostname "$TOR_SOCKS" https://check.torproject.org/api/ip 2>/dev/null || true)"
-    [[ "$code" == "200" ]] && return 0
-  fi
-  # Soft ready: listening SOCKS port after active unit.
-  if command -v ss >/dev/null 2>&1; then
-    ss -ltn 2>/dev/null | grep -qE "127\.0\.0\.1:9050|\[::1\]:9050" && return 0
-  fi
-  return 1
+  # Require a real Tor exit: API must say "IsTor": true (HTTP 200 alone is not enough —
+  # a direct leak can still return 200 with IsTor:false).
+  local body
+  body="$(tor_check_istor_body)"
+  [[ -n "$body" ]] || return 1
+  printf '%s' "$body" | grep -qE '"IsTor"[[:space:]]*:[[:space:]]*true'
+}
+
+close_stick_browsers() {
+  # Desktop Browser app only (/run/stickllm/browser/…). Never the kiosk StickLLM UI.
+  pkill -f -- '--user-data-dir=/run/stickllm/browser/' 2>/dev/null || true
+  return 0
 }
 
 start_tor() {
+  # Wait long enough for a real circuit, but cap so Settings/Wi-Fi stay responsive.
   ensure_tor_conf
   if ! command -v tor >/dev/null 2>&1 && ! systemctl cat "$TOR_UNIT" >/dev/null 2>&1; then
     return 1
   fi
-  systemctl start "$TOR_UNIT" 2>/dev/null || return 1
+  systemctl start --no-block "$TOR_UNIT" 2>/dev/null || systemctl start "$TOR_UNIT" 2>/dev/null || return 1
   local i
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
     if tor_bootstrap_ok; then
       return 0
     fi
     sleep 1
   done
-  # Unit up even if bootstrap still running — policy is already Tor; UI shows tor_ready.
-  tor_is_active
+  # Daemon up but not verified yet — UI keeps polling tor_ready via status.
+  tor_is_active || return 0
 }
 
 stop_tor() {
-  systemctl stop "$TOR_UNIT" 2>/dev/null || true
+  systemctl stop --no-block "$TOR_UNIT" 2>/dev/null || systemctl stop "$TOR_UNIT" 2>/dev/null || true
   return 0
 }
 
 apply_mode() {
-  local mode note tor_a=0 tor_r=0 applied=1
+  local mode note tor_a=0 tor_r=0 applied=1 reload_browser="${2:-0}"
   mode="$(norm_mode "${1:-}" )" || die "mode must be internet, tor, or none"
   case "$mode" in
     internet)
-      stop_tor
+      # Policy first so leaving Tor always restores direct even if Tor stop hangs.
       write_policy internet || applied=0
+      stop_tor
       note="Stick Chromium uses the normal network uplink."
       ;;
     tor)
       write_policy tor || applied=0
       if start_tor; then
         tor_a=1
-        if tor_bootstrap_ok; then tor_r=1; note="Stick Chromium is routed through Tor."; else
-          note="Tor is starting; stick Chromium will use Tor once the circuit is ready."
+        if tor_bootstrap_ok; then
+          tor_r=1
+          note="Tor verified (IsTor=true). Re-open Browser — public sites use Tor; Settings stay on Wi-Fi."
+        else
+          note="Tor daemon up — waiting to verify a Tor exit (IsTor). Settings stay on Wi-Fi."
         fi
       else
-        applied=0
-        note="Tor could not start. Install the tor package or check tor.service."
+        # Keep Tor mode selected; user can still switch away. Policy already written.
+        note="Tor could not start yet. StickLLM Settings / Wi-Fi stay direct; retry or check tor.service."
       fi
       ;;
     none)
-      stop_tor
       write_policy none || applied=0
-      note="Stick Chromium is blocked from the public web (loopback StickLLM still works)."
+      stop_tor
+      note="Stick Chromium is blocked from the public web (StickLLM on loopback/LAN still works)."
       ;;
   esac
   local p
@@ -225,7 +287,18 @@ apply_mode() {
     mkdir -p "$(dirname "$PERSIST_VAR")" 2>/dev/null || true
     cp -f "$STATE_RUN" "$PERSIST_VAR" 2>/dev/null || true
   fi
+  # On explicit set: close desktop Browser windows so the next open picks up Tor
+  # SOCKS flags (or drops them). Never kill the kiosk StickLLM Chromium.
+  if [[ "$reload_browser" == "1" ]]; then
+    close_stick_browsers
+    reload_stick_browser
+  fi
   printf 'mode=%s tor_active=%s tor_ready=%s applied=%s\n' "$mode" "$tor_a" "$tor_r" "$applied"
+  # Leaving Tor / entering internet must succeed even if Tor stop was noisy.
+  if [[ "$mode" == internet || "$mode" == none ]]; then
+    [[ "$applied" -eq 1 ]]
+    return $?
+  fi
   [[ "$applied" -eq 1 ]]
 }
 
@@ -241,8 +314,8 @@ emit_status() {
   case "$mode" in
     internet) note="Stick Chromium uses the normal network uplink." ;;
     tor)
-      if [[ "$tor_r" -eq 1 ]]; then note="Stick Chromium is routed through Tor."
-      elif [[ "$tor_a" -eq 1 ]]; then note="Tor is starting; stick Chromium will use Tor once the circuit is ready."
+      if [[ "$tor_r" -eq 1 ]]; then note="Tor verified (IsTor=true). Re-open Browser — public sites use Tor; Settings stay on Wi-Fi."
+      elif [[ "$tor_a" -eq 1 ]]; then note="Tor daemon up — waiting to verify a Tor exit (IsTor). Settings stay on Wi-Fi."
       else note="Tor mode selected; daemon is not running yet."; fi
       ;;
     none) note="Stick Chromium is blocked from the public web (loopback StickLLM still works)." ;;
@@ -261,11 +334,13 @@ case "$cmd" in
     emit_status
     ;;
   apply)
-    apply_mode "$(read_desired)"
+    # Boot path: write policy + Tor state only. Do not bounce the browser —
+    # stickllm-kiosk is starting in parallel and a restart blanks HDMI.
+    apply_mode "$(read_desired)" 0
     ;;
   set)
     [[ $# -ge 2 ]] || die "usage: stickllm-web-mode set <internet|tor|none>"
-    apply_mode "$2"
+    apply_mode "$2" 1
     ;;
   *)
     die "usage: stickllm-web-mode [status|get|set <internet|tor|none>|apply]"

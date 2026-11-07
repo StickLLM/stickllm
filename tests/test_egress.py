@@ -174,3 +174,33 @@ def test_proxy_refuses_metadata(agent, tmp_path, monkeypatch):
     assert "def run_egress_proxy" in src
     assert "172.30.0." in src
     assert "403 Forbidden" in src
+    assert "egress_upstream_connect" in src
+    assert "connect_via_tor_http_tunnel" in src
+
+
+def test_web_mode_steers_agent_egress(agent, tmp_path, monkeypatch):
+    mode_path = tmp_path / "web-mode.json"
+    monkeypatch.setattr(agent, "WEB_MODE_PATH", mode_path)
+    mode_path.write_text('{"mode":"internet"}\n', encoding="utf-8")
+    assert agent.stickllm_web_mode() == "internet"
+    assert agent.agent_web_fetch_enabled() is True
+    mode_path.write_text('{"mode":"none"}\n', encoding="utf-8")
+    assert agent.stickllm_web_mode() == "none"
+    assert agent.agent_web_fetch_enabled() is False
+    mode_path.write_text('{"mode":"tor","tor_ready":true}\n', encoding="utf-8")
+    assert agent.stickllm_web_mode() == "tor"
+    # Tor mode still allows fetch, but upstream must use the tunnel helper.
+    assert agent.agent_web_fetch_enabled() is True
+    calls = []
+
+    def fake_tor(host, port, timeout=20):
+        calls.append((host, port, timeout))
+        raise OSError("tor-down-for-test")
+
+    monkeypatch.setattr(agent, "connect_via_tor_http_tunnel", fake_tor)
+    try:
+        agent.egress_upstream_connect("example.com", 443, timeout=5)
+        assert False, "expected OSError"
+    except OSError as e:
+        assert "tor-down-for-test" in str(e)
+    assert calls == [("example.com", 443, 5)]
