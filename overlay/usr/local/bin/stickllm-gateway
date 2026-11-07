@@ -2320,6 +2320,18 @@ def set_session_mode(mode: str) -> dict:
             doc["agent_chats_remount"] = True
         except OSError:
             pass
+    # Desktop Browser only — so next open matches Incognito (ephemeral) vs normal (vault).
+    try:
+        subprocess.run(
+            ["pkill", "-f", "--", "--user-data-dir=/run/stickllm/browser/"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+        doc["browsers_closed"] = True
+    except (OSError, subprocess.TimeoutExpired):
+        doc["browsers_closed"] = False
     return {"ok": True, **doc}
 
 
@@ -2994,6 +3006,26 @@ def web_mode_info() -> dict:
     """UI-facing Web mode status. Stick Chromium + stick-origin fetches only."""
     doc = read_json_safe(WEB_MODE_PATH) or {}
     mode = get_web_mode()
+    session = get_session_mode()
+    private = session != "vault"
+    tor_ready = bool(doc.get("tor_ready"))
+    tor_active = bool(doc.get("tor_active"))
+    # Prefer clear product copy over older runtime notes ("Re-open Browser…").
+    if mode == "tor":
+        if tor_ready:
+            note = (
+                "Tor verified. Agent Zero and other StickLLM applications "
+                "use Tor when accessing the internet."
+            )
+        elif tor_active:
+            note = (
+                "Tor is starting — waiting to verify a Tor exit. "
+                "Agent Zero and other StickLLM apps will use Tor once ready."
+            )
+        else:
+            note = "Tor mode selected; daemon is not running yet."
+    else:
+        note = str(doc.get("note") or "")
     return {
         "ok": True,
         "mode": mode,
@@ -3005,10 +3037,19 @@ def web_mode_info() -> dict:
             "Remote LAN clients use their own network; StickLLM cannot force "
             "their browser through Tor or offline."
         ),
-        "tor_active": bool(doc.get("tor_active")),
-        "tor_ready": bool(doc.get("tor_ready")),
+        "tor_active": tor_active,
+        "tor_ready": tor_ready,
         "applied": bool(doc.get("applied", True)),
-        "note": str(doc.get("note") or ""),
+        "note": note,
+        # Session mode (Ephemeral / Vault) — Browser home + Incognito policy.
+        "session_mode": session,
+        "private_browsing": private,
+        "session_note": (
+            "Ephemeral: this Browser window is Incognito — history and cookies "
+            "are not kept."
+            if private
+            else "Vault: normal browsing for this window (still on the stick profile under /run)."
+        ),
     }
 
 

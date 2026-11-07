@@ -72,6 +72,9 @@ def test_control_browser_tor_proxy_flags():
     assert "_web_mode_for_browser" in ctl
     assert "--proxy-server=socks5://127.0.0.1:9050" in ctl
     assert "--proxy-bypass-list=" in ctl
+    # Ephemeral → Incognito on Desktop Browser windows.
+    assert 'session_mode() != "vault"' in ctl
+    assert '"--incognito"' in ctl or "'--incognito'" in ctl
 
 
 def test_browser_home_page_and_start_url():
@@ -81,15 +84,36 @@ def test_browser_home_page_and_start_url():
     assert "Privacy AI USB" in home
     assert "███████╗████████╗██╗" in home  # bootstatus / deskSplash banner
     assert "agent-zero" not in home.lower()
+    assert 'id="sessionPill"' in home and 'id="privacyPill"' in home
+    assert 'id="clientPill"' in home
     # Gateway CSP is script-src 'self' — no inline script on this page.
     assert "<script src=\"/browser-home.js\">" in home
     assert "fetch(" not in home
     assert "/api/web-mode" in js
     assert "Tor mode" in js and "No internet" in js and "Internet" in js
+    assert "Incognito" in js and "Ephemeral mode" in js and "Vault mode" in js
+    assert "private_browsing" in js and "session_mode" in js
+    assert "Remote web client" in js and "onStickLoopback" in js
+    assert "Agent Zero: Tor" in js and "Agent Zero: No internet" in js
+    assert "StickLLM USB Stick" in js
+    assert "use Tor when accessing the internet" in js
+    assert "This Browser window uses Tor and is Incognito" in js
+    assert "other StickLLM applications" in js
+    assert "install Tor" in js and "Incognito" in js
+    assert "remoteCallout" in home
+    assert "HDMI stick" not in js
+    assert "Re-open Browser" not in js
+    assert "Settings stay" not in js
+    assert "Type an address" not in js
+    wm = (BIN / "stickllm-web-mode").read_text(encoding="utf-8")
+    assert "Re-open Browser" not in wm
+    assert "Agent Zero and other StickLLM applications use Tor" in wm
     ctl = (BIN / "stickllm-control").read_text(encoding="utf-8")
     assert "browser-home.html" in ctl
     hotfix = (BIN / "stickllm-hotfix").read_text(encoding="utf-8")
     assert "browser-home.html" in hotfix and "browser-home.js" in hotfix
+    desk = (UI / "desktop.js").read_text(encoding="utf-8")
+    assert 'window.open(url || "/browser-home.html"' in desk
 
 
 def test_control_and_gateway_web_mode_api():
@@ -102,6 +126,8 @@ def test_control_and_gateway_web_mode_api():
     # Stick-origin fetches honour No internet / Tor.
     assert 'get_web_mode() == "none"' in gw
     assert "TOR_HTTP_PROXY" in gw
+    assert '"session_mode"' in gw and '"private_browsing"' in gw
+    assert "browsers_closed" in gw
 
 
 def test_desktop_web_tray_and_settings():

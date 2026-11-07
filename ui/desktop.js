@@ -1292,13 +1292,18 @@
   }
   // The Browser is a real Chrome window on the stick's screen (kiosk),
   // placed over the desktop like the other windows (stickllm-control). On a
-  // paired laptop the page is already in a browser: a new tab.
+  // paired laptop the page is already in a browser: a new tab → Browser home
+  // so session / Web mode status is visible (remote tabs are not Incognito /
+  // Tor — those apply to stick Chromium only).
   // Browser icon / unframeable apps: a real Chromium window on the stick's
   // screen (stickllm-control browser_open). app=true opens a bare app window
   // for one site; the Browser icon gets a normal window with an address bar.
   function openBrowser(url, title, app) {
     const api = appApi();
-    if (!isLocal() || !api.control) { window.open(url || "about:blank", "_blank"); return; }
+    if (!isLocal() || !api.control) {
+      window.open(url || "/browser-home.html", "_blank", "noopener");
+      return;
+    }
     const r = ui.layer.getBoundingClientRect();
     const k = window.devicePixelRatio || 1;
     const bx = window.screenX || 0, by = window.screenY || 0;

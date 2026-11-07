@@ -21,9 +21,21 @@ follow the same mode: blocked in **No internet**, HTTP-tunneled through Tor in
 ## Remote LAN clients
 
 Paired phones and PCs on the LAN keep **their own** network path. StickLLM cannot
-force a remote browser through Tor or offline. The Settings / tray UI says so
-when Web mode is open. Changing Web mode from a remote client still only
+force a remote browser through Tor, offline, or Incognito. The Settings / tray UI
+says so when Web mode is open. Changing Web mode from a remote client still only
 reconfigures the **stick’s** Chromium (and stick-origin fetches).
+
+Opening **Browser** from a remote client opens a new tab to `/browser-home.html`
+(not `about:blank`). That page:
+
+- Labels **Remote web client** vs **StickLLM USB Stick**
+- Shows stick **Agent Zero: Tor** / **Agent Zero: No internet** / Internet clearly
+- Notes that in Tor mode, **Agent Zero and other StickLLM applications on the USB
+  Stick** use Tor even when you are driving the stick from a remote client
+- Shows stick Ephemeral / Vault
+- Callout: Tor / Incognito for *this remote tab* are not applied by StickLLM —
+  install Tor / enable Incognito on the workstation yourself. Stick Desktop
+  Browser Incognito still applies only on the StickLLM USB Stick.
 
 ## Persistence and boot
 
@@ -62,11 +74,20 @@ other hosts → `SOCKS5 127.0.0.1:9050`. Re-open Browser after toggling Tor so t
 new process loads the PAC. `tor_ready` requires check.torproject `"IsTor": true`
 through Tor. Model load / llama are untouched by Web mode.
 
-## Browser home
+## Browser home and Ephemeral / Incognito
 
 Desktop **Browser** opens `http://127.0.0.1/browser-home.html` (local file under
-`/opt/stickllm/ui/`). It shows the StickLLM logo and the current Web mode from
-`GET /api/web-mode` (polls every few seconds).
+`/opt/stickllm/ui/`). It shows the StickLLM banner plus:
+
+- **Session mode** — Ephemeral or Vault (`session_mode` from `GET /api/web-mode`)
+- **Privacy** — Incognito when Ephemeral; normal browsing when Vault
+- **Web mode** — Internet / Tor / No internet
+
+When session mode is **Ephemeral**, `stickllm-control` starts Desktop Browser
+windows with Chromium `--incognito` (history and cookies are not kept). Vault
+mode uses a normal profile for that window. Switching Ephemeral ↔ Vault closes
+open Desktop Browser windows so the next open matches the new policy. The HDMI
+StickLLM kiosk is never launched Incognito.
 
 ## Test on the next bake
 

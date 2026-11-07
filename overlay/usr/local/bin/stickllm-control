@@ -219,6 +219,12 @@ def set_session_mode(mode: str) -> dict:
         doc["agent_chats_remount"] = r.get("code", 1) == 0
     except Exception:
         pass
+    # Re-open Browser after Ephemeral↔Vault so Incognito / normal matches mode.
+    try:
+        sh(["pkill", "-f", "--", "--user-data-dir=/run/stickllm/browser/"], timeout=10)
+        doc["browsers_closed"] = True
+    except Exception:
+        doc["browsers_closed"] = False
     return doc
 
 
@@ -5292,6 +5298,11 @@ def browser_command(bin_path: str, profile: Path, url: str, app: bool, geo: dict
         f"--user-data-dir={profile}", f"--disk-cache-dir={profile / 'cache'}",
         f"--class=stickllm-browser-{bid}",
     ]
+    # Ephemeral session → Chromium Incognito (no history/cookies for this window).
+    # Vault mode keeps a normal profile for the session. Kiosk StickLLM is never
+    # launched through this path.
+    if session_mode() != "vault":
+        cmd.append("--incognito")
     # Tor mode: SOCKS only on these Browser windows. Kiosk StickLLM stays direct
     # (managed stickllm-proxy.json is ProxyMode=direct while Tor runs).
     if _web_mode_for_browser() == "tor":

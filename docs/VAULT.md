@@ -9,8 +9,8 @@ Shipping ISO: **v0.3.6** on Google Drive — see [RESTORE.md](RESTORE.md) / [REA
 
 | Mode | Behavior |
 |---|---|
-| **Ephemeral** (default) | No SSD/vault writes. StickLLM chats stay RAM/browser-only; Agent Zero chats bind `/run/stickllm/a0-chats` (tmpfs), not `<vault>/chats/agent-zero`. Downloads use USB DATA or baked RAM paths only. |
-| **Vault** | User must switch consciously. Downloads/chats may use the encrypted blob after unlock/setup; A0 chats remount to the active encrypted store. |
+| **Ephemeral** (default) | No SSD/vault writes. StickLLM chats stay RAM/browser-only; Agent Zero chats bind `/run/stickllm/a0-chats` (tmpfs), not `<vault>/chats/agent-zero`. Desktop Browser opens **Incognito**. Downloads use USB DATA or baked RAM paths only. |
+| **Vault** | User must switch consciously. Downloads/chats may use the encrypted blob after unlock/setup; A0 chats remount to the active encrypted store. Desktop Browser uses a normal (non-Incognito) window. |
 
 Switching to Vault opens Settings unlock/setup if the vault is locked or absent. Switching back to Ephemeral stops new vault writes (does not auto-lock; use **Lock** / Ctrl+Shift+L to close LUKS). If Agent Zero is running, mode switch try-restarts it so the chats bind remounts — it does not stop llama or other add-ons.
 

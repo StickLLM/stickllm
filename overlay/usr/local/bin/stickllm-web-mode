@@ -262,13 +262,13 @@ apply_mode() {
         tor_a=1
         if tor_bootstrap_ok; then
           tor_r=1
-          note="Tor verified (IsTor=true). Re-open Browser — public sites use Tor; Settings stay on Wi-Fi."
+          note="Tor verified. Agent Zero and other StickLLM applications use Tor when accessing the internet."
         else
-          note="Tor daemon up — waiting to verify a Tor exit (IsTor). Settings stay on Wi-Fi."
+          note="Tor is starting — waiting to verify a Tor exit. Agent Zero and other StickLLM apps will use Tor once ready."
         fi
       else
         # Keep Tor mode selected; user can still switch away. Policy already written.
-        note="Tor could not start yet. StickLLM Settings / Wi-Fi stay direct; retry or check tor.service."
+        note="Tor could not start yet; retry or check tor.service."
       fi
       ;;
     none)
@@ -314,8 +314,8 @@ emit_status() {
   case "$mode" in
     internet) note="Stick Chromium uses the normal network uplink." ;;
     tor)
-      if [[ "$tor_r" -eq 1 ]]; then note="Tor verified (IsTor=true). Re-open Browser — public sites use Tor; Settings stay on Wi-Fi."
-      elif [[ "$tor_a" -eq 1 ]]; then note="Tor daemon up — waiting to verify a Tor exit (IsTor). Settings stay on Wi-Fi."
+      if [[ "$tor_r" -eq 1 ]]; then note="Tor verified. Agent Zero and other StickLLM applications use Tor when accessing the internet."
+      elif [[ "$tor_a" -eq 1 ]]; then note="Tor is starting — waiting to verify a Tor exit. Agent Zero and other StickLLM apps will use Tor once ready."
       else note="Tor mode selected; daemon is not running yet."; fi
       ;;
     none) note="Stick Chromium is blocked from the public web (loopback StickLLM still works)." ;;

@@ -5888,7 +5888,7 @@ async function setWebMode(mode, opts) {
   if (!j.ok) throw new Error(j.error || j.note || "Web mode failed");
   if (!quiet) {
     if (mode === "tor" && !j.tor_ready) toast("Tor starting — verifying a Tor exit…");
-    else if (mode === "tor") toast("Tor verified — open Browser for Tor tabs (Settings stay on Wi‑Fi)");
+    else if (mode === "tor") toast("Tor verified — Agent Zero and StickLLM apps use Tor for the internet");
     else if (mode === "none") toast("No internet — public web blocked in Browser");
     else toast("Internet — normal uplink");
   }
