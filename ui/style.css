@@ -242,8 +242,9 @@ details.reasoning>:not(summary){border-left:2px solid var(--line,rgba(127,127,12
 
 /* Settings modal */
 .modalWrap{position:fixed;inset:0;background:rgba(5,8,9,.6);display:grid;place-items:center;z-index:40;padding:24px}
+/* Must sit above #setupWizard (9999) — recovery confirm was invisible behind it. */
+.modalWrap.top2{z-index:10060}
 [data-theme=light] .modalWrap{background:rgba(20,30,32,.35)}
-.modalWrap.top2{z-index:60}
 .modal{width:min(980px,100%);height:min(720px,100%);background:var(--panel);border:1px solid var(--line);border-radius:16px;display:flex;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.45)}
 .modal.small{width:min(460px,100%);height:auto}
 .setNav{width:210px;flex:none;background:var(--bg2);border-right:1px solid var(--line2);padding:16px 10px;display:flex;flex-direction:column;gap:2px;overflow:auto}
@@ -763,3 +764,7 @@ body.setup-active #setupWizard.show {
 .pairCodeBanner .pcbHint{margin:0 0 10px;font-size:12px;color:#94a3b8}
 .pairCodeBanner .pcbCode{font-size:28px;letter-spacing:.12em;font-weight:700;margin:4px 0 10px}
 .pairCodeBanner .pcbMeta{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:#94a3b8}
+
+.setup-card .checkRow{display:flex;align-items:flex-start;gap:8px;font-size:14px;cursor:pointer}
+.setup-card .checkRow input{margin-top:3px}
+.setup-card pre.recovery{max-height:160px;overflow:auto}

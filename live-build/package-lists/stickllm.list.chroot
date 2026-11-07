@@ -88,3 +88,5 @@ docker.io
 apparmor
 # stickllm-agent installs its own nftables rules. dockerd is started with --iptables=false.
 nftables
+# 0.6.11: on-demand Tor for stick Chromium (Web mode). Not enabled at boot.
+tor

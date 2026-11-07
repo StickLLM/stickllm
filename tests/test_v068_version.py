@@ -8,29 +8,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_stickllm_json_is_068():
     doc = json.loads((ROOT / "overlay/opt/stickllm/ui/stickllm.json").read_text())
-    assert doc["version"] == "0.6.8"
+    assert doc["version"] in ("0.6.10", "0.6.11")
 
 
 def test_about_and_cache_bust_068():
     html = (ROOT / "ui/index.html").read_text(encoding="utf-8")
-    assert "StickLLM v0.6.8" in html
+    assert re.search(r"StickLLM v0\.6\.(10|11)", html)
     assert "deskSplash" in html
     # Hotfix cache busts on the 0.6.8 line (v068a).
-    assert len(re.findall(r"\?v=v068", html)) >= 5
+    assert len(re.findall(r"\?v=v061[01]", html)) >= 5
 
 
 def test_kiosk_fallback_and_build_default_068():
     kiosk = (ROOT / "overlay/usr/local/bin/stickllm-kiosk").read_text(encoding="utf-8")
-    assert "|| echo v0.6.8" in kiosk
+    assert re.search(r"\|\| echo v0\.6\.(10|11)", kiosk)
     build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
-    assert 'VERSION="${STICKLLM_VERSION:-0.6.8}"' in build
+    assert "STICKLLM_VERSION:-0.6.11" in build or "STICKLLM_VERSION:-0.6.10" in build
     assert "v0.6.7" in build  # refuse list keeps prior ship
 
 
 def test_changelog_top_is_068():
     log = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     first = re.search(r"^## (\S+)", log, re.M).group(1)
-    assert first == "0.6.8"
+    assert first in ("0.6.10", "0.6.11")
     for item in (
         "agentHttpReady",
         "csrf_token",
@@ -49,11 +49,9 @@ def test_changelog_top_is_068():
 
 def test_wizard_open_model_and_recovery_no_cancel():
     app = (ROOT / "ui/app.js").read_text(encoding="utf-8")
-    assert "STEP_WELCOME" in app
     assert "STEP_MODEL" in app
-    assert app.index("STEP_WELCOME") < app.index("STEP_MODEL")
-    assert "Welcome to StickLLM" in app
-    assert "This is your setup wizard" in app
+    assert "STEP_WELCOME" not in app
+    assert "rescueStuckVaultWizard" in app
     assert "Our default installed model is" in app
     assert "STARTER_MODEL_ID" in app
     assert "qwen25-7b-q4km" in app
@@ -82,6 +80,14 @@ def test_session_mode_idempotent_no_toast_loop():
     assert "httpReady" in desk
     assert "chatUpgradeLock" in desk
     assert "unable to load agent zero" in desk
+    # Never force-embed on status.running alone (127.0.0.1 refused on first open).
+    open_click = desk.split('if (b.dataset.mode === "open")', 1)[1].split("b.disabled = true; b.classList.add(\"busy\"); b.textContent = \"Installing…\"", 1)[0]
+    assert "forceChatEmbed(last)" not in open_click
+    assert "agentHttpReady" in open_click
+    ready = (ROOT / "ui/app.js").read_text(encoding="utf-8")
+    ready_fn = ready.split("async function agentHttpReady", 1)[1].split("\nasync function ", 1)[0]
+    assert "csrf_token" in ready_fn
+    assert 'method: "HEAD"' not in ready_fn
     # In-place reload only — no close+reopen thrash on blank/pair_required.
     reload_fn = desk.split("function reloadChatAgentFrame()", 1)[1].split("\n  function ", 1)[0]
     assert "wm.close(CHAT" not in reload_fn

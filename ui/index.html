@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>StickLLM</title>
 <link rel="icon" href="favicon.svg" />
-<link rel="stylesheet" href="style.css?v=v068a" />
-<link rel="stylesheet" href="desktop.css?v=v068a" />
+<link rel="stylesheet" href="style.css?v=v0611" />
+<link rel="stylesheet" href="desktop.css?v=v0611" />
 </head>
 <body>
 <!-- Exact stickllm-bootstatus BANNER (block "STICKLLM"); deskMode backdrop only. -->
@@ -521,8 +521,15 @@
   <div class="group">
     <div class="row"><div><b>LAN address</b><small>Open this on any device on the same network.</small></div><span class="mono"><span id="netUrl">http://…/</span> <button class="link" id="copyUrl">Copy</button></span></div>
     <div class="row"><div><b>Status</b><small id="netStatus">Reading the network…</small></div><span class="pill" id="netPill">…</span></div>
-    <div class="row"><div><b>Offline mode</b><small>Block all outbound traffic. Web lookup and updates are disabled.</small></div><label class="switch"><input type="checkbox" id="offline" disabled title="Coming soon — offline mode not wired"><span></span></label></div>
-    <div class="row dim"><div><b>Route web lookup through Tor</b><small>Coming later.</small></div><label class="switch"><input type="checkbox" disabled><span></span></label></div>
+    <div class="row"><div><b>Web (stick browser)</b><small id="webModeNote">Internet, Tor, or No internet for the stick kiosk / stick Chromium. Remote devices keep their own network.</small></div>
+      <div class="seg" id="webModeSeg" role="radiogroup" aria-label="Web mode">
+        <button type="button" data-web="internet" class="on" title="Normal uplink for stick Chromium">Internet</button>
+        <button type="button" data-web="tor" title="Route stick Chromium through Tor">Tor</button>
+        <button type="button" data-web="none" title="Block public web in stick Chromium">No internet</button>
+      </div>
+    </div>
+    <p class="muted small" id="webModeRemote">Applies to the <b>stick</b> kiosk browser and stick-local Chromium only. Paired phones and PCs on the LAN use their own network — StickLLM cannot force their traffic through Tor or offline. Stick-origin web lookup on the stick follows this mode.</p>
+    <p class="muted small" id="webModeStatus" hidden></p>
   </div>
   <h3>WiFi</h3>
   <div class="row2">
@@ -617,7 +624,7 @@
     <h3>StickLLM</h3>
     <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
     <div class="group">
-      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.8</span></div>
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.6.11</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono" id="aboutLlama">—</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
       <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
@@ -745,8 +752,8 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v068a"></script>
-<script src="desktop-core.js?v=v068a"></script>
-<script src="desktop.js?v=v068a"></script>
+<script src="app.js?v=v0611"></script>
+<script src="desktop-core.js?v=v0611"></script>
+<script src="desktop.js?v=v0611"></script>
 </body>
 </html>

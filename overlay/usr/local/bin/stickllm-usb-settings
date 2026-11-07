@@ -50,6 +50,30 @@ stick_keyfile_path() {
   fi
 }
 
+# An interrupted unlock can leave the mapper open with nothing mounted: the
+# mount after `cryptsetup open` failed, or the filesystem was unmounted later.
+# A second open then dies with "Device stickllm-settings already exists", the
+# partition stays "locked", and Agent Zero never leaves settings_missing — with
+# no way back short of a manual cryptsetup close. Reuse a live mapping when it
+# already backs this partition; drop it when it backs something else.
+adopt_open_mapper() {
+  local part="$1" backing=""
+  cryptsetup status "$MAPPER_NAME" >/dev/null 2>&1 || return 1
+  backing="$(cryptsetup status "$MAPPER_NAME" 2>/dev/null | awk '$1 == "device:" { print $2; exit }')"
+  if [[ -n "$backing" && "$backing" != "$part" ]]; then
+    cryptsetup close "$MAPPER_NAME" 2>/dev/null \
+      || die "settings mapper is open on $backing; close it before unlocking $part"
+    return 1
+  fi
+  [[ -b "$MAPPER" ]] || return 1
+  return 0
+}
+
+mount_mapper() {
+  mkdir -p "$MNT"
+  mountpoint -q "$MNT" || mount "$MAPPER" "$MNT"
+}
+
 boot_disk() {
   local disk=""
   disk="$("$CLAIM" --print-boot-disk 2>/dev/null || true)"
@@ -149,6 +173,28 @@ Voice weights are not stored here (/opt/stickllm/speech).
 Chats are not stored here (they stay in the SSD vault).
 EOF
   fi
+  # Seed Agent Zero stickllm-apps skill before the agent ever starts. The ISO
+  # bakes a copy under /usr/local/share/stickllm/agent-zero-skills; prepare-portable
+  # rewrites it with the live app list when Agent Zero starts.
+  seed_apps_skill || true
+}
+
+seed_apps_skill() {
+  local dest="$MNT/agent-zero/skills/stickllm-apps"
+  local baked="/usr/local/share/stickllm/agent-zero-skills/stickllm-apps/SKILL.md"
+  mkdir -p "$dest"
+  if [[ -f "$baked" && ! -f "$dest/SKILL.md" ]]; then
+    install -m 644 "$baked" "$dest/SKILL.md"
+  fi
+  if command -v python3 >/dev/null 2>&1 && [[ -f /usr/local/lib/stickllm_agent.py ]]; then
+    python3 - <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0, "/usr/local/lib")
+import stickllm_agent as a
+if a.settings_mounted():
+    a.ensure_apps_instructions()
+PY
+  fi
 }
 
 cmd_status() {
@@ -210,13 +256,14 @@ cmd_open() {
   if findmnt -n -S "$part" >/dev/null 2>&1; then
     die "refusing to open mounted $part"
   fi
-  if ! luks_pass "$pass" open --type luks2 "$part" "$MAPPER_NAME"; then
-    unset pass
-    die "settings unlock failed with the vault passcode"
+  if ! adopt_open_mapper "$part"; then
+    if ! luks_pass "$pass" open --type luks2 "$part" "$MAPPER_NAME"; then
+      unset pass
+      die "settings unlock failed with the vault passcode"
+    fi
   fi
   unset pass
-  mkdir -p "$MNT"
-  mount "$MAPPER" "$MNT"
+  mount_mapper
   prepare_tree
   echo "settings unlocked at $MNT"
 }
@@ -257,9 +304,11 @@ cmd_open_or_init() {
     die "refusing to format or open mounted $part"
   fi
   if cryptsetup isLuks "$part" 2>/dev/null; then
-    if ! luks_pass "$pass" open --type luks2 "$part" "$MAPPER_NAME"; then
-      unset pass
-      die "settings unlock failed with the vault passcode"
+    if ! adopt_open_mapper "$part"; then
+      if ! luks_pass "$pass" open --type luks2 "$part" "$MAPPER_NAME"; then
+        unset pass
+        die "settings unlock failed with the vault passcode"
+      fi
     fi
   else
     # Format only after the caller has already opened the SSD vault with this
@@ -286,8 +335,17 @@ cmd_open_or_init() {
       || { unset pass; die "mkfs failed on the settings mapper"; }
   fi
   unset pass
-  mkdir -p "$MNT"
-  mount "$MAPPER" "$MNT"
+  # luksFormat can succeed and mkfs still not run (power loss, or a crash
+  # between the two). The mapper then opens fine but every mount reports
+  # "bad superblock", and the partition is stuck locked for good. Finish the
+  # init — only with INIT=1, which means the vault already took this passcode.
+  if [[ -z "$(lsblk -no FSTYPE "$MAPPER" 2>/dev/null | head -1 | tr -d '[:space:]')" ]]; then
+    [[ "${STICKLLM_SETTINGS_INIT:-}" == "1" ]] \
+      || die "settings volume has no filesystem; unlock the vault to finish setup"
+    mkfs.ext4 -F -L STICKLLM-SETTINGS "$MAPPER" \
+      || die "mkfs failed finishing the settings volume"
+  fi
+  mount_mapper
   prepare_tree
   echo "settings unlocked at $MNT"
 }

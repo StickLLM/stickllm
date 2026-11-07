@@ -235,13 +235,24 @@
     const basePlay = play;
     const baseLose = lose;
     // Same globals the game loop calls; only gravity timing changes.
-    window.update = function (idt) {
+    // Assign both window.* and bare names: the vendored loop looks up `update`
+    // on the global object, and keyboard handlers call `play` the same way.
+    function wrappedUpdate(idt) {
       if (paused) { if (actions) actions.length = 0; return; }
       baseUpdate(mode === "turn" ? 0 : idt);
-    };
-    // A game started from the keyboard is a normal real-time game.
-    window.play = function () { lost = false; paused = false; mode = "realtime"; basePlay(); setBanner(); };
-    window.lose = function () { lost = true; baseLose(); };
+    }
+    function wrappedPlay() {
+      lost = false;
+      paused = false;
+      mode = "realtime";
+      basePlay();
+      setBanner();
+    }
+    function wrappedLose() { lost = true; baseLose(); }
+    window.update = wrappedUpdate;
+    window.play = wrappedPlay;
+    window.lose = wrappedLose;
+    try { update = wrappedUpdate; play = wrappedPlay; lose = wrappedLose; } catch (e) { /* strict */ }
 
     window.stickllmApp = {
       describe: function () {
@@ -253,13 +264,19 @@
         let error = null;
         const before = { score: score, lines: rows };
         try {
-          const want = action.mode === "realtime" || action.mode === "turn" ? action.mode : "turn";
-          if (action.new_game || (action.start && !playing)) play();
-          mode = want;
-          if (action.pause) paused = true;
-          if (action.resume) paused = false;
           const moves = ["left", "right", "rotate", "soft_drop", "hard_drop", "place"];
           const wants = moves.some(function (k) { return action[k] !== undefined && action[k] !== false; });
+          // Only agent gameplay (or an explicit mode) switches to turn mode.
+          // Human Space/play stays realtime; a stray empty act must not freeze gravity.
+          if (action.mode === "realtime" || action.mode === "turn") mode = action.mode;
+          else if (wants || action.new_game || action.start) mode = "turn";
+          if (action.new_game || (action.start && !playing)) {
+            lost = false;
+            paused = false;
+            basePlay();
+          }
+          if (action.pause) paused = true;
+          if (action.resume) paused = false;
           if (wants) {
             if (!playing) error = lost ? "game_over" : "not_started";
             else {

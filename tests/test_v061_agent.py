@@ -37,6 +37,23 @@ def test_skill_lists_live_apps_browser_and_fast_path():
     marked = AG.apps_skill_text(installed=["node-red"])
     assert "Node-RED (add-on, installed)" in marked
     assert "comfyui: ComfyUI (image generation) (add-on, not installed" in marked
+    # Agent Zero rejects unquoted YAML when description contains "Ids: …".
+    assert text.startswith("---\nname: stickllm-apps\ndescription: \"")
+    fm = text.split("---\n", 2)[1]
+    assert "Ids:" in fm and fm.strip().startswith("name:")
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        yaml = None
+    if yaml is not None:
+        doc = yaml.safe_load(fm)
+        assert doc["name"] == "stickllm-apps"
+        assert "tetris" in doc["description"]
+    baked = ROOT / "overlay/usr/local/share/stickllm/agent-zero-skills/stickllm-apps/SKILL.md"
+    assert baked.is_file()
+    assert 'description: "' in baked.read_text(encoding="utf-8")
+    agent_bin = (BIN / "stickllm-agent").read_text(encoding="utf-8")
+    assert "/git/agent-zero/usr/skills" in agent_bin
 
 
 def test_open_url_ok():

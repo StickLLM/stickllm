@@ -120,8 +120,8 @@ def test_games_are_vendored_and_offline():
         assert commit in sources
         assert "master" not in sources.lower()
         page = (folder / "index.html").read_text(encoding="utf-8")
-        assert "Back to Apps" in page
-        assert 'href="/#apps"' in page or "href=/#apps" in page
+        assert "Back to Apps" not in page
+        assert 'href="/#apps"' not in page and "href=/#apps" not in page
         assert "StickLLM" in page
         assert "fonts.googleapis" not in page
         assert "google-analytics" not in page.lower()
@@ -333,7 +333,7 @@ def test_starter_pages_are_external_scripts(tmp_path):
                 csp = resp.headers["Content-Security-Policy"]
                 assert "unsafe-inline" in csp
                 assert "http:" not in csp and "https:" not in csp
-                assert "Back to Apps" in body
+                assert "Back to Apps" not in body
             src = vendored_scripts.get(name)
             if not src:
                 continue

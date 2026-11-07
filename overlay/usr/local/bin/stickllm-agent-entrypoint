@@ -79,6 +79,20 @@ done
 # v0.5.9 (Nink): all Agent Zero plugins are unlocked. The plugin skills and
 # the built-in installer, scanner and validator are no longer removed.
 
+# StickLLM mounts stickllm-apps at /a0/usr/skills and /git/agent-zero/usr/skills.
+# Agent Zero's skill catalog also lists /a0/skills (Built-in). Mirror the apps
+# skill there so Tetris/Solitaire/etc. show up and load — get_abs_path("usr/skills")
+# alone was not enough for the Built-in skills UI.
+mkdir -p /a0/skills /git/agent-zero/skills
+for src in /git/agent-zero/usr/skills/stickllm-apps /a0/usr/skills/stickllm-apps; do
+  if [ -d "$src" ]; then
+    rm -rf /a0/skills/stickllm-apps /git/agent-zero/skills/stickllm-apps
+    cp -a "$src" /a0/skills/stickllm-apps
+    cp -a "$src" /git/agent-zero/skills/stickllm-apps
+    break
+  fi
+done
+
 mkdir -p /a0/usr/workdir /a0/usr/memory /a0/usr/logs /a0/usr/.cache
 
 # Prove the bridge control port from this container. Do not print the token.

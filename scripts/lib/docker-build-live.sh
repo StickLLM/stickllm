@@ -168,6 +168,19 @@ test -f config/includes.chroot/usr/local/bin/stickllm-appagent
 test -f config/includes.chroot/usr/local/lib/stickllm_appagent/service.py
 test -f config/includes.chroot/usr/local/lib/stickllm_appagent/plugin/plugin.js
 test -f config/includes.chroot/etc/systemd/system/stickllm-appagent.service
+# App Agent manuals (knowledge packs) and the Agent Zero stickllm-apps skill seed.
+for man in browser calculator media minesweeper nodered notepad slides solitaire tetris; do
+  test -f "config/includes.chroot/usr/local/lib/stickllm_appagent/manuals/MANUAL_${man}.md"
+done
+test -f config/includes.chroot/usr/local/share/stickllm/agent-zero-skills/stickllm-apps/SKILL.md
+grep -q '^name: stickllm-apps' config/includes.chroot/usr/local/share/stickllm/agent-zero-skills/stickllm-apps/SKILL.md
+grep -q 'tetris' config/includes.chroot/usr/local/share/stickllm/agent-zero-skills/stickllm-apps/SKILL.md
+# Starter games are baked into the UI tree (not catalog-installed at runtime).
+for app in tetris solitaire notepad minesweeper calculator; do
+  test -f "config/includes.chroot/opt/stickllm/ui/apps/${app}/index.html"
+done
+# Agent Zero must mount the skill where files.get_abs_path("usr/skills") looks.
+grep -q '/git/agent-zero/usr/skills' config/includes.chroot/usr/local/bin/stickllm-agent
 grep -q 'amd64_digest=sha256:bff1a9fd46f2b79ada776fd0447c3fccf66cbf44c1996ec9316efa8ac4ee3fd5' \
   config/includes.chroot/usr/local/share/stickllm/onlyoffice.pin
 # Starter add-ons (Tasks.md, Paisa, Trilium, Node-RED, ComfyUI).

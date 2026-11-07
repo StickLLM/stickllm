@@ -254,7 +254,9 @@ var _a=window.alert;
 if(typeof _a==="function"){
 window.alert=function(m){
 var s=String(m==null?"":m).trim();
-if(/^(pair_required|vault_locked|unauthorized)(:.*)?$/i.test(s))return;
+if(/^(pair_required|vault_locked|unauthorized|agent_not_running)(:.*)?$/i.test(s))return;
+/* Vault lock / A0 stop: never popup "agent not responding" / refuse noise. */
+if(/agent not responding|not responding|agent.?zero is not running|refused to connect|err_connection_refused|could not get data|unable to load agent zero/i.test(s))return;
 return _a.apply(this,arguments);
 };
 }
@@ -263,6 +265,16 @@ try{Object.defineProperty(navigator,"serviceWorker",{configurable:true,value:und
 function abs(u){
 try{
 var x=new URL(String(u),location.href);
+var h=(x.hostname||"").toLowerCase();
+var port=String(x.port||"");
+/* Keep A0 under /agent-zero/ — never let the iframe hop to raw :5099/:5443
+   (Chromium then shows "127.0.0.1 refused to connect" while A0 is still up). */
+if((h==="127.0.0.1"||h==="localhost"||h==="[::1]"||h==="::1")
+   &&(port==="5099"||port==="5443"||(!port&&(h==="127.0.0.1"||h==="localhost")&&String(u).indexOf(":5099")>=0))){
+  var lp=x.pathname||"/";
+  if(lp===P||lp.indexOf(P+"/")===0)return u;
+  return P+lp+(x.search||"")+(x.hash||"");
+}
 if(x.hostname!==location.hostname)return u;
 var p=x.pathname||"";
 if(p===P||p.indexOf(P+"/")===0)return u;
@@ -270,6 +282,12 @@ if(p.charAt(0)!=="/")return u;
 return P+p+(x.search||"")+(x.hash||"");
 }catch(e){return u;}
 }
+try{
+var _assign=window.location.assign.bind(window.location);
+var _replace=window.location.replace.bind(window.location);
+window.location.assign=function(u){try{u=abs(u);}catch(e){}return _assign(u);};
+window.location.replace=function(u){try{u=abs(u);}catch(e){}return _replace(u);};
+}catch(e){}
 function pathOf(u){
 try{
 var p=new URL(String(u||""),location.href).pathname||"";
@@ -326,11 +344,12 @@ md.getUserMedia=function(){return Promise.reject(new DOMException(micHttpsMsg(),
 (function quietA0ConnToasts(){
 var GROUPS=/^(reconnect|sync-mode)$/i;
 var MSGS=/^(Disconnected|Reconnected|WebSocket connection problems - using polling fallback|WebSocket connection restored)$/i;
+var LOCKNOISE=/agent not responding|not responding|agent.?zero is not running|refused to connect|err_connection_refused|could not get data|unable to load/i;
 function noisy(message,title,group){
 var g=String(group==null?"":group);
 var m=String(message==null?"":message);
 var t=String(title==null?"":title);
-return GROUPS.test(g)||MSGS.test(m)||(t==="Connection"&&/disconnect|reconnect|websocket|polling/i.test(m));
+return GROUPS.test(g)||MSGS.test(m)||LOCKNOISE.test(m)||LOCKNOISE.test(t)||(t==="Connection"&&/disconnect|reconnect|websocket|polling/i.test(m));
 }
 function quiet(store){
 if(!store||store.__stickllmQuietConn)return false;
@@ -1233,6 +1252,54 @@ def _agent_port_open(port: int = 5099) -> bool:
             return True
     except OSError:
         return False
+
+
+_AGENT_READY = {"at": 0.0, "ok": False}
+_AGENT_READY_LOCK = threading.Lock()
+
+
+def _agent_http_ready(port: int = 5099) -> bool:
+    """True only once Agent Zero's own HTTP server answers on loopback.
+
+    A TCP connect is not proof that A0 is up. The container publishes 5099
+    through docker-proxy, which binds and accepts the port the moment the
+    container is created — seconds to a minute before A0 starts listening
+    inside it. During that window a connect test says "open" while every
+    request through /agent-zero/ still fails, so the UI reported
+    running=true, said "Agent Zero is ready", and embedded the agent into a
+    dead endpoint; Chromium then painted "127.0.0.1 refused to connect" until
+    the user reloaded the desktop. Require a real HTTP response instead.
+
+    Polled by /api/agent/status roughly once a second per open tab, so the
+    answer is cached briefly: ready is sticky for a moment, not-ready is
+    rechecked promptly so the UI flips over as soon as A0 is live.
+    """
+    now = time.monotonic()
+    with _AGENT_READY_LOCK:
+        age = now - _AGENT_READY["at"]
+        if _AGENT_READY["ok"]:
+            if age < 2.0:
+                return True
+        elif age < 0.5:
+            return False
+    ok = False
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1.5)
+        try:
+            conn.request("GET", "/api/csrf_token")
+            resp = conn.getresponse()
+            resp.read(256)
+            # Any complete HTTP reply means A0's server is answering. 5xx is
+            # still "not ready": that is what the dead-upstream path returns.
+            ok = resp.status < 500
+        finally:
+            conn.close()
+    except Exception:
+        ok = False
+    with _AGENT_READY_LOCK:
+        _AGENT_READY["at"] = now
+        _AGENT_READY["ok"] = ok
+    return ok
 
 
 def agent_lib():
@@ -2211,7 +2278,7 @@ def set_session_mode(mode: str) -> dict:
     if mode not in SESSION_MODES:
         return {"ok": False, "error": "mode must be ephemeral or vault"}
     prev = get_session_mode()
-    # Idempotent: re-selecting the same mode must not re-fire ensure-addons
+    # Idempotent: re-selecting the same mode must not re-fire side effects
     # (UI health poll was toasting "Vault mode · starting your apps" forever).
     if prev == mode:
         doc = read_json_safe(SESSION_MODE_PATH) or {"mode": mode}
@@ -2229,23 +2296,12 @@ def set_session_mode(mode: str) -> dict:
             else "Ephemeral: do not write to SSD/vault; RAM/USB-DATA only as before."
         ),
     }
-    # 0.6.0 (bug B3): the toggle only switches where chats are read and
-    # written. It never stops llama, Docker or add-ons and never unmounts the
-    # vault (0.5.9 ran "stickllm-vault lock" here: slow, stopped every add-on,
-    # and a busy umount left the gateway without a vault view; bug B4).
+    # 0.6.0 (bug B3) / v069i: toggle only switches where chats are read/written.
+    # Never stop llama/Docker/add-ons; never unmount the vault; never spawn
+    # addon/model restore on mode change (that OOMed on ephemeral→vault).
+    # Unlock already starts add-ons via refresh_gateway_vault_view.
     doc["vault_locked"] = False
-    if mode == "vault" and vault_host_mounted():
-        # Restart any vault add-on a 0.5.9 lock or a crash left stopped.
-        try:
-            subprocess.Popen(
-                ["/usr/local/bin/stickllm-vault", "ensure-addons"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            doc["addons_restart"] = True
-        except OSError:
-            doc["addons_restart"] = False
+    doc["addons_restart"] = False
     SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     try:
         os.chmod(SESSION_MODE_PATH, 0o644)
@@ -2909,26 +2965,80 @@ def remint_pair_code() -> tuple[str, str]:
     return code, rid
 
 
+WEB_MODE_PATH = RUN_DIR / "web-mode.json"
+WEB_MODE_MODES = ("internet", "tor", "none")
+TOR_HTTP_PROXY = os.environ.get("STICKLLM_TOR_HTTP", "http://127.0.0.1:9080")
+
+
+def get_web_mode() -> str:
+    """Desired stick Web mode from runtime JSON (internet|tor|none)."""
+    doc = read_json_safe(WEB_MODE_PATH) or {}
+    mode = str(doc.get("mode") or "internet").strip().lower()
+    return mode if mode in WEB_MODE_MODES else "internet"
+
+
+def web_mode_info() -> dict:
+    """UI-facing Web mode status. Stick Chromium + stick-origin fetches only."""
+    doc = read_json_safe(WEB_MODE_PATH) or {}
+    mode = get_web_mode()
+    return {
+        "ok": True,
+        "mode": mode,
+        "modes": list(WEB_MODE_MODES),
+        "scope": "stick_browser",
+        "scope_note": "Applies to the stick kiosk browser and stick-local Chromium only.",
+        "remote_clients": "own_network",
+        "remote_note": (
+            "Remote LAN clients use their own network; StickLLM cannot force "
+            "their browser through Tor or offline."
+        ),
+        "tor_active": bool(doc.get("tor_active")),
+        "tor_ready": bool(doc.get("tor_ready")),
+        "applied": bool(doc.get("applied", True)),
+        "note": str(doc.get("note") or ""),
+    }
+
+
+def _urlopen_web(req: urllib.request.Request, timeout: float = 15):
+    """urlopen that honours stick Web mode for stick-origin fetches."""
+    mode = get_web_mode()
+    if mode == "none":
+        raise RuntimeError("Web mode is No internet — stick-origin web fetch is blocked.")
+    if mode == "tor":
+        handler = urllib.request.ProxyHandler({"http": TOR_HTTP_PROXY, "https": TOR_HTTP_PROXY})
+        opener = urllib.request.build_opener(handler)
+        return opener.open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def uplink_ok() -> bool:
     """Best-effort: can we reach the public internet (Web / downloads)?"""
+    if get_web_mode() == "none":
+        return False
     try:
         req = urllib.request.Request(
             "https://connectivitycheck.gstatic.com/generate_204",
             method="GET",
             headers={"User-Agent": UA},
         )
-        with urllib.request.urlopen(req, timeout=3) as r:
+        with _urlopen_web(req, timeout=3) as r:
             return int(getattr(r, "status", 0) or 0) in (204, 200)
     except Exception:
         try:
             req = urllib.request.Request("https://1.1.1.1", headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=3) as r:
+            with _urlopen_web(req, timeout=3) as r:
                 return True
         except Exception:
             return False
 
 
 def duckduckgo_search(query: str, n: int = 5) -> list[dict]:
+    if get_web_mode() == "none":
+        return [{
+            "title": "no internet",
+            "url": "",
+            "snippet": "Web mode is No internet. Stick-origin web lookup is blocked (remote browsers use their own network).",
+        }]
     if not uplink_ok():
         return [{
             "title": "no uplink",
@@ -2943,7 +3053,7 @@ def duckduckgo_search(query: str, n: int = 5) -> list[dict]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with _urlopen_web(req, timeout=15) as r:
             html = r.read(400_000).decode("utf-8", errors="replace")
     except Exception as e:
         return [{"title": "search error", "url": "", "snippet": f"Web lookup failed: {e}"}]
@@ -2974,8 +3084,12 @@ def duckduckgo_search(query: str, n: int = 5) -> list[dict]:
 def fetch_url(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         return "invalid url"
+    if get_web_mode() == "none":
+        return "Web mode is No internet — stick-origin fetch is blocked."
     try:
-        text = http_text(url, timeout=12)
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with _urlopen_web(req, timeout=12) as r:
+            text = r.read(200_000).decode("utf-8", errors="replace")
     except Exception as e:
         return f"fetch failed: {e}"
     text = re.sub(r"(?is)<script.*?>.*?</script>", " ", text)
@@ -3195,7 +3309,7 @@ class Handler(SimpleHTTPRequestHandler):
             doc = mod.status_document(
                 vault_open=vault_unlocked(),
                 settings_open=mod.settings_mounted(),
-                upstream_up=_agent_port_open(),
+                upstream_up=_agent_http_ready(),
                 saved=mod.read_status(),
             )
             doc["agent_url"] = self._agent_public_url()
@@ -3271,6 +3385,10 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(400, {"ok": False, "error": "bad_json"})
             return
         if not _agent_port_open(5099):
+            # stop while A0 is already down is success (vault lock / clear UI).
+            if action == "stop":
+                self._json(200, {"ok": True, "stopped": False, "message": "already stopped"})
+                return
             self._json(503, {"ok": False, "error": "agent_not_running",
                              "message": "Agent Zero is not running yet. Open the Agent window to start it."})
             return
@@ -3414,7 +3532,7 @@ class Handler(SimpleHTTPRequestHandler):
                 page = mod.status_document(
                     vault_open=vault_unlocked(),
                     settings_open=mod.settings_mounted(),
-                    upstream_up=_agent_port_open(),
+                    upstream_up=_agent_http_ready(),
                     saved=mod.read_status(),
                 )
                 page["state"] = "installing"
@@ -4490,7 +4608,7 @@ class Handler(SimpleHTTPRequestHandler):
         return mod.status_document(
             vault_open=vault_unlocked(),
             settings_open=mod.settings_mounted(),
-            upstream_up=_agent_port_open(),
+            upstream_up=_agent_http_ready(),
             saved=mod.read_status(),
         )
 
@@ -4505,7 +4623,9 @@ class Handler(SimpleHTTPRequestHandler):
         """
         if self._agent_refused():
             return
-        if not _agent_port_open(5099):
+        # Same readiness rule as /api/agent/status, so the embed never 502s
+        # halfway through a request the status call just called "running".
+        if not _agent_http_ready(5099):
             self._json(503, {"ok": False, "error": "agent_not_running",
                              "message": "Agent Zero is not running yet."})
             return
@@ -5530,6 +5650,9 @@ class Handler(SimpleHTTPRequestHandler):
                 },
             )
             return
+        if path == "/api/web-mode":
+            self._json(200, web_mode_info())
+            return
         if path == "/api/chats":
             doc, ok = self._auth()
             if doc.get("require_pair") and not ok:
@@ -6080,6 +6203,28 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(code, result)
             return
 
+        if path == "/api/web-mode":
+            # Privileged apply lives in stickllm-control (writes Chromium policy, starts Tor).
+            if not stickllm_ui_client(self.headers):
+                self._json(403, {"error": "ui_only", "message": "Web mode is StickLLM UI only."})
+                return
+            doc, ok = self._auth()
+            if doc.get("require_pair") and not ok and not self._is_loopback():
+                self._json(401, {"error": "pair_required"})
+                return
+            mode = str(req.get("mode") or "").strip().lower()
+            try:
+                data = http_json(
+                    CONTROL + "/action",
+                    {"action": "web_mode_set", "params": {"mode": mode}},
+                    timeout=120,
+                )
+                code = 200 if isinstance(data, dict) and data.get("ok") else 400
+                self._json(code, data if isinstance(data, dict) else {"ok": False, "error": "bad_control"})
+            except Exception as e:
+                self._json(502, {"ok": False, "error": f"web_mode_set failed: {e}"})
+            return
+
         if path == "/api/chat-store":
             if not stickllm_ui_client(self.headers):
                 self._json(403, {"error": "ui_only"})
@@ -6252,6 +6397,9 @@ class Handler(SimpleHTTPRequestHandler):
                 elif action in ("vault_lock", "set_session_mode", "session_mode"):
                     # Model stop (60s) + vault lock (control allows 360s).
                     timeout = 480
+                elif action in ("web_mode_set", "set_web_mode"):
+                    # Tor bootstrap inside stickllm-web-mode can take ~15–30s.
+                    timeout = 120
                 else:
                     timeout = 180
                 data = http_json(

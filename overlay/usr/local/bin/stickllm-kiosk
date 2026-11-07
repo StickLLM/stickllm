@@ -649,19 +649,87 @@ cog_cmd() {
   printf 'cog -P --enable-mediasource %q' "$URL"
 }
 
+# Stick-owned Chromium: auto-grant mic/camera for loopback + this stick's LAN
+# origins (no getUserMedia prompt). Remote phone/PC browsers are unaffected —
+# they still need HTTPS + a normal Allow gesture. Do not use
+# --use-fake-ui-for-media-stream: that would auto-accept capture for every
+# site in the profile (including the stick Browser window).
+stick_media_capture_urls_json() {
+  python3 - <<'PY' 2>/dev/null || true
+import json
+import os
+import re
+import subprocess
+
+urls = [
+    "http://127.0.0.1",
+    "http://127.0.0.1:*",
+    "https://127.0.0.1",
+    "https://127.0.0.1:*",
+    "http://localhost",
+    "http://localhost:*",
+    "https://localhost",
+    "https://localhost:*",
+    "http://[::1]",
+    "http://[::1]:*",
+    "https://[::1]",
+    "https://[::1]:*",
+]
+seen = set(urls)
+ipv4 = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+ips = []
+try:
+    out = subprocess.check_output(["hostname", "-I"], text=True, timeout=2)
+    ips.extend(out.split())
+except Exception:
+    pass
+for key in ("STICKLLM_PAIR_HOST", "STICKLLM_LAN_IP"):
+    val = (os.environ.get(key) or "").strip()
+    if val:
+        ips.append(val)
+for raw in ips:
+    ip = raw.strip().split("%", 1)[0]
+    if not ipv4.match(ip):
+        continue
+    if ip.startswith("127.") or ip.startswith("169.254."):
+        continue
+    for pattern in (
+        f"https://{ip}",
+        f"https://{ip}:*",
+        f"http://{ip}",
+        f"http://{ip}:*",
+    ):
+        if pattern not in seen:
+            urls.append(pattern)
+            seen.add(pattern)
+print(json.dumps({
+    "AudioCaptureAllowedUrls": urls,
+    "VideoCaptureAllowedUrls": list(urls),
+}))
+PY
+}
+
 # Keep a normal Chromium window so the tab strip stays on screen.
 # Fullscreen and app windows hide tabs, and the HDMI console then has no way
 # back to StickLLM except closing the browser.
 ensure_browser_tabs() {
   [[ "${BROWSER:-}" == "cog" ]] && return 0
-  local dir
+  local dir media_json
+  media_json="$(stick_media_capture_urls_json)"
+  [[ -n "$media_json" ]] || media_json='{"AudioCaptureAllowedUrls":["http://127.0.0.1","http://127.0.0.1:*","https://127.0.0.1","https://127.0.0.1:*","http://localhost","http://localhost:*","https://localhost","https://localhost:*","http://[::1]","http://[::1]:*","https://[::1]","https://[::1]:*"],"VideoCaptureAllowedUrls":["http://127.0.0.1","http://127.0.0.1:*","https://127.0.0.1","https://127.0.0.1:*","http://localhost","http://localhost:*","https://localhost","https://localhost:*","http://[::1]","http://[::1]:*","https://[::1]","https://[::1]:*"]}'
   for dir in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
     mkdir -p "$dir" 2>/dev/null || continue
     printf '%s\n' '{"FullscreenAllowed":false,"PopupsAllowedForUrls":["http://127.0.0.1","http://127.0.0.1:80","http://localhost","http://localhost:80"],"ClipboardAllowedForUrls":["http://127.0.0.1","http://localhost"]}' >"$dir/stickllm-tabs.json" 2>/dev/null || true
+    # Separate file so tab/clipboard rewrites never drop media auto-grant.
+    printf '%s\n' "$media_json" >"$dir/stickllm-media.json" 2>/dev/null || true
   done
   # Downloads: vault/Downloads when unlocked, blocked while locked.
   if [[ -x /usr/local/bin/stickllm-download-policy ]]; then
     STICKLLM_KIOSK_USER="$KIOSK_USER" /usr/local/bin/stickllm-download-policy auto >/dev/null 2>&1 || true
+  fi
+  # Web mode (Internet / Tor / No internet) for this Chromium + stick-local browsers.
+  if [[ -x /usr/local/bin/stickllm-web-mode ]]; then
+    /usr/local/bin/stickllm-web-mode apply >/dev/null 2>&1 || true
   fi
 }
 
@@ -1070,7 +1138,7 @@ hold_error() {
 # --- main ---
 # Chat (stickllm.chat) shares the on-stick browser; local/kiosk are aliases.
 CHAT_MODE=0
-STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.6.8)"
+STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.6.11)"
 if grep -Eqw 'stickllm\.chat' /proc/cmdline 2>/dev/null; then
   CHAT_MODE=1
 elif ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then

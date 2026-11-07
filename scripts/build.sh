@@ -13,9 +13,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PROFILE="amd-rtx3090"
-# Next unshipped line. Override: STICKLLM_VERSION=0.6.8 ./scripts/build.sh
-# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9 / v0.4.0 / v0.4.1 / v0.4.2 / v0.5.0 / v0.5.1 / v0.5.2 / v0.6.4 / v0.6.6 / v0.6.7).
-VERSION="${STICKLLM_VERSION:-0.6.8}"
+# Next unshipped line. Override: STICKLLM_VERSION=0.6.11 ./scripts/build.sh
+# Never point this at a published ship (v0.2.0 / v0.3.0 / v0.3.6 / v0.3.8 / v0.3.9 / v0.4.0 / v0.4.1 / v0.4.2 / v0.5.0 / v0.5.1 / v0.5.2 / v0.6.4 / v0.6.6 / v0.6.7 / v0.6.8 / v0.6.9 / v0.6.10).
+VERSION="${STICKLLM_VERSION:-0.6.11}"
 VERSION_DIR="v${VERSION}"
 ISO_NAME="${STICKLLM_ISO_NAME:-StickLLM-v${VERSION}.iso}"
 OUT_DIR="${STICKLLM_OUT_DIR:-out}"
@@ -35,7 +35,7 @@ BASE_HF_REPO="Qwen/Qwen2.5-7B-Instruct-GGUF"
 VOL_WORK="stickllm-lb-work"
 
 case "$VERSION_DIR" in
-  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8|v0.3.9|v0.4.0|v0.4.1|v0.4.2|v0.5.0|v0.5.1|v0.5.2|v0.6.4|v0.6.6|v0.6.7)
+  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8|v0.3.9|v0.4.0|v0.4.1|v0.4.2|v0.5.0|v0.5.1|v0.5.2|v0.6.4|v0.6.6|v0.6.7|v0.6.8|v0.6.9|v0.6.10)
     echo "REFUSE: VERSION=${VERSION} would overwrite a shipping artifact" >&2
     exit 1
     ;;

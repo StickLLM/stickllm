@@ -7,10 +7,13 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 // 0.6.5: never native-alert raw gateway status codes (Cursor Simple Browser
 // was popping window.alert("pair_required") on reconnect). Keep confirm/prompt.
 (function gateNativeDialogs() {
-  const raw = /^(pair_required|vault_locked|not_paired|unauthorized|plugins_locked|no_model|app_not_open)(:.*)?$/i;
+  const raw = /^(pair_required|vault_locked|not_paired|unauthorized|plugins_locked|no_model|app_not_open|agent_not_running)(:.*)?$/i;
+  const a0Noise = /agent.?zero is not running|agent_not_running|agent not responding|not responding|refused to connect|err_connection_refused|could not get data|unable to load agent zero|this site can.?t be reached|err_empty_response|connection (reset|refused|closed)/i;
   const wrap = (fn) => function gatedAlert(msg) {
     const s = String(msg == null ? "" : msg).trim();
     if (raw.test(s) || /^\{[\s\S]*"error"\s*:\s*"pair_required"/i.test(s)) return;
+    // A0 iframe / intentional vault-lock: never block the desk with refuse popups.
+    if (a0Noise.test(s) || (typeof vaultLocking !== "undefined" && vaultLocking)) return;
     return fn.apply(this, arguments);
   };
   try {
@@ -27,6 +30,8 @@ let loadedCtx = 0;
 let lastPerf = null;
 let sessionModeBusy = false;
 let clearingOnLock = false; // clearOnLock() re-entry guard (0.5.4)
+let vaultLocking = false; // intentional Lock vault — toast/alert gates + A0 suppress
+let vaultEpoch = 0;
 let activeChatId = null;
 let lastRemintId = null;
 let lastCatalog = [];
@@ -231,15 +236,10 @@ async function afterPairSuccess() {
   try { await refreshStatus(); } catch (_) {}
   try { await refreshAgentLink(); } catch (_) {}
   try { await refreshModels(); } catch (_) {}
-  if (state.vaultOpen) {
-    try { ensureAgentZeroStarted(); } catch (_) {}
-  }
   try { window.dispatchEvent(new CustomEvent("stickllm:paired")); } catch (_) {}
   try {
     if (window.stickDesk && typeof window.stickDesk.onPaired === "function") {
       await window.stickDesk.onPaired();
-    } else if (window.stickDesk && window.stickDesk.openApp) {
-      window.stickDesk.openApp("chat");
     }
   } catch (_) {}
 }
@@ -397,7 +397,9 @@ function setBtnBusy(btn, busy, text) {
 }
 // True when /agent-zero/ is actually usable — never navigate an iframe to a
 // dead :5099 / splash-"Unable to load" / refused-to-connect page.
-// Prefer CSRF (proves Origin rewrite + A0 API), then HEAD as fallback.
+// CSRF only (proves embed proxy + A0 API). HEAD+/status.running alone used to
+// embed too early; A0 then navigated the frame to 127.0.0.1:5099 and Chromium
+// showed connection refused until a full desktop reload.
 let agentHttpReadyCache = { ok: false, at: 0 };
 async function agentHttpReady(force) {
   const now = Date.now();
@@ -409,49 +411,28 @@ async function agentHttpReady(force) {
     return false;
   };
   try {
-    // Strong signal: embed proxy + Agent Zero API both answering.
     const csrf = await fetch("/agent-zero/api/csrf_token", {
       method: "GET",
       cache: "no-store",
       credentials: "same-origin",
       headers: authHeaders({ Accept: "application/json" }),
     });
-    if (csrf.status === 503 || csrf.status === 502) return fail();
-    if (csrf.ok) {
-      const j = await csrf.json().catch(() => ({}));
-      if (j && (j.ok === true || j.token)) {
-        agentHttpReadyCache = { ok: true, at: now };
-        return true;
-      }
+    if (csrf.status === 503 || csrf.status === 502 || csrf.status === 404) return fail();
+    if (!csrf.ok) return fail();
+    const j = await csrf.json().catch(() => ({}));
+    if (j && (j.ok === true || j.token || j.csrf_token || typeof j === "string")) {
+      agentHttpReadyCache = { ok: true, at: now };
+      return true;
     }
-  } catch (_) { /* fall through to HEAD */ }
-  try {
-    const r = await fetch("/agent-zero/", {
-      method: "HEAD",
-      cache: "no-store",
-      credentials: "same-origin",
-      headers: authHeaders({ Accept: "text/html" }),
-    });
-    // Gateway: 503/502 while A0 is down. 401/403 = pair/plugins gate (port may
-    // not have been checked) — fall back to status.running. Any other status
-    // (200/302/404/405…) means the embed path reached a live upstream.
-    if (r.status === 503 || r.status === 502) return fail();
-    if (r.status === 401 || r.status === 403) {
-      const s = agentLastStatus || {};
-      const ok = !!(s.running || s.state === "running");
-      agentHttpReadyCache = { ok, at: now };
-      return ok;
-    }
-    // HEAD alone is weak (splash HTML can 200 while asset-bundle/API still
-    // fails after a gateway restart). Require status.running too.
+    // 200 JSON without a token shape — still require a live status.running.
     const s = agentLastStatus || {};
-    const ok = !!(s.running || s.state === "running");
-    agentHttpReadyCache = { ok, at: now };
-    return ok;
+    if (s.running || s.state === "running") {
+      agentHttpReadyCache = { ok: true, at: now };
+      return true;
+    }
+    return fail();
   } catch (_) {
-    // Network blip — never open the iframe on a forced probe failure.
-    agentHttpReadyCache = { ok: false, at: now };
-    return false;
+    return fail();
   }
 }
 
@@ -1062,6 +1043,10 @@ function plainError(raw) {
 function showError(err, title) {
   title = title || (err && err.title);
   const raw = (err && err.message) ? err.message : String(err || "");
+  // Mid lock: A0 going away is expected — never sticky-error the desk.
+  if (vaultLocking && /agent.?zero|agent_not_running|not responding|refused to connect|could not get data/i.test(raw + " " + (title || ""))) {
+    return;
+  }
   let box = document.getElementById("errBox");
   if (!box) {
     box = document.createElement("div");
@@ -1098,7 +1083,13 @@ const toastRecent = new Map();
 function toast(msg, opts) {
   opts = opts || {};
   const text = String(msg == null ? "" : msg);
-  const flaky = /failed to fetch|networkerror|load failed|err_network|err_connection|connection (reset|refused|closed|lost)|disconnected|no longer paired|temporary auth|stick not answering|waiting…/i.test(text);
+  // Intentional vault lock: suppress A0/connection refuse spam (UI already tore down embeds).
+  if (vaultLocking && !opts.force
+    && /agent.?zero|agent_not_running|not responding|refused to connect|err_connection|could not get data|unable to load|starting agent|disconnected|reconnected|websocket/i.test(text)
+    && !/^vault locked$/i.test(text.trim())) {
+    return;
+  }
+  const flaky = /failed to fetch|networkerror|load failed|err_network|err_connection|connection (reset|refused|closed|lost)|disconnected|no longer paired|temporary auth|stick not answering|waiting…|agent not responding|agent.?zero is not running/i.test(text);
   const now = Date.now();
   const prev = toastRecent.get(text) || 0;
   if (!opts.force && (now - prev) < (flaky ? 20000 : 4000)) {
@@ -1305,8 +1296,9 @@ async function setSessionMode(m, opts) {
       if (state.current && !state.ephemeral.includes(state.current)) newChat();
     }
     if (!quiet) {
+      // Mode switch must not restart apps/model (gateway no longer ensure-addons).
       toast(next === "vault"
-        ? (j.addons_restart ? "Vault mode · starting your apps" : "Vault mode")
+        ? "Vault mode · chats save encrypted"
         : "Ephemeral mode · new chats stay in memory");
     }
     renderConvs();
@@ -1396,7 +1388,7 @@ async function focusVaultUnlock() {
 // Bumped on every vault open/locked change and when an unlock starts. A
 // health/status answer requested before that is stale: applying it repainted
 // "No vault set up" (and the Ephemeral tab, and a clear) just after unlock.
-let vaultEpoch = 0, vaultLocking = false;
+// vaultEpoch / vaultLocking are declared with the other top-level state.
 const vaultBusy = () => vaultUnlocking || vaultLocking;
 function setVaultChrome(open, absent = false) {
   if (!!open !== !!state.vaultOpen) vaultEpoch += 1;
@@ -1437,6 +1429,8 @@ function clearOnLock() {
   try {
     try { if (sendAbort) sendAbort.abort(); } catch (_) {}
     try { if (typeof stopSpeak === "function") stopSpeak(); } catch (_) {}
+    try { stickllmAutoStartA0 = false; } catch (_) {}
+    try { agentHttpReadyCache = { ok: false, at: 0 }; } catch (_) {}
     state.vaultOpen = false;
     state.chats = [];
     state.ephemeral = [];
@@ -1445,8 +1439,12 @@ function clearOnLock() {
     activeChatId = null;
     for (const w of appTabs.values()) { try { if (w && !w.closed) w.close(); } catch (_) {} }
     appTabs.clear();
-    // Desktop layout: app windows can show vault data too; close them all.
-    try { if (window.stickDesk) window.stickDesk.closeAll(); } catch (_) {}
+    // Desktop: tear down A0 embeds (blank + close Chat) and vault app windows.
+    // prepareForVaultLock is preferred; closeAll alone left the pinned Chat iframe alive.
+    try {
+      if (window.stickDesk && window.stickDesk.prepareForVaultLock) window.stickDesk.prepareForVaultLock();
+      else if (window.stickDesk) window.stickDesk.closeAll();
+    } catch (_) {}
     $$("textarea").forEach((t) => { t.value = ""; });
     try { if (typeof renderAttach === "function") renderAttach(); } catch (_) {}
     applyModeUi("ephemeral");
@@ -1459,15 +1457,51 @@ function clearOnLock() {
 }
 
 async function lockVault() {
-  // Screen first, so nothing stays readable while the lock call runs.
-  clearOnLock();
+  // Single-flight: mash Lock must not stack competing vault_lock calls.
+  if (vaultLocking) return;
   vaultLocking = true;
+  // Do not auto-restart A0 after this lock until the user opens it again.
+  try { stickllmAutoStartA0 = false; } catch (_) {}
+  try { agentHttpReadyCache = { ok: false, at: 0 }; } catch (_) {}
+  // 1) Tear down A0 UI / vault app windows FIRST (blank iframes, stop polls)
+  //    so stopping the container cannot paint "127.0.0.1 refused" / "agent not
+  //    responding" over a live embed.
   try {
-    const res = await control("vault_lock");
-    toast(res.ok !== false ? "Vault locked" : ("Lock failed: " + (res.error || "unknown")));
-    setVaultChrome(false);
-  } catch (e) { showError(e, "Lock failed"); }
-  finally { vaultLocking = false; vaultEpoch += 1; }
+    if (window.stickDesk && window.stickDesk.prepareForVaultLock) window.stickDesk.prepareForVaultLock();
+    else if (window.stickDesk && window.stickDesk.closeAll) window.stickDesk.closeAll();
+  } catch (_) {}
+  // 2) Clear readable vault/ephemeral chat state on screen.
+  clearOnLock();
+  // A0 going away during lock is expected (control vault_lock stops it).
+  const isA0DownNoise = (s) => /agent.?zero is not running|agent_not_running|agent not responding|refused to connect/i.test(String(s || ""));
+  try {
+    // 3) Lock LUKS — control stops llama + stickllm-agent, then stickllm-vault
+    //    stops add-ons/Docs and umounts. UI embeds are already gone.
+    let res = await control("vault_lock");
+    // Busy umount (docker still releasing): one short retry.
+    if (res && res.ok === false && /busy|umount|in use|device is busy/i.test(String(res.error || res.stderr || ""))) {
+      await new Promise((r) => setTimeout(r, 2500));
+      res = await control("vault_lock");
+    }
+    if (res && res.ok === false) {
+      const err = res.error || res.stderr || "unknown";
+      if (isA0DownNoise(err)) {
+        toast("Vault locked");
+        setVaultChrome(false);
+      } else {
+        toast("Lock failed: " + err, { force: true });
+        showError(new Error(String(err)), "Lock failed");
+      }
+    } else {
+      toast("Vault locked");
+      setVaultChrome(false);
+    }
+  } catch (e) {
+    if (isA0DownNoise(e && e.message)) {
+      toast("Vault locked");
+      setVaultChrome(false);
+    } else showError(e, "Lock failed");
+  } finally { vaultLocking = false; vaultEpoch += 1; }
   try {
     await fetch("/api/session-mode", {
       method: "POST",
@@ -1475,6 +1509,7 @@ async function lockVault() {
       body: JSON.stringify({ mode: "ephemeral" }),
     });
   } catch (_) {}
+  try { refreshAgentLink(); } catch (_) {}
 }
 $("#lockBtn").onclick = () => lockVault();
 $("#lockBtn2").onclick = () => lockVault();
@@ -3145,6 +3180,50 @@ function showRecoveryPhraseOnce(phrase) {
 function setupWizardShowing() {
   return !!$("#setupWizard")?.classList.contains("show");
 }
+function dismissSetupWizard() {
+  const overlay = $("#setupWizard");
+  if (overlay) overlay.classList.remove("show");
+  setSetupChrome(false);
+  try { showVaultCreating(false); } catch (_) {}
+  try {
+    const next = $("#setupNext");
+    if (next) next.disabled = false;
+  } catch (_) {}
+}
+/** Unstick create/unlock wizard when the vault is already open or create hung.
+ * Never dismiss the wizard past recovery / System ready — that caused first-boot
+ * to jump straight to the desktop A0 panel with no recovery phrase. */
+async function rescueStuckVaultWizard() {
+  if (!setupWizardShowing()) return false;
+  let busyOn = false;
+  try {
+    const busy = $("#vaultCreatingOverlay");
+    busyOn = !!(busy && busy.classList.contains("show"));
+  } catch (_) {}
+  // Do not interrupt an in-flight create/unlock busy overlay (recovery phrase still pending).
+  if (busyOn) return false;
+  let st = null;
+  try { st = await refreshSetupState(true); } catch (_) { st = null; }
+  const unlocked = !!(st && st.vault_unlocked) || !!state.vaultOpen;
+  // Re-enable Continue so the wizard's own create/unlock handler can advance
+  // (recovery → System ready). Do not markSetupDone or dismiss here.
+  try {
+    const next = $("#setupNext");
+    if (next && next.disabled) next.disabled = false;
+  } catch (_) {}
+  if (unlocked) {
+    try { showVaultCreating(false); } catch (_) {}
+    return false;
+  }
+  // Hung create: Continue disabled, blob already on disk → switch form to unlock wording only.
+  const title = (($("#setupTitle") && $("#setupTitle").textContent) || "").toLowerCase();
+  const onVaultPassStep = /vault passcode|unlock vault/.test(title);
+  if (onVaultPassStep && st && (st.blob || st.vault_configured)) {
+    try { showVaultCreating(false); } catch (_) {}
+    return false;
+  }
+  return false;
+}
 function setSetupChrome(on) {
   document.body.classList.toggle("setup-active", !!on);
   try {
@@ -3157,7 +3236,8 @@ function setupBlocksAgent() {
   return !setupDone();
 }
 
-/** After create/unlock: vault mode + chrome. A0 only after setup is finished. */
+/** After create/unlock: vault mode + chrome. Never auto-start Agent Zero —
+ * opening A0 at wizard end / first paint breaks first-boot; user opens it later. */
 async function enterVaultModeNow(opts) {
   const quiet = !!(opts && opts.quiet);
   const duringSetup = !!(opts && opts.duringSetup) || setupWizardShowing();
@@ -3166,7 +3246,6 @@ async function enterVaultModeNow(opts) {
   try { await setSessionMode("vault", { quiet: quiet || duringSetup || sessionMode === "vault" }); } catch (_) {}
   if (duringSetup || !setupDone()) return;
   try { window.dispatchEvent(new CustomEvent("stickllm:vault-unlocked")); } catch (_) {}
-  try { ensureAgentZeroStarted(); } catch (_) {}
   try { await refreshAgentLink(); } catch (_) {}
 }
 
@@ -4489,6 +4568,34 @@ function hardenVaultPassFields(...nodes) {
     } catch (_) {}
   });
 }
+/** Wizard vault forms used onsubmit="return false", so Enter never ran Unlock/Continue.
+ *  Wire submit + Enter to the same path as the primary setupNext button. */
+function wireVaultPassEnterToSetupNext(root) {
+  const scope = root && root.querySelector ? root : document;
+  const go = () => {
+    const btn = $("#setupNext");
+    if (btn && !btn.disabled) btn.click();
+  };
+  const form = scope.querySelector ? scope.querySelector("form") : null;
+  if (form && !form.dataset.stickEnterUnlock) {
+    form.dataset.stickEnterUnlock = "1";
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      go();
+    });
+  }
+  ["#wizP1", "#wizP2"].forEach((sel) => {
+    const n = scope.querySelector ? scope.querySelector(sel) : $(sel);
+    if (!n || n.dataset.stickEnterUnlock) return;
+    n.dataset.stickEnterUnlock = "1";
+    n.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.shiftKey || e.repeat || e.isComposing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      go();
+    });
+  });
+}
 
 async function refreshStorage() {
   if (!(await ensurePaired())) return;
@@ -5062,9 +5169,11 @@ $("#unlockForm").onsubmit = async (e) => {
     const payload = { passcode: pass };
     const bind = ($("#vaultPath").value || "").trim();
     if (bind) payload.path = bind;
-    $("#vaultPass").value = "";
+    // Keep the typed passcode until unlock succeeds — clearing early made Enter
+    // look like "asks for password again" when unlock failed or re-painted.
     const res = await control("vault_unlock", payload);
     if (!res.ok) throw new Error(res.error || res.stderr || "unlock failed");
+    try { $("#vaultPass").value = ""; } catch (_) {}
     vaultUnlocking = false;
     toast("Vault unlocked");
     await enterVaultModeNow();
@@ -5584,7 +5693,10 @@ $("#pairForm").onsubmit = async (e) => {
 
 // ---- 0.5.9: live Settings pages (Network, System) and Settings > Advanced ----
 function refreshSecLive(sec) {
-  if (sec === "network") refreshNetwork().catch(() => {});
+  if (sec === "network") {
+    refreshNetwork().catch(() => {});
+    refreshWebMode().catch(() => {});
+  }
   if (sec === "system" || sec === "about") refreshSystemInfo().catch(() => {});
   if (sec === "advanced") refreshAdvanced().catch((e) => toast(e.message || String(e)));
 }
@@ -5605,6 +5717,62 @@ async function refreshNetwork() {
   const box = $("#ssid");
   if (box && !box.value && n.ssid) box.value = n.ssid;
 }
+
+// 0.6.11: Internet / Tor / No internet — stick Chromium (+ stick-origin fetches).
+let webMode = "internet";
+function paintWebMode(j) {
+  const mode = (j && j.mode) || webMode || "internet";
+  webMode = mode;
+  const seg = $("#webModeSeg");
+  if (seg) {
+    seg.querySelectorAll("[data-web]").forEach((b) => {
+      const on = b.dataset.web === mode;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-checked", String(on));
+    });
+  }
+  const st = $("#webModeStatus");
+  if (st) {
+    let line = (j && j.note) || "";
+    if (mode === "tor" && j && !j.tor_ready) line = line || "Tor is starting…";
+    st.textContent = line;
+    st.hidden = !line;
+  }
+  try {
+    if (window.stickDesk && typeof window.stickDesk.syncWebMode === "function") {
+      window.stickDesk.syncWebMode(j || { mode });
+    }
+  } catch (_) {}
+}
+async function refreshWebMode() {
+  try {
+    const r = await fetch("/api/web-mode", { cache: "no-store", headers: authHeaders() });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) paintWebMode(j);
+    return j;
+  } catch (_) {
+    return { mode: webMode };
+  }
+}
+async function setWebMode(mode, opts) {
+  const quiet = !!(opts && opts.quiet);
+  mode = String(mode || "").toLowerCase();
+  if (!["internet", "tor", "none"].includes(mode)) throw new Error("Web mode must be internet, tor, or none");
+  if (!quiet) toast(mode === "tor" ? "Starting Tor…" : mode === "none" ? "Blocking stick browser web…" : "Using normal internet…");
+  const j = await control("web_mode_set", { mode });
+  paintWebMode(j);
+  if (!j.ok) throw new Error(j.error || j.note || "Web mode failed");
+  if (!quiet) {
+    if (mode === "tor" && !j.tor_ready) toast("Tor mode on — waiting for a circuit");
+    else if (mode === "tor") toast("Tor mode — stick browser is anonymized");
+    else if (mode === "none") toast("No internet — stick browser blocked from the public web");
+    else toast("Internet — stick browser uses the normal uplink");
+  }
+  return j;
+}
+$$("#webModeSeg [data-web]").forEach((b) => {
+  b.onclick = () => setWebMode(b.dataset.web).catch((e) => toast(e.message || String(e)));
+});
 async function refreshSystemInfo() {
   if (!(await ensurePaired())) return;
   const j = await control("system_info");
@@ -5887,6 +6055,8 @@ async function ensureAgentZeroStarted() {
   try {
     // First-boot wizard: never open/start A0 until setup finishes.
     if (setupBlocksAgent()) return null;
+    // Intentional Lock vault: never restart A0 while umount is in flight.
+    if (vaultLocking || vaultBusy()) return null;
     const st = await fetch("/api/agent/status", {
       headers: token ? { Authorization: "Bearer " + token } : {},
       cache: "no-store",
@@ -5933,7 +6103,18 @@ function setupDoneLocal() {
     return SETUP_KEY_OLD.some((k) => localStorage.getItem(k) === "1");
   } catch (_) { return false; }
 }
+function clearSetupDoneLocal() {
+  try {
+    localStorage.removeItem(SETUP_KEY);
+    SETUP_KEY_OLD.forEach((k) => localStorage.removeItem(k));
+  } catch (_) {}
+}
 function setupDone() {
+  // Prefer last server answer. Stale localStorage after a vault wipe must not
+  // suppress the first-boot wizard when STICKLLM-DATA says setup is incomplete.
+  if (setupStateCache && setupStateCache._fromServer) {
+    return !!setupStateCache.setup_complete;
+  }
   if (setupStateCache && setupStateCache.setup_complete) return true;
   return setupDoneLocal();
 }
@@ -5942,7 +6123,10 @@ function markSetupDone(extra) {
     localStorage.setItem(SETUP_KEY, "1");
     SETUP_KEY_OLD.forEach((k) => localStorage.setItem(k, "1"));
   } catch (_) {}
-  if (setupStateCache) setupStateCache.setup_complete = true;
+  if (setupStateCache) {
+    setupStateCache.setup_complete = true;
+    setupStateCache._fromServer = true;
+  }
   control("setup_mark_complete", extra && typeof extra === "object" ? extra : {}).catch(() => {});
 }
 async function refreshSetupState(force) {
@@ -5952,12 +6136,15 @@ async function refreshSetupState(force) {
   try {
     const st = await control("setup_status");
     if (st && st.ok !== false) {
-      setupStateCache = { ...st, _at: Date.now() };
+      setupStateCache = { ...st, _at: Date.now(), _fromServer: true };
       if (st.setup_complete) {
         try {
           localStorage.setItem(SETUP_KEY, "1");
           SETUP_KEY_OLD.forEach((k) => localStorage.setItem(k, "1"));
         } catch (_) {}
+      } else {
+        // Wipe / first-boot: drop browser markers that outlive STICKLLM-DATA.
+        clearSetupDoneLocal();
       }
       return setupStateCache;
     }
@@ -5969,6 +6156,7 @@ async function refreshSetupState(force) {
     vault_path: "",
     source: setupDoneLocal() ? "local" : "none",
     _at: Date.now(),
+    _fromServer: false,
   };
   return setupStateCache;
 }
@@ -6071,6 +6259,7 @@ async function openVaultUnlockOnly(opts) {
 </form>`;
   $("#wizVaultShow").textContent = vaultPath || st.blob || "(saved location)";
   hardenVaultPassFields($("#wizP1"));
+  wireVaultPassEnterToSetupNext(body);
   setTimeout(() => $("#wizP1")?.focus(), 50);
   $("#setupSkip").onclick = () => {
     overlay.classList.remove("show");
@@ -6105,20 +6294,32 @@ async function openVaultUnlockOnly(opts) {
 
 async function openSetupWizard(opts) {
   const force = !!(opts && opts.force);
-  if (!force) {
-    const st = await refreshSetupState(false);
-    if (st.setup_complete) {
-      if (!st.vault_unlocked && !state.vaultOpen) {
-        return openVaultUnlockOnly();
+  {
+    const st = await refreshSetupState(true);
+    // Already unlocked: do not steal an in-progress wizard (recovery / ready).
+    if (st.vault_unlocked || state.vaultOpen) {
+      if (setupWizardShowing() && !force) return;
+      if (!force) {
+        markSetupDone({ vault_path: st.vault_path || "" });
+        dismissSetupWizard();
+        try { await enterVaultModeNow({ quiet: true }); } catch (_) {}
+        return;
       }
-      return;
+      // force=true: continue into wizard UI even if unlocked (storage remount).
     }
-    if (setupDoneLocal()) return;
+    if (!force) {
+      if (st.setup_complete || st.vault_configured || st.blob) {
+        return openVaultUnlockOnly({ vaultPath: st.vault_path || "" });
+      }
+      if (setupDoneLocal()) return;
+    }
   }
-  // Welcome → Open model → Network → Storage → Vault → Ready
-  const STEP_WELCOME = 0, STEP_MODEL = 1, STEP_NET = 2, STEP_STOR = 3, STEP_VAULT = 4, STEP_READY = 5;
+  // Open model → Network → Storage → Vault → Recovery → System ready.
+  // Recovery is a wizard step (not #confirm): confirm was z-index 60 under
+  // #setupWizard (9999), so the phrase modal never appeared and create looked stuck.
+  const STEP_MODEL = 0, STEP_NET = 1, STEP_STOR = 2, STEP_VAULT = 3, STEP_RECOVERY = 4, STEP_READY = 5;
   const LAST = STEP_READY;
-  let step = 0;
+  let step = STEP_MODEL;
   let vaultStepBusy = false;
   const wiz = {
     drive: null,
@@ -6131,7 +6332,33 @@ async function openSetupWizard(opts) {
     wpass: "",
     vaultMode: "create", // or "unlock" when stickllm-vault.img already exists
     vaultDone: false,
+    // Create must show recovery once; poll/rescue must not skip it.
+    needsRecoveryPhrase: false,
+    recoveryShown: false,
+    recoveryPhrase: "",
+    createInFlight: false,
+    recoveryAck: false,
   };
+  /** Vault create success: enter vault mode → Recovery step → System ready. */
+  let advanceCreateLock = null;
+  async function advanceAfterVaultCreate(phrase) {
+    if (advanceCreateLock) return advanceCreateLock;
+    advanceCreateLock = (async () => {
+      showVaultCreating(false);
+      wiz.createInFlight = false;
+      wiz.vaultMode = "unlock";
+      wiz.vaultDone = true;
+      wiz.needsRecoveryPhrase = true;
+      const words = (phrase || wiz.recoveryPhrase || "").trim();
+      wiz.recoveryPhrase = words || "(no phrase in response — check stick logs)";
+      toast("Vault created");
+      try { await enterVaultModeNow({ duringSetup: true, quiet: true }); } catch (_) {}
+      step = STEP_RECOVERY;
+      render();
+    })();
+    try { return await advanceCreateLock; }
+    finally { advanceCreateLock = null; }
+  }
   let overlay = $("#setupWizard");
   if (!overlay) {
     overlay = document.createElement("div");
@@ -6218,14 +6445,12 @@ async function openSetupWizard(opts) {
     $("#setupSkip").hidden = false;
     $("#setupSkip").textContent = step >= LAST ? "Close" : "Skip";
     $("#setupNext").textContent = step >= LAST ? "Finish" : "Continue";
-    if (step === STEP_WELCOME) {
-      $("#setupTitle").textContent = "Welcome to StickLLM";
-      $("#setupSkip").hidden = true;
-      $("#setupNext").textContent = "Continue";
-      body.innerHTML = `
-<p><strong>Welcome to StickLLM</strong> — a private AI stick that runs models and apps on this computer, offline when you want.</p>
-<p>This is your setup wizard. A few short steps get Wi‑Fi, storage, and your encrypted vault ready.</p>`;
-    } else if (step === STEP_MODEL) {
+    // Hung create can leave Continue disabled with no busy overlay — always clear on paint.
+    try {
+      const busy = $("#vaultCreatingOverlay");
+      if (!(busy && busy.classList.contains("show"))) $("#setupNext").disabled = false;
+    } catch (_) {}
+    if (step === STEP_MODEL) {
       $("#setupTitle").textContent = "Open model";
       const m = starterModel();
       const label = (m && (m.name || m.id)) || "Qwen2.5-7B Instruct Q4_K_M";
@@ -6327,6 +6552,13 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
         };
       });
     } else if (step === STEP_VAULT) {
+      // Create finished — never re-paint passcode; go Recovery then Ready.
+      if (wiz.vaultDone || (wiz.needsRecoveryPhrase && wiz.recoveryPhrase)) {
+        wiz.vaultMode = "unlock";
+        step = wiz.recoveryShown ? STEP_READY : STEP_RECOVERY;
+        render();
+        return;
+      }
       $("#setupTitle").textContent = wiz.vaultMode === "unlock" ? "Unlock vault" : "Vault passcode";
       $("#setupSkip").hidden = true; // vault step: no skip past create/unlock
       body.innerHTML = `
@@ -6343,23 +6575,80 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
       $("#wizP1").value = wiz.pass1;
       if ($("#wizP2")) $("#wizP2").value = wiz.pass2;
       hardenVaultPassFields($("#wizP1"), $("#wizP2"));
+      wireVaultPassEnterToSetupNext(body);
       if (wiz.vaultMode === "unlock") {
         const h = $("#wizVaultHint");
         if (h) { h.hidden = false; h.textContent = "Existing stickllm-vault.img found — unlock instead of create."; }
+      }
+      // Mid-create hang: vault may already be unlocked under us — never flip to
+      // unlock-passcode just because the blob appeared mid-create (that caused
+      // "back to Vault passcode" after a successful create).
+      const vaultPaintStep = step;
+      refreshSetupState(true).then(async (st) => {
+        if (!setupWizardShowing() || step !== vaultPaintStep || step !== STEP_VAULT) return;
+        if (wiz.createInFlight || wiz.needsRecoveryPhrase || vaultStepBusy) {
+          if (st.vault_unlocked || state.vaultOpen) {
+            try { await advanceAfterVaultCreate(wiz.recoveryPhrase); } catch (_) {}
+          }
+          return;
+        }
+        if (st.vault_unlocked || state.vaultOpen) {
+          // Create path must still show recovery → ready (never markSetupDone / dismiss here).
+          if (wiz.needsRecoveryPhrase || (!wiz.vaultDone && wiz.vaultMode === "create")) {
+            try { await advanceAfterVaultCreate(wiz.recoveryPhrase); } catch (_) {}
+            return;
+          }
+          wiz.vaultDone = true;
+          wiz.vaultMode = "unlock";
+          showVaultCreating(false);
+          try { await enterVaultModeNow({ duringSetup: true, quiet: true }); } catch (_) {}
+          step = wiz.recoveryShown ? STEP_READY : STEP_RECOVERY;
+          render();
+          return;
+        }
+        // Only switch create→unlock UI when idle (not mid-create) and a blob
+        // already existed before this session's create attempt.
+        if ((st.blob || st.vault_configured) && wiz.vaultMode !== "unlock" && !wiz.createInFlight && !wiz.needsRecoveryPhrase && !wiz.vaultDone) {
+          wiz.vaultMode = "unlock";
+          if (st.vault_path) wiz.vaultPath = st.vault_path;
+          render();
+        }
+      }).catch(() => {});
+    } else if (step === STEP_RECOVERY) {
+      $("#setupTitle").textContent = "Save your recovery phrase";
+      $("#setupSkip").hidden = true;
+      $("#setupBack").hidden = true;
+      body.innerHTML = `
+<p>This is the only time it's shown. Write it down and keep it somewhere safe.</p>
+<pre class="recovery" id="wizRecoveryPhrase"></pre>
+<label class="checkRow"><input type="checkbox" id="wizRecoveryAck"> <span>I wrote down the recovery phrase.</span></label>`;
+      const pre = $("#wizRecoveryPhrase");
+      if (pre) pre.textContent = wiz.recoveryPhrase || "(no phrase in response — check stick logs)";
+      const ack = $("#wizRecoveryAck");
+      $("#setupNext").disabled = true;
+      $("#setupNext").textContent = "Continue";
+      if (ack) {
+        ack.checked = !!wiz.recoveryAck;
+        $("#setupNext").disabled = !ack.checked;
+        ack.onchange = () => {
+          wiz.recoveryAck = !!ack.checked;
+          $("#setupNext").disabled = !ack.checked;
+        };
       }
     } else {
       $("#setupTitle").textContent = "System ready";
       $("#setupSkip").hidden = true;
       body.innerHTML = `
-<ul class="setup-tour">
-<li><strong>Agent Zero</strong> is the main chat on the desktop — open it once the vault is unlocked.</li>
+<ul class="setup-check">
+<li>Setup is complete. Open <strong>Agent Zero</strong> from the desktop when you want to chat.</li>
 <li>Open <strong>Settings → Storage</strong> any time to change folders or re-run this wizard.</li>
 <li>Load another model from Models when you want a larger one — the on-stick 7B works offline.</li>
 </ul>`;
     }
   }
 
-  $("#setupBack").onclick = () => { if (step > 0) { step -= 1; render(); } };
+  $("#setupBack").onclick = () => { if (step > 0 && step !== STEP_RECOVERY) { step -= 1; render(); } };
+
   $("#setupSkip").onclick = () => {
     if (step >= LAST) {
       markSetupDone({ vault_path: wiz.vaultPath || "" });
@@ -6368,15 +6657,12 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
       enterVaultModeNow().catch(() => {});
       return;
     }
-    if (step === STEP_VAULT || step === STEP_WELCOME) return; // skip hidden
+    if (step === STEP_VAULT) return; // skip hidden
     step += 1; render();
   };
   $("#setupNext").onclick = async () => {
     showErr("");
     try {
-      if (step === STEP_WELCOME) {
-        step += 1; render(); return;
-      }
       if (step === STEP_MODEL) {
         try { await refreshModels(); } catch (_) {}
         const m = starterModel();
@@ -6433,17 +6719,61 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
           else wiz.vaultMode = "create";
         } catch (_) { wiz.vaultMode = "create"; }
       }
+      if (step === STEP_RECOVERY) {
+        if (!$("#wizRecoveryAck")?.checked && !wiz.recoveryAck) {
+          throw new Error("Tick the box after you write down the recovery phrase");
+        }
+        wiz.recoveryAck = true;
+        wiz.recoveryShown = true;
+        wiz.needsRecoveryPhrase = false;
+        step = STEP_READY;
+        render();
+        return;
+      }
       if (step === STEP_VAULT) {
         if (vaultStepBusy) return;
-        if (wiz.vaultDone && state.vaultOpen) {
-          // Already created/unlocked this session — do not call setup again.
-        } else {
+        // Already finished create/unlock this session — never re-enter create.
+        if (wiz.vaultDone) {
+          wiz.vaultMode = "unlock";
+          step = wiz.recoveryShown ? STEP_READY : STEP_RECOVERY;
+          render();
+          return;
+        }
+        // Rescue: create finished under a hung UI — vault already open.
+        {
+          const stNow = await refreshSetupState(true);
+          if (stNow.vault_unlocked || state.vaultOpen) {
+            if (wiz.needsRecoveryPhrase || wiz.vaultMode === "create") {
+              await advanceAfterVaultCreate(wiz.recoveryPhrase);
+              return;
+            }
+            showVaultCreating(false);
+            try { await enterVaultModeNow({ duringSetup: true, quiet: true }); } catch (_) {}
+            wiz.vaultDone = true;
+            wiz.vaultMode = "unlock";
+            step = wiz.recoveryShown ? STEP_READY : STEP_RECOVERY;
+            render();
+            return;
+          }
           wiz.pass1 = $("#wizP1")?.value || "";
           wiz.pass2 = wiz.vaultMode === "unlock" ? wiz.pass1 : ($("#wizP2")?.value || "");
           if (wiz.pass1.length < 8) throw new Error("Passcode must be at least 8 characters");
           if (wiz.vaultMode !== "unlock" && wiz.pass1 !== wiz.pass2) throw new Error("Passcodes don't match");
           const path = wiz.vaultPath.replace(/\/+$/, "");
           const onStick = path === "/mnt/stickllm-data" || path.startsWith("/mnt/stickllm-data/");
+          // Blob already there — never call create again (avoids exists-loop + disabled Continue).
+          if (wiz.vaultMode !== "unlock") {
+            try {
+              const found = await control("vault_find", { path });
+              const hits = (found && (found.vaults || found.hits || found.paths)) || [];
+              const blob = path + "/stickllm-vault.img";
+              const exists = hits.some((h) => {
+                const p = typeof h === "string" ? h : (h.path || h.blob || "");
+                return p === blob || p === path || String(p).endsWith("stickllm-vault.img");
+              }) || !!(found && (found.exists || found.blob));
+              if (exists) wiz.vaultMode = "unlock";
+            } catch (_) {}
+          }
           vaultStepBusy = true;
           $("#setupNext").disabled = true;
           showVaultCreating(true, wiz.vaultMode === "unlock" ? "open" : "create");
@@ -6457,18 +6787,72 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
               toast("Vault unlocked");
               await enterVaultModeNow({ duringSetup: true, quiet: true });
               wiz.vaultDone = true;
+              wiz.vaultMode = "unlock";
+              wiz.recoveryShown = true; // unlock path — no new phrase
+              wiz.needsRecoveryPhrase = false;
+              step = STEP_READY;
+              render();
+              return;
             } else {
-              res = await control("vault_setup", {
+              // Long create on USB: poll ONLY for unlocked (never for bare blob).
+              // Treating blob-exists as done flipped UI back to Vault passcode mid-create.
+              wiz.needsRecoveryPhrase = true;
+              wiz.createInFlight = true;
+              let createSettled = false;
+              const pollUnlocked = (async () => {
+                for (let i = 0; i < 120 && !createSettled; i++) {
+                  await new Promise((r) => setTimeout(r, 2500));
+                  if (createSettled) return null;
+                  try {
+                    const st = await refreshSetupState(true);
+                    if (st.vault_unlocked || state.vaultOpen) return { unlocked: true, st };
+                  } catch (_) {}
+                }
+                return null;
+              })();
+              const setupP = control("vault_setup", {
                 path, size_gb: "32", confirm: "CREATE-VAULT",
                 recovery_confirm: "SHOW-ONCE", passcode: wiz.pass1, passcode2: wiz.pass2,
                 space_confirm: "SPACE-OK",
                 ...(onStick ? { stick_data_confirm: "STICK-DATA" } : {}),
-              });
-              showVaultCreating(false);
+              }).then((r) => ({ kind: "setup", r }));
+              const raced = await Promise.race([
+                setupP,
+                pollUnlocked.then((r) => (r ? { kind: "poll", r } : new Promise(() => {}))),
+              ]);
+              createSettled = true;
+              if (raced.kind === "poll") {
+                // Vault is open — still prefer recovery_phrase from the create RPC.
+                let phrase = wiz.recoveryPhrase || "";
+                try {
+                  const late = await Promise.race([
+                    setupP.then((x) => x && x.r),
+                    new Promise((r) => setTimeout(() => r(null), 8000)),
+                  ]);
+                  if (late && late.recovery_phrase) phrase = late.recovery_phrase;
+                } catch (_) {}
+                await advanceAfterVaultCreate(phrase);
+                return;
+              }
+              res = raced.r;
               if (!res || res.ok === false) {
                 const errMsg = String((res && (res.error || res.stderr)) || "vault setup failed");
+                wiz.createInFlight = false;
                 if (/already exists/i.test(errMsg)) {
-                  // Created on a prior Continue that hung — switch to unlock, stay on step.
+                  showVaultCreating(false);
+                  // Create already finished (blob on disk). Never bounce to Unlock
+                  // passcode — that is the post-create loop. Prefer recovery → ready.
+                  try {
+                    const stEx = await refreshSetupState(true);
+                    if (stEx.vault_unlocked || state.vaultOpen || wiz.needsRecoveryPhrase) {
+                      await advanceAfterVaultCreate(wiz.recoveryPhrase || (res && res.recovery_phrase) || "");
+                      return;
+                    }
+                  } catch (_) {}
+                  if (wiz.needsRecoveryPhrase || wiz.recoveryPhrase) {
+                    await advanceAfterVaultCreate(wiz.recoveryPhrase || "");
+                    return;
+                  }
                   wiz.vaultMode = "unlock";
                   render();
                   showErr("A vault already exists here — enter the passcode to unlock.");
@@ -6476,30 +6860,54 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
                 }
                 throw new Error(errMsg);
               }
-              // Correct sequence: vault mode immediately → recovery (no Cancel) → ready.
-              toast("Vault created");
-              await enterVaultModeNow({ duringSetup: true, quiet: true });
-              wiz.vaultDone = true;
-              wiz.vaultMode = "unlock"; // never create twice
-              const phrase = res.recovery_phrase || "";
-              if (phrase) await showRecoveryPhraseOnce(phrase);
-              else {
-                // Still show the recovery dialog so create cannot skip past it.
-                await showRecoveryPhraseOnce("(no phrase in response — check stick logs)");
-              }
+              // Correct sequence: vault mode → recovery (no Cancel) → System ready. Never create twice.
+              await advanceAfterVaultCreate(res.recovery_phrase || "");
+              return;
             }
           } catch (e) {
             showVaultCreating(false);
             const msg = String(e.message || e);
-            if (/already exists/i.test(msg)) {
-              wiz.vaultMode = "unlock";
-              render();
-              showErr("A vault already exists here — enter the passcode to unlock.");
-              return;
+            // Create may have finished despite a client timeout/error.
+            try {
+              const stFail = await refreshSetupState(true);
+              if (stFail.vault_unlocked || state.vaultOpen) {
+                if (wiz.needsRecoveryPhrase || wiz.vaultMode === "create") {
+                  await advanceAfterVaultCreate(wiz.recoveryPhrase);
+                  return;
+                }
+                try { await enterVaultModeNow({ duringSetup: true, quiet: true }); } catch (_) {}
+                wiz.vaultDone = true;
+                wiz.vaultMode = "unlock";
+                step = wiz.recoveryShown ? STEP_READY : STEP_RECOVERY;
+                render();
+                return;
+              }
+              if (/already exists/i.test(msg) || stFail.blob || stFail.vault_configured) {
+                // Mid/post-create: blob exists is success path → recovery, not unlock form.
+                if (wiz.needsRecoveryPhrase || wiz.vaultMode === "create" || stFail.vault_unlocked || state.vaultOpen) {
+                  await advanceAfterVaultCreate(wiz.recoveryPhrase || "");
+                  return;
+                }
+                wiz.vaultMode = "unlock";
+                render();
+                showErr("A vault already exists here — enter the passcode to unlock.");
+                return;
+              }
+              throw e;
+            } catch (e2) {
+              if (/already exists/i.test(msg)) {
+                wiz.needsRecoveryPhrase = false;
+                wiz.vaultMode = "unlock";
+                render();
+                showErr("A vault already exists here — enter the passcode to unlock.");
+                return;
+              }
+              throw e2;
             }
-            throw e;
           } finally {
             vaultStepBusy = false;
+            // RPC path finished (success or fail). Leave needsRecoveryPhrase alone.
+            if (!wiz.recoveryShown) wiz.createInFlight = false;
             $("#setupNext").disabled = false;
           }
         }
@@ -6528,7 +6936,12 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
 async function maybeOfferSetupOrUnlock() {
   const stickLocalUi = !!(isLocalMode) || !!(detectLocalHost && detectLocalHost());
   if (!stickLocalUi || setupGateBusy) return;
-  if (setupWizardShowing()) return;
+  // Stuck create page (Continue disabled / vault already open): rescue even while wizard is showing.
+  if (setupWizardShowing()) {
+    setupGateBusy = true;
+    try { await rescueStuckVaultWizard(); } finally { setupGateBusy = false; }
+    return;
+  }
   setupGateBusy = true;
   try {
     // 0.6.7: mount SSD first and prefer an existing vault over full setup.
@@ -6536,10 +6949,9 @@ async function maybeOfferSetupOrUnlock() {
     const st = await refreshSetupState(true);
     if (st.vault_unlocked || state.vaultOpen) {
       if (st.setup_complete || setupDoneLocal() || probe.found) markSetupDone({ vault_path: st.vault_path || probe.path || "" });
-      // Only enter vault mode once — never re-toast / re-start apps on every health poll.
-      if (sessionMode !== "vault" || !state.vaultOpen) {
-        try { await enterVaultModeNow({ quiet: true }); } catch (_) {}
-      }
+      // Sync unlock chrome only. Never force Vault session mode here —
+      // enterVaultModeNow was stealing Ephemeral on every health poll.
+      if (!state.vaultOpen) setVaultChrome(true);
       return;
     }
     if (probe.found || st.setup_complete || st.vault_configured) {
@@ -6628,7 +7040,7 @@ async function refreshStatus() {
       const warming = /^(queued|waiting|running)$/i.test(String(warm));
       $("#chipModel").textContent = warming ? "Warming up…" : readyName;
       if (warming) {
-        setChipLoad(true, 95, readyName, "Loading model… first reply will be faster", false);
+        setChipLoad(true, 95, readyName, "Loading model… first reply takes a long time", false);
       } else {
         setChipLoad(false, 100, readyName);
       }
@@ -8939,10 +9351,10 @@ function deskAgent() {
 }
 window.stickApp = Object.freeze({
   openSettings, closeSettings, showSec, lockVault, showApps, toast,
-  setSessionMode, focusVaultUnlock, refreshApps, refreshAgentLink, refreshModels, installAgent,
+  setSessionMode, setWebMode, refreshWebMode, focusVaultUnlock, refreshApps, refreshAgentLink, refreshModels, installAgent,
   ensureAgentZeroStarted, moveAgentDrive, renderA0Drive, agentHttpReady,
   deskAppUrl, deskCatalog, deskAgent, control, agentFastPoll, authHeaders,
-  sessionMode: () => state.mode, vaultOpen: () => !!state.vaultOpen,
+  sessionMode: () => state.mode, webMode: () => webMode, vaultOpen: () => !!state.vaultOpen,
   setupDone: () => setupDone(), setupBlocksAgent: () => setupBlocksAgent(),
 });
 })();
@@ -9194,10 +9606,9 @@ if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices(
     document.head.appendChild(style);
   } catch (_) {}
 })();
-document.addEventListener("stickllm:model-ready", () => { try { ensureAgentZeroStarted(); } catch (_) {} });
+// Do not auto-start Agent Zero on model-ready / vault-unlock / timer — first-boot
+// and wizard-end opens break A0; user opens Chat from the desktop when ready.
 document.addEventListener("stickllm:vault-unlocked", () => {
-  try { ensureAgentZeroStarted(); } catch (_) {}
   try { refreshAgentLink(); } catch (_) {}
 });
-setTimeout(() => { try { ensureAgentZeroStarted(); } catch (_) {} }, 8000);
 try { hardenVaultPassFields($("#vaultPass"), $("#np1"), $("#np2")); } catch (_) {}

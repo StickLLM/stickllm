@@ -16,6 +16,19 @@ Switching to Vault opens Settings unlock/setup if the vault is locked or absent.
 
 **Boot:** no vault password/skip prompt. Session Mode stays **Ephemeral**; the vault stays locked until the user unlocks (or creates/attaches) in the UI. Headless Server/Local must not wait on tty for vault input. Chats APIs refuse to write unless Mode is Vault **and** the vault is mounted.
 
+## Lock while using the computer
+
+**Lock vault** (taskbar Vault → Lock, or Ctrl+Shift+L) encrypts chats, secrets, and Agent Zero memory again. That requires Agent Zero and vault add-ons to stop — their data lives under the LUKS mount.
+
+Intended UX:
+
+1. **Close Agent Zero UI first.** Desktop blanks/closes the Agent Zero window (and other vault app windows) so no live iframe keeps talking to `127.0.0.1:5099` / `/agent-zero/`.
+2. **Stop Agent Zero cleanly**, then umount/lock LUKS (`vault_lock` via control → `stickllm-vault lock`). Connection-refused / “agent not responding” toasts are suppressed during this intentional stop.
+3. **After lock:** session mode is Ephemeral. The desktop stays usable for non-vault work (browser, models still in RAM if loaded, Settings). Chat history on screen is cleared. No spam popups from a dead Agent Zero embed.
+4. **Unlock:** opens the vault and USB settings; does **not** auto-open Agent Zero. When you open Agent Zero later, it starts fresh (no leftover dead iframe pointing at loopback).
+
+**Ephemeral vs Vault:** Ephemeral never writes chats to the SSD blob. Switching Ephemeral ↔ Vault alone does not lock or unlock LUKS — only **Lock** / **Unlock** does. Lock always stops Agent Zero because A0’s chats/memory are vault-backed.
+
 ## Safety (fail-closed)
 
 Encoded from product docs and shipping rules:

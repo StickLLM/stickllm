@@ -1936,14 +1936,13 @@ ui_vault_mounted() {
 }
 
 schedule_ui_vault_refresh() {
-  # Deferred restart: let control/gateway finish writing the HTTP response first.
-  # Synchronous try-restart mid-unlock drops the browser connection ("Failed to fetch").
-  if command -v systemd-run >/dev/null 2>&1; then
-    systemd-run --quiet --collect --on-active=2s --timer-property=AccuracySec=100ms \
-      /bin/systemctl try-restart stickllm-ui.service >/dev/null 2>&1 && return 0
-  fi
-  ( sleep 2; systemctl try-restart stickllm-ui.service >/dev/null 2>&1 ) &
-  disown 2>/dev/null || true
+  # v069j: NEVER restart the UI unit here. Restarting the gateway drops the
+  # kiosk Chromium session and looks like a full machine reboot. Prefer nsenter
+  # remount in refresh_gateway_vault_view; if that failed, log and leave UI up.
+  local log="/run/stickllm/vault-ui-refresh.log"
+  mkdir -p /run/stickllm 2>/dev/null || true
+  echo "ts=$(date -Is) result=skip-ui-restart-no-reboot" >>"$log" 2>/dev/null || true
+  return 0
 }
 
 download_policy() {
@@ -1960,8 +1959,8 @@ refresh_gateway_vault_view() {
   # happen after the unit starts are invisible to stickllm-gateway ismount(),
   # so /api/chats falsely reports "vault locked" while the host mount is fine.
   #
-  # Prefer remounting into the UI mount namespace (no HTTP drop). Fall back to a
-  # *deferred* try-restart so the unlock API response can finish first.
+  # Prefer remounting into the UI mount namespace (no HTTP drop). Never fall back
+  # to stickllm-ui restart (v069j) — that blinks the whole kiosk like a reboot.
   local pid mapper log="/run/stickllm/vault-ui-refresh.log"
   mkdir -p /run/stickllm 2>/dev/null || true
   download_policy unlocked
@@ -1988,9 +1987,9 @@ refresh_gateway_vault_view() {
         return 0
       fi
     fi
-    echo "result=nsenter-failed-defer-restart" >>"$log" 2>/dev/null || true
+    echo "result=nsenter-failed-no-ui-restart" >>"$log" 2>/dev/null || true
   else
-    echo "result=no-ui-or-unmounted-defer-restart" >>"$log" 2>/dev/null || true
+    echo "result=no-ui-or-unmounted-no-ui-restart" >>"$log" 2>/dev/null || true
   fi
   schedule_ui_vault_refresh
   [[ "$addons" == view-only ]] || start_agent_addon
@@ -2011,12 +2010,10 @@ start_agent_addon() {
   if [[ -x /usr/local/bin/stickllm-addon ]]; then
     /usr/local/bin/stickllm-addon start-all >/run/stickllm/addons-start.log 2>&1 &
   fi
-  # Reload the last Activated model (and warm CUDA/KV) so the first A0 message
-  # is not stuck on opaque "Calling LLM" after unlock. No-op when none saved.
-  if [[ -x /usr/local/bin/stickllm-control ]]; then
-    /usr/local/bin/stickllm-control --restore-last-model \
-      >/run/stickllm/llama-restore.log 2>&1 &
-  fi
+  # v069j: do NOT restore/warmup the model here. Unlock + mode switch used to
+  # stack llama restart + CUDA warmup + dockerd/A0 and look like (or cause) a
+  # full-machine reboot. Leave whatever model is already loaded; Activate is
+  # explicit. (ensure-addons also stays restore-free.)
 }
 
 stop_vault_addons() {
@@ -2079,11 +2076,18 @@ cmd_ui_refresh() {
 }
 
 cmd_ensure_addons() {
-  # 0.6.0: Vault mode must bring every installed add-on back. Each start is
-  # idempotent and gated on the vault; nothing is stopped here.
+  # 0.6.0 / v069j: start installed add-ons only (no llama restore / no UI restart).
   need_root
   is_mounted || die "vault not mounted"
-  start_agent_addon
+  if [[ -x /usr/local/bin/stickllm-agent ]]; then
+    /usr/local/bin/stickllm-agent start >/run/stickllm/agent-start.log 2>&1 &
+  fi
+  if [[ -x /usr/local/bin/stickllm-docs ]]; then
+    /usr/local/bin/stickllm-docs start >/run/stickllm/docs-start.log 2>&1 &
+  fi
+  if [[ -x /usr/local/bin/stickllm-addon ]]; then
+    /usr/local/bin/stickllm-addon start-all >/run/stickllm/addons-start.log 2>&1 &
+  fi
   echo "ok"
 }
 
@@ -2863,7 +2867,8 @@ cmd_unlock() {
     fi
     unset pass
     json_state unlocked "already mounted"
-    refresh_gateway_vault_view
+    # Already unlocked: remount UI view only — do not re-fire add-ons/model.
+    refresh_gateway_vault_view view-only
     echo "Vault unlocked at $MNT_POINT"
     return 0
   fi
@@ -2914,7 +2919,8 @@ cmd_unlock() {
       sync_usb_settings "$pass" 1
       unset pass
       json_state unlocked "already open"
-      refresh_gateway_vault_view
+      # Mapper already open: view-only refresh (no add-on/model restart).
+      refresh_gateway_vault_view view-only
       echo "Vault unlocked at $MNT_POINT"
       return 0
     fi

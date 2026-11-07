@@ -1,5 +1,5 @@
 """Starter app polish: Minesweeper plays as a game, Files follows the theme,
-Notepad's Back to Apps link does not collide with its title."""
+desktop apps have no Back to Apps chrome."""
 from __future__ import annotations
 
 import re
@@ -83,14 +83,13 @@ r = run("self", false); if (r.own.dataset.theme !== "dark") throw new Error("sta
     subprocess.run([node, "-e", script, str(APPS / "files" / "files.js")], cwd=ROOT, check=True)
 
 
-def test_notepad_back_link_sits_clear_of_title():
+def test_starter_apps_have_no_back_to_apps_link():
+    for name in ("tetris", "notepad", "minesweeper", "solitaire", "calculator"):
+        page = _read(APPS / name / "index.html")
+        assert "Back to Apps" not in page, name
+        assert 'href="/#apps"' not in page, name
     page = _read(APPS / "notepad" / "index.html")
-    assert '<a class="stickBack" href="/#apps">Back to Apps</a>' in page
     links = re.findall(r'<link rel="stylesheet" href="styles/([\w.]+)">', page)
     assert links.index("stickllm.css") > links.index("main.css")
-    assert links.index("stickllm.css") > links.index("standalone.css")
-    css = _read(APPS / "notepad" / "styles" / "stickllm.css")
-    assert re.search(r"header\s*\{\s*position:\s*relative", css)
-    assert re.search(r"a\.stickBack\s*\{[^}]*position:\s*absolute", css)
-    assert re.search(r"header h1\s*\{[^}]*padding-right", css)
+    assert "stickBack" not in _read(APPS / "notepad" / "styles" / "stickllm.css")
     assert "stickllm.css" in _read(APPS / "notepad" / "SOURCES.txt")

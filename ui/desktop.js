@@ -6,7 +6,8 @@
  * 0.5.6: the chat window is chat only. Settings, Models, the App Store,
  * the Agent and the Browser are their own desktop apps; installed catalog
  * apps get a desktop icon and a launcher entry; the taskbar carries the
- * Ephemeral/Vault switch (with unlock) and the model button. */
+ * Ephemeral/Vault switch (with unlock), Web (Internet/Tor/No internet),
+ * and the model button. */
 (function () {
   "use strict";
   const core = window.StickDeskCore;
@@ -158,6 +159,7 @@
     lockOpen: '<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 017.7-1.5"/></svg>',
     lockShut: '<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>',
     net: '<svg viewBox="0 0 24 24"><path d="M2 8.5a15 15 0 0120 0M5 12a10 10 0 0114 0M8.5 15.5a5 5 0 017 0"/><circle cx="12" cy="19" r="1.2" fill="currentColor"/></svg>',
+    web: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>',
     netOff: '<svg viewBox="0 0 24 24"><path d="M2 8.5a15 15 0 0120 0M5 12a10 10 0 0114 0M8.5 15.5a5 5 0 017 0"/><circle cx="12" cy="19" r="1.2" fill="currentColor"/><path d="M4 4l16 16"/></svg>',
     gear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>',
     apps: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg>',
@@ -434,6 +436,11 @@
     net.type = "button";
     net.id = "trayNet";
     net.addEventListener("click", () => openSettings("network"));
+    const web = el("button", "trayBtn trayWeb");
+    web.type = "button";
+    web.id = "trayWeb";
+    web.innerHTML = SVG.web;
+    web.addEventListener("click", (e) => { e.stopPropagation(); toggleWebPop(); });
     const vault = el("button", "trayBtn trayVault");
     vault.type = "button";
     vault.id = "trayVault";
@@ -447,9 +454,11 @@
     clock.id = "trayClock";
     tray.append(mode, el("span", "traySep"), model, el("span", "traySep"));
     if (pair) tray.appendChild(pair);
-    tray.append(net, vault, theme, clock);
+    tray.append(net, web, vault, theme, clock);
     buildVaultPop();
+    buildWebPop();
     syncTray();
+    refreshWebTray();
     const obs = new MutationObserver(syncTray);
     ["#popVault", "#popUplink", "#statusChip", "#popModel", "#popCtx", "#popBackend", "#unlockMsg"].forEach((s) => {
       const n = $(s);
@@ -469,6 +478,101 @@
     return b ? b.dataset.mode : "ephemeral";
   }
   function openSettings(sec) { if (appApi().openSettings) appApi().openSettings(sec); }
+
+  // ---------- Web mode popover (Internet / Tor / No internet) ----------
+  let webState = { mode: "internet", tor_ready: false, note: "" };
+  function curWebMode() {
+    const api = appApi();
+    if (api.webMode) return api.webMode() || webState.mode || "internet";
+    return webState.mode || "internet";
+  }
+  function buildWebPop() {
+    const pop = el("div", "webPop");
+    pop.id = "webPop";
+    pop.hidden = true;
+    pop.setAttribute("role", "dialog");
+    pop.setAttribute("aria-label", "Web");
+    pop.innerHTML =
+      '<div class="wpHead"><span class="wpIcon"></span><div><b class="wpTitle">Web</b><small class="wpSub">Stick browser only</small></div></div>' +
+      '<div class="wpModes" role="radiogroup" aria-label="Web mode">' +
+      '<button type="button" class="wpMode" data-web="internet"><span class="wpDot internet"></span><span class="wpLabel"><b>Internet</b><small>Normal uplink</small></span></button>' +
+      '<button type="button" class="wpMode" data-web="tor"><span class="wpDot tor"></span><span class="wpLabel"><b>Tor</b><small>Anonymous via Tor</small></span></button>' +
+      '<button type="button" class="wpMode" data-web="none"><span class="wpDot none"></span><span class="wpLabel"><b>No internet</b><small>Block public web</small></span></button>' +
+      "</div>" +
+      '<small class="wpNote">Applies to the stick kiosk browser and stick-local Chromium. Remote LAN clients use their own network.</small>' +
+      '<small class="wpStatus" hidden></small>' +
+      '<button type="button" class="btn sm ghost wpSet">Network settings\u2026</button>';
+    pop.addEventListener("mousedown", (e) => e.stopPropagation());
+    pop.querySelectorAll(".wpMode").forEach((b) => {
+      b.addEventListener("click", () => {
+        const want = b.dataset.web;
+        if (appApi().setWebMode) {
+          appApi().setWebMode(want).then((j) => {
+            syncWebMode(j);
+            if (want !== "tor" || (j && j.tor_ready)) toggleWebPop(false);
+          }).catch(() => {});
+        }
+      });
+    });
+    pop.querySelector(".wpSet").addEventListener("click", () => { toggleWebPop(false); openSettings("network"); });
+    document.body.appendChild(pop);
+    ui.webPop = pop;
+  }
+  function toggleWebPop(force) {
+    if (!ui || !ui.webPop) return false;
+    const pop = ui.webPop;
+    const open = force == null ? pop.hidden : !!force;
+    pop.hidden = !open;
+    if (open) {
+      toggleVaultPop(false);
+      toggleLauncher(false);
+      refreshWebTray();
+      syncWebPop();
+    }
+    return true;
+  }
+  function syncWebMode(j) {
+    if (j && typeof j === "object") {
+      webState = {
+        mode: j.mode || webState.mode || "internet",
+        tor_ready: !!j.tor_ready,
+        tor_active: !!j.tor_active,
+        note: j.note || "",
+      };
+    }
+    syncTray();
+    syncWebPop();
+  }
+  function syncWebPop() {
+    const pop = ui && ui.webPop;
+    if (!pop) return;
+    const mode = curWebMode();
+    pop.dataset.mode = mode;
+    pop.querySelectorAll(".wpMode").forEach((b) => {
+      const on = b.dataset.web === mode;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-checked", String(on));
+    });
+    const st = pop.querySelector(".wpStatus");
+    if (st) {
+      let line = webState.note || "";
+      if (mode === "tor" && !webState.tor_ready) line = line || "Tor is starting\u2026";
+      st.textContent = line;
+      st.hidden = !line;
+    }
+    const sub = pop.querySelector(".wpSub");
+    if (sub) {
+      sub.textContent = mode === "tor"
+        ? (webState.tor_ready ? "Tor — stick browser anonymized" : "Tor — waiting for a circuit")
+        : mode === "none" ? "No internet — public web blocked" : "Internet — normal uplink";
+    }
+    pop.querySelector(".wpIcon").innerHTML = SVG.web;
+  }
+  function refreshWebTray() {
+    const api = appApi();
+    const go = api.refreshWebMode ? api.refreshWebMode() : Promise.resolve(null);
+    Promise.resolve(go).then((j) => { if (j) syncWebMode(j); }).catch(() => {});
+  }
   function buildVaultPop() {
     const pop = el("div", "vaultPop");
     pop.id = "vaultPop";
@@ -495,10 +599,15 @@
       if (!src || !form) { toggleVaultPop(false); openSettings("storage"); return; }
       if (!v.value) { showVpMsg("Enter the vault passcode."); v.focus(); return; }
       src.value = v.value;
-      v.value = "";
+      // Keep tray pass until unlock succeeds — clearing early re-prompted on Enter/fail.
       showVpMsg("Unlocking\u2026", true);
       // The Storage panel's own unlock form does the work (one code path).
-      if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event("submit", { cancelable: true }));
+      const done = () => {
+        try { if (vaultState() === "open") v.value = ""; } catch (_) {}
+      };
+      if (form.requestSubmit) form.requestSubmit();
+      else form.dispatchEvent(new Event("submit", { cancelable: true }));
+      setTimeout(done, 800);
     });
     pop.querySelector(".vpLock").addEventListener("click", () => { toggleVaultPop(false); if (appApi().lockVault) appApi().lockVault(); });
     pop.querySelector(".vpEph").addEventListener("click", () => { toggleVaultPop(false); if (appApi().setSessionMode) appApi().setSessionMode("ephemeral"); });
@@ -519,6 +628,7 @@
     const open = force == null ? pop.hidden : !!force;
     pop.hidden = !open;
     if (open) {
+      toggleWebPop(false);
       toggleLauncher(false);
       showVpMsg("");
       const um = $("#unlockMsg");
@@ -536,7 +646,7 @@
     c.title = d.toLocaleDateString([], { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   }
   function syncTray() {
-    const net = $("#trayNet"), vault = $("#trayVault");
+    const net = $("#trayNet"), web = $("#trayWeb"), vault = $("#trayVault");
     const v = vaultState();
     const m = curMode();
     const txt = (s) => (($(s) || {}).textContent || "").trim();
@@ -551,6 +661,16 @@
       net.innerHTML = st === "ok" || st === "unknown" ? SVG.net : SVG.netOff;
       net.title = label + " \u2014 click for Network settings";
       net.setAttribute("aria-label", label);
+    }
+    if (web) {
+      const wm = curWebMode();
+      let st = wm, label = "Web: Internet (stick browser)";
+      if (wm === "tor") label = webState.tor_ready ? "Web: Tor (stick browser)" : "Web: Tor starting\u2026";
+      else if (wm === "none") label = "Web: No internet (stick browser)";
+      web.dataset.state = st;
+      web.innerHTML = SVG.web;
+      web.title = label + " \u2014 click to change";
+      web.setAttribute("aria-label", label);
     }
     if (vault) {
       const label = v === "open" ? "Vault unlocked \u2014 click to lock or manage"
@@ -670,6 +790,21 @@
     // Clicks inside a same-origin app don't reach this page: focus the window
     // ourselves, and forward the global shortcuts (lock first of all).
     frame.addEventListener("load", () => {
+      // A0 sometimes navigates the iframe to http://127.0.0.1:5099/ — pull it
+      // back under same-origin /agent-zero/ before Chromium shows refused.
+      if (id === CHAT || id === "agent") {
+        try {
+          const href = String((frame.contentWindow && frame.contentWindow.location && frame.contentWindow.location.href) || "");
+          if (/:\/\/(127\.0\.0\.1|localhost|\[::1\])\:(5099|5443)\b/i.test(href)) {
+            const api = appApi();
+            const next = (api.deskAgent && api.deskAgent().href) || "/agent-zero/";
+            const safe = (next && String(next).indexOf("/agent-zero") >= 0) ? next : "/agent-zero/";
+            frame.src = safe;
+            return;
+          }
+        } catch (_) { /* cross-origin refuse page — reloadChatAgentFrame handles */ }
+        try { reloadChatAgentFrame(); } catch (_) {}
+      }
       let w;
       try { w = frame.contentWindow; void w.document; } catch (e) { return; }
       try {
@@ -818,6 +953,26 @@
     if (id === CHAT) {
       // Wizard / mid vault-create owns the screen — do not open A0 yet.
       if (setupBlocksA0()) return null;
+      // Vault locked / mid-lock: show Unlock panel only — never start A0 or
+      // focus a leftover embed that would paint 127.0.0.1 refused.
+      const vaultOpen = !!(api.vaultOpen && api.vaultOpen());
+      if (!vaultOpen) {
+        const curLocked = wm.get(CHAT);
+        if (curLocked && !curLocked.agentPanel) {
+          try {
+            const frame = curLocked.body && curLocked.body.querySelector
+              ? curLocked.body.querySelector("iframe") : null;
+            if (frame) { try { frame.src = "about:blank"; } catch (_) {} }
+          } catch (_) {}
+          try { wm.close(CHAT, true); } catch (_) {}
+        }
+        const w = wm.open(chatSpec({ installed: false, running: false }, { httpReady: false }));
+        if (w) {
+          w.agentPanel = true;
+          renderAgentPanel(api.deskAgent ? Object.assign({}, api.deskAgent(), { vaultUnlocked: false }) : { vaultUnlocked: false });
+        }
+        return w;
+      }
       try { if (api.ensureAgentZeroStarted) api.ensureAgentZeroStarted(); } catch (e) {}
       const cur = wm.get(CHAT);
       // Already showing the embed — just raise it (no reload thrash).
@@ -932,9 +1087,15 @@
     const api = appApi();
     stopChatAgentPoll();
     let kicks = 0;
+    let ticks = 0;
     const tick = () => {
       if (!wm || !wm.has(CHAT) || !chatWinIsPanel()) { stopChatAgentPoll(); return; }
       if (setupBlocksA0()) { stopChatAgentPoll(); return; }
+      // Intentional vault lock: never restart A0 or thrash the panel.
+      try {
+        if (api.vaultOpen && !api.vaultOpen()) { stopChatAgentPoll(); return; }
+      } catch (_) {}
+      ticks += 1;
       const kick = () => {
         // Reboot unlock: keep asking A0 to start while the panel is up.
         if (kicks < 8 && api.ensureAgentZeroStarted) {
@@ -949,12 +1110,25 @@
         .then((ok) => {
           const now = api.deskAgent ? api.deskAgent() : {};
           if (!chatWinIsPanel()) return;
-          if (ok && now.installed && now.running) upgradeChatToAgent(now);
+          // Prefer HTTP-ready; after ~20s of "running" still on panel, force embed
+          // so Ready is never a dead end when csrf probes flap.
+          // Upgrade only when HTTP-ready — never force-embed; user opens A0.
+          if (ok && now.running) upgradeChatToAgent(now);
           else renderAgentPanel(now);
         }).catch(() => {});
     };
     tick();
     chatAgentPoll = setInterval(tick, 1500);
+  }
+  /** Do not force-embed without agentHttpReady — leaves Waiting panel + poll. */
+  function forceChatEmbed(ag) {
+    if (!wm || setupBlocksA0()) return null;
+    const api = appApi();
+    if (chatWinIsPanel()) {
+      renderAgentPanel(ag || (api.deskAgent ? api.deskAgent() : {}));
+      startChatAgentPoll();
+    }
+    return null;
   }
   /** Same-origin /agent-zero/ that loaded before pair cookies → blank / pair_required. */
   function chatFrameNeedsReload(frame) {
@@ -1023,6 +1197,9 @@
     // 0.6.5+: Agent launcher opens the pinned Chat window (same HTTP-ready path).
     return openApp(CHAT);
   }
+  // Explicit Open Agent Zero only — single-flight so mash clicks are ignored.
+  let openA0Busy = false;
+  let openA0Flight = null;
   function renderAgentPanel(ag) {
     const p = ui && ui.agentPanel;
     if (!p) return;
@@ -1034,11 +1211,17 @@
     const needsUnlock = !vaultOpen;
     const settingsGap = vaultOpen && st === "settings_missing";
     const working = !needsUnlock && !settingsGap && (st === "installing" || st === "starting" || st === "locked"
-      || (ag.installed && !ag.running && st !== "error" && st !== "pull_failed" && st !== "stopped"));
+      || (ag.installed && !ag.running && st !== "error" && st !== "pull_failed" && st !== "stopped")
+      || openA0Busy);
     const pct = Number.isFinite(Number(ag.progress)) && ag.progress !== null && ag.progress !== "" ? Math.max(0, Math.min(99, Math.round(Number(ag.progress)))) : null;
     let line;
     if (needsUnlock) line = "Unlock the vault to use Agent Zero.";
     else if (settingsGap) line = ag.message || "USB settings still locked — unlock the vault again.";
+    else if (openA0Busy) {
+      line = ag.running
+        ? "Agent Zero is running — opening…"
+        : (ag.message || (ag.step ? "Starting… step " + ag.step + " of " + (ag.steps || 6) : "Starting Agent Zero…"));
+    }
     else if (st === "locked" || working) line = ag.message || (ag.step ? "Starting… step " + ag.step + " of " + (ag.steps || 6) : "Starting Agent Zero…");
     else if (st === "error" || st === "pull_failed") line = ag.message || "Agent Zero did not start.";
     else if (!ag.installed && !ag.preinstalled) line = ag.state && ag.state !== "Not installed" ? ag.state : "Agent Zero is not installed yet.";
@@ -1049,7 +1232,7 @@
     if (bar) {
       bar.hidden = !working;
       const fill = bar.querySelector("i");
-      if (fill) fill.style.width = (pct !== null ? pct : 5) + "%";
+      if (fill) fill.style.width = (pct !== null ? pct : (openA0Busy ? 12 : 5)) + "%";
       bar.classList.toggle("indet", pct === null);
     }
     const inst = p.querySelector(".apInstall");
@@ -1058,17 +1241,28 @@
     if (inst) {
       if (needsUnlock || settingsGap) {
         // 0.6.7: stale Install/Open/Retry while locked confused first-boot.
+        openA0Busy = false;
         inst.hidden = false;
         inst.disabled = false;
         inst.classList.remove("busy");
         inst.dataset.mode = "unlock";
         inst.textContent = "Unlock vault";
+      } else if (openA0Busy) {
+        // Keep Starting… while Open is in flight — status polls must not
+        // re-enable the button (that caused mash-click restarts).
+        inst.hidden = false;
+        inst.disabled = true;
+        inst.classList.add("busy");
+        inst.dataset.mode = "open";
+        inst.textContent = "Starting…";
       } else if (ag.running) {
-        // Running: CTAs clear — Chat poll upgrades to the embed.
-        inst.hidden = true;
+        // Running but still on Waiting panel: keep Open so csrf wait / upgrade
+        // can be retried — never leave the user with no way into A0.
+        inst.hidden = false;
         inst.disabled = false;
         inst.classList.remove("busy");
-        inst.dataset.mode = "";
+        inst.dataset.mode = "open";
+        inst.textContent = "Open Agent Zero";
       } else if (working || ag.busy) {
         inst.hidden = false;
         inst.disabled = true;
@@ -1090,11 +1284,11 @@
     if (retry) {
       // Hide Retry while locked, starting, or already running — reboot unlock
       // must not leave Open/Retry/Store looking like a failed install.
-      retry.hidden = needsUnlock || settingsGap || working || !!ag.busy || !ag.installed
+      retry.hidden = needsUnlock || settingsGap || working || openA0Busy || !!ag.busy || !ag.installed
         || !!ag.needsInstall || !!ag.running || st === "installing" || st === "starting";
-      retry.disabled = st === "installing" || st === "starting" || working;
+      retry.disabled = st === "installing" || st === "starting" || working || openA0Busy;
     }
-    if (store) store.hidden = needsUnlock || settingsGap || working || !!ag.busy || !!ag.running;
+    if (store) store.hidden = needsUnlock || settingsGap || working || openA0Busy || !!ag.busy || !!ag.running;
   }
   // The Browser is a real Chrome window on the stick's screen (kiosk),
   // placed over the desktop like the other windows (stickllm-control). On a
@@ -1231,31 +1425,48 @@
         return;
       }
       if (b.dataset.mode === "open") {
-        // 0.6.8: start A0, wait until HTTP ready, then swap panel → iframe once.
+        // Single-flight Open: ignore mash clicks; keep Starting… until embed.
+        if (openA0Flight || openA0Busy) return;
+        openA0Busy = true;
         b.disabled = true; b.classList.add("busy"); b.textContent = "Starting…";
-        const finishOpen = (agNow, httpOk) => {
-          b.disabled = false; b.classList.remove("busy"); b.textContent = "Open Agent Zero";
-          if (wm && wm.has(CHAT) && wm.get(CHAT) && wm.get(CHAT).agentPanel && agNow && agNow.running && httpOk) {
-            upgradeChatToAgent(agNow);
-          } else {
-            renderAgentPanel(agNow || {});
-            startChatAgentPoll();
-          }
-        };
-        const waitReady = (n) => {
-          Promise.resolve(api.refreshAgentLink ? api.refreshAgentLink() : null)
-            .then(() => (api.agentHttpReady ? api.agentHttpReady(true) : Promise.resolve(false)))
-            .then((ok) => {
-              const now = api.deskAgent ? api.deskAgent() : {};
-              if (ok && now.running) { finishOpen(now, true); return; }
-              if (n >= 40) { finishOpen(now, false); return; }
+        renderAgentPanel(api.deskAgent ? api.deskAgent() : {});
+        openA0Flight = (async () => {
+          let last = {};
+          try {
+            // Kick docker start in parallel — do not serialize behind first CSRF probe.
+            const startP = Promise.resolve(api.ensureAgentZeroStarted ? api.ensureAgentZeroStarted() : null)
+              .catch(() => null);
+            for (let n = 0; n < 50; n++) {
+              if (!wm || !wm.has(CHAT) || !chatWinIsPanel()) return;
+              if (n === 0) {
+                await Promise.race([startP, new Promise((r) => setTimeout(r, 150))]);
+              }
+              try { if (api.refreshAgentLink) await api.refreshAgentLink(); } catch (_) {}
+              last = api.deskAgent ? api.deskAgent() : {};
+              renderAgentPanel(last);
+              const httpOk = api.agentHttpReady ? await api.agentHttpReady(true) : false;
+              // Only embed when /agent-zero/ CSRF answers — never force-embed on
+              // status.running alone (that painted Chromium "127.0.0.1 refused
+              // to connect" when A0 redirected the iframe to :5099 too early).
+              if (httpOk && last.running) {
+                await Promise.resolve(upgradeChatToAgent(last));
+                return;
+              }
+              await new Promise((r) => setTimeout(r, 400));
+            }
+            if (api.toast) api.toast("Agent Zero is still starting — press Open again in a moment");
+          } catch (_) {
+            if (api.toast) api.toast("Could not open Agent Zero — try again");
+          } finally {
+            openA0Busy = false;
+            openA0Flight = null;
+            if (wm && wm.has(CHAT) && chatWinIsPanel()) {
+              const now = api.deskAgent ? api.deskAgent() : last;
               renderAgentPanel(now);
-              setTimeout(() => waitReady(n + 1), 500);
-            }).catch(() => finishOpen({}, false));
-        };
-        Promise.resolve(api.ensureAgentZeroStarted ? api.ensureAgentZeroStarted() : null)
-          .then(() => waitReady(0))
-          .catch(() => { b.disabled = false; b.classList.remove("busy"); b.textContent = "Open Agent Zero"; });
+              startChatAgentPoll();
+            }
+          }
+        })();
         return;
       }
       b.disabled = true; b.classList.add("busy"); b.textContent = "Installing…";
@@ -1348,9 +1559,8 @@
         const appEl = $("#app");
         if (appEl && ui.hold) move(appEl, ui.hold);
       } catch (e) {}
-      // First-boot wizard / mid vault-create: do not open Agent Zero yet.
-      // After setup dismiss or vault unlock, stickllm:vault-unlocked opens once.
-      if (!setupBlocksA0()) openApp(CHAT);
+      // Never auto-open Agent Zero on desktop start — first-boot A0 open breaks it.
+      // User opens Chat from the dock/icon when ready.
       pollBrowser();
       window.addEventListener("resize", onResize);
       renderTasks();
@@ -1381,6 +1591,7 @@
       clearTimeout(browserT);
       ui.layer.remove(); ui.bar.remove(); ui.launcher.remove(); ui.hold.remove();
       if (ui.vaultPop) ui.vaultPop.remove();
+      if (ui.webPop) ui.webPop.remove();
     }
     ui = null;
     wm = null;
@@ -1422,6 +1633,9 @@
   window.addEventListener("keydown", (e) => {
     if (!on) return;
     const k = (e.key || "").toLowerCase();
+    if (e.key === "Escape" && ui && ui.webPop && !ui.webPop.hidden) {
+      e.preventDefault(); e.stopImmediatePropagation(); toggleWebPop(false); return;
+    }
     if (e.key === "Escape" && ui && ui.vaultPop && !ui.vaultPop.hidden) {
       e.preventDefault(); e.stopImmediatePropagation(); toggleVaultPop(false); return;
     }
@@ -1441,6 +1655,7 @@
     if (done) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
   document.addEventListener("pointerdown", (e) => {
+    if (ui && ui.webPop && !ui.webPop.hidden && !ui.webPop.contains(e.target) && !e.target.closest("#trayWeb")) toggleWebPop(false);
     if (ui && ui.vaultPop && !ui.vaultPop.hidden && !ui.vaultPop.contains(e.target) && !e.target.closest("#trayMode,#trayVault")) toggleVaultPop(false);
     if (!ui || ui.launcher.hidden) return;
     if (!ui.launcher.contains(e.target) && !ui.start.contains(e.target)) toggleLauncher(false);
@@ -1457,6 +1672,37 @@
       if (w && !w.min && wm.activeId() !== id) wm.focus(id);
     }, 0);
   });
+
+  // Lock while in use: blank/close A0 embeds BEFORE vault_lock stops the
+  // container, so Chromium never paints "127.0.0.1 refused" / A0 "not
+  // responding" over a dead iframe. Also close vault app windows.
+  function prepareForVaultLock() {
+    stopChatAgentPoll();
+    stopAgentPoll();
+    openA0Busy = false;
+    openA0Flight = null;
+    chatFrameReloadN = 0;
+    chatUpgradeLock = null;
+    toggleLauncher(false);
+    if (!wm) return;
+    // Blank any live A0 iframe immediately (pinned Chat survives closeAll).
+    try {
+      const cur = wm.get(CHAT);
+      const frame = cur && cur.body && cur.body.querySelector
+        ? cur.body.querySelector("iframe") : null;
+      if (frame) {
+        try { frame.removeAttribute("src"); } catch (_) {}
+        try { frame.src = "about:blank"; } catch (_) {}
+      }
+    } catch (_) {}
+    // Force-close Chat (pinned) so unlock later opens a fresh panel, not a
+    // leftover dead /agent-zero/ or loopback frame.
+    if (wm.has(CHAT)) {
+      try { wm.close(CHAT, true); } catch (_) {}
+    }
+    // Other vault apps (Trilium, Docs, …) — keep Settings/Models usable.
+    try { wm.closeAll(false); } catch (_) {}
+  }
 
   // Public hooks for app.js.
   window.stickDesk = {
@@ -1475,11 +1721,13 @@
     },
     onSettingsClose: () => { if (wm && wm.has("settings")) wm.close("settings"); },
     vaultPrompt: () => on && toggleVaultPop(true),
+    syncWebMode: (j) => { if (on) syncWebMode(j); },
     refreshCatalog: scheduleCatalog,
     openApp: (id) => openApp(id),
     openBrowser: (url, title) => openBrowser(url, title),
     onPaired: () => onPaired(),
     closeAll: () => { if (wm) wm.closeAll(false); toggleLauncher(false); },
+    prepareForVaultLock: () => prepareForVaultLock(),
     list: () => (wm ? wm.list() : []),
     _wm: () => wm,
     evaluate: evaluate,
@@ -1492,32 +1740,19 @@
   window.addEventListener("stickllm:vault-unlocked", () => {
     if (!on || !wm) return;
     const api = appApi();
-    // Setup wizard owns the screen — never open/reload Agent Zero mid-wizard.
+    // Setup wizard owns the screen — close any premature A0 window.
     if (setupBlocksA0()) {
       if (wm.has(CHAT)) try { wm.close(CHAT, true); } catch (_) {}
       return;
     }
-    // Open A0 once after setup complete or returning-boot vault unlock.
-    if (!wm.has(CHAT)) {
-      try { openApp(CHAT); } catch (_) {}
-    }
-    const after = () => {
-      const ag = api.deskAgent ? api.deskAgent() : {};
-      if (!wm.has(CHAT)) return;
-      const cur = wm.get(CHAT);
-      if (cur && cur.agentPanel) {
-        renderAgentPanel(ag);
-        startChatAgentPoll(); // panel → iframe only when agentHttpReady
-      } else if (ag.installed && ag.running) {
-        try { wm.focus(CHAT); } catch (_) {}
-      } else {
-        startChatAgentPoll();
-      }
-    };
-    Promise.resolve(api.ensureAgentZeroStarted ? api.ensureAgentZeroStarted() : null)
-      .then(() => api.refreshAgentLink ? api.refreshAgentLink() : null)
-      .then(after)
-      .catch(after);
+    // Never auto-open or auto-start Agent Zero — only explicit Open.
+    if (!wm.has(CHAT)) return;
+    Promise.resolve(api.refreshAgentLink ? api.refreshAgentLink() : null)
+      .then(() => {
+        if (!wm.has(CHAT) || !chatWinIsPanel()) return;
+        renderAgentPanel(api.deskAgent ? api.deskAgent() : {});
+      })
+      .catch(() => {});
   });
   window.addEventListener("stickllm:agent-status", () => {
     if (!on || !wm || !chatWinIsPanel() || setupBlocksA0()) return;

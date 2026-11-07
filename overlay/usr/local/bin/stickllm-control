@@ -194,21 +194,23 @@ def set_session_mode(mode: str) -> dict:
         return {"ok": False, "error": "mode must be ephemeral or vault"}
     prev = session_mode()
     RUN.mkdir(parents=True, exist_ok=True)
+    # Idempotent: same mode must not re-lock or re-fire side effects.
+    if prev == mode:
+        return {"ok": True, "mode": mode, "unchanged": True, "vault_locked": False}
     doc = {
         "ok": True,
         "mode": mode,
         "updated": int(time.time()),
+        "note": (
+            "Vault mode: chats/settings in LUKS blob."
+            if mode == "vault"
+            else "Ephemeral: new chats stay in memory; vault may stay unlocked."
+        ),
     }
-    # Switching to Ephemeral locks the vault (unload model + unmount LUKS).
-    if mode == "ephemeral" and (
-        prev == "vault" or os.path.ismount("/var/lib/stickllm/vault")
-    ):
-        lock_r = vault_action("lock", {})
-        doc["vault_locked"] = bool(lock_r.get("ok"))
-        if not lock_r.get("ok"):
-            doc["vault_lock_error"] = (
-                lock_r.get("error") or lock_r.get("stderr") or "lock failed"
-            )
+    # 0.6.0 (B3) / v069f: Ephemeral only changes where chats go. Never lock the
+    # vault here (old control path locked on ephemeral and fought the UI toggle).
+    # Explicit Lock vault uses vault_lock. Matches stickllm-gateway set_session_mode.
+    doc["vault_locked"] = False
     SESSION_MODE_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     return doc
 
@@ -1985,13 +1987,13 @@ def spawn_llama_warmup(wait: float = 600.0) -> None:
 def restore_last_model() -> dict:
     """After vault unlock / setup: reload the last Activated model if none is up.
 
-    Always kicks a real /v1/chat/completions warm when llama is already healthy so
-    the first Agent Zero message is not the cold first-token hit.
+    If llama is already healthy, do nothing (no activate, no warmup). Warmup on a
+    live model was cheap alone, but ensure-addons used to fire this on every
+    ephemeral→vault switch and stack dockerd/A0 start on top — enough to OOM.
     """
     ok, _ = llama_health_ok()
     if ok and active_model_path():
-        spawn_llama_warmup(600)
-        return {"ok": True, "restored": False, "running": True, "note": "already loaded", "warmup": "spawned"}
+        return {"ok": True, "restored": False, "running": True, "note": "already loaded", "warmup": "skipped"}
     if active_model_path() and not ok:
         # model.env present but server down or still starting — kick the unit, then warm.
         sh(["systemctl", "reset-failed", "stickllm-llama.service"], timeout=30)
@@ -5171,6 +5173,65 @@ def browser_downloads_state() -> str:
     return "vault" if "downloads=unlocked" in str(r.get("stdout") or "") else "blocked"
 
 
+# --- 0.6.11: Web mode (Internet / Tor / No internet) for stick Chromium ---
+WEB_MODE_MODES = ("internet", "tor", "none")
+WEB_MODE_BIN = "/usr/local/bin/stickllm-web-mode"
+WEB_MODE_STATE = RUN / "web-mode.json"
+
+
+def web_mode_status() -> dict:
+    """Current Web mode (+ Tor readiness). Stick Chromium only; remotes own their net."""
+    r = sh([WEB_MODE_BIN, "status"], timeout=25)
+    doc = read_json(WEB_MODE_STATE) if WEB_MODE_STATE.is_file() else {}
+    if not isinstance(doc, dict):
+        doc = {}
+    if not doc.get("mode"):
+        # Parse mode=… from CLI when JSON was not written yet.
+        for line in str(r.get("stdout") or "").splitlines():
+            if line.startswith("{"):
+                try:
+                    doc = json.loads(line)
+                except Exception:
+                    pass
+                break
+    mode = str(doc.get("mode") or "internet").strip().lower()
+    if mode not in WEB_MODE_MODES:
+        mode = "internet"
+    out = {
+        "ok": True,
+        "mode": mode,
+        "modes": list(WEB_MODE_MODES),
+        "scope": "stick_browser",
+        "scope_note": "Applies to the stick kiosk browser and stick-local Chromium only.",
+        "remote_clients": "own_network",
+        "remote_note": (
+            "Remote LAN clients use their own network; StickLLM cannot force "
+            "their browser through Tor or offline."
+        ),
+        "tor_active": bool(doc.get("tor_active")),
+        "tor_ready": bool(doc.get("tor_ready")),
+        "applied": bool(doc.get("applied", True)),
+        "note": str(doc.get("note") or ""),
+        "cli_ok": bool(r.get("ok")),
+    }
+    return out
+
+
+def web_mode_set(mode: str) -> dict:
+    mode = str(mode or "").strip().lower()
+    if mode not in WEB_MODE_MODES:
+        return {"ok": False, "error": "mode must be internet, tor, or none"}
+    # Tor bootstrap wait can take ~15s inside the helper.
+    r = sh([WEB_MODE_BIN, "set", mode], timeout=90)
+    st = web_mode_status()
+    st["ok"] = bool(r.get("ok")) and bool(st.get("applied", True))
+    if not r.get("ok"):
+        st["error"] = (r.get("stderr") or r.get("stdout") or "web-mode failed")[-400:]
+        st["ok"] = False
+    st["cli"] = {"ok": r.get("ok"), "stdout": (r.get("stdout") or "")[-200:]}
+    return st
+
+
 def _browser_reap() -> None:
     import shutil
     for bid, rec in list(_BROWSERS.items()):
@@ -5718,6 +5779,10 @@ def handle(action: str, params: dict) -> dict:
         return browser_close(params)
     if action == "browser_window":
         return browser_window(params)
+    if action == "web_mode" or action == "web_mode_status":
+        return web_mode_status()
+    if action == "web_mode_set" or action == "set_web_mode":
+        return web_mode_set(str(params.get("mode") or ""))
     if action == "session_mode":
         return {"ok": True, "mode": session_mode(), "modes": sorted(SESSION_MODES)}
     if action == "set_session_mode":
@@ -6034,6 +6099,13 @@ def vault_action(cmd: str, params: dict) -> dict:
             return {"ok": False, "error": str(e)}
     if cmd == "lock":
         sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
+        # Stop Agent Zero before stickllm-vault lock/umount so the vault is not
+        # busy and the UI is not blocked by "Agent Zero is not running" noise.
+        sh(["/usr/local/bin/stickllm-agent", "stop"], timeout=120)
+        try:
+            time.sleep(1.0)
+        except Exception:
+            pass
         # 0.5.6: Office alone can take ~60-150s to flush and stop (TimeoutStopSec=150),
         # then Agent Zero, add-ons and dockerd stop; 120s killed the lock midway.
         r = sh([script, "lock"], timeout=360)

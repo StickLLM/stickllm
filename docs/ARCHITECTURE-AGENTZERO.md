@@ -58,7 +58,7 @@ The Tetris adapter wraps the vendored game's globals (`update`, `play`, `lose`) 
 
 Agent Zero keeps the tool prompts of an old chat. After the app list changes, start a new chat.
 
-Agent Zero tools are `open_app(id)`, `app_state(id)`, and `app_act(id, action)`. The skill is `/mnt/stickllm-settings/agent-zero/skills/stickllm-apps/SKILL.md`, mounted at `/a0/usr/skills/stickllm-apps/SKILL.md`. It says to use those tools, not the container's own browser, and to stop after 30 actions.
+Agent Zero tools are `open_app(id)`, `app_state(id)`, and `app_act(id, action)`. The skill is `/mnt/stickllm-settings/agent-zero/skills/stickllm-apps/SKILL.md`, mounted at both `/a0/usr/skills/stickllm-apps/SKILL.md` and `/git/agent-zero/usr/skills/stickllm-apps/SKILL.md` (A0 resolves `usr/skills` under `/git/agent-zero`). The entrypoint also mirrors it into `/a0/skills` so the Built-in skills UI lists it. A seed copy ships in the ISO at `/usr/local/share/stickllm/agent-zero-skills/stickllm-apps/SKILL.md` and is written onto the settings partition when USB settings open. It says to use those tools, not the container's own browser, and to stop after 30 actions.
 
 URL ids: `minesweeper`, `solitaire`, `tetris`, `notepad`, `calculator`, `files`, `media`, `monitor`. The desktop label minesweep is the id `minesweeper`.
 

@@ -73,6 +73,22 @@ if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
   fi
 fi
 
+# Chromium enterprise policies (tabs, downloads, media auto-grant, proxy/web-mode).
+if [[ -d "$SRC/etc/chromium/policies/managed" ]]; then
+  mkdir -p /etc/chromium/policies/managed /etc/chromium-browser/policies/managed
+  shopt -s nullglob
+  for f in "$SRC/etc/chromium/policies/managed"/stickllm-*.json; do
+    [[ -f "$f" ]] || continue
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    base="$(basename "$f")"
+    install -m 644 "$f" "/etc/chromium/policies/managed/$base"
+    install -m 644 "$f" "/etc/chromium-browser/policies/managed/$base"
+    echo "installed /etc/chromium/policies/managed/$base"
+    installed=1
+  done
+  shopt -u nullglob
+fi
+
 if [[ -d "$SRC/opt/stickllm/ui" ]]; then
   mkdir -p /opt/stickllm/ui
   shopt -s nullglob
@@ -130,6 +146,24 @@ if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
   fi
   echo "installed /etc/sudoers.d/stickllm"
   installed=1
+fi
+
+# Baked Agent Zero stickllm-apps skill seed (ISO + settings open).
+if [[ -d "$SRC/usr/local/share/stickllm/agent-zero-skills" ]]; then
+  while IFS= read -r -d '' f; do
+    rel="${f#"$SRC/"}"
+    dest="/$rel"
+    mkdir -p "$(dirname "$dest")"
+    case "$rel" in
+      *.md|*.txt|*.json)
+        sed -i 's/\r$//' "$f" 2>/dev/null || true
+        install -m 644 "$f" "$dest"
+        ;;
+      *) echo "skipping non-skill file: $rel" >&2; continue ;;
+    esac
+    echo "installed $dest"
+    installed=1
+  done < <(find "$SRC/usr/local/share/stickllm/agent-zero-skills" -type f -print0)
 fi
 
 if [[ "$installed" -eq 0 ]]; then

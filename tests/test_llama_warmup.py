@@ -39,10 +39,16 @@ def test_unload_clears_last_model():
     assert "clear_last_model" in body
 
 
-def test_vault_unlock_restores_last_model():
+def test_vault_unlock_does_not_restore_model():
+    # v069j: unlock/mode paths must not restore/warmup llama (looked like reboot).
     v = VAULT.read_text(encoding="utf-8")
     body = v[v.index("start_agent_addon()") : v.index("stop_vault_addons()")]
-    assert "--restore-last-model" in body
+    assert "--restore-last-model" not in body
+    ensure = v[v.index("cmd_ensure_addons()") : v.index("cmd_ui_mount_status()")]
+    assert "--restore-last-model" not in ensure
+    sched = v[v.index("schedule_ui_vault_refresh()") : v.index("download_policy()")]
+    assert "systemctl try-restart" not in sched
+    assert "skip-ui-restart-no-reboot" in sched
 
 
 def test_gateway_exposes_warmup():
@@ -56,3 +62,5 @@ def test_ui_shows_warming_up():
     js = UI.read_text(encoding="utf-8")
     assert "Warming up…" in js
     assert "llama_warmup" in js
+    assert "first reply takes a long time" in js
+    assert "first reply will be faster" not in js

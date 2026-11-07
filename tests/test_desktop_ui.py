@@ -71,7 +71,12 @@ def test_no_cdn_and_local_winbox():
 def test_app_js_hooks():
     app = _read(UI / "app.js")
     assert app.count("window.stickDesk.handles(id)") >= 2, "starter apps open as desktop windows"
-    assert "window.stickDesk.closeAll()" in app, "lock closes app windows"
+    assert (
+        "prepareForVaultLock" in app or "window.stickDesk.closeAll()" in app
+    ), "lock closes A0/app windows before umount"
+    desk_src = _read(UI / "desktop.js")
+    assert "prepareForVaultLock" in desk_src, "desktop tears down A0 embeds on lock"
+    assert "about:blank" in desk_src
     m = re.search(r"window\.stickApp = Object\.freeze\(\{([^}]*)\}\)", app)
     assert m, "app.js publishes the actions desktop.js needs"
     for fn in ("openSettings", "lockVault", "showApps", "toast"):

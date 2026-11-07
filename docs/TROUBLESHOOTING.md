@@ -1,5 +1,17 @@
 # StickLLM troubleshooting
 
+## Agent Zero: “127.0.0.1 refused to connect” on first open
+
+**What you see:** After setup (or the first time you open Agent Zero), the Agent window shows Chromium’s **This site can’t be reached** / **127.0.0.1 refused to connect** (or localhost), instead of the Agent Zero chat UI.
+
+**Why:** Agent Zero’s container takes a short time to answer after vault unlock / first start. An early open can leave the window on a dead loopback URL before the service is listening.
+
+**What to do**
+1. Prefer the **Starting… / Open Agent Zero** waiting panel — stay there until StickLLM swaps in the live Agent Zero page.
+2. If you already see the refused-to-connect page: **Reload the desktop** (right-click the StickLLM desk → **Reload**, or press **F5**), then open **Agent Zero** again.
+
+You should not need this after a Reload once Agent Zero has finished starting. Later StickLLM builds wait for Agent Zero’s API before embedding the page.
+
 ## Agent Zero apps open in a panel / don't open in a new tab
 
 > **Applies to current versions.** This goes away once per-connection
@@ -81,6 +93,19 @@ can still read and play it. Switch to the StickLLM tab to watch, or click
 - Only one paired device at a time is supported. If two devices both chatted
   with Agent Zero in the last 5 minutes, the most recent one gets the app.
 
+## Microphone on the stick kiosk vs a remote phone/PC
+
+**Kiosk (HDMI Chromium we own):** mic (and camera, if used) is auto-granted for
+StickLLM loopback and this stick’s LAN/pair origins via Chromium enterprise
+policy `AudioCaptureAllowedUrls` / `VideoCaptureAllowedUrls`
+(`stickllm-media.json`, also written at kiosk start). There should be **no**
+Allow prompt on the console. The kiosk user is also in the `audio` group so
+`/dev/snd` capture devices are reachable.
+
+**Remote LAN browser (phone/PC):** still normal browser rules — open the stick
+over **HTTPS**, then **Allow** mic after a user gesture. StickLLM cannot push
+kiosk policies into someone else’s Chrome/Safari.
+
 ## Microphone fails on a remote LAN browser
 
 **What you see:** Agent Zero says something like "Failed to access microphone.
@@ -95,7 +120,7 @@ is not secure, so the browser blocks the mic even when the OS mic is fine.
 
 Use the stick IP from Settings → Devices (example `192.168.72.50`). Remote
 `http://` page loads redirect to `https://` when TLS is up; the stick kiosk
-(`http://127.0.0.1/`) stays on HTTP.
+(`http://127.0.0.1/`) stays on HTTP and uses the auto-grant policy above.
 
 1. Open **`https://192.168.72.50/`** (or follow the redirect from `http://`).
 2. In Chrome: **Advanced → Proceed to 192.168.72.50 (unsafe)** once so the

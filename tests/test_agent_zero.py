@@ -628,6 +628,14 @@ def test_console_browser_keeps_a_tab_strip():
     )
     assert policy["FullscreenAllowed"] is False
     assert "http://127.0.0.1" in policy["PopupsAllowedForUrls"]
+    media = json.loads(
+        (
+            ROOT / "overlay" / "etc" / "chromium" / "policies" / "managed" / "stickllm-media.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert "http://127.0.0.1:*" in media["AudioCaptureAllowedUrls"]
+    assert "stickllm-media.json" in text
+    assert "AudioCaptureAllowedUrls" in text
 
 
 def _nft_check(text: str) -> None:

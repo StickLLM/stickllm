@@ -1,0 +1,30 @@
+{
+  "AudioCaptureAllowedUrls": [
+    "http://127.0.0.1",
+    "http://127.0.0.1:*",
+    "https://127.0.0.1",
+    "https://127.0.0.1:*",
+    "http://localhost",
+    "http://localhost:*",
+    "https://localhost",
+    "https://localhost:*",
+    "http://[::1]",
+    "http://[::1]:*",
+    "https://[::1]",
+    "https://[::1]:*"
+  ],
+  "VideoCaptureAllowedUrls": [
+    "http://127.0.0.1",
+    "http://127.0.0.1:*",
+    "https://127.0.0.1",
+    "https://127.0.0.1:*",
+    "http://localhost",
+    "http://localhost:*",
+    "https://localhost",
+    "https://localhost:*",
+    "http://[::1]",
+    "http://[::1]:*",
+    "https://[::1]",
+    "https://[::1]:*"
+  ]
+}

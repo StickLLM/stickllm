@@ -111,6 +111,9 @@ body.deskMode .trayBtn svg{width:19px;height:19px}
 body.deskMode .trayNet[data-state="ok"]{color:var(--ok)}
 body.deskMode .trayNet[data-state="local"]{color:var(--warn)}
 body.deskMode .trayNet[data-state="down"]{color:var(--danger)}
+body.deskMode .trayWeb[data-state="internet"]{color:var(--ok)}
+body.deskMode .trayWeb[data-state="tor"]{color:var(--warn)}
+body.deskMode .trayWeb[data-state="none"]{color:var(--danger)}
 body.deskMode .trayVault[data-state="open"]{color:var(--ok)}
 body.deskMode .trayVault[data-state="locked"]{color:var(--ink2)}
 body.deskMode .trayVault[data-state="none"]{color:var(--muted)}
@@ -237,6 +240,30 @@ body.deskMode .vpMsg.info{color:var(--muted)}
 body.deskMode .vpActs{display:flex;flex-wrap:wrap;gap:6px}
 body.deskMode .vpActs [hidden]{display:none}
 body.deskMode .vpKeys{color:var(--muted);font-size:11.5px}
+
+/* ---- Web mode popover (0.6.11) ---- */
+body.deskMode .webPop{position:fixed;right:48px;bottom:56px;z-index:30;width:320px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:10px}
+body.deskMode .webPop[hidden]{display:none}
+body.deskMode .wpHead{display:flex;gap:12px;align-items:center}
+body.deskMode .wpHead b{display:block;font-size:15px}
+body.deskMode .wpHead small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+body.deskMode .wpIcon{display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:var(--bg2);flex:none;color:var(--ok)}
+body.deskMode .webPop[data-mode="tor"] .wpIcon{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,var(--bg2))}
+body.deskMode .webPop[data-mode="none"] .wpIcon{color:var(--danger);background:color-mix(in srgb,var(--danger) 15%,var(--bg2))}
+body.deskMode .wpIcon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}
+body.deskMode .wpModes{display:flex;flex-direction:column;gap:4px}
+body.deskMode .wpMode{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:1px solid transparent;border-radius:10px;background:none;color:var(--ink);cursor:pointer;text-align:left}
+body.deskMode .wpMode:hover,body.deskMode .wpMode.on{background:var(--bg2);border-color:var(--line)}
+body.deskMode .wpMode.on{border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+body.deskMode .wpDot{width:10px;height:10px;border-radius:50%;flex:none}
+body.deskMode .wpDot.internet{background:var(--ok)}
+body.deskMode .wpDot.tor{background:var(--warn)}
+body.deskMode .wpDot.none{background:var(--danger)}
+body.deskMode .wpLabel{display:flex;flex-direction:column;gap:1px;min-width:0}
+body.deskMode .wpLabel b{font-size:13.5px;font-weight:650}
+body.deskMode .wpLabel small{font-size:12px;color:var(--muted)}
+body.deskMode .wpNote,body.deskMode .wpStatus{color:var(--muted);font-size:12px;line-height:1.35}
+body.deskMode .wpStatus{color:var(--ink2)}
 
 /* 0.5.6 r3: taskbar menu for compositor (Chromium) windows. */
 body.deskMode .taskMenu{position:fixed;z-index:40;min-width:160px;padding:4px;border-radius:10px;background:var(--panel,#16202a);border:1px solid var(--line,rgba(255,255,255,.12));box-shadow:0 10px 30px rgba(0,0,0,.35);display:flex;flex-direction:column}

@@ -1,0 +1,273 @@
+#!/bin/bash
+# StickLLM Web mode for stick-local Chromium (kiosk + stickllm-control Browser).
+# Modes: internet (direct) | tor (SOCKS via local Tor) | none (block outbound web).
+# Does NOT force Tor on remote LAN browsers — they use their own network.
+# Usage: stickllm-web-mode [status|get|set <mode>|apply]
+set -u
+
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+STATE_RUN="$RUN/web-mode.json"
+PERSIST_VAR="${STICKLLM_WEB_MODE_PERSIST:-/var/lib/stickllm/web-mode.json}"
+SETTINGS_MNT="${STICKLLM_SETTINGS_MNT:-/mnt/stickllm-settings}"
+PERSIST_SETTINGS="$SETTINGS_MNT/web-mode.json"
+POLICY_DIRS="${STICKLLM_CHROMIUM_POLICY_DIRS:-/etc/chromium/policies/managed /etc/chromium-browser/policies/managed}"
+POLICY_NAME="stickllm-proxy.json"
+TOR_UNIT="${STICKLLM_TOR_UNIT:-tor.service}"
+TOR_SOCKS="${STICKLLM_TOR_SOCKS:-127.0.0.1:9050}"
+TOR_HTTP="${STICKLLM_TOR_HTTP:-127.0.0.1:9080}"
+MODES="internet tor none"
+DEFAULT_MODE="internet"
+
+mkdir -p "$RUN" 2>/dev/null || true
+
+die() { echo "$*" >&2; exit 2; }
+
+norm_mode() {
+  local m
+  m="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$m" in
+    internet|online|direct|clear) printf 'internet' ;;
+    tor|onion|anonymous) printf 'tor' ;;
+    none|off|block|offline|no|ninet|nointernet) printf 'none' ;;
+    *) return 1 ;;
+  esac
+}
+
+persist_path() {
+  if [[ -d "$SETTINGS_MNT" ]] && mountpoint -q "$SETTINGS_MNT" 2>/dev/null; then
+    printf '%s' "$PERSIST_SETTINGS"
+  else
+    printf '%s' "$PERSIST_VAR"
+  fi
+}
+
+read_desired() {
+  local path m
+  for path in "$PERSIST_SETTINGS" "$PERSIST_VAR" "$STATE_RUN"; do
+    [[ -f "$path" ]] || continue
+    m="$(python3 - "$path" <<'PY' 2>/dev/null || true
+import json,sys
+try:
+  d=json.load(open(sys.argv[1],encoding="utf-8"))
+except Exception:
+  raise SystemExit(0)
+m=str(d.get("mode") or "").strip().lower()
+print(m)
+PY
+)"
+    if m="$(norm_mode "$m" 2>/dev/null)"; then
+      printf '%s' "$m"
+      return 0
+    fi
+  done
+  printf '%s' "$DEFAULT_MODE"
+}
+
+write_json() {
+  local path="$1" mode="$2" tor_active="$3" tor_ready="$4" note="$5" applied="$6"
+  local dir tmp
+  dir="$(dirname "$path")"
+  mkdir -p "$dir" 2>/dev/null || true
+  tmp="$path.tmp.$$"
+  python3 - "$tmp" "$mode" "$tor_active" "$tor_ready" "$note" "$applied" <<'PY'
+import json,sys,time
+path,mode,tor_active,tor_ready,note,applied=sys.argv[1:7]
+doc={
+  "ok": True,
+  "mode": mode,
+  "modes": ["internet","tor","none"],
+  "scope": "stick_browser",
+  "scope_note": "Applies to the stick kiosk browser and stick-local Chromium only.",
+  "remote_clients": "own_network",
+  "remote_note": "Remote LAN clients use their own network; StickLLM cannot force their browser through Tor or offline.",
+  "tor_active": tor_active == "1",
+  "tor_ready": tor_ready == "1",
+  "applied": applied == "1",
+  "updated": int(time.time()),
+  "note": note,
+}
+open(path,"w",encoding="utf-8").write(json.dumps(doc,indent=2)+"\n")
+PY
+  chmod 644 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$path"
+}
+
+write_policy() {
+  local mode="$1" body
+  case "$mode" in
+    internet)
+      # Clear StickLLM proxy/block policies so Chromium uses a direct uplink.
+      body='{"ProxyMode":"direct","ProxyServer":"","ProxyBypassList":"","URLBlocklist":[],"URLAllowlist":[]}'
+      ;;
+    tor)
+      body=$(printf '{"ProxyMode":"fixed_servers","ProxyServer":"socks5://%s","ProxyBypassList":"<-loopback>","URLBlocklist":[],"URLAllowlist":[]}' "$TOR_SOCKS")
+      ;;
+    none)
+      # Block every URL except loopback StickLLM / local app ports.
+      body='{"ProxyMode":"direct","ProxyServer":"","ProxyBypassList":"","URLBlocklist":["*"],"URLAllowlist":["http://127.0.0.1","http://127.0.0.1:*","https://127.0.0.1","https://127.0.0.1:*","http://localhost","http://localhost:*","https://localhost","https://localhost:*"]}'
+      ;;
+    *) return 1 ;;
+  esac
+  local dir tmp rc=1
+  for dir in $POLICY_DIRS; do
+    mkdir -p "$dir" 2>/dev/null || continue
+    tmp="$dir/.$POLICY_NAME.$$"
+    if printf '%s\n' "$body" >"$tmp" 2>/dev/null && chmod 644 "$tmp" && mv -f "$tmp" "$dir/$POLICY_NAME"; then
+      rc=0
+    else
+      rm -f "$tmp" 2>/dev/null || true
+    fi
+  done
+  return "$rc"
+}
+
+ensure_tor_conf() {
+  # Debian uses /etc/torrc.d when %include is enabled in /etc/tor/torrc.
+  local d f
+  for d in /etc/torrc.d /etc/tor/torrc.d; do
+    mkdir -p "$d" 2>/dev/null || continue
+    f="$d/90-stickllm.conf"
+    cat >"$f" <<EOF
+# StickLLM: on-demand anonymity for stick Chromium / stick-origin fetches.
+SocksPort ${TOR_SOCKS}
+HTTPTunnelPort ${TOR_HTTP}
+EOF
+    chmod 644 "$f" 2>/dev/null || true
+  done
+  # Uncomment or append %include so our snippet is loaded.
+  if [[ -f /etc/tor/torrc ]]; then
+    if grep -qE '^#%include /etc/torrc\.d/\*\.conf' /etc/tor/torrc 2>/dev/null; then
+      sed -i 's|^#%include /etc/torrc\.d/\*\.conf|%include /etc/torrc.d/*.conf|' /etc/tor/torrc 2>/dev/null || true
+    elif ! grep -qE '^%include /etc/torrc\.d/' /etc/tor/torrc 2>/dev/null; then
+      printf '\n%%include /etc/torrc.d/*.conf\n' >>/etc/tor/torrc 2>/dev/null || true
+    fi
+  fi
+}
+
+tor_is_active() {
+  systemctl is-active --quiet "$TOR_UNIT" 2>/dev/null
+}
+
+tor_bootstrap_ok() {
+  # Prefer Tor's HTTP tunnel; fall back to SOCKS via curl.
+  if command -v curl >/dev/null 2>&1; then
+    local code
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 \
+      --proxy "http://${TOR_HTTP}" https://check.torproject.org/api/ip 2>/dev/null || true)"
+    [[ "$code" == "200" ]] && return 0
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 \
+      --socks5-hostname "$TOR_SOCKS" https://check.torproject.org/api/ip 2>/dev/null || true)"
+    [[ "$code" == "200" ]] && return 0
+  fi
+  # Soft ready: listening SOCKS port after active unit.
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | grep -qE "127\.0\.0\.1:9050|\[::1\]:9050" && return 0
+  fi
+  return 1
+}
+
+start_tor() {
+  ensure_tor_conf
+  if ! command -v tor >/dev/null 2>&1 && ! systemctl cat "$TOR_UNIT" >/dev/null 2>&1; then
+    return 1
+  fi
+  systemctl start "$TOR_UNIT" 2>/dev/null || return 1
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if tor_bootstrap_ok; then
+      return 0
+    fi
+    sleep 1
+  done
+  # Unit up even if bootstrap still running — policy is already Tor; UI shows tor_ready.
+  tor_is_active
+}
+
+stop_tor() {
+  systemctl stop "$TOR_UNIT" 2>/dev/null || true
+  return 0
+}
+
+apply_mode() {
+  local mode note tor_a=0 tor_r=0 applied=1
+  mode="$(norm_mode "${1:-}" )" || die "mode must be internet, tor, or none"
+  case "$mode" in
+    internet)
+      stop_tor
+      write_policy internet || applied=0
+      note="Stick Chromium uses the normal network uplink."
+      ;;
+    tor)
+      write_policy tor || applied=0
+      if start_tor; then
+        tor_a=1
+        if tor_bootstrap_ok; then tor_r=1; note="Stick Chromium is routed through Tor."; else
+          note="Tor is starting; stick Chromium will use Tor once the circuit is ready."
+        fi
+      else
+        applied=0
+        note="Tor could not start. Install the tor package or check tor.service."
+      fi
+      ;;
+    none)
+      stop_tor
+      write_policy none || applied=0
+      note="Stick Chromium is blocked from the public web (loopback StickLLM still works)."
+      ;;
+  esac
+  local p
+  p="$(persist_path)"
+  write_json "$p" "$mode" "$tor_a" "$tor_r" "$note" "$applied"
+  # Always mirror runtime status for the gateway (ProtectSystem cannot write elsewhere).
+  write_json "$STATE_RUN" "$mode" "$tor_a" "$tor_r" "$note" "$applied"
+  # Copy persist into the other location when settings is open so both stay aligned.
+  if [[ "$p" == "$PERSIST_SETTINGS" ]]; then
+    mkdir -p "$(dirname "$PERSIST_VAR")" 2>/dev/null || true
+    cp -f "$STATE_RUN" "$PERSIST_VAR" 2>/dev/null || true
+  fi
+  printf 'mode=%s tor_active=%s tor_ready=%s applied=%s\n' "$mode" "$tor_a" "$tor_r" "$applied"
+  [[ "$applied" -eq 1 ]]
+}
+
+emit_status() {
+  local mode tor_a=0 tor_r=0
+  mode="$(read_desired)"
+  if [[ "$mode" == tor ]]; then
+    if tor_is_active; then tor_a=1; fi
+    if tor_bootstrap_ok; then tor_r=1; fi
+  fi
+  # Refresh runtime file for readers without rewriting persist.
+  local note
+  case "$mode" in
+    internet) note="Stick Chromium uses the normal network uplink." ;;
+    tor)
+      if [[ "$tor_r" -eq 1 ]]; then note="Stick Chromium is routed through Tor."
+      elif [[ "$tor_a" -eq 1 ]]; then note="Tor is starting; stick Chromium will use Tor once the circuit is ready."
+      else note="Tor mode selected; daemon is not running yet."; fi
+      ;;
+    none) note="Stick Chromium is blocked from the public web (loopback StickLLM still works)." ;;
+  esac
+  write_json "$STATE_RUN" "$mode" "$tor_a" "$tor_r" "$note" 1
+  if [[ -f "$STATE_RUN" ]]; then
+    cat "$STATE_RUN"
+  else
+    printf '{"ok":false,"error":"no_status"}\n'
+  fi
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+  status|get)
+    emit_status
+    ;;
+  apply)
+    apply_mode "$(read_desired)"
+    ;;
+  set)
+    [[ $# -ge 2 ]] || die "usage: stickllm-web-mode set <internet|tor|none>"
+    apply_mode "$2"
+    ;;
+  *)
+    die "usage: stickllm-web-mode [status|get|set <internet|tor|none>|apply]"
+    ;;
+esac

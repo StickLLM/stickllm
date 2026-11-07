@@ -18,7 +18,8 @@ const $ = (s) => (els[s] = els[s] || { textContent: "", hidden: false, classList
 const state = { vaultOpen: false };
 const calls = [];
 const api = new Function("$", "state", "applyModeUi", "clearOnLock", "unlockMessage", "sessionModeRef",
-  "let clearingOnLock = false; let sessionMode = sessionModeRef.m;\n" + absentBlock + chromeBlock +
+  "let clearingOnLock = false; let sessionMode = sessionModeRef.m;\n" +
+  "let vaultEpoch = 0, vaultLocking = false;\n" + absentBlock + chromeBlock +
   "\nreturn { setVaultChrome, vaultIsAbsent, epoch: () => vaultEpoch, bump: () => { vaultEpoch += 1; }," +
   " busy: () => vaultBusy(), setUnlocking: (v) => { vaultUnlocking = v; }, setLocking: (v) => { vaultLocking = v; } };")(
   $, state, (m) => calls.push("mode:" + m), () => calls.push("clear"), () => {}, { m: "ephemeral" });
@@ -50,9 +51,9 @@ assert.ok(rs.indexOf("const ep = vaultEpoch;") < rs.indexOf('fetch("/api/health"
 assert.ok(rs.includes("const vaultFresh = () => ep === vaultEpoch && !vaultBusy();"));
 assert.ok(rs.includes("if (j.session_mode && vaultFresh()) {"), "mode tabs only from a fresh answer");
 assert.ok(rs.includes("if (j.vault && vaultFresh()) setVaultChrome(vaultIsOpen(j.vault), vaultIsAbsent(j.vault));"));
-// refreshStorage: same guard around control status.
+// refreshStorage: epoch snapshot + busy guard (control("status") may be indirect).
 const rst = cut("async function refreshStorage()", "async function refreshDrivesLive()");
-assert.ok(rst.indexOf("const ep = vaultEpoch;") < rst.indexOf('control("status")'));
+assert.ok(rst.includes("const ep = vaultEpoch;"), "epoch taken at start of refreshStorage");
 assert.ok(rst.includes("if (ep !== vaultEpoch || vaultBusy()) return;"));
 // Unlock start, the screen clear, and the end of a lock all invalidate in-flight answers.
 assert.ok(/vaultUnlocking = true;\n  vaultEpoch \+= 1;/.test(src), "unlock start bumps");

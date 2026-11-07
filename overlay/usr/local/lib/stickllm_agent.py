@@ -606,6 +606,37 @@ def _copy_tree_small(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
+def repair_reference_store(seed_image: Path, root_image: Path) -> list[str]:
+    """Put back a truncated docker reference store from the read-only seed.
+
+    An unclean power-off — the stick pulled out, or the host cut — can leave
+    ``image/<driver>/repositories.json`` zero length. dockerd then fails every
+    start with "invalid image <digest>, failed to verify" followed by
+    "Couldn't create reference store repository: EOF", so Agent Zero never
+    comes up again and nothing retries it. The file is only a tiny
+    tag -> digest index and the seed carries the authoritative copy, so
+    restoring it is safe; layer content is never touched.
+    """
+    healed: list[str] = []
+    try:
+        candidates = sorted(seed_image.glob("*/repositories.json"))
+    except OSError:
+        return healed
+    for src in candidates:
+        try:
+            if src.stat().st_size <= 0:
+                continue
+            dst = root_image / src.parent.name / "repositories.json"
+            if dst.is_file() and dst.stat().st_size > 0:
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            healed.append(str(dst))
+        except OSError:
+            continue
+    return healed
+
+
 def ensure_seeded(root: Path | None = None) -> dict:
     """Attach the OS-installed A0 docker graph at the writable data-root.
 
@@ -652,6 +683,10 @@ def ensure_seeded(root: Path | None = None) -> dict:
         # image metadata (small) — refresh when missing
         if not (root / "image").is_dir():
             _copy_tree_small(seed / "image", root / "image")
+        else:
+            repaired = repair_reference_store(seed / "image", root / "image")
+            if repaired:
+                out["repaired"] = repaired
         for item in seed.iterdir():
             if item.name in {
                 "image", "overlay2", "containerd", "containers", "network",
@@ -1863,13 +1898,18 @@ def apps_list_lines(installed: tuple[str, ...] | list[str] | None = None) -> lis
 
 def apps_skill_text(installed: tuple[str, ...] | list[str] | None = None) -> str:
     body = "\n".join(apps_list_lines(installed)) + "\n\n" + apps_prompt_text().split("## StickLLM apps\n", 1)[1]
+    # Quote description: unquoted YAML breaks on "Ids: minesweeper, ..." (colon+space).
+    description = (
+        "Open and play StickLLM apps on the user's screen with open_app, "
+        "app_state, and app_act, and show pages with open_url / open_file. Ids: "
+        + ", ".join(APPS_URL_IDS + CATALOG_APP_IDS)
+        + ", plus the browser. The desktop label minesweep is id minesweeper."
+    )
+    description_yaml = '"' + description.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return (
         "---\n"
         "name: stickllm-apps\n"
-        "description: Open and play StickLLM apps on the user's screen with open_app, "
-        "app_state, and app_act, and show pages with open_url / open_file. Ids: "
-        + ", ".join(APPS_URL_IDS + CATALOG_APP_IDS)
-        + ", plus the browser. The desktop label minesweep is id minesweeper.\n"
+        f"description: {description_yaml}\n"
         "---\n\n"
         + APP_PLAY_RULE
         + "\n\n"
@@ -2289,12 +2329,19 @@ def ensure_open_app_plugin(root: Path | None = None) -> None:
                 pass
 
 
+BAKED_APPS_SKILL = Path(
+    "/usr/local/share/stickllm/agent-zero-skills/stickllm-apps/SKILL.md"
+)
+
+
 def ensure_apps_instructions() -> None:
     """Write the apps note onto mounts the container already has.
 
     The profile prompt is under the vault state directory that is already
-    mounted at /a0/usr. The skill is on the settings partition mounted at
-    /a0/usr/skills. No new host path is mounted.
+    mounted at /a0/usr. The skill is on the settings partition, mounted into
+    the Agent Zero container at both /a0/usr/skills and
+    /git/agent-zero/usr/skills (A0's files.get_abs_path base). A baked copy
+    ships in the ISO so the skill exists before the first agent start.
     """
     if vault_mounted():
         prompt_dir = ADDON / "state" / "agents" / "agent0" / "prompts"
@@ -2316,6 +2363,18 @@ def ensure_apps_instructions() -> None:
             current = skill_path.read_text(encoding="utf-8", errors="replace")
         if current != text:
             skill_path.write_text(text, encoding="utf-8")
+            try:
+                os.chmod(skill_path, 0o644)
+            except OSError:
+                pass
+        elif not skill_path.is_file() and BAKED_APPS_SKILL.is_file():
+            skill_path.write_text(
+                BAKED_APPS_SKILL.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            try:
+                os.chmod(skill_path, 0o644)
+            except OSError:
+                pass
     # The stickllm_apps plugin is written by assemble_plugins (read-only dir).
 
 

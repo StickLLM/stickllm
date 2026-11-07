@@ -267,13 +267,21 @@ for anonymity. See [Tails: Limitations of the Tor network](https://tails.net/doc
 
 Users may run their own VPN outside StickLLM; we do not make that the product story.
 
+## Web mode (0.6.11): stick browser only
+
+Taskbar **Web** / Settings → Network offers **Internet**, **Tor**, and **No internet**.
+That policy steers **stick-local Chromium** (HDMI kiosk + Browser windows from
+`stickllm-control`) and stick-origin gateway fetches. It does **not** wrap a paired
+phone or PC browser — those clients keep their own network path. Full notes:
+[WEB-MODE.md](WEB-MODE.md).
+
 ## Out of scope (not implemented)
 
 - Tor / onion remote access (planned direction; not in v0.2)  
 - Bundled commercial VPN (rejected as default)  
 - Mesh networking  
 - Paired mobile client + encrypted tunnel  
-- OS-level NINO / air-gap firewall (ISS-023; Offline switch not wired)  
+- OS-level NINO / air-gap firewall (ISS-023; Web “No internet” is Chromium URL policy + stick-origin fetch block, not a full NIC lockdown)  
 - GrapheneOS client  
 - Auto-update of OS / drivers / models  
 - Mutual TLS, API keys, or multi-user auth  

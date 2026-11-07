@@ -126,6 +126,7 @@ systemctl enable stickllm-usb.service || true
 systemctl enable stickllm-bootstatus.service || true
 systemctl enable stickllm-local.service || true
 systemctl enable stickllm-kiosk.service || true
+systemctl enable stickllm-web-mode.service || true
 systemctl enable seatd.service 2>/dev/null || true
 systemctl enable stickllm-ssh.service || true
 systemctl enable NetworkManager.service || true
@@ -135,6 +136,9 @@ systemctl disable docker.service 2>/dev/null || true
 systemctl disable docker.socket 2>/dev/null || true
 systemctl mask docker.service 2>/dev/null || true
 systemctl mask docker.socket 2>/dev/null || true
+# Tor only while Web mode is Tor (stickllm-web-mode starts/stops it).
+systemctl disable tor.service 2>/dev/null || true
+systemctl disable tor@default.service 2>/dev/null || true
 systemctl enable stickllm-agent.service || true
 systemctl enable stickllm-files.service || true
 # 0.6.3: persist journal snapshots to STICKLLM-DATA; skip GPUs whose amdgpu init fails

@@ -130,15 +130,31 @@ def test_migrate_private_a0_chats(tmp_path):
 
 
 def test_ephemeral_toggle_never_locks_or_stops():
-    gw = GW.read_text()
+    gw = GW.read_text(encoding="utf-8")
     body = gw[gw.index("def set_session_mode("):gw.index("VAULT_MNT = Path(")]
     assert '"stickllm-vault", "lock"' not in body and "stickllm-vault\", \"lock\"" not in body
     assert "systemctl\", \"stop\"" not in body
-    assert "ensure-addons" in body
-    js = (ROOT / "ui/app.js").read_text()
-    sm = js[js.index("async function setSessionMode(m)"):]
+    # v069i: mode switch must not spawn addon/model restore (OOM on vault toggle).
+    assert "stickllm-vault\", \"ensure-addons\"" not in body
+    assert '["/usr/local/bin/stickllm-vault", "ensure-addons"]' not in body
+    assert "addons_restart" in body
+    assert "Popen" not in body
+    js = (ROOT / "ui/app.js").read_text(encoding="utf-8")
+    sm = js[js.index("async function setSessionMode("):]
     sm = sm[: sm.index("\n}\n")]
     assert "clearOnLock()" not in sm
+    # Health poll must not force Vault session (was stealing Ephemeral).
+    gate = js[js.index("async function maybeOfferSetupOrUnlock("):]
+    gate = gate[: gate.index("\n}\n\n")]
+    assert "await enterVaultModeNow" not in gate
+    assert "setVaultChrome(true)" in gate
+    assert "stealing Ephemeral" in gate
+    # Control path must match gateway: ephemeral does not lock the vault.
+    ctl = (ROOT / "overlay/usr/local/bin/stickllm-control").read_text(encoding="utf-8")
+    cbody = ctl[ctl.index("def set_session_mode("):]
+    cbody = cbody[: cbody.index("\ndef vault_host_root(")]
+    assert "vault_action(\"lock\"" not in cbody
+    assert "Never lock" in cbody or "never lock" in cbody.lower()
 
 
 def test_lock_keeps_gateway_view_when_umount_fails():

@@ -106,6 +106,7 @@ Previous ship (~8.7 GB), still recoverable. It baked both the 3B and the 7B. Not
 - Inference is **local**; StickLLM web UI + pair code on LAN.
 - **Persist config** and **Download model** require explicit confirmation.
 - Local ≠ safe against LAN sniffers, GPU/firmware vendors, phones, or physical access.
+- **Web / Tor / No internet** (taskbar Web, Settings → Network) applies to the **stick kiosk browser** and stick-local Chromium only. Paired phones and PCs on the LAN use their own network — StickLLM cannot force their traffic through Tor or offline. Details: [docs/WEB-MODE.md](docs/WEB-MODE.md).
 - High-risk use: [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 ## Runtime (on the stick)
@@ -125,6 +126,10 @@ Set firmware to **boot the USB first** ([docs/BOOT.md](docs/BOOT.md)).
 | `http://<lan-ip>/v1/chat/completions` | **Not supported** — returns **410** for third-party clients (ISS-004). Use the StickLLM UI. |
 
 Helpers on PATH: `stickllm-status`, `stickllm-persist`, `stickllm-download-model`, `stickllm-wifi-setup`.
+
+## Troubleshooting
+
+**Agent Zero shows “127.0.0.1 refused to connect” (or localhost won’t connect) the first time you open it.** Agent Zero may still be starting after setup. Prefer waiting on the **Open Agent Zero** / Starting panel until it opens by itself. If the window already shows that Chromium error: use **Reload** on the desktop (right‑click the StickLLM desk → **Reload**, or press **F5**), then open **Agent Zero** again. More detail: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Build from source (first-class)
 

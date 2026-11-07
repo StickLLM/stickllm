@@ -3,6 +3,11 @@ Description=StickLLM Agent Zero (host SSD image, loopback UI only)
 After=local-fs.target
 # The unit is skipped until the server vault is actually mounted.
 ConditionPathIsMountPoint=/var/lib/stickllm/vault
+# These belong in [Unit]. In [Service] systemd logs "Unknown key" and ignores
+# them, so Restart=always retried a broken dockerd forever instead of giving
+# up after 5 tries in 2 minutes.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -12,8 +17,6 @@ ExecStart=/usr/local/bin/stickllm-agent run
 ExecStop=/usr/local/bin/stickllm-agent stop
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=120
-StartLimitBurst=5
 # Host mount namespace so the vault, settings, and host SSD mounts are visible.
 # Docker data-root is a folder on the host SSD. The daemon is not started by docker.service.
 
