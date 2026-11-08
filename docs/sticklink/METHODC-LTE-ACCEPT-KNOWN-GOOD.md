@@ -16,7 +16,7 @@
 Working Method C path only (no alternate connection methods):
 
 - Rendezvous: `wss://link.stickllm.com/v1/ws`, `pair.open` → `sl1:` QR
-- WebRTC (direct or TURN/relay) + Noise
+- WebRTC + Noise. Lab acceptance ICE was **direct**; do not claim TURN/DERP browser fallback without a recorded relay ICE type
 - App-mux HTTP tunnel: gzip (`x-sticklink-ce`), concurrency `HTTP_MAX` / `Semaphore(8)`
 - Service worker static cache `sticklink-a0-static-v1`; authenticated API responses not cached
 - Cloudflare join page only; Agent Zero **not** proxied over bootstrap HTTP (`a0_via_sticklink_dc_only`)

@@ -42,7 +42,8 @@ Max Noise PT body recommendation: **48 KiB** decoded payload per JSON message.
 Headers: subset only (content-type, accept, x-csrf-token, x-stickllm-client, …).
 Strip Hop-by-hop. Cookie jar lives on the **stick/lab bridge** (CSRF session), not in the browser jar for stick HTTPS.
 
-Backpressure: client allows at most **4** concurrent HTTP streams; server processes FIFO per session with a bounded queue.
+Backpressure: client allows at most **8** concurrent HTTP streams (`HTTP_MAX` /
+`asyncio.Semaphore(8)` after LTE load work); server processes with a bounded queue.
 
 ## WebSocket (Socket.IO)
 

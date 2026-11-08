@@ -12,6 +12,17 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-034 — Method C lab automation: repeated Send after response timed out
+| | |
+|---|---|
+| **ID** | ISS-034 |
+| **Date** | 2026-11-08 |
+| **Mode** | StickLink Method C / lab browser E2E |
+| **Severity** | MED (automation / UX flake; operator LTE chats succeeded) |
+| **Status** | Open — do not block v0.7.2 TEST bake |
+| **Summary** | In `_e2e_lte_acceptance.py`, after msg1 (Send) and msg2 (Enter + search) succeeded, a third Send (`AGAIN_OK`) did not observe the reply within timeout. Agent status often still showed not-idle (`waiting=false`) after answers appeared. |
+| **Notes** | Real iPhone LTE acceptance still passed with multiple chat exchanges. Track as open; do not “fix” by redesigning Method C in this cycle. |
+
 ### ISS-033 — LAN / desktop Agent Zero pairing broken after StickLink phone lab
 | | |
 |---|---|
@@ -19,9 +30,9 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 | **Date** | 2026-11-08 |
 | **Mode** | Local / LAN / Agent Zero |
 | **Severity** | HIGH (desktop Agent Zero via original pairing) |
-| **Status** | Open — acknowledged; fix after v0.7.2 bake (do not block StickLink phone QR ship) |
-| **Summary** | After StickLink phone-join lab + pairing UI for StickLink QR, desktop Agent Zero through the original LAN pairing path no longer works. Phone StickLink QR → Agent Zero works. |
-| **Notes** | User confirmed phone path. Restore LAN/desktop Agent Zero pairing as a follow-up; do not chase in the same bake as Devices & Pairing StickLink QR. |
+| **Status** | Open — **broken and deferred**; not fixed in v0.7.2 |
+| **Summary** | After StickLink phone-join lab + pairing UI for StickLink QR, desktop Agent Zero through the original LAN pairing path no longer works. Phone StickLink Method C (lab-assisted) works. |
+| **Notes** | Architect agreed: defer LAN/desktop restore. Do not chase in the Method C TEST ISO cycle. |
 
 ### ISS-032 — StickLink on stick: sticklinkd missing host Python deps
 | | |

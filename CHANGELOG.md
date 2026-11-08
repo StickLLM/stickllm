@@ -1,12 +1,15 @@
-## 0.7.2 - WIP (StickLink phone QR under Pairing)
+## 0.7.2 - TEST (lab-assisted Method C preview; shipping tag pending HW)
 - **Devices & Pairing StickLink QR.** Kiosk shows the StickLink phone join QR
   (cellular → Agent Zero), not the LAN address. Gateway
-  `GET /api/pair/sticklink-join`; `stickllm-sticklink-join-publish` writes
+  `GET /api/pair/sticklink-join` + remint; `stickllm-sticklink-join-publish` writes
   `/run/stickllm/sticklink-join.json`.
+- **Method C lab-assisted preview.** Rendezvous → WebRTC → Noise → app-mux DC.
+  Join peer + trusted-approval lab grants remain on the lab host (not Phase 2).
+  Known-good tag: `methodc-lte-accept-20261108.1`.
 - **SearXNG.** Prefer Bing/Yahoo/Seznam/Wikipedia when Google/DDG/Brave CAPTCHA
   on shared egress.
-- **Known:** LAN/desktop Agent Zero via original pairing is broken after this
-  lab line (ISS-033) — fix after bake; phone StickLink path works.
+- **Known / deferred:** ISS-033 LAN/desktop pairing broken (not fixed);
+  ISS-034 lab repeated-Send automation timeout. No shipping tag until HW accept.
 
 ## 0.7.1 - StickLink deps bake
 - **StickLink host deps.** Bake `python3-cryptography`, `python3-nacl`, and
