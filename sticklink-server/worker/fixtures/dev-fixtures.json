@@ -1,0 +1,112 @@
+{
+  "_copyright": "Copyright (c) 2026 Nink Inc. All rights reserved.",
+  "_note": "LOCAL TEST FIXTURES derived from public labels. Never use in production.",
+  "ws": "ws://<host>:8787/v1/ws (subprotocol sticklink.1); from a QEMU user-net guest the host is 10.0.2.2",
+  "relay": {
+    "rg": "tor1",
+    "derp": "http://<host>:3340/derp",
+    "token": "test-relay-token-tor1-0123456789",
+    "signing_kid": "test-1",
+    "signing_pub": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+  },
+  "devices": {
+    "stick1": {
+      "name": "stick1",
+      "kind": "stick",
+      "dev": "mVlQRKeI7a9jMT6r2R2ljg",
+      "gen": 0,
+      "home": "_nxk9U2anZkKu0-p6YJ05w",
+      "cls": "stick",
+      "ent_until": 1825625396,
+      "auth_seed": "lhktMgYWo4xolLCUTt4xYt5y2CL5JueAKyHoIKR6HJE",
+      "ak": "_QJ6i7jrd-F3AtGUxdAY1yHsApYEBIEjm1MzVNeWtUo"
+    },
+    "stick2_noent": {
+      "name": "stick2",
+      "kind": "stick",
+      "dev": "Xa-5r1wkeNatJHQ_LsmD9w",
+      "gen": 0,
+      "home": "aqIMbNRjRko0N1oPS_DHjg",
+      "cls": "none",
+      "ent_until": 0,
+      "auth_seed": "TxPxlDGsvMnW-1zL7R20lrwViuqTcMBKM5eb1_gm_64",
+      "ak": "_ybXDc1KU_2iZAX7LHR5r9AqzVdCU4PCdaDE_BwdHZ8"
+    },
+    "kvm1": {
+      "name": "kvm1",
+      "kind": "kvm",
+      "dev": "DrZAMLbX5cMTxTnX-wZXjg",
+      "gen": 0,
+      "home": null,
+      "cls": "kvm",
+      "ent_until": 1825625396,
+      "auth_seed": "vwddAlepQz4DDBbuoEFh8tyI4YIAF83O1V4qUJSfQIs",
+      "ak": "HMtmC_3Zq11S49t6HPcBWfiPMG5-8kBdFka2BEq0lBU"
+    },
+    "kvm2_noent": {
+      "name": "kvm2",
+      "kind": "kvm",
+      "dev": "RzQjAzgO62gTYO3zEPHbNA",
+      "gen": 0,
+      "home": null,
+      "cls": "none",
+      "ent_until": 0,
+      "auth_seed": "yhkBL7tTh7hWNCH9fbmlXei2599RZ0QkDysuvGCXdSA",
+      "ak": "snrNniw3wfHQ8nFtg3b9ObcdjsR3JzBF8wfFLcBTDT4"
+    },
+    "stick_e2e": {
+      "name": "stick_e2e",
+      "kind": "stick",
+      "dev": "K1K-6g67fvK0xtrqKYAdRA",
+      "gen": 0,
+      "home": "3eIldt_LyZEp0XzkDI1Uog",
+      "cls": "stick",
+      "ent_until": 1825625396,
+      "auth_seed": "KCHlekNWbCNIWCqwDiWD5D7KHt0Lemvb6AZM_OO_A_A",
+      "ak": "dCXRYwijKZK8cZnfFTU440wBY9UryVAX-a5xuArqHDY"
+    }
+  },
+  "peers": {
+    "_how": "The stick adds these with slot.add {slot,jk,adm}; a peer then joins with HMAC(jk, 'sl1/join'||n||home||slot).",
+    "phone_admin": {
+      "name": "phone",
+      "slot": "gNjD_7nlg_M",
+      "jk": "xzM7iEtNAO112-5VMRuLILdmDQCQEtBH_2meNxWuGAw",
+      "adm": 1
+    },
+    "laptop": {
+      "name": "laptop",
+      "slot": "I7__qdgLurs",
+      "jk": "XBNbWKdbbZnj96gSNWfX3-MTuPeBnw2hbKDVK727oUc",
+      "adm": 0
+    },
+    "kvm1_slot": {
+      "name": "kvm1",
+      "slot": "0pdMLYFx_dc",
+      "jk": "yas0mq5wTXlGJWnatGHbKFoQrcjw2G2ABx6lRZ8yvkM",
+      "adm": 0
+    }
+  },
+  "homes": {
+    "home1": {
+      "home": "_nxk9U2anZkKu0-p6YJ05w",
+      "owner": "stick1"
+    },
+    "home2": {
+      "home": "aqIMbNRjRko0N1oPS_DHjg",
+      "owner": "stick2_noent"
+    },
+    "home_e2e": {
+      "home": "3eIldt_LyZEp0XzkDI1Uog",
+      "owner": "stick_e2e"
+    }
+  },
+  "e2e": {
+    "_how": "E2E pairing (stands in for USB/QR pairing). See server/E2E.md. stick_e2e adds slot `slot` with jk at start; kvm1 joins it.",
+    "home": "3eIldt_LyZEp0XzkDI1Uog",
+    "slot": "PTqAZFSNjug",
+    "jk": "URRRjDo9D61kE1LYeOXHmUGBWgSDDdx37yx2TK9ZT8E",
+    "stick": "stick_e2e",
+    "kvm": "kvm1"
+  }
+}

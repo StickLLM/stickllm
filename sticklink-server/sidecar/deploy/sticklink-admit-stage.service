@@ -1,0 +1,48 @@
+# Copyright (c) 2026 Nink Inc. All rights reserved.
+#
+# STAGING ONLY — listen on 127.0.0.1:9109 so derp-admit can keep 9099.
+# Do NOT point derper at this URL until Phase 3 interruption approval.
+[Unit]
+Description=sticklink relay admission controller (STAGING on :9109)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/sticklink-admit -listen 127.0.0.1:9109 -base https://link.stickllm.com -region tor1 -token-file ${CREDENTIALS_DIRECTORY}/admit-token -keys /etc/sticklink/admit-keys -state /var/lib/sticklink-admit
+LoadCredential=admit-token:/etc/sticklink/admit-token
+DynamicUser=yes
+StateDirectory=sticklink-admit
+StateDirectoryMode=0700
+Restart=always
+RestartSec=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+MemoryMax=64M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

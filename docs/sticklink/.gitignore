@@ -1,0 +1,5 @@
+# Local inventory of account/zone IDs may sit beside docs; keep secrets out of git
+CF-ACCOUNT.md
+*.token
+*.pem
+sticklink_relay

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>StickLink Method C lab browser</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "@noble/curves/ed25519.js": "/node_modules/@noble/curves/ed25519.js",
+      "@noble/ciphers/chacha.js": "/node_modules/@noble/ciphers/chacha.js",
+      "@noble/ciphers/_poly1305.js": "/node_modules/@noble/ciphers/_poly1305.js",
+      "@noble/ciphers/utils.js": "/node_modules/@noble/ciphers/utils.js",
+      "@noble/ciphers/_arx.js": "/node_modules/@noble/ciphers/_arx.js",
+      "@noble/hashes/sha2.js": "/node_modules/@noble/hashes/sha2.js",
+      "@noble/hashes/hmac.js": "/node_modules/@noble/hashes/hmac.js",
+      "@noble/hashes/hkdf.js": "/node_modules/@noble/hashes/hkdf.js",
+      "@noble/hashes/utils.js": "/node_modules/@noble/hashes/utils.js",
+      "@noble/hashes/_md.js": "/node_modules/@noble/hashes/_md.js",
+      "@noble/hashes/_u64.js": "/node_modules/@noble/hashes/_u64.js",
+      "@noble/hashes/sha256.js": "/node_modules/@noble/hashes/sha2.js"
+    }
+  }
+  </script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui; background: #111; color: #ddd; margin: 1.5rem; }
+    pre { background: #1a1a1a; padding: 1rem; border-radius: 8px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Method C lab</h1>
+  <p style="color:#888;font-size:0.9rem">Lab bypass: no native VT approval overlay; kiosk may skip approve_local.</p>
+  <pre id="log">boot…</pre>
+  <script type="module">
+    import { runPairC, mutateQrWrongPin } from "./pair_c_client.js";
+    const logEl = document.getElementById("log");
+    const log = (m) => { logEl.textContent += "\n" + m; };
+    const params = new URLSearchParams(location.search);
+    const wsUrl = params.get("ws") || "ws://127.0.0.1:8797/v1/ws";
+    let qr = params.get("qr");
+    const expectFail = params.get("expectFail") || "";
+    if (!qr) { log("missing qr="); throw new Error("qr"); }
+    if (expectFail === "wrong_pin") {
+      qr = mutateQrWrongPin(qr);
+      log("NEG wrong_pin: mutated QR K (Noise pin)");
+    }
+    try {
+      await runPairC({ wsUrl, qr, log, expectFail: expectFail || undefined });
+      log("client returned; waiting for chat/revoke…");
+    } catch (e) {
+      if (expectFail && !window.__SL_RESULT__) {
+        window.__SL_RESULT__ = { ok: true, neg: expectFail, noise_failed: true, detail: String(e) };
+        log("NEG caught: " + e);
+      } else {
+        log("FAIL " + e);
+        window.__SL_RESULT__ = { ok: false, error: String(e) };
+      }
+    }
+  </script>
+</body>
+</html>

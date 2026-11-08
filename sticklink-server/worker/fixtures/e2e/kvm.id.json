@@ -1,0 +1,9 @@
+{
+  "_copyright": "Copyright (c) 2026 Nink Inc. All rights reserved.",
+  "format": "sl1-e2e-identity/2",
+  "_note": "TEST ONLY private material for one device.",
+  "role": "kvm",
+  "dev": "DrZAMLbX5cMTxTnX-wZXjg",
+  "auth_seed": "vwddAlepQz4DDBbuoEFh8tyI4YIAF83O1V4qUJSfQIs",
+  "static_priv": "1111111111111111111111111111111111111111111111111111111111111111"
+}

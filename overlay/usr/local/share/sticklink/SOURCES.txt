@@ -1,0 +1,8 @@
+bip39-english.txt      BIP-0039 English word list (github.com/bitcoin/bips, bip-0039/english.txt), 2048 words.
+                       sha256 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda
+                       Pinned word list for the stick recovery phrase and vault recovery phrases (12 words, 132 bits, no checksum).
+eff_large_wordlist.txt EFF large diceware list (eff.org/files/2016/07/18/eff_large_wordlist.txt), 7776 words, CC BY 3.0 US.
+                       sha256 addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e
+                       Used for the generated 4-word default PIN passphrase (~51.7 bits).
+common-passwords.txt   SecLists Passwords/Common-Credentials/10k-most-common.txt (MIT), CR and blank lines stripped.
+                       Used to refuse common user-chosen passphrases.

@@ -1,0 +1,6 @@
+# Copyright (c) 2026 Nink Inc. All rights reserved.
+#
+# Example for /etc/sticklink/admit-keys on relay-tor1 (root:root 0644).
+# Production Worker SIGNING_KID=prod-1 (public half only — not a secret).
+# Format: <kid> <base64url raw 32-byte Ed25519 public key, no padding>
+prod-1 B5FJ-W72teNI4hB-5IPB6iuEKdLGCB4YAeyubXPeoLk

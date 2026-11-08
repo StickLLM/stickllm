@@ -1,0 +1,51 @@
+# Copyright (c) 2026 Nink Inc. All rights reserved.
+# Phase 1 deploy 2026-11-07 (approved). See docs/sticklink/DEPLOY-APPROVAL-PLAN-20261107.md.
+name = "sticklink-signalling"
+main = "src/index.ts"
+compatibility_date = "2026-08-15"
+workers_dev = true
+preview_urls = false
+# Inventory 2026-11-07 (Peter@nink.com's Account). Not a secret.
+account_id = "83ead3dd06c02e0011d009fb1cc13e5f"
+
+[dev]
+ip = "0.0.0.0"      # reachable from a QEMU VM (host is 10.0.2.2 under user-mode networking)
+port = 8787
+local_protocol = "http"
+
+[[durable_objects.bindings]]
+name = "HOME"
+class_name = "HomeDO"
+
+[[durable_objects.bindings]]
+name = "ROUTER"
+class_name = "RouterDO"
+
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "LimiterDO"
+
+[[durable_objects.bindings]]
+name = "FEED"
+class_name = "FeedDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HomeDO", "RouterDO", "LimiterDO", "FeedDO"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sticklink"
+# Created 2026-11-07 Phase 1: wrangler d1 create sticklink (region ENAM)
+database_id = "db77321c-ea7b-4bf0-8cc7-2b28cca79cb1"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["17 * * * *"]
+
+[vars]
+RELAYS = '[{"rg":"tor1","host":"relay-tor1.stickllm.com","stun":3478}]'
+FEATURE_SPAKE2_CODE = "0"   # §8b(a): code pairing off until the SPAKE2 audit passes
+MBX_GRACE_S = "0"
+SIGNING_KID = "prod-1"
+# Secrets (local: .dev.vars, prod: `wrangler secret put`): IP_PEPPER, SIGNING_KEY, RELAY_TOKENS

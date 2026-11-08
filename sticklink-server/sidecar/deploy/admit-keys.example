@@ -1,0 +1,9 @@
+# Copyright (c) 2026 Nink Inc. All rights reserved.
+#
+# /etc/sticklink/admit-keys  (root:root 0644)
+# Pinned Ed25519 public keys the Worker signs allowlists with.
+# Format: <kid> <base64url raw 32-byte public key, no padding>
+# Keep the old kid listed during a key rotation, remove it afterwards.
+# The line below is the PUBLIC test vector key (vectors/signalling-v2.json),
+# never use it in production.
+test-1 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo

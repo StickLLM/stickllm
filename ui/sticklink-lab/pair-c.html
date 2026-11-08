@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StickLink Method C lab</title>
+  <style>
+    :root { color-scheme: light; --bg: #1a1f1c; --fg: #e8efe9; --muted: #9aa89c; --acc: #6bcf8e; }
+    body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+    main { max-width: 40rem; margin: 2rem auto; padding: 0 1.25rem; }
+    h1 { font-size: 1.35rem; font-weight: 600; }
+    p, li { color: var(--muted); line-height: 1.45; }
+    .warn { border-left: 3px solid #d4a017; padding: 0.5rem 0.75rem; margin: 1rem 0; }
+    label { display: block; margin-top: 1rem; font-size: 0.85rem; color: var(--muted); }
+    textarea, input { width: 100%; box-sizing: border-box; margin-top: 0.35rem; padding: 0.6rem; border-radius: 6px;
+      border: 1px solid #334; background: #0f1311; color: var(--fg); font-family: ui-monospace, Consolas, monospace; }
+    button { margin-top: 1rem; margin-right: 0.5rem; padding: 0.55rem 1rem; border: 0; border-radius: 6px;
+      background: var(--acc); color: #102016; font-weight: 600; cursor: pointer; }
+    button.secondary { background: #2a3330; color: var(--fg); }
+    pre { background: #0f1311; padding: 0.75rem; border-radius: 6px; overflow: auto; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>StickLink Method C — lab only</h1>
+  <div class="warn">
+    Isolated lab / VM pairing. SPAKE2 disabled. Not for shipping or a real stick.
+    Trusted local kiosk approval only; production uses the native overlay.
+  </div>
+  <p>Paste an <code>sl1:…</code> QR payload from the lab stick session. Browser WebRTC + Noise
+     DataChannel wiring lands next; this page validates decode + shows derived public fields.</p>
+  <label for="qr">QR payload</label>
+  <textarea id="qr" rows="4" placeholder="sl1:M=…&amp;K=…&amp;P=…&amp;E=…"></textarea>
+  <button type="button" id="parse">Parse</button>
+  <button type="button" class="secondary" id="clear">Clear</button>
+  <pre id="out">Waiting…</pre>
+</main>
+<script>
+function b64uToBytes(s) {
+  const pad = "=".repeat((4 - (s.length % 4)) % 4);
+  const b64 = (s + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function parseQr(raw) {
+  const s = raw.trim();
+  if (!s.startsWith("sl1:")) throw new Error("not an sl1 QR");
+  const q = new URLSearchParams(s.slice(4));
+  for (const k of ["M", "K", "P", "E"]) {
+    if (!q.get(k)) throw new Error("missing " + k);
+  }
+  const M = q.get("M");
+  if (!/^[0-9a-fA-F]{16}$/.test(M)) throw new Error("M must be 16 hex digits");
+  const K = b64uToBytes(q.get("K"));
+  const P = b64uToBytes(q.get("P"));
+  if (K.length !== 32 || P.length !== 32) throw new Error("K/P must be 32 bytes");
+  return {
+    mailbox_id: M.toLowerCase(),
+    stick_static_pub_len: K.length,
+    invite_secret_len: P.length,
+    exp: Number(q.get("E")),
+    spake2: "disabled",
+    note: "invite_secret held only in memory for lab; not printed"
+  };
+}
+document.getElementById("parse").onclick = () => {
+  const el = document.getElementById("out");
+  try {
+    el.textContent = JSON.stringify(parseQr(document.getElementById("qr").value), null, 2);
+  } catch (e) {
+    el.textContent = "error: " + e.message;
+  }
+};
+document.getElementById("clear").onclick = () => {
+  document.getElementById("qr").value = "";
+  document.getElementById("out").textContent = "Waiting…";
+};
+</script>
+</body>
+</html>

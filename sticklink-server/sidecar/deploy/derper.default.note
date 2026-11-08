@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Nink Inc. All rights reserved.
+#
+# No change is needed to /etc/default/derper. Keep:
+#   DERP_VERIFY_URL=http://127.0.0.1:9099/derp/admit
+# derper.service keeps -verify-client-url-fail-open=false, so if
+# sticklink-admit is down every client is denied (fail closed).
+# In derper.service, change Wants=/After= from derp-admit.service to
+# sticklink-admit.service, then disable derp-admit.service.
+#
+# Secret: /etc/sticklink/admit-token (root:root 0600) holds the relay bearer
+# token whose SHA-256 the Worker stores (RELAY_TOKENS secret). It is passed via
+# systemd LoadCredential and is never logged.

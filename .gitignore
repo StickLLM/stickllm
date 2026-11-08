@@ -44,3 +44,14 @@ Thumbs.db
 .venv/
 __pycache__/
 node_modules/
+.pytest_cache/
+.wrangler/
+
+# StickLink lab runtime (never commit)
+sticklink-server/lab-browser-e2e/state/
+sticklink-server/lab-browser-e2e/*.log
+sticklink-server/worker/.dev.vars
+**/dev.vars
+sticklink-server/sidecar/dist/
+
+

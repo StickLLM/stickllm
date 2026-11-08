@@ -1,0 +1,20 @@
+{
+  "_copyright": "Copyright (c) 2026 Nink Inc. All rights reserved.",
+  "format": "sl1-e2e-pairing/1",
+  "_note": "TEST ONLY. Stands in for the result of USB (kvm-usb) or QR pairing. Both X25519 static keys are pinned here.",
+  "home": "3eIldt_LyZEp0XzkDI1Uog",
+  "slot": "PTqAZFSNjug",
+  "pair_psk": "88a0a2cc6a50a032a6c0a52ba3f0256a5aabb88f75cb9123797bbee0a3799eb5",
+  "stick": {
+    "static_pub": "7b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14"
+  },
+  "kvm": {
+    "static_pub": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13"
+  },
+  "derived": {
+    "P_slot": "64e27f8aa6249f7dff6023d5c9c5d4cf79279cc99fd0d236acfd31cd0c621db3",
+    "jk": "5114518c3a3d0fad641352d878e5c79941815a04830ddc77ef2c764caf594fc1",
+    "env_k": "7795a8a044c95cb814cc0487fd2fd34671a4ce3bac5a9bde5891b3aefbc1a64e",
+    "prologue": "736c312f6e657401dde22576dfcbc99129d17ce40c8d54a23d3a8064548d8ee87b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f137b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14"
+  }
+}
