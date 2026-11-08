@@ -5,8 +5,6 @@
 **Git tag:** `methodc-lte-accept-20261108.1`  
 **Branch at preserve:** `feature/sticklink-browser-lab`
 
-Fill in after `git commit` + `git tag`:
-
 | Field | Value |
 |-------|--------|
 | Commit | `860ea3ccd6ed1b5bee6c587317eba1435420f646` |
