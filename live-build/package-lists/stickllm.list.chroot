@@ -90,3 +90,8 @@ apparmor
 nftables
 # 0.6.11: on-demand Tor for stick Chromium (Web mode). Not enabled at boot.
 tor
+# StickLink (0.7.1): sticklinkd needs these on the host Python, not only in tests.
+# v0.7.0 shipped sticklinkd without them → ModuleNotFoundError: cryptography.
+python3-cryptography
+python3-nacl
+python3-websockets

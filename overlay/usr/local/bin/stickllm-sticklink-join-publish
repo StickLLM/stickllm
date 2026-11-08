@@ -1,0 +1,23 @@
+#!/bin/bash
+# Publish StickLink phone-join URL for Devices & Pairing QR.
+# Reads JSON from /home/stickllm/sticklink-join.json (written by the lab) into
+# /run/stickllm/ so stickllm-gateway (ProtectHome=true) can serve it.
+set -euo pipefail
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root: sudo stickllm-sticklink-join-publish" >&2
+  exit 1
+fi
+SRC_JSON="${1:-/home/stickllm/sticklink-join.json}"
+SRC_URL="${2:-/home/stickllm/sticklink-join-url.txt}"
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+mkdir -p "$RUN"
+if [[ ! -f "$SRC_JSON" ]]; then
+  echo "missing $SRC_JSON" >&2
+  exit 1
+fi
+install -m 644 "$SRC_JSON" "$RUN/sticklink-join.json"
+if [[ -f "$SRC_URL" ]]; then
+  install -m 644 "$SRC_URL" "$RUN/sticklink-join-url.txt"
+fi
+echo "published $RUN/sticklink-join.json"
+cat "$RUN/sticklink-join.json"

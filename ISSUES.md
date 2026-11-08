@@ -12,6 +12,28 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-033 — LAN / desktop Agent Zero pairing broken after StickLink phone lab
+| | |
+|---|---|
+| **ID** | ISS-033 |
+| **Date** | 2026-11-08 |
+| **Mode** | Local / LAN / Agent Zero |
+| **Severity** | HIGH (desktop Agent Zero via original pairing) |
+| **Status** | Open — acknowledged; fix after v0.7.2 bake (do not block StickLink phone QR ship) |
+| **Summary** | After StickLink phone-join lab + pairing UI for StickLink QR, desktop Agent Zero through the original LAN pairing path no longer works. Phone StickLink QR → Agent Zero works. |
+| **Notes** | User confirmed phone path. Restore LAN/desktop Agent Zero pairing as a follow-up; do not chase in the same bake as Devices & Pairing StickLink QR. |
+
+### ISS-032 — StickLink on stick: sticklinkd missing host Python deps
+| | |
+|---|---|
+| **ID** | ISS-032 |
+| **Date** | 2026-11-08 |
+| **Mode** | Local / StickLink |
+| **Severity** | HIGH (StickLink dead on v0.7.0 lab stick) |
+| **Status** | Open — cut v0.7.1 ISO (no v0.7.0 overwrite); do not hotfix-loop |
+| **Summary** | `sticklinkd` + `/etc/sticklink/sticklinkd.json` present on lab stick, but `sticklinkd --help` fails: `ModuleNotFoundError: No module named 'cryptography'`. Package list never included `python3-cryptography` / `python3-nacl` / `python3-websockets`. |
+| **Notes** | Per product call: no in-place pip/hotfix chase — bake **v0.7.1** with those packages in `live-build/package-lists/stickllm.list.chroot`, flash, retry StickLink. |
+
 **Security is parked** (2026-10-16). Do not implement NINO, firewalls, the client-stick lockdown, zero-trust remote access, pairing/TLS redesign, or signed updates until the working product is settled. The idea list and the checklist are one plan at the top of [FEATURES.md](FEATURES.md). **Next is ISS-021:** the same model filters on installed models, then the greyed Advanced controls. AMD / Intel GPU paths come after that. The rest of the vault story (stick key + PIN; not the duress PIN) comes after the GPU work.
 
 ### ISS-023 — Complete offline / NINO network lockdown (“nothing in, nothing out”)

@@ -31,7 +31,9 @@ def mute(text):
     out = []
     program = ""
     seen_autostart = False
-    muted = {"run_sshd", "run_tunnel_api", "run_searxng"}
+    # Keep SearXNG (run_searxng) — Agent Zero built-in web search. Mute only
+    # host-owned sshd and the unused tunnel API.
+    muted = {"run_sshd", "run_tunnel_api"}
 
     def flush_autostart(buf, prog, seen):
         if prog in muted and not seen:
@@ -73,6 +75,36 @@ PY
 for searx in /etc/searxng/settings.yml /per/etc/searxng/settings.yml; do
   if [ -f "$searx" ] && ! grep -q 'bind_address:' "$searx"; then
     sed -i '/^server:/a\  bind_address: "127.0.0.1"' "$searx"
+  fi
+  # Engine fetches must use the stick egress proxy — nft drops direct internet
+  # from the container, and SearXNG's httpx client does not honor HTTP_PROXY.
+  if [ -f "$searx" ] && ! grep -q '172.30.0.1:18080' "$searx"; then
+    printf '\n# StickLLM: route SearXNG engines through the host egress proxy.\noutgoing:\n  request_timeout: 12.0\n  proxies:\n    all://: http://172.30.0.1:18080\n' >>"$searx"
+  fi
+  # Prefer engines that still answer through a shared egress IP. Google/DDG/
+  # Brave/Startpage often CAPTCHA or suspend the stick's uplink.
+  if [ -f "$searx" ] && ! grep -q 'StickLLM: preferred search engines' "$searx"; then
+    cat >>"$searx" <<'EOF'
+
+# StickLLM: preferred search engines (shared egress IP).
+engines:
+  - name: google
+    disabled: true
+  - name: brave
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: bing
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: seznam
+    disabled: false
+  - name: wikipedia
+    disabled: false
+EOF
   fi
 done
 

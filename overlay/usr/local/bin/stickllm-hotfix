@@ -119,29 +119,31 @@ if [[ -d "$SRC/opt/stickllm/ui" ]]; then
     installed=1
   done
   shopt -u nullglob
-  if [[ -d "$SRC/opt/stickllm/ui/apps" ]]; then
-    mkdir -p /opt/stickllm/ui/apps
-    while IFS= read -r -d '' f; do
-      rel="${f#"$SRC/opt/stickllm/ui/"}"
-      dest="/opt/stickllm/ui/$rel"
-      mkdir -p "$(dirname "$dest")"
-      case "$rel" in
-        *.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.woff|*.woff2|*.wasm)
-          install -m 644 "$f" "$dest"
-          ;;
-        *.html|*.js|*.css|*.svg|*.json|*.txt|*.webmanifest|LICENSE|*/LICENSE)
-          sed -i 's/\r$//' "$f" 2>/dev/null || true
-          install -m 644 "$f" "$dest"
-          ;;
-        *) echo "skipping non-app file: $rel" >&2; continue ;;
-      esac
-      echo "installed $dest"
-      installed=1
-    done < <(find "$SRC/opt/stickllm/ui/apps" -type f -print0)
-    # Homemade starters replaced by the vendored trees.
-    rm -f /opt/stickllm/ui/apps/minesweeper/game.js \
-          /opt/stickllm/ui/apps/notepad/notepad.js
-  fi
+  for tree in apps vendor; do
+    if [[ -d "$SRC/opt/stickllm/ui/$tree" ]]; then
+      mkdir -p "/opt/stickllm/ui/$tree"
+      while IFS= read -r -d '' f; do
+        rel="${f#"$SRC/opt/stickllm/ui/"}"
+        dest="/opt/stickllm/ui/$rel"
+        mkdir -p "$(dirname "$dest")"
+        case "$rel" in
+          *.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.woff|*.woff2|*.wasm)
+            install -m 644 "$f" "$dest"
+            ;;
+          *.html|*.js|*.css|*.svg|*.json|*.txt|*.webmanifest|LICENSE|*/LICENSE)
+            sed -i 's/\r$//' "$f" 2>/dev/null || true
+            install -m 644 "$f" "$dest"
+            ;;
+          *) echo "skipping non-ui file: $rel" >&2; continue ;;
+        esac
+        echo "installed $dest"
+        installed=1
+      done < <(find "$SRC/opt/stickllm/ui/$tree" -type f -print0)
+    fi
+  done
+  # Homemade starters replaced by the vendored trees.
+  rm -f /opt/stickllm/ui/apps/minesweeper/game.js \
+        /opt/stickllm/ui/apps/notepad/notepad.js
 fi
 
 if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then

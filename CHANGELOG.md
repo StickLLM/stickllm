@@ -1,3 +1,19 @@
+## 0.7.2 - WIP (StickLink phone QR under Pairing)
+- **Devices & Pairing StickLink QR.** Kiosk shows the StickLink phone join QR
+  (cellular → Agent Zero), not the LAN address. Gateway
+  `GET /api/pair/sticklink-join`; `stickllm-sticklink-join-publish` writes
+  `/run/stickllm/sticklink-join.json`.
+- **SearXNG.** Prefer Bing/Yahoo/Seznam/Wikipedia when Google/DDG/Brave CAPTCHA
+  on shared egress.
+- **Known:** LAN/desktop Agent Zero via original pairing is broken after this
+  lab line (ISS-033) — fix after bake; phone StickLink path works.
+
+## 0.7.1 - StickLink deps bake
+- **StickLink host deps.** Bake `python3-cryptography`, `python3-nacl`, and
+  `python3-websockets` so `sticklinkd` can start. v0.7.0 shipped the StickLink
+  overlay/config but the host Python was missing cryptography (`ModuleNotFoundError`
+  on lab stick). Do not overwrite `StickLLM-v0.7.0.iso`.
+
 ## 0.6.12 - WIP (tree only — not baked/flashed)
 - **Official Agent Zero logo.** Desktop / nav icon uses the Agent Zero A0 mark
   (from agent0ai/agent-zero); Discord approval from Jan Tomášek is filed at

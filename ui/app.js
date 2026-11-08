@@ -3038,6 +3038,7 @@ function openSettings(sec = "general") {
   if (sec === "storage") refreshStorage().catch((e) => showError(e, "Storage"));
   if (sec === "devices" || sec === "network" || sec === "system" || sec === "about")
     refreshStatus().catch(() => {});
+  if (sec === "devices") refreshSticklinkQr(false).catch(() => {});
   if (sec === "chats") { renderSaved(); refreshChatStore().catch(() => {}); }
   refreshSecLive(sec === "__nav" ? "general" : sec);
   if (desk && window.stickDesk.onSettings) window.stickDesk.onSettings(sec === "__nav" ? "general" : sec);
@@ -5521,6 +5522,70 @@ function formatPairCode(code) {
   return c.length === 6 ? c.slice(0, 3) + " " + c.slice(3) : c;
 }
 
+/** StickLink join URL QR (cellular) — NOT the LAN address. */
+let pairQrLastUrl = "";
+let pairQrPollTimer = null;
+function paintSticklinkQr(url, meta) {
+  const host = $("#pairQr");
+  const hint = $("#pairQrHint");
+  const urlEl = $("#pairQrUrl");
+  if (!host) return;
+  const join = String(url || "").trim();
+  if (!join) {
+    host.innerHTML = "";
+    pairQrLastUrl = "";
+    if (hint) hint.textContent = "Waiting for StickLink join… Start the StickLink phone lab, then Refresh.";
+    if (urlEl) { urlEl.hidden = true; urlEl.textContent = ""; }
+    return;
+  }
+  if (join === pairQrLastUrl && host.querySelector("canvas, img")) return;
+  if (typeof QRCode === "undefined") {
+    if (hint) hint.textContent = "QR library missing — refresh the page.";
+    return;
+  }
+  host.innerHTML = "";
+  try {
+    new QRCode(host, {
+      text: join,
+      width: 200,
+      height: 200,
+      colorDark: "#000000",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+    pairQrLastUrl = join;
+    const via = (meta && meta.via) ? String(meta.via) : "sticklink";
+    if (hint) hint.textContent = "Wi‑Fi off → scan → Agent Zero (" + via + ").";
+    if (urlEl) { urlEl.hidden = false; urlEl.textContent = join; }
+  } catch (e) {
+    if (hint) hint.textContent = "Could not draw QR — " + ((e && e.message) || "error");
+  }
+}
+async function refreshSticklinkQr(force) {
+  const hint = $("#pairQrHint");
+  try {
+    const r = await fetch("/api/pair/sticklink-join", { cache: "no-store", headers: authHeaders() });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      paintSticklinkQr("");
+      if (hint) hint.textContent = (j && (j.message || j.error)) || ("StickLink join unavailable (" + r.status + ")");
+      return;
+    }
+    if (force) pairQrLastUrl = "";
+    paintSticklinkQr(j.url || j.join || "", j);
+  } catch (e) {
+    paintSticklinkQr("");
+    if (hint) hint.textContent = "StickLink join unreachable — " + ((e && e.message) || "error");
+  }
+}
+function ensureSticklinkQrPoll() {
+  if (pairQrPollTimer) return;
+  pairQrPollTimer = setInterval(() => {
+    if (!$("#sec-devices") || $("#sec-devices").hidden) return;
+    refreshSticklinkQr(false).catch(() => {});
+  }, 5000);
+}
+
 /** Sticky pair-code prompt on the stick: stays until dismiss or truthful expiry. */
 const PAIR_CODE_UI_TTL_MS = 900 * 1000; // matches gateway PAIR_CODE_TTL_SECS
 let pairCodeBanner = { code: "", expAt: 0, timer: null };
@@ -5740,6 +5805,11 @@ async function issueSshHotkey() {
   } catch (e) { showError(e); }
 }
 $("#remint").onclick = () => { issuePairHotkey(); };
+if ($("#pairQrRefresh")) {
+  $("#pairQrRefresh").onclick = () => { refreshSticklinkQr(true).catch(() => {}); };
+}
+ensureSticklinkQrPoll();
+refreshSticklinkQr(false).catch(() => {});
 /** LAN browsers: no code, no New code. Both live on the kiosk only. */
 function applyPairKioskUi() {
   if (detectLocalHost()) return;
@@ -5830,6 +5900,7 @@ async function refreshNetwork() {
   const n = (j && j.net) || {};
   const url = n.url || location.origin + "/";
   if ($("#netUrl")) $("#netUrl").textContent = url;
+  if ($("#lanUrl2") && url) $("#lanUrl2").textContent = url;
   const parts = [];
   if (n.type) parts.push(n.type + (n.iface ? " (" + n.iface + ")" : ""));
   if (n.type === "WiFi" && n.ssid) parts.push(n.ssid);

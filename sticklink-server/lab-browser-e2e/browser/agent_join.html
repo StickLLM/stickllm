@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>StickLink → Agent Zero</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "@noble/curves/ed25519.js": "/node_modules/@noble/curves/ed25519.js",
+      "@noble/ciphers/chacha.js": "/node_modules/@noble/ciphers/chacha.js",
+      "@noble/ciphers/_poly1305.js": "/node_modules/@noble/ciphers/_poly1305.js",
+      "@noble/ciphers/utils.js": "/node_modules/@noble/ciphers/utils.js",
+      "@noble/ciphers/_arx.js": "/node_modules/@noble/ciphers/_arx.js",
+      "@noble/hashes/sha2.js": "/node_modules/@noble/hashes/sha2.js",
+      "@noble/hashes/hmac.js": "/node_modules/@noble/hashes/hmac.js",
+      "@noble/hashes/hkdf.js": "/node_modules/@noble/hashes/hkdf.js",
+      "@noble/hashes/utils.js": "/node_modules/@noble/hashes/utils.js",
+      "@noble/hashes/_md.js": "/node_modules/@noble/hashes/_md.js",
+      "@noble/hashes/_u64.js": "/node_modules/@noble/hashes/_u64.js",
+      "@noble/hashes/sha256.js": "/node_modules/@noble/hashes/sha2.js"
+    }
+  }
+  </script>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #0e1210; color: #e7eee8; }
+    header { padding: 1rem 1.1rem 0.5rem; }
+    h1 { font-size: 1.15rem; margin: 0 0 0.35rem; font-weight: 650; }
+    .sub { color: #9aa89c; font-size: 0.85rem; margin: 0; }
+    #log { margin: 0.75rem 1.1rem; padding: 0.75rem; background: #161c19; border-radius: 8px;
+      font: 0.75rem/1.35 ui-monospace, Consolas, monospace; white-space: pre-wrap; max-height: 40vh; overflow: auto; }
+    button { margin: 0.5rem 1.1rem 1rem; padding: 0.75rem 1.1rem; border: 0; border-radius: 8px;
+      background: #6bcf8e; color: #102016; font-weight: 700; font-size: 1rem; }
+    .warn { color: #d4a017; font-size: 0.85rem; margin: 0.5rem 1.1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>StickLink → Agent Zero</h1>
+    <p class="sub">Cellular OK. After pair join, Agent opens via tunnel (WebRTC optional).</p>
+  </header>
+  <p class="warn" id="warn">Pairing…</p>
+  <pre id="log">boot…</pre>
+  <button type="button" id="openAgent" hidden>Open Agent Zero</button>
+  <script type="module">
+    import { runPairCAgent } from "./agent_join_client.js";
+    const logEl = document.getElementById("log");
+    const warn = document.getElementById("warn");
+    const log = (m) => { logEl.textContent += "\n" + m; logEl.scrollTop = logEl.scrollHeight; };
+    const params = new URLSearchParams(location.search);
+    const wsUrl = params.get("ws") || "wss://link.stickllm.com/v1/ws";
+    const qr = params.get("qr");
+    if (!qr) { log("missing qr="); throw new Error("qr"); }
+
+    const iceServers = [
+      { urls: ["stun:stun.l.google.com:19302"] },
+      { urls: ["stun:relay-tor1.stickllm.com:3478"] },
+      {
+        urls: [
+          "turn:openrelay.metered.ca:80",
+          "turn:openrelay.metered.ca:443",
+          "turn:openrelay.metered.ca:443?transport=tcp",
+        ],
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+    ];
+
+    async function waitLabReady(ms = 90000) {
+      const t0 = Date.now();
+      while (Date.now() - t0 < ms) {
+        try {
+          const r = await fetch("/lab/ready", { cache: "no-store" });
+          const j = await r.json();
+          if (j.ok) return j;
+        } catch (_) {}
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      throw new Error("lab session not ready");
+    }
+
+    // Fast path: Method C join for auth, then Agent Zero over HTTPS tunnel (no TURN).
+    try {
+      const session = await runPairCAgent({
+        wsUrl,
+        qr,
+        log,
+        iceServers,
+        // Stop after pair.joined and let proxy path open Agent Zero.
+        stopAfterJoined: true,
+      });
+      warn.textContent = "StickLink pair joined. Waiting for Agent session…";
+      log("waiting /lab/ready…");
+      await waitLabReady();
+      warn.textContent = "Agent session ready.";
+      const btn = document.getElementById("openAgent");
+      btn.hidden = false;
+      const go = () => { location.href = "/agent-zero/"; };
+      btn.onclick = go;
+      // Auto-open for phone UX
+      setTimeout(go, 400);
+    } catch (e) {
+      warn.textContent = "Pair failed: " + e;
+      log("FAIL " + e);
+    }
+  </script>
+</body>
+</html>

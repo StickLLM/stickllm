@@ -3,6 +3,6 @@
 # `user` (tty2 console) and `stickllm` (SSH/Term) both need WiFi bootstrap without a LAN browser.
 # stickllm-hotfix: SSH-first iterate (scripts/units under /tmp/stickllm-hotfix only).
 # stickllm-gpu-power (0.5.9): one GPU index + whole watts, clamped to the card min/max.
-Cmnd_Alias STICKLLM_HELPERS = /usr/local/bin/stickllm-persist, /usr/local/bin/stickllm-download-model, /usr/local/bin/stickllm-usb-claim, /usr/local/bin/stickllm-usb-settings, /usr/local/bin/stickllm-vault, /usr/local/bin/stickllm-model-probe, /usr/local/bin/stickllm-status, /usr/local/bin/stickllm-wifi-apply, /usr/local/bin/stickllm-wifi-setup, /usr/local/bin/stickllm-hotfix, /usr/local/bin/stickllm-gpu-power
+Cmnd_Alias STICKLLM_HELPERS = /usr/local/bin/stickllm-persist, /usr/local/bin/stickllm-download-model, /usr/local/bin/stickllm-usb-claim, /usr/local/bin/stickllm-usb-settings, /usr/local/bin/stickllm-vault, /usr/local/bin/stickllm-model-probe, /usr/local/bin/stickllm-status, /usr/local/bin/stickllm-wifi-apply, /usr/local/bin/stickllm-wifi-setup, /usr/local/bin/stickllm-hotfix, /usr/local/bin/stickllm-gpu-power, /usr/local/bin/stickllm-sticklink-enable, /usr/local/bin/stickllm-pair-force, /usr/local/bin/stickllm-sticklink-lab-grant, /usr/local/bin/stickllm-sticklink-stop, /usr/local/bin/stickllm-agent-lab-diag, /usr/local/bin/stickllm-sticklink-join-publish
 stickllm ALL=(root) NOPASSWD: STICKLLM_HELPERS
 user ALL=(root) NOPASSWD: /usr/local/bin/stickllm-wifi-apply, /usr/local/bin/stickllm-wifi-setup

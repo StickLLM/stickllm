@@ -522,8 +522,21 @@
 
 <!-- DEVICES -->
 <section class="sec" id="sec-devices" data-title="Devices &amp; Pairing" hidden>
+  <div class="pairCard sticklinkPairCard">
+    <div class="pairQrBlock" id="pairQrBlock">
+      <small>StickLink — phone (cellular OK)</small>
+      <div id="pairQr" class="pairQr" role="img" aria-label="Scan with phone to open Agent Zero over StickLink"></div>
+      <p class="muted small" id="pairQrHint">Waiting for StickLink join…</p>
+      <p class="mono small" id="pairQrUrl" hidden></p>
+      <button type="button" class="btn sm" id="pairQrRefresh">Refresh StickLink QR</button>
+    </div>
+    <div>
+      <small>StickLink join</small>
+      <p>Turn Wi‑Fi off on your phone. Scan the QR — it opens Agent Zero through StickLink (not your LAN address).</p>
+    </div>
+  </div>
   <div class="pairCard">
-    <div><small>Pair a phone or laptop</small><p>On the new device, open the address below and enter the code shown <b>on the stick's screen</b>.</p>
+    <div><small>LAN pair (same Wi‑Fi)</small><p>On the new device, open the address below and enter the code shown <b>on the stick's screen</b>.</p>
       <div class="mono big" id="lanUrl2">http://…/</div></div>
     <div class="code"><small>Pair code (press F9 on the kiosk)</small><b class="mono" id="pairCodeShow">······</b><button class="btn sm" id="remint">New code</button></div>
     <div class="sshDetails" id="sshDetails" hidden>
@@ -774,8 +787,9 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
-<script src="app.js?v=v0612"></script>
-<script src="desktop-core.js?v=v0612"></script>
-<script src="desktop.js?v=v0612remotecallout"></script>
+<script src="vendor/qrcode/qrcode.min.js"></script>
+<script src="app.js?v=v0712sticklinkqr"></script>
+<script src="desktop-core.js?v=v0712sticklinkqr"></script>
+<script src="desktop.js?v=v0712sticklinkqr"></script>
 </body>
 </html>
