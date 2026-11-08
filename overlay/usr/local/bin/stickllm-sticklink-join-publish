@@ -19,5 +19,11 @@ install -m 644 "$SRC_JSON" "$RUN/sticklink-join.json"
 if [[ -f "$SRC_URL" ]]; then
   install -m 644 "$SRC_URL" "$RUN/sticklink-join-url.txt"
 fi
+# Lab remint ack (optional): clear kiosk Refresh request + publish status.
+SRC_REMINT="${3:-/home/stickllm/sticklink-join-remint.json}"
+if [[ -f "$SRC_REMINT" ]]; then
+  install -m 644 "$SRC_REMINT" "$RUN/sticklink-join-remint.json"
+fi
+rm -f "$RUN/sticklink-join-remint.req"
 echo "published $RUN/sticklink-join.json"
 cat "$RUN/sticklink-join.json"

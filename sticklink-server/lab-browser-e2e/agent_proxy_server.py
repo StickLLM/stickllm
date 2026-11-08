@@ -150,23 +150,56 @@ def _strip_unsecured_banner(body: bytes) -> bytes:
     return json.dumps(doc).encode("utf-8")
 
 
-# Phone/tunnel UX: keep send arrow on-screen, Enter sends (Shift+Enter newline),
-# and lift the composer above the soft keyboard.
+# Phone/tunnel UX: composer + mobile layout. Inject ONLY into the top-level SPA
+# document — never into A0 x-component HTML fragments (that appends <style>/<script>
+# into every component and breaks phone layout: overlapping rails, 0x0 chat-history).
 _LAB_UX_SHIM = b"""<style data-stickllm-lab-ux="1">
+/* Hide flash of unstyled/partial chrome while modules settle over StickLink DC. */
+html.sticklink-booting #right-panel,html.sticklink-booting #left-panel,html.sticklink-booting .welcome-host{opacity:0!important}
+html.sticklink-ready #right-panel,html.sticklink-ready #left-panel,html.sticklink-ready .welcome-host{opacity:1;transition:opacity .2s ease}
+/* Belt-and-suspenders if banners API still emits unsecured nag. */
+[data-banner-id="unsecured-connection"],
+.notification-item[data-id="unsecured-connection"],
+.banner[data-id="unsecured-connection"]{display:none!important}
 #chat-input-container{flex:1 1 auto!important;min-width:0!important}
 #chat-buttons-wrapper{flex:0 0 auto!important;flex-shrink:0!important;margin-left:auto}
 #send-button{flex-shrink:0!important;z-index:6;position:relative}
 .input-row{max-width:100%!important;box-sizing:border-box;overflow:visible!important}
 #input-section{padding-bottom:calc(var(--sl-kb,0px) + env(safe-area-inset-bottom,0px))!important}
-/* While the agent is busy the blue arrow becomes a red Stop; label it so it
-   does not look like the send control vanished. */
 #send-button.stop .material-symbols-outlined,
 #send-button.send-queue .material-symbols-outlined{font-size:0!important;width:0;overflow:hidden}
 #send-button.stop::before{content:"STOP";font:700 11px/1 system-ui,sans-serif;letter-spacing:.04em}
 #send-button.send-queue::before{content:"SEND";font:700 11px/1 system-ui,sans-serif;letter-spacing:.04em}
+/* StickLink phone: hide right-canvas rail; keep chat full-bleed under mobile sidebar. */
+@media (max-width:768px){
+  html,body{overflow-x:hidden!important;max-width:100vw!important}
+  #right-panel,.welcome-host,#chat-area-wrapper{max-width:100vw!important;box-sizing:border-box!important;min-width:0!important}
+  body.right-canvas-mobile-mode .right-canvas-rail,
+  body.right-canvas-mobile-mode .right-canvas-handle,
+  body.right-canvas-overlay-mode .right-canvas-rail,
+  body.right-canvas-mobile-mode [class*="right-canvas-rail"],
+  .right-canvas-rail{display:none!important;visibility:hidden!important;pointer-events:none!important}
+  #chat-input-container,.input-row,#input-section{max-width:calc(100vw - 16px)!important}
+  #chat-history{min-width:0!important;flex:1 1 auto!important}
+  .chat-container{max-width:100%!important;left:auto!important;transform:none!important}
+  /* A0 leaves #left-panel fixed+open after chat select; force drawer closed unless .panel (no .hidden). */
+  #left-panel.panel.hidden{left:0!important;transform:translateX(-105%)!important;pointer-events:none!important}
+}
 </style>
 <script data-stickllm-lab-ux="1">(function(){
 if(window.__stickllmLabUx)return; window.__stickllmLabUx=1;
+try{document.documentElement.classList.add("sticklink-booting");}catch(e){}
+function markReady(){
+  try{
+    document.documentElement.classList.remove("sticklink-booting");
+    document.documentElement.classList.add("sticklink-ready");
+  }catch(e){}
+}
+setTimeout(markReady, 1200);
+document.addEventListener("alpine:initialized", markReady, {once:true});
+
+/* Match A0 sidebar-store isMobile() (<=768), not a wider heuristic. */
+function isPhone(){ return Math.max(document.documentElement.clientWidth||0, window.innerWidth||0) <= 768; }
 function sendNow(){
   try{
     var s=window.Alpine&&Alpine.store&&Alpine.store("chatInput");
@@ -188,11 +221,88 @@ function kb(){
   var gap=Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
   document.documentElement.style.setProperty("--sl-kb", gap+"px");
 }
+function closeSidebar(){
+  try{
+    if(!isPhone()) return;
+    var s=window.Alpine&&Alpine.store&&Alpine.store("sidebar");
+    if(s){
+      try{ if(typeof s.close==="function") s.close(); }catch(e){}
+      s.isOpen=false;
+    }
+    var left=document.getElementById("left-panel");
+    if(left){ left.classList.add("hidden"); }
+  }catch(e){}
+}
+function fixPhoneCanvas(){
+  try{
+    if(!isPhone()) return;
+    document.body.classList.remove("right-canvas-open");
+    var stores=["rightCanvas","right_canvas","canvas"];
+    for(var i=0;i<stores.length;i++){
+      try{
+        var s=window.Alpine&&Alpine.store&&Alpine.store(stores[i]);
+        if(!s) continue;
+        if(s.isOpen && typeof s.close==="function") s.close();
+        else if(s.isOpen) s.isOpen=false;
+      }catch(e){}
+    }
+    document.querySelectorAll(".right-canvas-rail,[class*='right-canvas-rail']").forEach(function(el){
+      el.style.display="none";
+    });
+  }catch(e){}
+}
+var __slCloseUntil=0;
+function requestCloseSidebar(ms){
+  __slCloseUntil=Date.now()+(ms||2500);
+}
+function pumpClose(){
+  try{
+    if(!isPhone()) return;
+    if(Date.now()>__slCloseUntil) return;
+    var right=document.getElementById("right-panel");
+    if(right&&right.classList.contains("chat-active")) closeSidebar();
+  }catch(e){}
+}
+function fixPhoneLayout(){
+  fixPhoneCanvas();
+  pumpClose();
+}
+/* Selecting a chat leaves Alpine sidebar.isOpen=true on touch widths - close drawer. */
+document.addEventListener("click",function(e){
+  if(!isPhone()||!e.target||!e.target.closest) return;
+  if(!e.target.closest("#left-panel")) return;
+  // Chat select is async; keep trying to close for a couple seconds.
+  requestCloseSidebar(3000);
+  [40,120,300,700,1200,2000,2800].forEach(function(ms){ setTimeout(pumpClose, ms); });
+},true);
 if(window.visualViewport){
   visualViewport.addEventListener("resize",kb);
   visualViewport.addEventListener("scroll",kb);
   kb();
 }
+function watchRightPanel(){
+  try{
+    var right=document.getElementById("right-panel");
+    if(!right||right.__slWatched||!window.MutationObserver) return;
+    right.__slWatched=1;
+    var had=right.classList.contains("chat-active");
+    new MutationObserver(function(){
+      var now=right.classList.contains("chat-active");
+      if(now&&!had){ requestCloseSidebar(2000); pumpClose(); }
+      had=now;
+    }).observe(right,{attributes:true,attributeFilter:["class"]});
+  }catch(e){}
+}
+function boot(){
+  fixPhoneCanvas();
+  watchRightPanel();
+  setTimeout(watchRightPanel, 500);
+  setTimeout(watchRightPanel, 2000);
+  setInterval(function(){ watchRightPanel(); pumpClose(); }, 500);
+}
+if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", boot);
+else boot();
+document.addEventListener("alpine:initialized", function(){ watchRightPanel(); fixPhoneCanvas(); });
 })();</script>"""
 
 
@@ -207,15 +317,19 @@ def _inject_lab_ux(body: bytes, headers) -> bytes:
         return body
     if b"data-stickllm-lab-ux" in body:
         return body
-    # Prefer end of <head>; else before </body>.
-    low = body.lower()
-    idx = low.find(b"</head>")
+    # Top-level SPA only. A0 x-components are mini documents that start with
+    # <html> (no doctype) — injecting into those duplicates CSS/JS and breaks
+    # phone layout (sidebar overlap, 0x0 regions, corrupt chat chrome).
+    low = body.lstrip().lower()
+    if not low.startswith(b"<!doctype"):
+        return body
+    idx = body.lower().find(b"</head>")
     if idx >= 0:
         return body[:idx] + _LAB_UX_SHIM + body[idx:]
-    idx = low.find(b"</body>")
+    idx = body.lower().find(b"</body>")
     if idx >= 0:
         return body[:idx] + _LAB_UX_SHIM + body[idx:]
-    return body + _LAB_UX_SHIM
+    return body
 
 
 def _rewrite_set_cookie(raw: str) -> str:
@@ -422,13 +536,64 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         qs = ("?" + parsed.query) if parsed.query else ""
 
-        # Lab readiness for phone after Method C join
+        # Lab readiness: Method C session minted (DC carries A0; no HTTP A0 here).
         if path == "/lab/ready":
             sess = read_session()
             body = json.dumps(
-                {"ok": bool(sess), "agent": "/agent-zero/", "via": "sticklink-lab" if sess else None}
+                {
+                    "ok": bool(sess),
+                    "agent": "sticklink-dc",
+                    "via": "sticklink-app-mux" if sess else None,
+                    "http_proxy_a0": False,
+                }
             ).encode()
             self._send(200 if sess else 503, {"Content-Type": "application/json"}, body)
+            return
+
+        # Phase 1: Agent Zero MUST NOT ride this bootstrap HTTP proxy / tunnel.
+        # Include bare A0 roots the SPA sometimes emits without /agent-zero prefix.
+        if (
+            path.startswith("/agent-zero")
+            or path.startswith("/socket.io")
+            or path.startswith("/api/agent")
+            or path == "/api/csrf_token"
+            or path.startswith("/api/csrf")
+            or path.startswith("/public/")
+            or path.startswith("/plugins/")
+            or path.startswith("/js/")
+            or path.startswith("/components/")
+            or path.startswith("/vendor/")
+            or path.startswith("/extensions/")
+            or path.startswith("/css/")
+            or path in ("/index.js", "/index.css", "/sw.js", "/favicon.ico")
+        ):
+            self._send(
+                404,
+                {"Content-Type": "application/json", "Cache-Control": "no-store"},
+                b'{"error":"a0_via_sticklink_dc_only","message":"Agent Zero is not served over bootstrap HTTP"}',
+            )
+            return
+
+        # Fresh ICE/TURN for Method C WebRTC (replaces sinkholed openrelay).
+        if path == "/lab/ice":
+            try:
+                from lab_ice import fetch_ice_servers
+
+                body = json.dumps({"iceServers": fetch_ice_servers(force=True)}).encode()
+                self._send(
+                    200,
+                    {
+                        "Content-Type": "application/json",
+                        "Cache-Control": "no-store",
+                    },
+                    body,
+                )
+            except Exception as e:
+                self._send(
+                    502,
+                    {"Content-Type": "application/json"},
+                    json.dumps({"error": str(e)}).encode(),
+                )
             return
 
         if path == "/lab/open-agent":
@@ -442,6 +607,24 @@ class Handler(BaseHTTPRequestHandler):
                 "<p>Opening Agent Zero…</p>"
             ).encode()
             self._send(200, {"Content-Type": "text/html; charset=utf-8"}, html)
+            return
+
+        # Asset SW must be rooted so scope "/" can cover /agent-zero/* module loads.
+        if path == "/sticklink-asset-sw.js":
+            fp = ROOT / "browser" / "sticklink_asset_sw.js"
+            if not fp.is_file():
+                self._send(404, {"Content-Type": "text/plain"}, b"sw missing")
+                return
+            data = fp.read_bytes()
+            self._send(
+                200,
+                {
+                    "Content-Type": "text/javascript; charset=utf-8",
+                    "Service-Worker-Allowed": "/",
+                    "Cache-Control": "no-store",
+                },
+                data,
+            )
             return
 
         # Static join assets

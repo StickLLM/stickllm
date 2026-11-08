@@ -1,9 +1,10 @@
-/* Lab: Method C pair then HTTP tunnel to Agent Zero (see kiosk_agent_session.py). */
+/* Lab: Method C pair → Noise DC → StickLink app-mux (APP-MUX-V1.md). */
 import { x25519 } from "@noble/curves/ed25519.js";
 import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
+import { createAppMux, installBrowserTransport } from "./sticklink_app_mux.js";
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -171,7 +172,7 @@ export async function runPairCAgent({ wsUrl, qr, log, iceServers, stopAfterJoine
   // iOS Safari often never reaches iceGatheringState=complete with TURN — don't hang.
   await new Promise((r) => {
     if (pc.iceGatheringState === "complete") return r();
-    const t = setTimeout(() => { L("ICE gather timeout — sending answer anyway"); r(); }, 8000);
+    const t = setTimeout(() => { L("ICE gather still running — sending answer (normal on cellular)"); r(); }, 8000);
     pc.onicegatheringstatechange = () => {
       if (pc.iceGatheringState === "complete") { clearTimeout(t); r(); }
     };
@@ -185,6 +186,41 @@ export async function runPairCAgent({ wsUrl, qr, log, iceServers, stopAfterJoine
     else dc.onopen = () => { clearTimeout(t); r(); };
   });
   L("datachannel open");
+
+  async function readIceType() {
+    try {
+      const stats = await pc.getStats();
+      let pair = null;
+      const byId = new Map();
+      stats.forEach((s) => byId.set(s.id, s));
+      stats.forEach((s) => {
+        if (s.type === "candidate-pair" && (s.selected || s.nominated) && s.state === "succeeded") {
+          pair = s;
+        }
+      });
+      if (!pair) {
+        stats.forEach((s) => {
+          if (s.type === "candidate-pair" && s.state === "succeeded") pair = pair || s;
+        });
+      }
+      if (!pair) return { iceType: "unknown", localType: null, remoteType: null };
+      const local = byId.get(pair.localCandidateId);
+      const remote = byId.get(pair.remoteCandidateId);
+      const lt = local?.candidateType || local?.type || null;
+      const rt = remote?.candidateType || remote?.type || null;
+      const relay = lt === "relay" || rt === "relay";
+      return {
+        iceType: relay ? "relay" : "direct",
+        localType: lt,
+        remoteType: rt,
+        protocol: local?.protocol || remote?.protocol || null,
+      };
+    } catch (e) {
+      return { iceType: "unknown", error: String(e) };
+    }
+  }
+  const iceInfo = await readIceType();
+  L("ICE path " + iceInfo.iceType + " local=" + iceInfo.localType + " remote=" + iceInfo.remoteType);
 
   const sPriv = crypto.getRandomValues(new Uint8Array(32));
   const sPub = x25519.getPublicKey(sPriv);
@@ -267,25 +303,38 @@ export async function runPairCAgent({ wsUrl, qr, log, iceServers, stopAfterJoine
   if (ready.t !== "agent_ready") throw new Error("want agent_ready got " + JSON.stringify(ready));
   L("agent_ready");
 
-  let reqId = 1;
-  async function http(method, path, headers = {}, body = null) {
-    const id = "r" + (reqId++);
-    const payload = { t: "http_req", id, method, path, headers };
-    if (body != null) {
-      const u8 = typeof body === "string" ? te.encode(body) : body;
-      payload.body_b64 = b64u(u8);
+  const mux = createAppMux({ sendPt, log: L });
+  // After agent_ready, all Noise PT messages go to the app-mux.
+  dc.onmessage = (ev) => {
+    const buf = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : new Uint8Array(ev.data);
+    try {
+      const pt = decryptIncoming(buf);
+      const msg = JSON.parse(td.decode(pt));
+      if (msg && typeof msg.t === "string" && (
+        msg.t.startsWith("http_") || msg.t.startsWith("ws_") || msg.t === "pong" || msg.t === "ping"
+      )) {
+        mux.dispatch(msg);
+        return;
+      }
+      if (recvWait) {
+        const w = recvWait;
+        recvWait = null;
+        w(msg);
+      } else recvQ.push(msg);
+    } catch (e) {
+      L("aead err " + e);
     }
-    sendPt(payload);
-    const res = await recvPt(120000);
-    if (res.t !== "http_res" || res.id !== id) throw new Error("bad http_res");
-    const raw = res.body_b64 ? unb64u(res.body_b64) : new Uint8Array(0);
-    return {
-      status: res.status,
-      headers: res.headers || {},
-      body: raw,
-      text: td.decode(raw),
-    };
-  }
+  };
 
-  return { http, ws, dc, home: joined.home };
+  return {
+    mux,
+    http: (method, path, headers, body) => mux.http(method, path, headers, body),
+    installTransport: (opts) => installBrowserTransport(mux, opts),
+    ws,
+    dc,
+    pc,
+    ice: iceInfo,
+    home: joined.home,
+    sendPt,
+  };
 }

@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Lab Method C session that stays up and proxies Agent Zero over the Noise DC.
+"""Lab Method C session: rendezvous → WebRTC → Noise DC → Agent Zero http_req.
 
 LAB BYPASS: skips native VT approval. After pair-confirm, mints a StickLink-lab
 gateway grant on the stick (SSH) and answers http_req frames by fetching the
 stick Agent Zero / StickLLM UI with that token.
 
-Phone path: cellular → join page (cloudflared) → Method C (WSS+WebRTC) → this
-process → HTTPS to stick LAN. Not yet Noise/DERP end-to-end on-stick.
+Design path (no Cloudflare for Agent Zero):
+  phone join client → wss://link.stickllm.com → WebRTC DataChannel → this
+  process (Noise responder) → HTTPS to stick LAN Agent Zero.
+
+Join HTML may be hosted anywhere (lab tunnel is only a static host). Stick traffic
+rides StickLink after pair.joined.
 """
 from __future__ import annotations
 
 import asyncio
+import http.cookiejar
 import json
 import os
 import ssl
@@ -28,7 +33,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "overlay/usr/local/lib"))
 
 import websockets
-from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from sticklink import crypto, noise, pair_qr
@@ -38,22 +43,13 @@ ROOT = Path(__file__).resolve().parent
 STATE = ROOT / "state"
 STICK_HTTPS = os.environ.get("SL_STICK_HTTPS", "https://192.168.72.50")
 STICK_SSH = os.environ.get("SL_STICK_HOST", "192.168.72.50")
-ICE = RTCConfiguration(
-    iceServers=[
-        RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
-        RTCIceServer(urls=["stun:relay-tor1.stickllm.com:3478"]),
-        # Lab TURN so cellular phones can reach this PC behind NAT.
-        RTCIceServer(
-            urls=[
-                "turn:openrelay.metered.ca:80",
-                "turn:openrelay.metered.ca:443",
-                "turn:openrelay.metered.ca:443?transport=tcp",
-            ],
-            username="openrelayproject",
-            credential="openrelayproject",
-        ),
-    ]
-)
+
+# Lazy ICE: openrelay.metered.ca is sinkholed (192.0.2.1). lab_ice fetches a
+# living short-lived TURN from elixir-webrtc Rel (+ STUN fallbacks).
+def _ice_config():
+    from lab_ice import aiortc_ice
+
+    return aiortc_ice()
 
 
 def log(msg: str):
@@ -146,36 +142,93 @@ def mint_stick_token() -> str:
     return doc["token"]
 
 
-def stick_http(token: str, method: str, path: str, headers: dict | None = None, body: bytes | None = None) -> dict:
-    ctx = ssl._create_unverified_context()
-    url = STICK_HTTPS.rstrip("/") + path
-    hdrs = {
-        "Authorization": f"Bearer {token}",
-        "X-StickLLM-Client": "ui",
-        "Accept": headers.get("accept", "*/*") if headers else "*/*",
-        "User-Agent": "StickLink-lab-tunnel",
-    }
-    if headers:
-        for k, v in headers.items():
-            if k.lower() in ("authorization", "host", "connection", "content-length"):
-                continue
-            hdrs[k] = v
-    req = urllib.request.Request(url, data=body, method=method.upper(), headers=hdrs)
-    try:
-        with urllib.request.urlopen(req, context=ctx, timeout=60) as r:
-            raw = r.read()
-            return {
-                "status": r.status,
-                "headers": {k.lower(): v for k, v in r.headers.items()},
-                "body_b64": b64u(raw),
-            }
-    except urllib.error.HTTPError as e:
-        raw = e.read()
-        return {
-            "status": e.code,
-            "headers": {k.lower(): v for k, v in e.headers.items()},
-            "body_b64": b64u(raw),
+class StickHttpBridge:
+    """Authenticated Agent Zero client for http_req frames.
+
+    A0 CSRF requires the Flask session cookie issued by GET /api/csrf_token to
+    accompany later POSTs that carry X-CSRF-Token. The phone cannot hold that
+    cookie (requests never hit a browser jar for stick HTTPS), so the bridge
+    must persist Set-Cookie across http_req calls for this paired session.
+    """
+
+    def __init__(self, token: str):
+        self.token = token
+        self.ctx = ssl._create_unverified_context()
+        self.jar = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=self.ctx),
+            urllib.request.HTTPCookieProcessor(self.jar),
+        )
+        self.origin = STICK_HTTPS.rstrip("/")
+        self.referer = self.origin + "/agent-zero/"
+
+    def cookie_header(self) -> str:
+        parts = []
+        for c in self.jar:
+            parts.append(f"{c.name}={c.value}")
+        return "; ".join(parts)
+
+    def request(self, method: str, path: str, headers: dict | None = None, body: bytes | None = None) -> dict:
+        url = self.origin + path
+        hdrs = {
+            "Authorization": f"Bearer {self.token}",
+            "X-StickLLM-Client": "ui",
+            "Accept": "*/*",
+            "User-Agent": "StickLink-lab-tunnel",
+            # A0 CSRF / session binding expects stick origin (see stickllm_a0client).
+            "Origin": self.origin,
+            "Referer": self.referer,
         }
+        if headers:
+            for k, v in headers.items():
+                lk = k.lower()
+                if lk in (
+                    "authorization",
+                    "host",
+                    "connection",
+                    "content-length",
+                    "cookie",  # bridge jar is authoritative
+                    "origin",
+                    "referer",
+                ):
+                    continue
+                if lk.startswith("sec-"):
+                    continue
+                hdrs[k] = v
+        # Explicit Cookie from jar (HTTPCookieProcessor also sets it; keep visible for logs).
+        cookie = self.cookie_header()
+        if cookie:
+            hdrs["Cookie"] = cookie
+        req = urllib.request.Request(url, data=body, method=method.upper(), headers=hdrs)
+        try:
+            with self.opener.open(req, timeout=60) as r:
+                raw = r.read()
+                status = r.status
+                resp_headers = r.headers
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            status = e.code
+            resp_headers = e.headers
+        out_headers: dict[str, str] = {}
+        for k, v in resp_headers.items():
+            lk = k.lower()
+            if lk == "set-cookie":
+                # Surface to phone for debugging; bridge jar already stored it.
+                prev = out_headers.get("set-cookie")
+                out_headers["set-cookie"] = f"{prev}, {v}" if prev else v
+            else:
+                out_headers[lk] = v
+        return {
+            "status": status,
+            "headers": out_headers,
+            "body_b64": b64u(raw),
+            "cookies": self.cookie_header(),
+        }
+
+
+def stick_http(token: str, method: str, path: str, headers: dict | None = None, body: bytes | None = None) -> dict:
+    """One-shot helper (tests). Prefer StickHttpBridge for a live DC session."""
+    return StickHttpBridge(token).request(method, path, headers, body)
 
 
 class StickWS:
@@ -260,28 +313,17 @@ async def main():
         log(f"peer join {peer.get('conn')}")
         assert peer.get("state") == "join"
 
-        # Cellular phones often fail WebRTC/TURN. Mint Agent session as soon as
-        # Method C mailbox join succeeds so /agent-zero can ride the Cloudflare
-        # reverse proxy without a datachannel.
-        try:
-            token = await asyncio.to_thread(mint_stick_token)
-            (STATE / "agent-session.json").write_text(
-                json.dumps({"token": token, "via": "sticklink-lab", "exp": time.time() + 3600, "at": time.time()}),
-                encoding="utf-8",
+        # Method C design: WebRTC + Noise DC carries Agent Zero (http_req).
+        # SL_WEBRTC=0 is the old Cloudflare-proxy bypass — refuse unless explicit.
+        if os.environ.get("SL_WEBRTC", "1") == "0":
+            raise RuntimeError(
+                "SL_WEBRTC=0 disables StickLink data path; unset it to use Method C "
+                "(rendezvous → WebRTC → Noise DC). Cloudflare DIRECT is SL_ALLOW_DIRECT=1 only."
             )
-            log("agent-session ready (proxy /agent-zero without WebRTC)")
-        except Exception as e:
-            log(f"agent-session mint failed: {e}")
-            raise
 
-        # Default lab path: hold the process so the reverse proxy keeps working.
-        # WebRTC/DC tunnel is optional (SL_WEBRTC=1) and usually fails on cellular.
-        if os.environ.get("SL_WEBRTC", "0") != "1":
-            log("holding for reverse-proxy Agent Zero (set SL_WEBRTC=1 for DC tunnel)")
-            while True:
-                await asyncio.sleep(3600)
-
-        pc = RTCPeerConnection(configuration=ICE)
+        ice = _ice_config()
+        log(f"ICE servers={len(ice.iceServers or [])}")
+        pc = RTCPeerConnection(configuration=ice)
         dc = pc.createDataChannel("sl1", ordered=True)
         dc_q: asyncio.Queue = asyncio.Queue()
 
@@ -371,59 +413,60 @@ async def main():
             raise RuntimeError("confirm_i failed")
         dc_send_pt({"t": "confirm_r", "mac": b64u(pair_qr.confirm_mac(kc, "r", hh))})
         log("pair_psk+confirm ok")
-        # Token may already exist from peer-join mint; refresh if needed
-        if not (STATE / "agent-session.json").exists():
+        sess_path = STATE / "agent-session.json"
+        token = ""
+        if sess_path.exists():
+            try:
+                token = str(json.loads(sess_path.read_text(encoding="utf-8")).get("token") or "")
+            except Exception:
+                token = ""
+        if not token:
             token = await asyncio.to_thread(mint_stick_token)
-            (STATE / "agent-session.json").write_text(
-                json.dumps({"token": token, "via": "sticklink-lab", "exp": time.time() + 3600, "at": time.time()}),
+            sess_path.write_text(
+                json.dumps(
+                    {
+                        "token": token,
+                        "via": "sticklink-lab",
+                        "exp": time.time() + 3600,
+                        "at": time.time(),
+                    }
+                ),
                 encoding="utf-8",
             )
+        bridge = StickHttpBridge(token)
+        log(f"agent bridge ready (cookie jar; Bearer …{token[-6:]})")
+        from app_mux_bridge import AppMuxBridge
+
+        mux = AppMuxBridge(
+            stick_https=STICK_HTTPS,
+            bridge_http=bridge,
+            send_pt=dc_send_pt,
+            log=log,
+        )
         dc_send_pt({"t": "agent_ready", "via": "sticklink-lab"})
-        log("agent_ready sent; serving http_req tunnel (optional path)")
+        log("agent_ready sent; app-mux v1 on StickLink DC (no HTTP proxy for A0)")
 
         # Serve until phone disconnects
         while True:
             msg = json.loads(await dc_recv_pt())
             t = msg.get("t")
-            if t == "http_req":
-                rid = msg.get("id")
-                method = str(msg.get("method") or "GET").upper()
-                path = str(msg.get("path") or "/")
-                if not path.startswith("/"):
-                    path = "/" + path
-                # Only allow StickLLM/Agent paths
-                allowed = (
-                    path.startswith("/agent-zero")
-                    or path.startswith("/api/agent")
-                    or path.startswith("/api/pair/status")
-                    or path == "/"
-                    or path.startswith("/assets")
-                    or path.startswith("/app.js")
-                    or path.startswith("/style")
-                )
-                if not allowed:
-                    dc_send_pt({"t": "http_res", "id": rid, "status": 403, "headers": {"content-type": "text/plain"}, "body_b64": b64u(b"forbidden path")})
-                    continue
-                hdrs = msg.get("headers") if isinstance(msg.get("headers"), dict) else {}
-                body = unb64u(msg["body_b64"]) if msg.get("body_b64") else None
-                try:
-                    res = await asyncio.to_thread(stick_http, token, method, path, hdrs, body)
-                    res["t"] = "http_res"
-                    res["id"] = rid
-                    # Cap body for DC (~256KB lab)
-                    raw = unb64u(res["body_b64"])
-                    if len(raw) > 250_000:
-                        res["body_b64"] = b64u(raw[:250_000])
-                        res["headers"]["x-sticklink-truncated"] = "1"
-                    dc_send_pt(res)
-                    log(f"http {method} {path} -> {res['status']}")
-                except Exception as e:
-                    dc_send_pt({"t": "http_res", "id": rid, "status": 502, "headers": {"content-type": "text/plain"}, "body_b64": b64u(str(e).encode())})
-            elif t == "ping":
-                dc_send_pt({"t": "pong"})
-            elif t == "close":
+            if t == "close":
                 log("client close")
                 break
+            try:
+                await mux.handle(msg)
+            except Exception as e:
+                log(f"mux error: {e}")
+                if t == "http_req" and msg.get("id"):
+                    dc_send_pt(
+                        {
+                            "t": "http_res",
+                            "id": msg["id"],
+                            "status": 502,
+                            "headers": {"content-type": "text/plain"},
+                            "body_b64": b64u(str(e).encode()),
+                        }
+                    )
 
 
 if __name__ == "__main__":

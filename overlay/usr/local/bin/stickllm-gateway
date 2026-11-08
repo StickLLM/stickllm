@@ -1895,6 +1895,31 @@ PAIR_COOKIE = "stickllm_pair"
 PAIR_COOKIE_TLS = "__Secure-stickllm_pair"
 PAIR_REQUEST_PATH = RUN_DIR / "pair-request.json"
 PAIR_REQUEST_MIN_GAP = 30
+STICKLINK_JOIN_REMINT_REQ = RUN_DIR / "sticklink-join-remint.req"
+STICKLINK_JOIN_REMINT_STATUS = RUN_DIR / "sticklink-join-remint.json"
+
+
+def _sticklink_remint_status() -> dict:
+    try:
+        if STICKLINK_JOIN_REMINT_STATUS.is_file():
+            doc = json.loads(STICKLINK_JOIN_REMINT_STATUS.read_text(encoding="utf-8"))
+            if isinstance(doc, dict):
+                return doc
+    except Exception:
+        pass
+    if STICKLINK_JOIN_REMINT_REQ.is_file():
+        return {"status": "requested"}
+    return {"status": "idle"}
+
+
+def request_sticklink_join_remint() -> dict:
+    """Ask the StickLink lab (or on-stick publisher) to mint a new join URL."""
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    now = int(time.time())
+    STICKLINK_JOIN_REMINT_REQ.write_text(f"{now}\n", encoding="utf-8")
+    status = {"status": "requested", "at": now}
+    STICKLINK_JOIN_REMINT_STATUS.write_text(json.dumps(status) + "\n", encoding="utf-8")
+    return status
 
 
 def apps_session_value(doc: dict) -> str:
@@ -5722,6 +5747,9 @@ class Handler(SimpleHTTPRequestHandler):
                     "url": url,
                     "via": str((doc or {}).get("via") or "sticklink"),
                     "exp": exp or None,
+                    "at": (doc or {}).get("at"),
+                    "until": (doc or {}).get("until"),
+                    "remint": _sticklink_remint_status(),
                 },
             )
             return
@@ -6430,6 +6458,27 @@ class Handler(SimpleHTTPRequestHandler):
             if show_code:
                 body["pair_code"] = code
             self._json(200, body)
+            return
+
+        if path == "/api/pair/sticklink-join-refresh":
+            # Mint a new StickLink phone-join (new tunnel/session). The lab PC
+            # polls sticklink-join-remint.req and republishes /run join JSON.
+            if not (self._is_loopback() or stickllm_ui_client(self.headers)):
+                self._json(403, {"ok": False, "error": "ui_only"})
+                return
+            try:
+                status = request_sticklink_join_remint()
+            except Exception as e:
+                self._json(500, {"ok": False, "error": "remint_request_failed", "message": str(e)})
+                return
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "remint": status,
+                    "message": "Requested a new StickLink join — waiting for the phone session to remint.",
+                },
+            )
             return
 
         if path == "/api/pair/sticklink-lab":

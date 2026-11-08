@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>StickLink → Agent Zero</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "@noble/curves/ed25519.js": "/node_modules/@noble/curves/ed25519.js",
+      "@noble/ciphers/chacha.js": "/node_modules/@noble/ciphers/chacha.js",
+      "@noble/ciphers/_poly1305.js": "/node_modules/@noble/ciphers/_poly1305.js",
+      "@noble/ciphers/utils.js": "/node_modules/@noble/ciphers/utils.js",
+      "@noble/ciphers/_arx.js": "/node_modules/@noble/ciphers/_arx.js",
+      "@noble/hashes/sha2.js": "/node_modules/@noble/hashes/sha2.js",
+      "@noble/hashes/hmac.js": "/node_modules/@noble/hashes/hmac.js",
+      "@noble/hashes/hkdf.js": "/node_modules/@noble/hashes/hkdf.js",
+      "@noble/hashes/utils.js": "/node_modules/@noble/hashes/utils.js",
+      "@noble/hashes/_md.js": "/node_modules/@noble/hashes/_md.js",
+      "@noble/hashes/_u64.js": "/node_modules/@noble/hashes/_u64.js",
+      "@noble/hashes/sha256.js": "/node_modules/@noble/hashes/sha2.js"
+    }
+  }
+  </script>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #0e1210; color: #e7eee8; }
+    header { padding: 1rem 1.1rem 0.5rem; }
+    h1 { font-size: 1.15rem; margin: 0 0 0.35rem; font-weight: 650; }
+    .sub { color: #9aa89c; font-size: 0.85rem; margin: 0; }
+    #log { margin: 0.75rem 1.1rem; padding: 0.75rem; background: #161c19; border-radius: 8px;
+      font: 0.75rem/1.35 ui-monospace, Consolas, monospace; white-space: pre-wrap; max-height: 50vh; overflow: auto; }
+    .warn { color: #d4a017; font-size: 0.85rem; margin: 0.5rem 1.1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>StickLink → Agent Zero</h1>
+    <p class="sub">Method C pair, then open the full Agent Zero app.</p>
+  </header>
+  <p class="warn" id="warn">Pairing…</p>
+  <pre id="log">boot…</pre>
+  <script type="module">
+    import { runPairCAgent } from "./agent_join_client.js";
+    const logEl = document.getElementById("log");
+    const warn = document.getElementById("warn");
+    const log = (m) => { logEl.textContent += "\n" + m; logEl.scrollTop = logEl.scrollHeight; };
+    const params = new URLSearchParams(location.search);
+    const wsUrl = params.get("ws") || "wss://link.stickllm.com/v1/ws";
+    const qr = params.get("qr");
+    if (!qr) { log("missing qr="); throw new Error("qr"); }
+
+    async function loadIceServers() {
+      try {
+        const r = await fetch("/lab/ice", { cache: "no-store" });
+        const j = await r.json();
+        if (r.ok && Array.isArray(j.iceServers) && j.iceServers.length) {
+          log("ICE from /lab/ice (" + j.iceServers.length + " servers)");
+          return j.iceServers;
+        }
+      } catch (e) {
+        log("ICE /lab/ice fail: " + e);
+      }
+      return [
+        { urls: ["stun:stun.l.google.com:19302"] },
+        { urls: ["stun:stun.cloudflare.com:3478"] },
+      ];
+    }
+
+    async function waitLabReady(ms = 90000) {
+      const t0 = Date.now();
+      while (Date.now() - t0 < ms) {
+        try {
+          const r = await fetch("/lab/ready", { cache: "no-store" });
+          const j = await r.json();
+          if (j && j.ok) return j;
+        } catch (_) {}
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      throw new Error("lab session not ready (agent-session)");
+    }
+
+    try {
+      const iceServers = await loadIceServers();
+      warn.textContent = "Method C: joining StickLink…";
+      await runPairCAgent({
+        wsUrl,
+        qr,
+        log,
+        iceServers,
+        stopAfterJoined: false,
+      });
+      warn.textContent = "StickLink paired. Opening Agent Zero…";
+      log("waiting /lab/ready…");
+      await waitLabReady();
+      log("session ready → /agent-zero/");
+      window.__sticklinkPaired = true;
+      // Full A0 SPA + Socket.IO need HTTP(S)/WS on the join origin.
+      // Method C minted the sticklink-lab Bearer; the lab proxy serves the app.
+      location.replace("/agent-zero/");
+    } catch (e) {
+      warn.textContent = "Pair failed: " + e;
+      log("FAIL " + e);
+      window.__sticklinkFail = String(e);
+    }
+  </script>
+</body>
+</html>

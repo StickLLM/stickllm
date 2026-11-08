@@ -24,85 +24,302 @@
   </script>
   <style>
     :root { color-scheme: dark; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #0e1210; color: #e7eee8; }
-    header { padding: 1rem 1.1rem 0.5rem; }
-    h1 { font-size: 1.15rem; margin: 0 0 0.35rem; font-weight: 650; }
-    .sub { color: #9aa89c; font-size: 0.85rem; margin: 0; }
-    #log { margin: 0.75rem 1.1rem; padding: 0.75rem; background: #161c19; border-radius: 8px;
-      font: 0.75rem/1.35 ui-monospace, Consolas, monospace; white-space: pre-wrap; max-height: 40vh; overflow: auto; }
-    button { margin: 0.5rem 1.1rem 1rem; padding: 0.75rem 1.1rem; border: 0; border-radius: 8px;
-      background: #6bcf8e; color: #102016; font-weight: 700; font-size: 1rem; }
-    .warn { color: #d4a017; font-size: 0.85rem; margin: 0.5rem 1.1rem; }
+    html, body { margin: 0; height: 100%; background: #0e1210; color: #e7eee8;
+      font-family: ui-sans-serif, system-ui, sans-serif; }
+    #boot { padding: 1rem 1.1rem; }
+    h1 { font-size: 1.15rem; margin: 0 0 0.35rem; }
+    .sub, .warn { color: #9aa89c; font-size: 0.85rem; }
+    .warn { color: #d4a017; }
+    #log { margin-top: 0.75rem; padding: 0.75rem; background: #161c19; border-radius: 8px;
+      font: 0.75rem/1.35 ui-monospace, Consolas, monospace; white-space: pre-wrap;
+      max-height: 40vh; overflow: auto; }
+    #a0frame { display: none; border: 0; width: 100%; height: 100%; position: fixed; inset: 0; background: #0e1210; }
+    body.a0-live #boot { display: none; }
+    body.a0-live #a0frame { display: block; }
+    #perfHud {
+      display: none; position: fixed; z-index: 99999; left: 8px; right: 8px; bottom: 8px;
+      max-height: 42vh; overflow: auto; background: rgba(10,14,12,.92); color: #d7e6da;
+      border: 1px solid #2a3a30; border-radius: 10px; padding: .55rem .7rem;
+      font: 11px/1.35 ui-monospace, Consolas, monospace; backdrop-filter: blur(6px);
+    }
+    body.a0-live #perfHud { display: block; }
+    #perfHud .row { display: flex; justify-content: space-between; gap: .5rem; }
+    #perfHud .muted { color: #8aa090; }
+    #perfHud button {
+      appearance: none; border: 0; background: #24332a; color: #e7eee8;
+      border-radius: 6px; padding: .2rem .45rem; font: inherit; margin-left: .35rem;
+    }
   </style>
 </head>
 <body>
-  <header>
+  <div id="boot">
     <h1>StickLink → Agent Zero</h1>
-    <p class="sub">Cellular OK. After pair join, Agent opens via tunnel (WebRTC optional).</p>
-  </header>
-  <p class="warn" id="warn">Pairing…</p>
-  <pre id="log">boot…</pre>
-  <button type="button" id="openAgent" hidden>Open Agent Zero</button>
+    <p class="sub">Method C pair, then Agent Zero over Noise data channel only.</p>
+    <p class="sub" id="buildId">build: …</p>
+    <p class="warn" id="warn">Pairing…</p>
+    <pre id="log">boot…</pre>
+  </div>
+  <iframe id="a0frame" title="Agent Zero" allow="clipboard-read; clipboard-write; microphone; camera"></iframe>
+  <div id="perfHud" aria-live="polite">
+    <div class="row"><strong>StickLink perf</strong><span><button type="button" id="perfWarm">Warm reload</button><button type="button" id="perfHide">Hide</button></span></div>
+    <div id="perfBody" class="muted">waiting for Agent Zero…</div>
+  </div>
+  <script src="/browser/sticklink_perf.js"></script>
   <script type="module">
     import { runPairCAgent } from "./agent_join_client.js";
     const logEl = document.getElementById("log");
     const warn = document.getElementById("warn");
     const log = (m) => { logEl.textContent += "\n" + m; logEl.scrollTop = logEl.scrollHeight; };
+    const BUILD = "methodc-lte-accept-20261108.1";
     const params = new URLSearchParams(location.search);
     const wsUrl = params.get("ws") || "wss://link.stickllm.com/v1/ws";
     const qr = params.get("qr");
+    document.getElementById("buildId").textContent = "build: " + BUILD;
+    window.__sticklinkBuild = BUILD;
     if (!qr) { log("missing qr="); throw new Error("qr"); }
-
-    const iceServers = [
-      { urls: ["stun:stun.l.google.com:19302"] },
-      { urls: ["stun:relay-tor1.stickllm.com:3478"] },
-      {
-        urls: [
-          "turn:openrelay.metered.ca:80",
-          "turn:openrelay.metered.ca:443",
-          "turn:openrelay.metered.ca:443?transport=tcp",
-        ],
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-    ];
-
-    async function waitLabReady(ms = 90000) {
-      const t0 = Date.now();
-      while (Date.now() - t0 < ms) {
-        try {
-          const r = await fetch("/lab/ready", { cache: "no-store" });
-          const j = await r.json();
-          if (j.ok) return j;
-        } catch (_) {}
-        await new Promise((r) => setTimeout(r, 400));
-      }
-      throw new Error("lab session not ready");
+    if (params.get("httpMax")) {
+      window.__sticklinkHttpMax = Number(params.get("httpMax")) || 8;
     }
 
-    // Fast path: Method C join for auth, then Agent Zero over HTTPS tunnel (no TURN).
+    function renderPerfHud(extra) {
+      const el = document.getElementById("perfBody");
+      if (!el) return;
+      const s = window.__sticklinkPerf?.summary?.() || {};
+      const h = s.http || {};
+      const r = s.render || {};
+      const ice = window.__sticklinkIce || {};
+      const interactive = r.chatInputVisibleMs != null
+        ? Math.round(r.chatInputVisibleMs) + " ms"
+        : "…";
+      el.innerHTML =
+        "build " + BUILD + "<br>" +
+        "ICE " + (ice.iceType || "?") +
+        " (local=" + (ice.localType || "?") + " remote=" + (ice.remoteType || "?") + ")<br>" +
+        "cold interactive " + interactive + "<br>" +
+        "warm interactive " + (window.__sticklinkWarmMs != null ? Math.round(window.__sticklinkWarmMs) + " ms" : "—") + "<br>" +
+        "requests " + (h.count || 0) + " completed " + (h.completed || 0) + "<br>" +
+        "bytes " + (h.bytes || 0) + " (wire~b64 est " + (h.wireEstB64 || 0) + ")<br>" +
+        "gzip claims " + (h.compressClaims || 0) +
+        " maxInflight " + (h.maxInflight || 0) +
+        " p95 " + (h.p95Ms != null ? Math.round(h.p95Ms) + "ms" : "—") + "<br>" +
+        "SW hop avg " + ((s.sw && s.sw.avgHostHopMs) != null ? s.sw.avgHostHopMs + "ms" : "—") +
+        " DC maxBuf " + ((s.dc && s.dc.maxBuffered) != null ? s.dc.maxBuffered : "—") +
+        (extra ? "<br>" + extra : "");
+    }
+
+    document.getElementById("perfHide")?.addEventListener("click", () => {
+      document.getElementById("perfHud").style.display = "none";
+    });
+    document.getElementById("perfWarm")?.addEventListener("click", async () => {
+      const f = document.getElementById("a0frame");
+      if (!f) return;
+      window.__sticklinkPerf?.resetBase?.();
+      window.__sticklinkPerf?.mark?.("warm_start");
+      const t0 = performance.now();
+      f.src = "/agent-zero/ui/index";
+      const deadline = Date.now() + 120000;
+      while (Date.now() < deadline) {
+        try {
+          const doc = f.contentDocument;
+          if (doc && doc.getElementById("chat-input")) {
+            window.__sticklinkWarmMs = performance.now() - t0;
+            window.__sticklinkPerf.state.render.chatInputVisibleMs = window.__sticklinkWarmMs;
+            break;
+          }
+        } catch (_) {}
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      renderPerfHud("warm reload done");
+    });
+
+    async function loadIceServers() {
+      try {
+        const r = await fetch("/lab/ice", { cache: "no-store" });
+        const j = await r.json();
+        if (r.ok && Array.isArray(j.iceServers) && j.iceServers.length) {
+          log("ICE from /lab/ice (" + j.iceServers.length + ")");
+          return j.iceServers;
+        }
+      } catch (e) { log("ICE fail " + e); }
+      return [
+        { urls: ["stun:stun.l.google.com:19302"] },
+        { urls: ["stun:stun.cloudflare.com:3478"] },
+      ];
+    }
+
+    /** Relay SW HTTP fetches onto the Noise app-mux (WS stays on constructor patch). */
+    function installSwMuxRelay() {
+      if (window.__sticklinkSwRelay) return;
+      window.__sticklinkSwRelay = true;
+      navigator.serviceWorker.addEventListener("message", async (event) => {
+        if (event.data && event.data.type === "sticklink-sw-perf") {
+          try { window.__sticklinkPerf?.onSw?.(event.data); } catch (_) {}
+          return;
+        }
+        if (!event.data || event.data.type !== "sticklink-mux-http") return;
+        const port = event.ports && event.ports[0];
+        if (!port) return;
+        try {
+          const mux = window.__sticklinkMux;
+          if (!mux) throw new Error("mux not ready");
+          let body = event.data.body;
+          if (body && !(body instanceof Uint8Array) && !(body instanceof ArrayBuffer)) {
+            body = null;
+          }
+          if (body instanceof ArrayBuffer) body = new Uint8Array(body);
+          const res = await mux.http(
+            event.data.method || "GET",
+            event.data.path || "/",
+            event.data.headers || {},
+            body,
+          );
+          const ab = res.body.buffer.slice(
+            res.body.byteOffset,
+            res.body.byteOffset + res.body.byteLength,
+          );
+          port.postMessage(
+            { status: res.status, headers: res.headers || {}, body: ab },
+            [ab],
+          );
+        } catch (e) {
+          port.postMessage({ error: String(e && e.message ? e.message : e) });
+        }
+      });
+    }
+
+    function startDcSampler(session) {
+      const dc = session && session.dc;
+      if (!dc || !window.__sticklinkPerf) return;
+      const tick = () => {
+        try {
+          window.__sticklinkPerf.sampleDc(dc, window.__sticklinkMux?._inflightHint);
+        } catch (_) {}
+      };
+      tick();
+      window.__sticklinkDcSample = setInterval(tick, 250);
+    }
+
+    async function ensureAssetSw(log) {
+      if (!("serviceWorker" in navigator)) {
+        throw new Error("Service Worker required for A0 module/script loads over StickLink");
+      }
+      installSwMuxRelay();
+      const reg = await navigator.serviceWorker.register("/sticklink-asset-sw.js?v=lte1", {
+        scope: "/",
+        updateViaCache: "none",
+      });
+      await navigator.serviceWorker.ready;
+      if (reg.active) {
+        try { reg.active.postMessage({ type: "sticklink-claim" }); } catch (_) {}
+      }
+      // Wait until this page is controlled (needed before iframe /agent-zero hits SW).
+      const t0 = Date.now();
+      while (!navigator.serviceWorker.controller && Date.now() - t0 < 15000) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (!navigator.serviceWorker.controller) {
+        throw new Error("SW controller timeout — reload join page once");
+      }
+      log("asset SW ready (HTTP→DC); WS via constructor patch");
+    }
+
+    /**
+     * Load A0 in a same-origin iframe. HTTP (incl. ES modules) via asset SW→mux;
+     * WebSocket via injected constructor patch. Bootstrap HTTP still 404s A0.
+     */
+    async function bootAgentZero(session) {
+      const uninstall = session.installTransport({ log });
+      window.__sticklinkMux = session.mux;
+      window.__sticklinkUninstall = uninstall;
+      window.__sticklinkSession = session;
+      startDcSampler(session);
+
+      warn.textContent = "Loading Agent Zero over StickLink…";
+      await ensureAssetSw(log);
+
+      // Reset perf clock at A0 HTML fetch (exclude Method C pair time).
+      try { window.__sticklinkPerf?.resetBase?.(); } catch (_) {}
+      window.__sticklinkPerf?.mark?.("a0_load_start");
+
+      // Probe shell over DC so we fail fast if mux/bridge is broken.
+      const shellT0 = performance.now();
+      const shell = await session.http("GET", "/agent-zero/ui/index", {
+        "Accept": "text/html",
+        "X-StickLLM-Client": "ui",
+      });
+      if (shell.status !== 200) {
+        throw new Error("A0 ui/index HTTP " + shell.status + " " + shell.text.slice(0, 120));
+      }
+      if (window.__sticklinkPerf) {
+        window.__sticklinkPerf.state.render.htmlFirstByteMs =
+          window.__sticklinkPerf.state.http.find((h) => h.path && h.path.includes("/ui/index"))?.ttfbMs
+          ?? null;
+        window.__sticklinkPerf.state.render.htmlDoneMs = performance.now() - shellT0;
+      }
+      log("A0 ui/index " + shell.body.length + " B via DC (probe ok)");
+
+      const frame = document.getElementById("a0frame");
+      const navT0 = performance.now();
+      frame.addEventListener("load", () => {
+        try {
+          window.__sticklinkPerf.state.render.iframeNavMs = performance.now() - navT0;
+          window.__sticklinkPerf.mark("iframe_load");
+        } catch (_) {}
+      }, { once: true });
+      frame.src = "/agent-zero/ui/index";
+      document.body.classList.add("a0-live");
+      warn.textContent = "Agent Zero on StickLink DC";
+      window.__sticklinkA0 = {
+        mux: session.mux,
+        http: session.http.bind(session),
+        frame,
+        build: BUILD,
+        ice: session.ice,
+        perf: () => window.__sticklinkPerf?.summary?.() || null,
+        perfDump: () => window.__sticklinkPerf?.dumpJson?.() || null,
+      };
+      log("A0 iframe → /agent-zero/ui/index (SW tunnels HTTP over Noise DC)");
+      // Poll until chat interactive, then paint HUD.
+      (async () => {
+        const t0 = performance.now();
+        const deadline = Date.now() + 180000;
+        while (Date.now() < deadline) {
+          try {
+            const doc = frame.contentDocument;
+            if (doc && doc.getElementById("chat-input")) {
+              const ms = performance.now() - (window.__sticklinkPerf?.state?.t0 || t0);
+              if (window.__sticklinkPerf) {
+                window.__sticklinkPerf.state.render.chatInputVisibleMs = ms;
+                window.__sticklinkPerf.mark("chat_input_visible");
+              }
+              break;
+            }
+          } catch (_) {}
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        renderPerfHud();
+        setInterval(() => renderPerfHud(), 2000);
+      })();
+    }
+
     try {
+      const iceServers = await loadIceServers();
+      warn.textContent = "Method C: joining…";
       const session = await runPairCAgent({
         wsUrl,
         qr,
         log,
         iceServers,
-        // Stop after pair.joined and let proxy path open Agent Zero.
-        stopAfterJoined: true,
+        stopAfterJoined: false,
       });
-      warn.textContent = "StickLink pair joined. Waiting for Agent session…";
-      log("waiting /lab/ready…");
-      await waitLabReady();
-      warn.textContent = "Agent session ready.";
-      const btn = document.getElementById("openAgent");
-      btn.hidden = false;
-      const go = () => { location.href = "/agent-zero/"; };
-      btn.onclick = go;
-      // Auto-open for phone UX
-      setTimeout(go, 400);
+      window.__sticklinkIce = session.ice || null;
+      log("ICE " + JSON.stringify(session.ice || {}));
+      await bootAgentZero(session);
+      window.__sticklinkPaired = true;
     } catch (e) {
-      warn.textContent = "Pair failed: " + e;
+      warn.textContent = "FAIL: " + e;
       log("FAIL " + e);
+      window.__sticklinkFail = String(e);
     }
   </script>
 </body>

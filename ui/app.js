@@ -5525,6 +5525,33 @@ function formatPairCode(code) {
 /** StickLink join URL QR (cellular) — NOT the LAN address. */
 let pairQrLastUrl = "";
 let pairQrPollTimer = null;
+let pairQrMinting = false;
+function setPairQrButton(mode) {
+  const btn = $("#pairQrRefresh");
+  if (!btn) return;
+  if (mode === "busy") {
+    btn.disabled = true;
+    btn.textContent = "Creating new key…";
+    return;
+  }
+  btn.disabled = false;
+  if (mode === "generate") btn.textContent = "Generate a new QR code";
+  else btn.textContent = "Refresh StickLink QR";
+}
+function showPairQrPlaceholder(kind, title, sub) {
+  const host = $("#pairQr");
+  const urlEl = $("#pairQrUrl");
+  if (!host) return;
+  pairQrLastUrl = "";
+  const expired = kind === "expired";
+  host.innerHTML =
+    '<div class="pairQrPlaceholder' + (expired ? " expired" : "") + '" role="status">' +
+    (expired ? "" : '<div class="pairQrBusyDot" aria-hidden="true"></div>') +
+    "<div>" + title + "</div>" +
+    (sub ? "<span>" + sub + "</span>" : "") +
+    "</div>";
+  if (urlEl) { urlEl.hidden = true; urlEl.textContent = ""; }
+}
 function paintSticklinkQr(url, meta) {
   const host = $("#pairQr");
   const hint = $("#pairQrHint");
@@ -5534,11 +5561,12 @@ function paintSticklinkQr(url, meta) {
   if (!join) {
     host.innerHTML = "";
     pairQrLastUrl = "";
-    if (hint) hint.textContent = "Waiting for StickLink join… Start the StickLink phone lab, then Refresh.";
+    if (hint) hint.textContent = "Waiting for StickLink join… Start the StickLink phone lab, then Generate.";
     if (urlEl) { urlEl.hidden = true; urlEl.textContent = ""; }
+    setPairQrButton("generate");
     return;
   }
-  if (join === pairQrLastUrl && host.querySelector("canvas, img")) return;
+  if (join === pairQrLastUrl && host.querySelector("img")) return;
   if (typeof QRCode === "undefined") {
     if (hint) hint.textContent = "QR library missing — refresh the page.";
     return;
@@ -5553,29 +5581,119 @@ function paintSticklinkQr(url, meta) {
       colorLight: "#ffffff",
       correctLevel: QRCode.CorrectLevel.M,
     });
+    // Library leaves a hidden canvas under the img; drop the canvas so CSS
+    // cannot un-hide it and stack two QRs (looks like corrupt modules).
+    host.querySelectorAll("canvas").forEach((el) => el.remove());
+    const img = host.querySelector("img");
+    if (img) {
+      img.width = 200;
+      img.height = 200;
+      img.style.width = "200px";
+      img.style.height = "200px";
+      img.alt = "StickLink join QR";
+    }
     pairQrLastUrl = join;
     const via = (meta && meta.via) ? String(meta.via) : "sticklink";
-    if (hint) hint.textContent = "Wi‑Fi off → scan → Agent Zero (" + via + ").";
+    if (hint) {
+      const until = (meta && meta.until) ? String(meta.until) : "";
+      hint.textContent = until === "lab-reboot"
+        ? "Wi‑Fi off → scan → Agent Zero (" + via + "). Stays up until the lab PC reboots."
+        : "Wi‑Fi off → scan → Agent Zero (" + via + ").";
+    }
     if (urlEl) { urlEl.hidden = false; urlEl.textContent = join; }
+    setPairQrButton("refresh");
   } catch (e) {
     if (hint) hint.textContent = "Could not draw QR — " + ((e && e.message) || "error");
   }
 }
+function paintSticklinkQrExpired(message) {
+  const hint = $("#pairQrHint");
+  showPairQrPlaceholder(
+    "expired",
+    "QR code expired",
+    "Do not scan an old code",
+  );
+  if (hint) {
+    hint.textContent = message
+      || "This StickLink join expired. Generate a new QR code, then scan with your phone.";
+  }
+  setPairQrButton("generate");
+}
 async function refreshSticklinkQr(force) {
   const hint = $("#pairQrHint");
   try {
-    const r = await fetch("/api/pair/sticklink-join", { cache: "no-store", headers: authHeaders() });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      paintSticklinkQr("");
-      if (hint) hint.textContent = (j && (j.message || j.error)) || ("StickLink join unavailable (" + r.status + ")");
+    if (force) {
+      if (pairQrMinting) return;
+      pairQrMinting = true;
+      const prev = pairQrLastUrl || "";
+      // Hide the old QR immediately so nobody scans a stale code.
+      showPairQrPlaceholder("busy", "Creating new key…", "Old QR disabled — wait for the new one");
+      setPairQrButton("busy");
+      if (hint) hint.textContent = "Creating a new StickLink key — do not scan yet.";
+      try {
+        const req = await fetch("/api/pair/sticklink-join-refresh", {
+          method: "POST",
+          cache: "no-store",
+          headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+          body: "{}",
+        });
+        const reqJ = await req.json().catch(() => ({}));
+        if (!req.ok) {
+          paintSticklinkQrExpired(
+            (reqJ && (reqJ.message || reqJ.error))
+              || ("StickLink remint request failed (" + req.status + ")"),
+          );
+          return;
+        }
+        const deadline = Date.now() + 90000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 1500));
+          const r = await fetch("/api/pair/sticklink-join", { cache: "no-store", headers: authHeaders() });
+          const j = await r.json().catch(() => ({}));
+          const url = (j && (j.url || j.join)) || "";
+          if (r.ok && url && url !== prev) {
+            paintSticklinkQr(url, j);
+            if (hint) hint.textContent = "New StickLink join ready — scan with phone (Wi‑Fi off).";
+            return;
+          }
+          if (r.status === 410) {
+            showPairQrPlaceholder("busy", "Creating new key…", "Still minting…");
+          }
+          if (hint) {
+            const st = (j && j.remint && j.remint.status) || "requested";
+            hint.textContent = "Creating new key (" + st + ")… do not scan yet.";
+          }
+        }
+        paintSticklinkQrExpired(
+          "Timed out creating a new key — is the StickLink phone-join lab running on the lab PC?",
+        );
+      } finally {
+        pairQrMinting = false;
+      }
       return;
     }
-    if (force) pairQrLastUrl = "";
+    if (pairQrMinting) return;
+    const r = await fetch("/api/pair/sticklink-join", { cache: "no-store", headers: authHeaders() });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 410 || (j && j.error === "join_expired")) {
+      paintSticklinkQrExpired((j && j.message) || "");
+      return;
+    }
+    if (!r.ok) {
+      paintSticklinkQr("");
+      if (hint) {
+        hint.textContent = (j && (j.message || j.error))
+          || ("StickLink join unavailable (" + r.status + ")");
+      }
+      setPairQrButton("generate");
+      return;
+    }
     paintSticklinkQr(j.url || j.join || "", j);
   } catch (e) {
     paintSticklinkQr("");
     if (hint) hint.textContent = "StickLink join unreachable — " + ((e && e.message) || "error");
+    setPairQrButton("generate");
+    pairQrMinting = false;
   }
 }
 function ensureSticklinkQrPoll() {

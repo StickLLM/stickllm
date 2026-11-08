@@ -390,10 +390,29 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2
 .code b{font-size:30px;letter-spacing:.08em;font-weight:600}
 .sticklinkPairCard{align-items:flex-start}
 .pairQrBlock{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:200px}
-.pairQr{display:inline-block;padding:10px;background:#fff;border-radius:8px;line-height:0;min-height:200px;min-width:200px}
-.pairQr img,.pairQr canvas{display:block}
+.pairQr{display:inline-block;padding:10px;background:#fff;border-radius:8px;line-height:0;min-height:200px;min-width:200px;box-sizing:border-box}
+/* qrcode.js draws on canvas then reveals an <img>; never force both visible. */
+.pairQr img{display:block;width:200px;height:200px;image-rendering:pixelated;image-rendering:crisp-edges}
+.pairQr canvas{display:none!important}
+.pairQrPlaceholder{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  width:200px;height:200px;padding:16px;box-sizing:border-box;text-align:center;
+  background:linear-gradient(160deg,#eef5ff 0%,#d9e8ff 100%);color:#14325c;border-radius:6px;
+  border:1px solid #9db7de;line-height:1.25;font-size:15px;font-weight:700;letter-spacing:.01em
+}
+.pairQrPlaceholder span{font-size:12px;font-weight:500;color:#35557a;opacity:.95}
+.pairQrPlaceholder.expired{
+  background:linear-gradient(160deg,#fff4ef 0%,#ffd9cc 100%);color:#5c2414;border-color:#e0a090
+}
+.pairQrPlaceholder.expired span{color:#7a3a28}
+.pairQrBusyDot{
+  width:28px;height:28px;border:3px solid rgba(20,50,92,.2);border-top-color:#2a6fd6;
+  border-radius:50%;animation:pairQrSpin .8s linear infinite
+}
+@keyframes pairQrSpin{to{transform:rotate(360deg)}}
 .pairQrBlock .muted{max-width:280px;margin:0}
 #pairQrUrl{max-width:280px;word-break:break-all;font-size:11px;color:var(--accent);margin:0}
+#pairQrRefresh:disabled{opacity:.55;cursor:wait}
 #pairIn{width:140px;letter-spacing:.2em}
 .err{color:var(--danger);font-size:13px}
 .about{max-width:520px;text-align:center;margin:10px auto}

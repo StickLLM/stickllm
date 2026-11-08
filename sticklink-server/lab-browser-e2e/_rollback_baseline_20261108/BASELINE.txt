@@ -1,0 +1,4 @@
+Rollback baseline before Phase 0/1 StickLink DC app-mux (2026-11-08).
+git: feature/sticklink-browser-lab @ 412113d
+This snapshot is the Method C pair + redirect-to-proxied /agent-zero/ lab.
+To roll back Phase 1: copy these files back over lab-browser-e2e/.
