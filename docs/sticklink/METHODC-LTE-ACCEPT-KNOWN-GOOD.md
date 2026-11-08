@@ -1,4 +1,4 @@
-# Method C LTE acceptance — known-good preserve
+﻿# Method C LTE acceptance — known-good preserve
 
 **Status:** iPhone LTE real-world acceptance passed (operator, 2026-11-08).  
 **Frozen join build id:** `methodc-lte-accept-20261108.1`  
@@ -9,7 +9,7 @@ Fill in after `git commit` + `git tag`:
 
 | Field | Value |
 |-------|--------|
-| Commit | `_COMMIT_HASH_` |
+| Commit | `860ea3ccd6ed1b5bee6c587317eba1435420f646` |
 | Tag | `methodc-lte-accept-20261108.1` |
 | Prior tip (pre-preserve) | `412113d` (`Ship StickLink phone QR under Devices & Pairing for v0.7.2.`) |
 
@@ -40,7 +40,7 @@ Verify:
 ```text
 git rev-parse HEAD
 git rev-parse methodc-lte-accept-20261108.1
-# both must equal _COMMIT_HASH_
+# both must equal 860ea3ccd6ed1b5bee6c587317eba1435420f646
 rg -n "methodc-lte-accept-20261108.1" sticklink-server/lab-browser-e2e/browser/agent_join.html
 ```
 
