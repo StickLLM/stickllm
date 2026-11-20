@@ -1,6 +1,6 @@
-# Booting StickLLM
+﻿# Booting StickLLM
 
-Current ship: **v0.7.5** (Drive ISO + [`checksums/v0.7.5.sha256`](../checksums/v0.7.5.sha256)).
+Current ship: **v0.7.6** (Drive ISO + [`checksums/v0.7.6.sha256`](../checksums/v0.7.6.sha256)).
 Do **not** flash **v0.3.5** (truncated). Flash notes: [FLASH.md](FLASH.md). Vault after
 reflash: [VAULT.md](VAULT.md).
 
@@ -14,7 +14,7 @@ boot order does.
 3. Save & exit.
 
 Until USB is first, another OS’s bootloader may keep winning after reboot.
-Secure Boot: turn **off** (or enroll custom keys later — not required for v0.7.5).
+Secure Boot: turn **off** (or enroll custom keys later — not required for v0.7.6).
 
 Example lab host (AMD desktop / ROMED8-class board with Ubuntu on NVMe): same
 steps — USB above the NVMe entry. That hardware is an example, not a requirement.
@@ -89,3 +89,4 @@ Phone on the same LAN: open the Chat UI URL from the READY screen and enter the 
 - Default: ephemeral (RAM; reboot wipes session).
 - **Persist config** is explicit only (`stickllm-persist`).
 - **Encrypted vault:** no unlock/skip prompt at boot. Unlock/create/attach only in the UI (Settings). Server/Local continue automatically with the vault locked.
+
