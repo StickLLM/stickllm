@@ -1,3 +1,8 @@
+## 0.7.7 - StickLink remint UX + false-connected fix
+- **Remint UX.** Closing / minting phases with short 2.5s session close; reconnecting state while phone sleeps.
+- **Peer connected gate.** Defer "connected" until DataChannel is live; handshake timeout returns to reconnecting (not false-connected).
+- **Always-On docs.** Worker/peer PSK v2 path documented in closed StickLink repo; ISO bakes matching peer overlay at build time.
+
 ## 0.7.2 - TEST (lab-assisted Method C preview; shipping tag pending HW)
 - **Devices & Pairing StickLink QR.** Kiosk shows the StickLink phone join QR
   (cellular → Agent Zero), not the LAN address. Gateway

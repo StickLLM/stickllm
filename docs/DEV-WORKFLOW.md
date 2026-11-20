@@ -72,7 +72,7 @@ Through **v0.3.6**, ships used `stickllm-amd-rtx3090-v….hybrid.iso` — leave 
 paths and checksums unchanged. Details: [BUILD.md](BUILD.md).
 
 Preserve N-2 restore slots — see [RESTORE.md](RESTORE.md). Current public **N** is
-**v0.7.6** (Drive `StickLLM-v0.7.6.iso`); **N-1** is **v0.7.0**. Never overwrite
+**v0.7.7** (Drive `StickLLM-v0.7.7.iso`); **N-1** is **v0.7.0**. Never overwrite
 published checksums or shipping tags. **Do not flash v0.3.5** (truncated).
 
 ## After flash

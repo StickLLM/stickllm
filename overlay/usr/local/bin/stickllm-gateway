@@ -5778,7 +5778,23 @@ class Handler(SimpleHTTPRequestHandler):
                 )
                 return
             # Explicit Generate in flight — do not keep reporting "connected".
-            if STICKLINK_JOIN_REMINT_REQ.is_file() or remint_st == "requested":
+            if STICKLINK_JOIN_REMINT_REQ.is_file() or remint_st in (
+                "requested",
+                "closing",
+                "minting",
+            ):
+                if remint_st == "closing":
+                    phase_msg = str(
+                        (remint or {}).get("message") or "Ending previous session…"
+                    )
+                elif remint_st == "minting":
+                    phase_msg = str(
+                        (remint or {}).get("message") or "Creating join key…"
+                    )
+                else:
+                    phase_msg = str(
+                        (remint or {}).get("message") or "Creating join key…"
+                    )
                 self._json(
                     200,
                     {
@@ -5788,7 +5804,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "url": "",
                         "via": str((doc or {}).get("via") or "sticklink"),
                         "at": (doc or {}).get("at"),
-                        "message": "Creating a new StickLink QR…",
+                        "message": phase_msg,
                         "remint": remint if remint_st else {"status": "requested"},
                     },
                 )
@@ -5827,6 +5843,26 @@ class Handler(SimpleHTTPRequestHandler):
                         "message": str(
                             (remint or {}).get("message")
                             or "Tap Generate for a new StickLink QR."
+                        ),
+                        "remint": remint,
+                    },
+                )
+                return
+            # Phone asleep / transport lost — durable resume; do not 404 (blank QR box).
+            if remint_st == "reconnecting" or bool((doc or {}).get("reconnecting")):
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "reconnecting": True,
+                        "connected": False,
+                        "url": "",
+                        "via": str((doc or {}).get("via") or "sticklink"),
+                        "at": (doc or {}).get("at"),
+                        "reason": str((doc or {}).get("reason") or (remint or {}).get("reason") or ""),
+                        "message": str(
+                            (remint or {}).get("message")
+                            or "Phone reconnecting — leave the StickLink tab open."
                         ),
                         "remint": remint,
                     },

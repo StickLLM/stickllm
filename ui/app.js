@@ -5559,10 +5559,13 @@ function paintSticklinkQr(url, meta) {
   if (!host) return;
   const join = String(url || "").trim();
   if (!join) {
-    host.innerHTML = "";
-    pairQrLastUrl = "";
+    // Never leave an empty white .pairQr square — always show a labeled placeholder.
+    showPairQrPlaceholder(
+      "expired",
+      "No active QR",
+      "Generate a new code to pair",
+    );
     if (hint) hint.textContent = "Waiting for StickLink join… Start the StickLink phone lab, then Generate.";
-    if (urlEl) { urlEl.hidden = true; urlEl.textContent = ""; }
     setPairQrButton("generate");
     return;
   }
@@ -5632,12 +5635,33 @@ function paintSticklinkQrConnected(message) {
   }
   setPairQrButton("generate");
 }
+function paintSticklinkQrReconnecting(message) {
+  const hint = $("#pairQrHint");
+  showPairQrPlaceholder(
+    "busy",
+    "Phone reconnecting",
+    "Leave StickLink tab open",
+  );
+  if (hint) {
+    hint.textContent = message
+      || "Phone asleep or offline — stick is waiting. Generate only to force a new QR.";
+  }
+  // Allow Generate to force remint, but default UX is wait for wake.
+  setPairQrButton("generate");
+}
 function sticklinkJoinIsConnected(j) {
   if (!j || typeof j !== "object") return false;
   if (j.minting) return false;
   if (j.connected) return true;
   const st = (j.remint && j.remint.status) || "";
   return st === "connected";
+}
+function sticklinkJoinIsReconnecting(j) {
+  if (!j || typeof j !== "object") return false;
+  if (j.minting || j.connected || j.idle) return false;
+  if (j.reconnecting) return true;
+  const st = (j.remint && j.remint.status) || "";
+  return st === "reconnecting";
 }
 function paintSticklinkQrIdle(message) {
   const hint = $("#pairQrHint");
@@ -5693,6 +5717,32 @@ function paintSticklinkQrRateLimited(j) {
   }
   setPairQrButton("generate");
 }
+function sticklinkRemintPhase(j) {
+  const st = String((j && j.remint && j.remint.status) || (j && j.minting ? "minting" : "") || "");
+  if (st === "closing") {
+    return {
+      title: "Ending previous session…",
+      sub: "Old join disabled — wait for the new key",
+      hint: (j && j.message) || "Ending previous session… do not scan yet.",
+      btn: "Ending previous session…",
+    };
+  }
+  return {
+    title: "Creating join key…",
+    sub: st === "requested" ? "Old QR disabled — wait for the new one" : "Still minting…",
+    hint: (j && j.message) || "Creating join key… do not scan yet.",
+    btn: "Creating join key…",
+  };
+}
+function paintSticklinkQrMinting(j) {
+  const phase = sticklinkRemintPhase(j);
+  const hint = $("#pairQrHint");
+  showPairQrPlaceholder("busy", phase.title, phase.sub);
+  setPairQrButton("busy");
+  const btn = $("#pairQrRefresh");
+  if (btn) btn.textContent = phase.btn;
+  if (hint) hint.textContent = phase.hint;
+}
 async function refreshSticklinkQr(force) {
   const hint = $("#pairQrHint");
   try {
@@ -5701,9 +5751,7 @@ async function refreshSticklinkQr(force) {
       pairQrMinting = true;
       const prev = pairQrLastUrl || "";
       // Hide the old QR immediately so nobody scans a stale code.
-      showPairQrPlaceholder("busy", "Creating new key…", "Old QR disabled — wait for the new one");
-      setPairQrButton("busy");
-      if (hint) hint.textContent = "Creating a new StickLink key — do not scan yet.";
+      paintSticklinkQrMinting({ minting: true, remint: { status: "requested" }, message: "Creating join key… do not scan yet." });
       try {
         const req = await fetch("/api/pair/sticklink-join-refresh", {
           method: "POST",
@@ -5726,7 +5774,7 @@ async function refreshSticklinkQr(force) {
         // Always wait for a new URL — peer ends a live session on Generate.
         const deadline = Date.now() + 90000;
         while (Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 1500));
+          await new Promise((r) => setTimeout(r, 400));
           const r = await fetch("/api/pair/sticklink-join", { cache: "no-store", headers: authHeaders() });
           const j = await r.json().catch(() => ({}));
           if (sticklinkJoinIsRateLimited(j)) {
@@ -5739,12 +5787,8 @@ async function refreshSticklinkQr(force) {
             if (hint) hint.textContent = "New StickLink join ready — scan with phone (Wi‑Fi off).";
             return;
           }
-          if (r.status === 410 || (j && j.minting)) {
-            showPairQrPlaceholder("busy", "Creating new key…", "Still minting…");
-          }
-          if (hint) {
-            const st = (j && j.remint && j.remint.status) || (j && j.minting ? "minting" : "requested");
-            hint.textContent = "Creating new key (" + st + ")… do not scan yet.";
+          if (r.status === 410 || (j && j.minting) || (j && j.remint && (j.remint.status === "closing" || j.remint.status === "minting" || j.remint.status === "requested"))) {
+            paintSticklinkQrMinting(j);
           }
         }
         paintSticklinkQrExpired(
@@ -5763,12 +5807,15 @@ async function refreshSticklinkQr(force) {
       return;
     }
     if (j && j.minting) {
-      showPairQrPlaceholder("busy", "Creating new key…", "Still minting…");
-      setPairQrButton("busy");
+      paintSticklinkQrMinting(j);
       return;
     }
     if (sticklinkJoinIsConnected(j)) {
       paintSticklinkQrConnected((j && j.message) || (j.remint && j.remint.message) || "");
+      return;
+    }
+    if (sticklinkJoinIsReconnecting(j)) {
+      paintSticklinkQrReconnecting((j && j.message) || (j.remint && j.remint.message) || "");
       return;
     }
     if (j && (j.idle || (j.remint && j.remint.status === "idle"))) {
@@ -5780,7 +5827,11 @@ async function refreshSticklinkQr(force) {
       return;
     }
     if (!r.ok) {
-      paintSticklinkQr("");
+      showPairQrPlaceholder(
+        "expired",
+        "StickLink unavailable",
+        (j && (j.message || j.error)) || ("HTTP " + r.status),
+      );
       if (hint) {
         hint.textContent = (j && (j.message || j.error))
           || ("StickLink join unavailable (" + r.status + ")");
@@ -5795,7 +5846,11 @@ async function refreshSticklinkQr(force) {
     }
     paintSticklinkQr(url, j);
   } catch (e) {
-    paintSticklinkQr("");
+    showPairQrPlaceholder(
+      "expired",
+      "StickLink unreachable",
+      (e && e.message) || "error",
+    );
     if (hint) hint.textContent = "StickLink join unreachable — " + ((e && e.message) || "error");
     setPairQrButton("generate");
     pairQrMinting = false;
