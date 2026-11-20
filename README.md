@@ -10,7 +10,7 @@ to the USB or internal disks unless you explicitly approve a write.
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
 | Current image | **v0.7.5** — `StickLLM-v0.7.5.iso`, hash in [`checksums/v0.7.5.sha256`](checksums/v0.7.5.sha256) |
-| Last GitHub Release | **[v0.3.9](https://github.com/StickLLM/stickllm/releases/tag/v0.3.9)** (older public line; StickLink ships on Drive) |
+| Last GitHub Release | **v0.3.9** (older public line on Drive; prior git history is private) |
 | Minimum hardware | **16 GB** system RAM · **8 GB** GPU |
 | GPU backends | **AMD:** ROCm and Vulkan · **NVIDIA:** CUDA · **Intel GPU:** Vulkan |
 | Tested hardware | NVIDIA: single / dual RTX 3090 · AMD: single RX 570 / RX 580 — [HARDWARE.md](docs/HARDWARE.md) |
@@ -212,3 +212,4 @@ GitHub: [github.com/StickLLM](https://github.com/StickLLM).
 
 Bundled and downloaded third-party components (Debian/Linux, llama.cpp, Agent Zero,
 NVIDIA drivers, model weights, companion apps, etc.) remain under their own licenses.
+
