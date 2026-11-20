@@ -1,0 +1,8 @@
+# ComfyUI (GPL) via yanwk/comfyui-boot (CUDA 12.6, slim: ComfyUI bundled,
+# no models). Pulled by digest onto the host SSD docker data-root only.
+# Checked against registry-1.docker.io on 2026-10-28. manifest_digest is the
+# OCI index; amd64_digest is the linux/amd64 manifest that is pulled.
+image=yanwk/comfyui-boot
+version=cu126-slim-20261026
+manifest_digest=sha256:0a355cd7fe20af79c67f01b3d9bb31c12d2c09617e0847e53dd88af4f7da8106
+amd64_digest=sha256:0b4ff81b9d6159debf9ec430d7de5ed10486d407efc998181566e6d4324de1a4

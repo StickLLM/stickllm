@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+echo "[stickllm] apt sources:"
+cat /etc/apt/sources.list || true
+ls -la /etc/apt/sources.list.d/ 2>/dev/null || true
+apt-get update

@@ -1,0 +1,335 @@
+#!/bin/bash
+# Launch llama-server: localhost-only.
+# Backend preference: CUDA (verified) → Vulkan → CPU last resort.
+# -ngl comes from VRAM fit (stickllm-control --plan-offload). Never a hardcoded 99
+# except the MoE --n-cpu-moe path, which the planner emits itself.
+set -euo pipefail
+
+if [[ "${1:-}" == "--capture-fail" ]]; then
+  # ExecStopPost (+ = root). Keep a short CUDA line for the UI. No passwords.
+  RUN_CAP="${STICKLLM_RUN:-/run/stickllm}"
+  mkdir -p "$RUN_CAP" 2>/dev/null || true
+  if [[ "${SERVICE_RESULT:-}" == "success" ]]; then
+    printf '0\n' >"$RUN_CAP/llama-fail-count" 2>/dev/null || true
+    rm -f "$RUN_CAP/llama-fail.txt" 2>/dev/null || true
+    exit 0
+  fi
+  n=0
+  if [[ -f "$RUN_CAP/llama-fail-count" ]]; then
+    n="$(tr -cd '0-9' <"$RUN_CAP/llama-fail-count" 2>/dev/null || true)"
+  fi
+  [[ -n "${n:-}" ]] || n=0
+  n=$((n + 1))
+  printf '%s\n' "$n" >"$RUN_CAP/llama-fail-count" 2>/dev/null || true
+  err="$(
+    journalctl -u stickllm-llama -n 80 --no-pager -o cat 2>/dev/null \
+      | grep -Ei 'cuda|cublas|out of memory|ggml_cuda|failed to allocate|unable to allocate|error|fatal|cannot|segfault|segmentation fault|core.dump|dumped core|status=11|SIGSEGV|unknown model architecture' \
+      | grep -Eiv 'password|STICKLLM_SSH_PASS|backend registered|stickllm-cuda-register' \
+      | tail -n 1 \
+      || true
+  )"
+  if [[ -z "${err:-}" ]]; then
+    # 0.6.2: a crash with no matching log line still gets a plain message.
+    arch="$(head -n1 "$RUN_CAP/model-arch.txt" 2>/dev/null | tr -cd 'A-Za-z0-9_.-' || true)"
+    code="${EXIT_STATUS:-${EXIT_CODE:-?}}"
+    err="llama-server exited (code ${code}) while loading $(basename -- "${STICKLLM_MODEL:-model}")"
+    [[ -n "$arch" ]] && err="${err}; this build may not support arch ${arch}"
+  elif [[ -n "$(head -n1 "$RUN_CAP/model-arch.txt" 2>/dev/null)" ]] && grep -Eqi 'segfault|segmentation|core|status=11|SIGSEGV|unknown model architecture' <<<"$err"; then
+    err="${err} (this build may not support arch $(head -n1 "$RUN_CAP/model-arch.txt" | tr -cd 'A-Za-z0-9_.-'))"
+  fi
+  if [[ -n "${err:-}" ]]; then
+    printf '%s\n' "$err" >"$RUN_CAP/llama-fail.txt" 2>/dev/null || true
+    chmod 644 "$RUN_CAP/llama-fail.txt" 2>/dev/null || true
+  fi
+  # StartLimitBurst is the real stop. This file tells the UI how many crashes landed.
+  exit 0
+fi
+
+# Require explicit Activate (model.env). No baked default — avoids long wrong-model boots.
+MODEL="${STICKLLM_MODEL:-}"
+HOST="${STICKLLM_LLAMA_HOST:-127.0.0.1}"
+PORT="${STICKLLM_LLAMA_PORT:-8080}"
+CTX="${STICKLLM_CTX_SIZE:-32768}"
+CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
+CPU_BIN="${STICKLLM_LLAMA_CPU:-/opt/stickllm/bin/llama-server-cpu}"
+VULKAN_BIN="${STICKLLM_LLAMA_VULKAN:-/opt/stickllm/bin/llama-server-vulkan}"
+LIB="${STICKLLM_LIB:-/opt/stickllm/lib}"
+LIB_VK="${STICKLLM_LIB_VULKAN:-/opt/stickllm/lib-vulkan}"
+REGISTER_SO="${STICKLLM_CUDA_REGISTER:-$LIB/stickllm-cuda-register.so}"
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+mkdir -p "$RUN" 2>/dev/null || true
+
+# pick-gpus writes cuda.env in ExecStartPre; EnvironmentFile may already be loaded,
+# but re-source so STICKLLM_BACKEND is always visible even on first boot.
+if [[ -f "$RUN/cuda.env" ]]; then
+  # shellcheck disable=SC1090
+  set +u
+  # shellcheck source=/dev/null
+  . "$RUN/cuda.env"
+  set -u
+fi
+# Activate writes model.env. Source it so --print-fit works outside systemd.
+if [[ -z "${STICKLLM_MODEL:-}" && -f "$RUN/model.env" ]]; then
+  # shellcheck disable=SC1090
+  set +u
+  # shellcheck source=/dev/null
+  . "$RUN/model.env"
+  set -u
+fi
+# Re-read after sourcing: model.env (not only the unit environment) sets these.
+MODEL="${STICKLLM_MODEL:-}"
+CTX="${STICKLLM_CTX_SIZE:-32768}"
+
+BACKEND="${STICKLLM_BACKEND:-cpu}"
+
+phys_threads() {
+  local n
+  n="$(nproc --all 2>/dev/null || nproc 2>/dev/null || echo 4)"
+  # Prefer physical cores when lscpu reports them.
+  if command -v lscpu >/dev/null 2>&1; then
+    local cores
+    cores="$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l | tr -d ' ')"
+    if [[ "${cores:-0}" =~ ^[0-9]+$ ]] && [[ "$cores" -ge 1 ]]; then
+      n="$cores"
+    fi
+  fi
+  [[ "$n" -lt 1 ]] && n=1
+  [[ "$n" -gt 64 ]] && n=64
+  echo "$n"
+}
+
+THREADS="$(phys_threads)"
+export LD_LIBRARY_PATH="${LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GGML_BACKEND_DIR="${GGML_BACKEND_DIR:-$LIB}"
+export CUDA_DEVICE_ORDER="${CUDA_DEVICE_ORDER:-PCI_BUS_ID}"
+
+# /run/stickllm is prepared by unit ExecStartPre as root. Never fail the service
+# if the unprivileged User= cannot write breadcrumbs (was killing CPU/CUDA start).
+write_runtime_env() {
+  local backend="$1"
+  mkdir -p "$RUN" 2>/dev/null || true
+  {
+    printf 'backend=%s\nthreads=%s\nhost=%s\nport=%s\nmodel=%s\n' \
+      "$backend" "$THREADS" "$HOST" "$PORT" "$MODEL"
+  } >"$RUN/llama-runtime.env" 2>/dev/null || \
+  {
+    printf 'backend=%s\nthreads=%s\nhost=%s\nport=%s\nmodel=%s\n' \
+      "$backend" "$THREADS" "$HOST" "$PORT" "$MODEL"
+  } >"/tmp/stickllm-llama-runtime.env" 2>/dev/null || true
+}
+
+cuda_devices_ok() {
+  local out
+  [[ -x "$CUDA_BIN" ]] || return 1
+  out="$(
+    env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
+      ${REGISTER_SO:+LD_PRELOAD="$REGISTER_SO"} \
+      CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES-}" \
+      GGML_BACKEND_DIR="$GGML_BACKEND_DIR" \
+      "$CUDA_BIN" --list-devices 2>/dev/null || true
+  )"
+  echo "$out" | grep -qE '^[[:space:]]*CUDA[0-9]'
+}
+
+if [[ -z "$MODEL" ]]; then
+  echo "stickllm-llama-start: STICKLLM_MODEL unset — Activate a model from the UI (Models → Activate)" >&2
+  exit 1
+fi
+if [[ ! -f "$MODEL" ]]; then
+  echo "stickllm-llama-start: model missing: $MODEL" >&2
+  exit 1
+fi
+if [[ ! -r "$MODEL" ]]; then
+  echo "stickllm-llama-start: model not readable: $MODEL" >&2
+  exit 1
+fi
+
+# Fit plan: all suitable GPUs, tensor-split by free VRAM, -ngl only for what fits.
+# stdout is shell assignments (quoted caption). mmap stays at the llama.cpp default.
+PLAN_SH="$(python3 /usr/local/bin/stickllm-control --plan-offload 2>/dev/null || true)"
+if [[ -n "$PLAN_SH" ]]; then
+  # shellcheck disable=SC1090
+  eval "$PLAN_SH"
+fi
+NGL="${STICKLLM_PLAN_NGL:-}"
+if [[ ! "${NGL:-}" =~ ^[0-9]+$ ]]; then
+  # Planner missing: partial offload, not the old "put everything on one GPU" 99.
+  NGL=32
+  echo "stickllm-llama-start: offload planner failed; using -ngl 32" >&2
+fi
+# 0.5.9: Settings > Advanced per-model -ngl wins over the fit (not over the
+# "Fewer GPU layers" retry, which writes ngl.env after a crash).
+if [[ "${STICKLLM_NGL_USER:-}" =~ ^[0-9]+$ && -z "${STICKLLM_N_GPU_LAYERS:-}" ]]; then
+  NGL="$STICKLLM_NGL_USER"
+fi
+N_CPU_MOE="${STICKLLM_PLAN_N_CPU_MOE:-0}"
+TENSOR_SPLIT="${STICKLLM_PLAN_TENSOR_SPLIT:-${STICKLLM_TENSOR_SPLIT:-}}"
+GPU_COUNT="${STICKLLM_PLAN_GPU_COUNT:-${STICKLLM_GPU_COUNT:-0}}"
+PLAN_FIT="${STICKLLM_PLAN_FIT:-}"
+PLAN_CAP="${STICKLLM_PLAN_CAPTION:-}"
+
+if [[ "${1:-}" == "--print-fit" ]]; then
+  printf 'cuda_visible_devices=%s\n' "${CUDA_VISIBLE_DEVICES:-}"
+  printf 'devices=%s\n' "${STICKLLM_PLAN_DEVICES:-}"
+  printf 'n_gpu_layers=%s\n' "$NGL"
+  printf 'n_cpu_moe=%s\n' "${N_CPU_MOE:-0}"
+  printf 'tensor_split=%s\n' "$TENSOR_SPLIT"
+  printf 'gpu_count=%s\n' "$GPU_COUNT"
+  printf 'fit=%s\n' "$PLAN_FIT"
+  printf 'caption=%s\n' "$PLAN_CAP"
+  printf 'ctx=%s\n' "$CTX"
+  exit 0
+fi
+
+# Context: the user's STICKLLM_CTX_SIZE (model.env) wins. It may be capped to
+# what the model supports (planner STICKLLM_PLAN_CTX_MAX), never raised.
+# (Agent Zero prefers >= 32768; that is now the user's choice in Models.)
+if [[ ! "$CTX" =~ ^[0-9]+$ ]] || (( CTX < 256 )); then
+  echo "stickllm-llama-start: bad STICKLLM_CTX_SIZE='${CTX}', using 32768" >&2
+  CTX=32768
+fi
+CTX_MAX="${STICKLLM_PLAN_CTX_MAX:-0}"
+if [[ "$CTX_MAX" =~ ^[0-9]+$ ]] && (( CTX_MAX >= 256 && CTX > CTX_MAX )); then
+  echo "stickllm-llama-start: capping ctx-size ${CTX} to model limit ${CTX_MAX}" >&2
+  CTX="$CTX_MAX"
+fi
+
+# 0.5.9: the planner puts a model on ONE card when it fits there (most free
+# VRAM, or the pinned card). Show llama only that card; split only otherwise.
+# CUDA_DEVICE_ORDER=PCI_BUS_ID keeps CUDA and nvidia-smi indexes the same.
+if [[ "$BACKEND" == "cuda" && "$GPU_COUNT" == "1" && "${STICKLLM_PLAN_DEVICES:-}" =~ ^[0-9]+$ ]]; then
+  export CUDA_VISIBLE_DEVICES="$STICKLLM_PLAN_DEVICES"
+fi
+
+gpu_extra=()
+if [[ "$GPU_COUNT" =~ ^[0-9]+$ ]] && (( GPU_COUNT > 1 )) && [[ -n "$TENSOR_SPLIT" ]]; then
+  gpu_extra+=(--tensor-split "$TENSOR_SPLIT")
+fi
+if [[ "${N_CPU_MOE:-0}" =~ ^[0-9]+$ ]] && (( N_CPU_MOE > 0 )); then
+  gpu_extra+=(--n-cpu-moe "$N_CPU_MOE")
+fi
+# Vision only on a GPU backend, and only when Activate found an mmproj beside the GGUF.
+# KV cache type from Activate (Models > Advanced). f16 = llama.cpp default.
+# A quantized V cache needs flash attention, so q8_0/q4_0 turn it on.
+kv_extra=()
+case "${STICKLLM_KV_TYPE:-f16}" in
+  q8_0|q4_0)
+    kv_extra+=(--cache-type-k "$STICKLLM_KV_TYPE" --cache-type-v "$STICKLLM_KV_TYPE" --flash-attn on)
+    ;;
+esac
+# 0.5.9 per-model overrides (validated by stickllm-control before model.env).
+ctk="${STICKLLM_CTK:-}"; ctv="${STICKLLM_CTV:-}"
+if [[ -n "$ctk" || -n "$ctv" ]]; then
+  kv_extra=()
+  [[ -n "$ctk" ]] && kv_extra+=(--cache-type-k "$ctk")
+  [[ -n "$ctv" ]] && kv_extra+=(--cache-type-v "$ctv")
+  if [[ -n "$ctv" && "$ctv" != "f16" && "$ctv" != "f32" && "$ctv" != "bf16" ]]; then
+    kv_extra+=(--flash-attn on)
+  fi
+fi
+if [[ "${STICKLLM_PARALLEL:-}" =~ ^[0-9]+$ ]] && (( STICKLLM_PARALLEL >= 1 )); then
+  kv_extra+=(--parallel "$STICKLLM_PARALLEL")
+fi
+[[ "${STICKLLM_NO_MMAP:-}" == "1" ]] && kv_extra+=(--no-mmap)
+[[ "${STICKLLM_MLOCK:-}" == "1" ]] && kv_extra+=(--mlock)
+ot_extra=()
+if [[ -s "$RUN/override-tensor.txt" ]]; then
+  IFS= read -r ot_val <"$RUN/override-tensor.txt" || true
+  [[ -n "${ot_val:-}" ]] && ot_extra+=(--override-tensor "$ot_val")
+fi
+mm_extra=()
+if [[ -n "${STICKLLM_MMPROJ:-}" && -f "${STICKLLM_MMPROJ}" ]]; then
+  mm_extra+=(--mmproj "$STICKLLM_MMPROJ")
+fi
+
+# 1) CUDA — only if pick-gpus said so AND list-devices still sees CUDA.
+if [[ "$BACKEND" == "cuda" ]] && [[ -x "$CUDA_BIN" ]]; then
+  if [[ -f "$REGISTER_SO" ]]; then
+    export LD_PRELOAD="$REGISTER_SO${LD_PRELOAD:+:$LD_PRELOAD}"
+  fi
+  if cuda_devices_ok; then
+    echo "stickllm-llama-start: STICKLLM_BACKEND=cuda (-ngl $NGL fit=${PLAN_FIT:-?} gpus=${GPU_COUNT:-?} split=${TENSOR_SPLIT:-none}) threads=$THREADS host=$HOST:$PORT ${PLAN_CAP}" >&2
+    write_runtime_env cuda
+    exec "$CUDA_BIN" \
+      --model "$MODEL" \
+      --host "$HOST" \
+      --port "$PORT" \
+      --ctx-size "$CTX" \
+      --n-gpu-layers "$NGL" \
+      --threads "$THREADS" \
+      "${gpu_extra[@]}" \
+      "${mm_extra[@]}" \
+      "${kv_extra[@]}" \
+      "${ot_extra[@]}" \
+      --jinja \
+      --metrics
+  fi
+  echo "stickllm-llama-start: CUDA claimed but list-devices has no CUDA — not starting fake-cuda" >&2
+  unset LD_PRELOAD || true
+  BACKEND=fallback
+fi
+
+# 2) Vulkan — AMD/Intel (or CUDA failure fallback) when llama-server-vulkan ships.
+if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "fallback" ]]; then
+  if [[ -x "$VULKAN_BIN" ]]; then
+    if [[ -d "$LIB_VK" ]]; then
+      export LD_LIBRARY_PATH="${LIB_VK}:${LD_LIBRARY_PATH}"
+      export GGML_BACKEND_DIR="${LIB_VK}"
+    fi
+    # One Vulkan device (most free VRAM, from pick-gpus/planner), e.g. Vulkan1.
+    vk_dev="${STICKLLM_PLAN_DEVICES:-}"
+    if [[ ! "$vk_dev" =~ ^Vulkan[0-9]+$ ]]; then
+      vk_dev="${STICKLLM_VULKAN_DEVICE:-}"
+    fi
+    if [[ "$vk_dev" =~ ^Vulkan[0-9]+$ ]] && [[ "$NGL" =~ ^[0-9]+$ ]] && (( NGL > 0 )); then
+      gpu_extra+=(--device "$vk_dev")
+    fi
+    echo "stickllm-llama-start: STICKLLM_BACKEND=vulkan (-ngl $NGL device=${vk_dev:-default} fit=${PLAN_FIT:-?} vram_free=${STICKLLM_VRAM_FREE_MIB:-?}MiB) threads=$THREADS host=$HOST:$PORT ctx=$CTX model=$MODEL" >&2
+    write_runtime_env vulkan
+    exec "$VULKAN_BIN" \
+      --model "$MODEL" \
+      --host "$HOST" \
+      --port "$PORT" \
+      --ctx-size "$CTX" \
+      --n-gpu-layers "$NGL" \
+      --threads "$THREADS" \
+      "${gpu_extra[@]}" \
+      "${mm_extra[@]}" \
+      "${kv_extra[@]}" \
+      "${ot_extra[@]}" \
+      --jinja \
+      --metrics
+  fi
+  if [[ "$BACKEND" == "vulkan" ]]; then
+    echo "stickllm-llama-start: Vulkan requested but $VULKAN_BIN missing — falling back to CPU" >&2
+  elif [[ "$BACKEND" == "fallback" ]]; then
+    echo "stickllm-llama-start: Vulkan unavailable after CUDA fail — falling back to CPU" >&2
+  fi
+  BACKEND=cpu
+fi
+
+# 3) CPU last resort — clear logging, never claim cuda/vulkan.
+BIN="$CPU_BIN"
+CPU_LIB="${STICKLLM_LIB_CPU:-/opt/stickllm/lib-cpu}"
+if [[ -x "$BIN" && -d "$CPU_LIB" ]]; then
+  export LD_LIBRARY_PATH="${CPU_LIB}:${LD_LIBRARY_PATH}"
+elif [[ ! -x "$BIN" ]]; then
+  BIN="$CUDA_BIN"
+fi
+if [[ ! -x "$BIN" ]]; then
+  echo "stickllm-llama-start: no llama-server binary found" >&2
+  exit 1
+fi
+
+echo "stickllm-llama-start: STICKLLM_BACKEND=cpu (-ngl 0) threads=$THREADS host=$HOST:$PORT model=$MODEL bin=$BIN ctx=$CTX kv=${STICKLLM_KV_TYPE:-f16}" >&2
+write_runtime_env cpu
+exec "$BIN" \
+  --model "$MODEL" \
+  --host "$HOST" \
+  --port "$PORT" \
+  --ctx-size "$CTX" \
+  --n-gpu-layers 0 \
+  --threads "$THREADS" \
+  "${kv_extra[@]}" \
+  --jinja \
+  --metrics

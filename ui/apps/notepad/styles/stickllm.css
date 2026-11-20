@@ -1,0 +1,2 @@
+/* StickLLM notepad chrome (desktop window — no Back to Apps link). */
+header h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

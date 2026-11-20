@@ -1,0 +1,23 @@
+---
+description: Windows StickLLM USB flash — Rufus for consumers; no letter ≠ missing stick
+alwaysApply: true
+---
+
+# Windows StickLLM USB flash
+
+Windows does not like Linux-flashed USB keys. StickLLM isohybrid often has **no drive letter** after flash; Windows still sees the disk. Do **not** assume the stick is missing when there is no letter.
+
+## Prefer
+
+1. **Consumers / public docs:** [Rufus](https://rufus.ie/) **DD Image** mode (or `dd` on Linux). Documented in `docs/FLASH.md`.
+2. **Maintainer lab (this machine):** elevated `C:\Python314\python.exe` + `out/safe-flash-samsung-auth.py` (Clear-Disk + FSCTL lock/dismount + WriteFile) when Rufus is unavailable — see `docs/MAINTAINER.md`. Do not present this as the README preferred path unless the script is copied into `scripts/` and documented.
+
+## Avoid
+
+- Naive PowerShell `FileStream` raw write → Access Denied even when elevated.
+- `Set-Disk -IsOffline` on removable Samsung sticks.
+
+## Remember
+
+- No letter ≠ missing USB. Confirm with disk number / size / bus (e.g. Get-Disk), not Explorer.
+- Only flash when the user explicitly asks; never overwrite a shipping release under an existing name.

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StickLLM Browser</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #0e1416;
+    --ink: #e8f2f0;
+    --muted: #8aa3a0;
+    --accent: #2bb5a8;
+    --ok: #3ecf8e;
+    --warn: #e6b84d;
+    --danger: #e06b6b;
+    --card: rgba(255,255,255,.04);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100%;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 640px at 18% -8%, rgba(43,181,168,.22), transparent 58%),
+      radial-gradient(900px 520px at 100% 100%, rgba(108,142,240,.10), transparent 55%),
+      linear-gradient(180deg, #121a1c 0%, var(--bg) 55%);
+  }
+  main {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px;
+    text-align: center;
+    gap: 22px;
+  }
+  .brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .mark {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    white-space: pre;
+    text-align: left;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+    font-size: clamp(9px, 1.85vw, 18px);
+    line-height: 1.12;
+    letter-spacing: 0;
+    color: color-mix(in srgb, var(--accent) 82%, var(--ink));
+    user-select: none;
+  }
+  .tag {
+    margin: 0;
+    color: var(--muted);
+    font-size: clamp(1rem, 2.2vw, 1.25rem);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+  .pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    max-width: 44rem;
+  }
+  .mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 18px;
+    border-radius: 999px;
+    background: var(--card);
+    border: 1px solid rgba(255,255,255,.08);
+    font-size: 1.05rem;
+    font-weight: 600;
+  }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--muted);
+    box-shadow: 0 0 0 3px rgba(255,255,255,.06);
+  }
+  .mode[data-mode="internet"] .dot,
+  .mode[data-mode="vault"] .dot,
+  .mode[data-mode="normal"] .dot,
+  .mode[data-mode="stick"] .dot { background: var(--ok); }
+  .mode[data-mode="tor"] .dot,
+  .mode[data-mode="ephemeral"] .dot,
+  .mode[data-mode="incognito"] .dot,
+  .mode[data-mode="remote"] .dot { background: var(--warn); }
+  .mode[data-mode="none"] .dot { background: var(--danger); }
+  .mode[data-mode="internet"],
+  .mode[data-mode="vault"],
+  .mode[data-mode="normal"],
+  .mode[data-mode="stick"] { color: var(--ok); }
+  .mode[data-mode="tor"],
+  .mode[data-mode="ephemeral"],
+  .mode[data-mode="incognito"],
+  .mode[data-mode="remote"] { color: var(--warn); }
+  .mode[data-mode="none"] { color: var(--danger); }
+  .note {
+    max-width: 36rem;
+    margin: 0;
+    color: var(--muted);
+    font-size: 1rem;
+    line-height: 1.45;
+  }
+  .callout {
+    display: none;
+    max-width: 38rem;
+    margin: 0;
+    padding: 18px 20px;
+    text-align: left;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    background: color-mix(in srgb, var(--warn) 12%, var(--card));
+    color: var(--ink);
+    font-size: 1.02rem;
+    line-height: 1.5;
+  }
+  .callout[data-show="1"] { display: block; }
+  .callout strong { color: var(--warn); font-weight: 700; }
+  .callout p { margin: 0 0 10px; }
+  .callout p:last-child { margin: 0; }
+  .hint {
+    margin: 0;
+    color: color-mix(in srgb, var(--muted) 80%, transparent);
+    font-size: 0.9rem;
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">
+    <pre class="mark" role="img" aria-label="StickLLM">███████╗████████╗██╗ ██████╗██╗  ██╗██╗     ██╗     ███╗   ███╗
+██╔════╝╚══██╔══╝██║██╔════╝██║ ██╔╝██║     ██║     ████╗ ████║
+███████╗   ██║   ██║██║     █████╔╝ ██║     ██║     ██╔████╔██║
+╚════██║   ██║   ██║██║     ██╔═██╗ ██║     ██║     ██║╚██╔╝██║
+███████║   ██║   ██║╚██████╗██║  ██╗███████╗███████╗██║ ╚═╝ ██║
+╚══════╝   ╚═╝   ╚═╝ ╚══════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚═╝</pre>
+    <p class="tag">Privacy AI USB</p>
+  </div>
+  <div class="pills" aria-live="polite">
+    <div class="mode" id="clientPill" data-mode="stick">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="clientLabel">Checking client…</span>
+    </div>
+    <div class="mode" id="sessionPill" data-mode="ephemeral">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="sessionLabel">Checking session…</span>
+    </div>
+    <div class="mode" id="privacyPill" data-mode="incognito">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="privacyLabel">Checking privacy…</span>
+    </div>
+    <div class="mode" id="modePill" data-mode="internet">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="modeLabel">Checking Web mode…</span>
+    </div>
+  </div>
+  <div class="callout" id="remoteCallout" data-show="0" role="note"></div>
+  <p class="note" id="modeNote">Loading status from this stick…</p>
+  <p class="hint" id="modeHint">Type an address above to browse.</p>
+</main>
+<script src="/browser-home.js"></script>
+</body>
+</html>

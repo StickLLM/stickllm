@@ -1,0 +1,7 @@
+# Node-RED (Apache-2.0). Pulled by digest onto the host SSD docker data-root only.
+# Verified against registry-1.docker.io on 2026-10-27. manifest_digest is the
+# OCI index; amd64_digest is the linux/amd64 manifest that is pulled.
+image=nodered/node-red
+version=5.0.9
+manifest_digest=sha256:e085d4a06591fd0aca2ea2a91364d27f1a0e31e885675f77935e10f95412a963
+amd64_digest=sha256:051b217b585013c692006e238faa1067adc52f7ded972cbca3d944f5f9563d80

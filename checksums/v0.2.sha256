@@ -1,0 +1,11 @@
+# StickLLM v0.2 ISO — verify after download from Google Drive
+# File: stickllm-amd-rtx3090-v0.2.hybrid.iso
+#
+# Windows (PowerShell):
+#   (Get-FileHash .\stickllm-amd-rtx3090-v0.2.hybrid.iso -Algorithm SHA256).Hash
+# Linux / macOS:
+#   sha256sum stickllm-amd-rtx3090-v0.2.hybrid.iso
+#
+# Expected (uppercase or lowercase — same digest):
+
+4914087d502d13327dbbd9196c9a4a7df46ee079d423ff4b0bc6280e1c7b1a48  stickllm-amd-rtx3090-v0.2.hybrid.iso

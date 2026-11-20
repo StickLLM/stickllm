@@ -1,0 +1,481 @@
+#!/bin/bash
+# Download a catalog-pinned model onto STICKLLM-DATA (or RAM models dir). Verify SHA-256.
+# Writes /run/stickllm/download-progress.json for Models UI + bootstatus.
+set -euo pipefail
+
+CATALOG="${STICKLLM_CATALOG:-/etc/stickllm/models/catalog.toml}"
+MNT="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+PROGRESS_JSON="$RUN/download-progress.json"
+LOCK="$RUN/download.lock"
+ID=""
+CONFIRM=0
+DEST_OVERRIDE=""
+HF_REPO=""
+HF_FILE=""
+HF_SHA=""
+HF_BYTES=0
+HF_NAME=""
+ALLOW_UNPINNED=0
+
+usage() {
+  echo "Usage: sudo stickllm-download-model --i-understand [--id MODEL_ID] [--dest DIR]"
+  echo "Catalog: $CATALOG"
+  echo "Dest: user-selected folder, or USB DATA / vault SSD by session mode"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --i-understand) CONFIRM=1; shift ;;
+    --id) ID="${2:-}"; shift 2 ;;
+    --id=*) ID="${1#--id=}"; shift ;;
+    --dest) DEST_OVERRIDE="${2:-}"; shift 2 ;;
+    --dest=*) DEST_OVERRIDE="${1#--dest=}"; shift ;;
+    --repo) HF_REPO="${2:-}"; shift 2 ;;
+    --file) HF_FILE="${2:-}"; shift 2 ;;
+    --sha256) HF_SHA="${2:-}"; shift 2 ;;
+    --bytes) HF_BYTES="${2:-}"; shift 2 ;;
+    --name) HF_NAME="${2:-}"; shift 2 ;;
+    --allow-unpinned) ALLOW_UNPINNED=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown: $1"; usage; exit 2 ;;
+  esac
+done
+
+if [[ "$CONFIRM" -ne 1 ]]; then
+  echo "Refusing without confirmation."
+  usage
+  exit 1
+fi
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root (sudo)."
+  exit 1
+fi
+
+mkdir -p "$RUN"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "Another stickllm-download-model is already running."
+  exit 0
+fi
+echo $$ >"$RUN/download.pid"
+trap 'rm -f "$RUN/download.pid"' EXIT
+
+# Session mode (header dropdown): ephemeral = no vault/SSD writes; vault = prefer vault.
+SESSION_MODE="${STICKLLM_SESSION_MODE:-}"
+if [[ -z "$SESSION_MODE" && -f "$RUN/session-mode.json" ]]; then
+  SESSION_MODE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("mode","ephemeral"))' "$RUN/session-mode.json" 2>/dev/null || echo ephemeral)"
+fi
+SESSION_MODE="$(printf '%s' "${SESSION_MODE:-ephemeral}" | tr '[:upper:]' '[:lower:]')"
+
+VAULT_MNT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
+DATA_MNT_META="${STICKLLM_VAULT_META:-}"
+if [[ -z "$DATA_MNT_META" ]]; then
+  if findmnt -n "$MNT" >/dev/null 2>&1; then
+    DATA_MNT_META="$MNT/vault-meta"
+  else
+    DATA_MNT_META="/var/lib/stickllm/vault-meta"
+  fi
+fi
+DEST_DIR=""
+# Explicit UI / control dest wins (Models › Change… or download dest param).
+if [[ -z "$DEST_OVERRIDE" && -n "${STICKLLM_MODELS_DIR:-}" ]]; then
+  DEST_OVERRIDE="$STICKLLM_MODELS_DIR"
+fi
+if [[ -z "$DEST_OVERRIDE" && -f "$RUN/models-dir.json" ]]; then
+  DEST_OVERRIDE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("path") or "")' "$RUN/models-dir.json" 2>/dev/null || true)"
+fi
+if [[ -n "$DEST_OVERRIDE" ]]; then
+  case "$DEST_OVERRIDE" in
+    /mnt/*|/var/lib/stickllm/*)
+      DEST_DIR="$DEST_OVERRIDE"
+      echo "Download target: user-selected models folder ($DEST_DIR)"
+      ;;
+    *)
+      echo "Refusing dest outside /mnt or /var/lib/stickllm: $DEST_OVERRIDE"
+      exit 1
+      ;;
+  esac
+fi
+if [[ -z "$DEST_DIR" && "$SESSION_MODE" == "vault" ]]; then
+  # Prefer clear host SSD models folder (vault setup root). Chats stay in LUKS blob only.
+  ROOT_DIR=""
+  if [[ -f /run/stickllm/vault.json ]]; then
+    ROOT_DIR="$(python3 -c 'import json,sys;print(json.load(open("/run/stickllm/vault.json")).get("root") or "")' 2>/dev/null || true)"
+  fi
+  if [[ -z "$ROOT_DIR" && -f "$DATA_MNT_META/root" ]]; then
+    ROOT_DIR="$(tr -d '\n' <"$DATA_MNT_META/root")"
+  fi
+  if [[ -z "$ROOT_DIR" && -f /var/lib/stickllm/vault-meta/root ]]; then
+    ROOT_DIR="$(tr -d '\n' </var/lib/stickllm/vault-meta/root)"
+  fi
+  if [[ -n "$ROOT_DIR" && -d "$ROOT_DIR" ]]; then
+    base="$(basename -- "$ROOT_DIR")"
+    if [[ "${base,,}" == "models" ]]; then
+      DEST_DIR="$ROOT_DIR"
+    else
+      DEST_DIR="$ROOT_DIR/models"
+    fi
+    echo "Download target: SSD models folder ($DEST_DIR)"
+  elif findmnt -n "$VAULT_MNT" >/dev/null 2>&1 && [[ -d "$VAULT_MNT/models" ]]; then
+    # Fallback only when host root unknown but vault is unlocked.
+    DEST_DIR="$VAULT_MNT/models"
+    echo "Download target: vault-internal models ($DEST_DIR) — host root not configured"
+  fi
+  if [[ -z "$DEST_DIR" ]]; then
+    echo "Vault mode selected but vault is locked/absent — unlock or setup in Settings → Storage."
+    echo "Refusing USB/RAM fallback in vault mode (fail-closed)."
+    exit 1
+  fi
+elif [[ -z "$DEST_DIR" ]]; then
+  echo "Session mode: ephemeral — not writing to SSD vault."
+fi
+if [[ -z "$DEST_DIR" ]]; then
+  if findmnt -n "$MNT" >/dev/null 2>&1; then
+    DEST_DIR="$MNT/models"
+    echo "Download target: USB STICKLLM-DATA ($DEST_DIR)"
+  else
+    DEST_DIR="/opt/stickllm/models"
+    echo "WARNING: STICKLLM-DATA not mounted — writing to live RAM ($DEST_DIR)."
+    echo "Run: sudo stickllm-usb-claim --auto --yes"
+  fi
+fi
+mkdir -p "$DEST_DIR"
+
+if [[ -n "$HF_REPO" || -n "$HF_FILE" ]]; then
+  case "$HF_FILE" in
+    *.gguf) ;;
+    *) echo "Refusing non-GGUF file: $HF_FILE"; exit 2 ;;
+  esac
+  case "$HF_FILE" in
+    *..*|/*) echo "Refusing unsafe file path"; exit 2 ;;
+  esac
+  case "$HF_REPO" in
+    */*) ;;
+    *) echo "Refusing repo (need org/name): $HF_REPO"; exit 2 ;;
+  esac
+  MAP="$(
+    HF_REPO="$HF_REPO" HF_FILE="$HF_FILE" HF_SHA="$HF_SHA" HF_BYTES="$HF_BYTES" HF_NAME="$HF_NAME" HF_ID="${ID:-hf}" \
+    python3 - <<'PY'
+import json, os
+repo = os.environ["HF_REPO"]
+file = os.environ["HF_FILE"]
+sha = os.environ.get("HF_SHA", "").strip().lower()
+try:
+    nbytes = int(os.environ.get("HF_BYTES") or 0)
+except ValueError:
+    nbytes = 0
+name = os.environ.get("HF_NAME") or file
+print(json.dumps({
+    "id": os.environ.get("HF_ID") or "hf",
+    "name": name,
+    "hf_repo": repo,
+    "hf_files": [file],
+    "sha256": [sha] if len(sha) == 64 else [],
+    "approx_size_gb": round(nbytes / (1024 ** 3), 3) if nbytes else 0,
+}))
+PY
+  )"
+else
+# Resolve model from catalog via python
+MAP="$(python3 - "$CATALOG" "$ID" <<'PY'
+import json, re, sys
+path, want = sys.argv[1], sys.argv[2]
+models = []
+rows = None
+try:
+    import tomllib  # 0.6.2: real TOML (multi-line arrays, trailing commas)
+    with open(path, "rb") as fh:
+        rows = tomllib.load(fh).get("model") or []
+except Exception:
+    rows = None
+if rows is None:
+    rows = []
+    text = open(path, encoding="utf-8").read()
+    for b in re.split(r"\n\[\[model\]\]\n", text)[1:]:
+        row = {}
+        for m in re.finditer(r"^(\w+)\s*=\s*(\[[^\]]*\]|.+)$", b, re.M | re.S):
+            raw = m.group(2).strip()
+            row[m.group(1)] = re.findall(r'"([^"]*)"', raw) if raw.startswith("[") else raw.strip('"')
+        rows.append(row)
+def as_list(v):
+    if isinstance(v, str):
+        return [v] if v else []
+    return [str(x) for x in (v or [])]
+for r in rows:
+    if not isinstance(r, dict):
+        continue
+    mid = str(r.get("id") or "")
+    if not mid:
+        continue
+    models.append({
+        "id": mid,
+        "name": str(r.get("name") or mid),
+        "hf_repo": str(r.get("hf_repo") or ""),
+        "hf_files": as_list(r.get("hf_files")),
+        "sha256": [s.lower() for s in as_list(r.get("sha256"))],
+        "approx_size_gb": float(r.get("approx_size_gb") or 0),
+        "quality_rank": int(float(r.get("quality_rank") or 0)),
+    })
+pick = None
+if want:
+    pick = next((m for m in models if m["id"] == want), None)
+    if not pick:
+        print(json.dumps({"error": f"unknown model id: {want}"}))
+        sys.exit(3)
+else:
+    pinned = [m for m in models if m["hf_repo"] and m["hf_files"]]
+    if not pinned:
+        print(json.dumps({"error": "no pinned models in catalog"}))
+        sys.exit(3)
+    pick = max(pinned, key=lambda m: m["quality_rank"])
+print(json.dumps(pick))
+PY
+)"
+fi
+
+if echo "$MAP" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(1 if d.get("error") else 0)'; then
+  :
+else
+  echo "$MAP"
+  exit 3
+fi
+
+NAME="$(echo "$MAP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+REPO="$(echo "$MAP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hf_repo"])')"
+ID="$(echo "$MAP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+
+echo "StickLLM Download model (v0.2)"
+echo "  Model: $NAME ($ID)"
+echo "  Dest:  $DEST_DIR"
+echo "  Source: https://huggingface.co/${REPO}"
+echo
+
+if [[ -z "$REPO" ]]; then
+  echo "Model not pinned with hf_repo yet — cannot download."
+  exit 4
+fi
+
+FILES="$(echo "$MAP" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["hf_files"]))')"
+if [[ -z "${FILES//[[:space:]]/}" ]]; then
+  # 0.6.2: never report "done" for a model with no files (queue loop bug).
+  echo "No files resolved for $ID in the catalog — nothing to download."
+  python3 - "$PROGRESS_JSON" "$ID" "$NAME" <<'PY'
+import json, sys, time
+p, mid, name = sys.argv[1:4]
+open(p, "w", encoding="utf-8").write(json.dumps({"state": "failed", "id": mid, "name": name, "file": "",
+    "percent": None, "bytes_done": 0, "bytes_total": 0, "note": "no files resolved",
+    "started": int(time.time()), "updated": int(time.time())}) + "\n")
+PY
+  exit 4
+fi
+HASHES="$(echo "$MAP" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["sha256"]))')"
+
+TOTAL_BYTES="$(echo "$MAP" | python3 -c 'import json,sys; print(int(float(json.load(sys.stdin).get("approx_size_gb") or 0)*(1024**3)))')"
+FILE_COUNT="$(echo "$MAP" | python3 -c 'import json,sys; print(max(len(json.load(sys.stdin).get("hf_files") or []),1))')"
+PER_FILE_BYTES=$(( TOTAL_BYTES / FILE_COUNT ))
+[[ "$PER_FILE_BYTES" -lt 1 ]] && PER_FILE_BYTES=0
+
+write_progress() {
+  local state="$1" file="$2" done_b="$3" total_b="$4" note="${5:-}"
+  python3 - "$PROGRESS_JSON" "$state" "$ID" "$NAME" "$file" "$done_b" "$total_b" "$note" <<'PY'
+import json, sys, time
+path, state, mid, name, file, done, total, note = sys.argv[1:9]
+done_i, total_i = int(done or 0), int(total or 0)
+pct = None
+if total_i > 0:
+    pct = max(0.0, min(99.9, round(100.0 * done_i / total_i, 1)))
+if state == "done":
+    pct = 100.0
+now = int(time.time())
+started = now
+try:
+    prev = json.load(open(path, encoding="utf-8"))
+    if prev.get("id") == mid and prev.get("started") and prev.get("state") not in ("done", "failed", "idle"):
+        started = int(prev["started"])
+except Exception:
+    pass
+doc = {
+    "state": state,
+    "id": mid,
+    "name": name,
+    "file": file,
+    "percent": pct,
+    "bytes_done": done_i,
+    "bytes_total": total_i,
+    "note": note,
+    "started": started,
+    "updated": now,
+}
+open(path, "w", encoding="utf-8").write(json.dumps(doc) + "\n")
+PY
+}
+
+write_progress "starting" "" 0 "$TOTAL_BYTES" "starting download"
+
+cleanup_progress() {
+  local st="${1:-failed}"
+  write_progress "$st" "" "${2:-0}" "$TOTAL_BYTES" "$st"
+}
+trap 'cleanup_progress failed 0' ERR
+
+i=0
+BYTES_BEFORE=0
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  DEST="${DEST_DIR}/$(basename -- "$f")"
+  ENC="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$f")"
+  URL="https://huggingface.co/${REPO}/resolve/main/${ENC}"
+  expect="$(echo "$HASHES" | sed -n "$((i+1))p" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "$expect" && "$ALLOW_UNPINNED" != "1" ]]; then
+    echo "FATAL: no sha256 in catalog for $f — refusing unverified model"
+    write_progress "failed" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "missing sha256"
+    exit 5
+  fi
+  if [[ -f "$DEST" ]]; then
+    echo "Already present: $DEST — verifying sha256"
+    write_progress "verifying" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "hash check"
+    got="$(sha256sum "$DEST" | awk '{print tolower($1)}')"
+    if [[ -n "$expect" && "$got" != "$expect" ]]; then
+      echo "HASH MISMATCH: $f"
+      echo "  expected $expect"
+      echo "  got      $got"
+      rm -f "$DEST"
+      write_progress "failed" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "hash mismatch"
+      exit 5
+    fi
+    SZ="$(stat -c%s "$DEST" 2>/dev/null || echo 0)"
+    BYTES_BEFORE=$((BYTES_BEFORE + SZ))
+    echo "OK sha256 $f"
+  else
+    TMP="${DEST}.partial"
+    STICKLLM_SC_DEST="$DEST" STICKLLM_SC_ID="$ID" STICKLLM_SC_NAME="$NAME" \
+      STICKLLM_SC_REPO="$REPO" STICKLLM_SC_FILE="$f" STICKLLM_SC_SHA="$expect" \
+      STICKLLM_SC_BYTES="$TOTAL_BYTES" STICKLLM_SC_DIR="$DEST_DIR" \
+      python3 - <<'PY'
+import json, os
+from pathlib import Path
+dest = os.environ.get("STICKLLM_SC_DEST") or ""
+if dest:
+    try:
+        nbytes = int(os.environ.get("STICKLLM_SC_BYTES") or 0)
+    except ValueError:
+        nbytes = 0
+    doc = {
+        "id": os.environ.get("STICKLLM_SC_ID") or "",
+        "name": os.environ.get("STICKLLM_SC_NAME") or "",
+        "repo": os.environ.get("STICKLLM_SC_REPO") or "",
+        "file": os.environ.get("STICKLLM_SC_FILE") or "",
+        "sha256": os.environ.get("STICKLLM_SC_SHA") or "",
+        "bytes": nbytes,
+        "dest": os.environ.get("STICKLLM_SC_DIR") or "",
+    }
+    Path(dest + ".stickllm.json").write_text(json.dumps(doc) + "\n", encoding="utf-8")
+PY
+    echo "Fetching $f …"
+    write_progress "downloading" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "fetching"
+    if command -v curl >/dev/null; then
+      # Resume + retry: HF / USB sticks drop connections; don't leave a frozen .partial.
+      ATTEMPT=0
+      MAX_ATTEMPTS=30
+      CURL_RC=1
+      while (( ATTEMPT < MAX_ATTEMPTS )); do
+        ATTEMPT=$((ATTEMPT + 1))
+        write_progress "downloading" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "fetching (try ${ATTEMPT}/${MAX_ATTEMPTS})"
+        set +e
+        HDR=()
+        if [[ -n "${STICKLLM_HF_TOKEN:-}" ]]; then
+          HDR=(-H "Authorization: Bearer ${STICKLLM_HF_TOKEN}")
+        fi
+        curl -L --fail --progress-bar \
+          -C - \
+          --retry 8 \
+          --retry-delay 3 \
+          --retry-all-errors \
+          --connect-timeout 30 \
+          --speed-time 60 \
+          --speed-limit 1000 \
+          "${HDR[@]}" \
+          -o "$TMP" "$URL" &
+        CURLPID=$!
+        STALL_TICKS=0
+        LAST_SZ=-1
+        while kill -0 "$CURLPID" 2>/dev/null; do
+          CUR="$(stat -c%s "$TMP" 2>/dev/null || echo 0)"
+          write_progress "downloading" "$f" "$((BYTES_BEFORE + CUR))" "$TOTAL_BYTES" "fetching (try ${ATTEMPT}/${MAX_ATTEMPTS})"
+          if [[ "$CUR" -eq "$LAST_SZ" ]]; then
+            STALL_TICKS=$((STALL_TICKS + 1))
+          else
+            STALL_TICKS=0
+            LAST_SZ=$CUR
+          fi
+          # If curl is alive but bytes frozen ~3 min, kill and resume.
+          if (( STALL_TICKS >= 36 )); then
+            echo "Stall detected on $f — restarting curl (try ${ATTEMPT})"
+            kill "$CURLPID" 2>/dev/null || true
+            wait "$CURLPID" 2>/dev/null || true
+            break
+          fi
+          sleep 5
+        done
+        wait "$CURLPID" 2>/dev/null
+        CURL_RC=$?
+        set -e
+        if [[ "$CURL_RC" -eq 0 ]] && [[ -f "$TMP" ]]; then
+          break
+        fi
+        echo "curl exit ${CURL_RC} for $f — will resume (try ${ATTEMPT}/${MAX_ATTEMPTS})"
+        sleep 5
+      done
+      if [[ ! -f "$TMP" ]]; then
+        write_progress "failed" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "curl failed"
+        exit 1
+      fi
+      CUR="$(stat -c%s "$TMP" 2>/dev/null || echo 0)"
+      if [[ "$PER_FILE_BYTES" -gt 0 ]] && [[ "$CUR" -lt $((PER_FILE_BYTES * 95 / 100)) ]] && [[ "$CURL_RC" -ne 0 ]]; then
+        write_progress "failed" "$f" "$((BYTES_BEFORE + CUR))" "$TOTAL_BYTES" "incomplete after retries"
+        exit 1
+      fi
+    elif command -v wget >/dev/null; then
+      wget -c -O "$TMP" "$URL"
+    else
+      echo "Need curl or wget."
+      exit 1
+    fi
+    write_progress "verifying" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "hash check"
+    # ISS-011: verify .partial before mv into final path.
+    got="$(sha256sum "$TMP" | awk '{print tolower($1)}')"
+    if [[ -n "$expect" && "$got" != "$expect" ]]; then
+      echo "HASH MISMATCH: $f"
+      echo "  expected $expect"
+      echo "  got      $got"
+      rm -f "$TMP"
+      write_progress "failed" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "hash mismatch"
+      exit 5
+    fi
+    if [[ -z "$expect" ]]; then
+      echo "No catalog hash for $f — saved sha256 $got"
+    fi
+    write_progress "moving" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "moving into the models folder"
+    mv "$TMP" "$DEST"
+    chmod 644 "$DEST"
+    SZ="$(stat -c%s "$DEST" 2>/dev/null || echo 0)"
+    BYTES_BEFORE=$((BYTES_BEFORE + SZ))
+    echo "OK sha256 $f"
+  fi
+  i=$((i+1))
+done <<<"$FILES"
+
+# Download only — do not auto-load. User Activates from Models UI when ready.
+FIRST="$(echo "$FILES" | head -1)"
+if [[ -n "$FIRST" ]]; then
+  echo "Downloaded → ${DEST_DIR}/${FIRST}"
+  echo "Load when ready: Models → radio select → context slider → Activate"
+fi
+
+[[ "$BYTES_BEFORE" -gt 0 ]] || BYTES_BEFORE="$TOTAL_BYTES"
+# 0.6.2: "done" stays until the queue/UI has read it (no idle reset).
+write_progress "done" "$FIRST" "$BYTES_BEFORE" "$BYTES_BEFORE" "complete"
+echo "Downloaded and verified. Activate from the Models page to load."
+stickllm-status || true

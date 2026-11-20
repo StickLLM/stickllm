@@ -1,0 +1,12 @@
+[Unit]
+Description=StickLLM targeted A0 numpy/scipy ABI fix (no agent restart)
+After=stickllm-agent.service
+# Oneshoot repair only; does not Conflict with or stop agent/llama.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/stickllm-a0-numpy-fix
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

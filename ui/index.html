@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>StickLLM</title>
+<link rel="icon" href="favicon.svg" />
+<link rel="stylesheet" href="style.css?v=v0712qrcreate" />
+<link rel="stylesheet" href="desktop.css?v=v0612a0zoom" />
+</head>
+<body>
+<!-- Exact stickllm-bootstatus BANNER (block "STICKLLM"); deskMode backdrop only. -->
+<pre class="deskSplash" aria-hidden="true">███████╗████████╗██╗ ██████╗██╗  ██╗██╗     ██╗     ███╗   ███╗
+██╔════╝╚══██╔══╝██║██╔════╝██║ ██╔╝██║     ██║     ████╗ ████║
+███████╗   ██║   ██║██║     █████╔╝ ██║     ██║     ██╔████╔██║
+╚════██║   ██║   ██║██║     ██╔═██╗ ██║     ██║     ██║╚██╔╝██║
+███████║   ██║   ██║╚██████╗██║  ██╗███████╗███████╗██║ ╚═╝ ██║
+╚══════╝   ╚═╝   ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚═╝</pre>
+<div class="app" id="app">
+  <div class="scrim" id="scrim" hidden></div>
+
+  <!-- Sidebar: conversations -->
+  <aside class="sidebar" id="sidebar" aria-label="Conversations">
+    <div class="sideHead">
+      <div class="brand"><span class="logo" aria-hidden="true"></span>StickLLM<button type="button" class="pairLink" data-state="unknown" aria-label="Pairing" title="Pairing"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="plA" d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path class="plB" d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/><path class="plX" d="M4 4l16 16"/></svg></button></div>
+      <button class="iconBtn" id="collapseBtn" aria-label="Collapse sidebar" title="Collapse sidebar (Ctrl+B)">
+        <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+    </div>
+    <button class="btn primary block" id="newChatBtn" title="New chat (Ctrl+Shift+O)">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> New chat
+    </button>
+    <div class="modeSeg" role="radiogroup" aria-label="Storage mode">
+      <button role="radio" aria-checked="true" data-mode="ephemeral" class="on">Ephemeral</button>
+      <button role="radio" aria-checked="false" data-mode="vault">Vault</button>
+    </div>
+    <p class="sideHint" id="modeHint">Nothing is written to disk. Chats are lost at reboot.</p>
+    <nav class="convList" id="convList" aria-label="Chat history"></nav>
+    <div class="sideFoot">
+      <button class="navBtn" data-open="models"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>Models</button>
+      <button class="navBtn" data-open="storage"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Storage &amp; Vault</button>
+      <button class="navBtn" data-open="general"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
+      <nav class="sideApps" aria-label="Apps">
+        <p class="sideAppsLabel">Apps</p>
+        <a class="navBtn" id="agentLink" href="/agent-zero/" target="stickllm-agent-zero" hidden><img class="agentMark" src="agent-zero.png?v=desk7" alt="Agent Zero"><span class="appName"><span id="agentLinkLabel">Agent Zero</span><small id="agentLinkState">Opens in a new tab</small></span></a>
+        <button class="navBtn" id="appsLink" type="button"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span class="appName"><span>Apps</span><small>Desktop</small></span></button>
+      </nav>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <header class="top">
+      <button class="iconBtn" id="menuBtn" aria-label="Open conversations" title="Conversations (Ctrl+B)">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <button type="button" class="pairLink topPair" data-state="unknown" aria-label="Pairing" title="Pairing"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="plA" d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path class="plB" d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/><path class="plX" d="M4 4l16 16"/></svg></button>
+      <h1 class="chatTitle" id="chatTitle">New chat</h1>
+      <div class="topRight">
+        <button class="chip" id="statusChip" aria-haspopup="true" aria-expanded="false" title="Model and connection status">
+          <span class="dot"></span><span id="chipModel">none</span><span class="chipSep">·</span><span class="chipMeta" id="chipMeta">?</span>
+          <span class="chipLoad" id="chipLoad" hidden><span class="chipLoadFill" id="chipLoadFill"></span></span>
+        </button>
+        <div class="popover" id="statusPop" hidden>
+          <dl>
+            <dt>Model</dt><dd id="popModel">—</dd>
+            <dt>Context</dt><dd id="popCtx">—</dd>
+            <dt>Backend</dt><dd id="popBackend">—</dd>
+            <dt>Uplink</dt><dd id="popUplink">—</dd>
+            <dt>Vault</dt><dd id="popVault">Locked</dd>
+          </dl>
+          <button class="btn sm" data-open="models">Manage models</button>
+        </div>
+        <button class="iconBtn" id="lockBtn" aria-label="Lock vault" title="Lock vault (Ctrl+Shift+L)" hidden>
+          <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>
+        </button>
+        <button class="iconBtn" id="themeBtn" aria-label="Toggle light/dark theme" title="Toggle theme">
+          <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>
+        </button>
+        <button class="iconBtn" data-open="general" aria-label="Settings" title="Settings (Ctrl+,)">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="thread" id="thread" aria-live="polite"></main>
+
+    <form class="composer" id="composer">
+      <div class="composerBox">
+        <div class="attachments" id="attachments" hidden aria-label="Attachments"></div>
+        <textarea id="input" rows="1" placeholder="Message StickLLM" aria-label="Message"></textarea>
+        <div class="appAgentRow" id="appAgentRow" aria-label="App agent" hidden>
+          <button type="button" class="toggleChip" id="appAgentToggle" aria-pressed="false" title="Load the app agent: chat can then work in your open apps">App agent: off</button>
+          <span class="appTarget on" id="appAgentTarget" hidden></span>
+          <span class="appAgentPick" id="appAgentPick" hidden>
+            <span id="appAgentRecent"></span>
+            <input type="search" id="appAgentSearch" list="appAgentList" placeholder="Find an app…" aria-label="Send to an app" autocomplete="off">
+            <datalist id="appAgentList"></datalist>
+          </span>
+        </div>
+        <div class="composerBar">
+          <button type="button" class="iconBtn" id="attachBtn" title="Attach a file" aria-label="Attach a file">
+            <svg viewBox="0 0 24 24"><path d="M21.4 11l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"/></svg>
+          </button>
+          <input type="file" id="attachPick" multiple hidden>
+          <button type="button" class="toggleChip" id="webToggle" aria-pressed="true" title="Allow live web lookup when needed (needs internet)">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>Web
+          </button>
+          <button type="button" class="toggleChip" id="a0Toggle" aria-pressed="false" title="Send the message to Agent Zero (multi-step tasks: files, code, web)">
+            <svg viewBox="0 0 24 24"><rect x="5" y="7" width="14" height="11" rx="2"/><path d="M12 3v4M9 12h.01M15 12h.01"/></svg>Agent Zero
+          </button>
+          <span class="grow"></span>
+          <button type="button" class="toggleChip" id="voiceModeBtn" aria-pressed="false" title="Voice off">Voice</button>
+          <button type="button" class="iconBtn" id="stopSpeechBtn" hidden title="Stop speaking" aria-label="Stop speaking">
+            <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9l5 6M21 9l-5 6"/></svg>
+          </button>
+          <button type="button" class="iconBtn" id="micBtn" hidden title="Voice input" aria-label="Voice input" aria-pressed="false">
+            <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg>
+          </button>
+          <button type="button" class="sendBtn stop" id="stopBtn" hidden aria-label="Stop">
+            <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+          </button>
+          <button type="submit" class="sendBtn" id="sendBtn" aria-label="Send (Enter)">
+            <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+      </div>
+      <p class="composerNote"><span id="composerNote"></span><span class="composerPerf" id="composerPerf" hidden></span></p>
+    </form>
+    <section class="appsView" id="appsView" hidden aria-label="Apps">
+      <div class="desk" id="desk">
+        <div class="deskIcons" id="deskIcons">
+          <a class="deskIcon" data-starter="files" href="/apps/files/" target="stickllm-files"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7z"/></svg></span><span class="deskLabel">Files</span></a>
+          <a class="deskIcon" data-starter="notepad" href="/apps/notepad/" target="stickllm-notepad"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v5h5M9 13h6M9 17h4"/></svg></span><span class="deskLabel">Notepad</span></a>
+          <a class="deskIcon" data-starter="minesweeper" href="/apps/minesweeper/" target="stickllm-minesweeper"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="#fff"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></span><span class="deskLabel">minesweep</span></a>
+          <a class="deskIcon" data-starter="solitaire" href="/apps/solitaire/" target="stickllm-solitaire"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="M12 8c1.4 1.6 2.2 2.6 2.2 4a2.2 2.2 0 01-4.4 0c0-1.4.8-2.4 2.2-4z" fill="#fff"/></svg></span><span class="deskLabel">Solitaire</span></a>
+          <a class="deskIcon" data-starter="tetris" href="/apps/tetris/" target="stickllm-tetris"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="5" height="5" fill="#fff"/><rect x="4" y="9" width="5" height="5" fill="#fff"/><rect x="4" y="15" width="5" height="5" fill="#fff"/><rect x="10" y="15" width="5" height="5" fill="#fff"/></svg></span><span class="deskLabel">Tetris</span></a>
+          <a class="deskIcon" data-starter="calculator" href="/apps/calculator/" target="stickllm-calculator"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M8 6h8"/><path d="M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 19h.01M12 19h.01M16 19h.01" stroke-width="3"/></svg></span><span class="deskLabel">Calculator</span></a>
+          <a class="deskIcon" data-starter="media" href="/apps/media/" target="stickllm-media"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l6 3-6 3z" fill="#fff"/></svg></span><span class="deskLabel">Media</span></a>
+          <a class="deskIcon" data-starter="monitor" href="/apps/monitor/" target="stickllm-monitor"><span class="deskGlyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span><span class="deskLabel">Monitor</span></a>
+        </div>
+        <div class="deskBar">
+          <button type="button" class="deskStart" id="appsMenuBtn" aria-expanded="false" aria-controls="appsMenu">Install apps</button>
+        </div>
+        <div class="appsMenu" id="appsMenu" hidden>
+          <div class="appsInner">
+        <div class="appsLayout">
+          <div class="appsList" id="appsList">
+            <section class="appsGroup" data-group="Agent">
+              <div class="appsRows">
+                <div class="appsRow appsRowLive" id="agentCatalogRow" data-app="agent-zero" data-license="MIT" data-disk-min="4" data-ram-min="2" data-gpu="none">
+                  <span class="appName">
+                    <span>Agent Zero</span>
+                    <small id="agentCatalogMsg">Agent Zero is preinstalled on the stick. Optionally move it to an SSD for speed.</small>
+                    <small class="appReq">Disk 4 GB (measured) · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Uses llama-server for the model; Kokoro TTS on CPU ~0.5-1 GB RAM; needs a few GB free while unpacking</small>
+                    <pre id="agentCatalogPull" class="mono appsPull" hidden></pre>
+                  </span>
+                  <span class="appsState">
+                    <button type="button" class="btn sm" id="agentCatalogInstall" hidden>Install Agent Zero</button><button type="button" class="btn sm" id="agentMoveSsdBtn">Move Agent Zero to SSD (faster)</button><button type="button" class="btn sm ghost" id="agentRunStickBtn" hidden>Run from stick</button><div class="progress" id="agentMoveBar" hidden><div id="agentMovePct" style="width:0%"></div></div>
+                  </span>
+                </div>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Core (starter apps)">
+              <div class="appsRows">
+                <div class="appsRow appsRowLive" data-app="onlyoffice" data-license="AGPL" data-disk-min="3" data-ram-min="2" data-gpu="none">
+                  <span class="appName">
+                    <span>ONLYOFFICE <b class="appTile">Office</b></span>
+                    <small>Documents, spreadsheets, and slides (ONLYOFFICE). The bot can edit open files live.</small>
+                    <small class="appReq">Disk 3 GB · RAM 2 GB (4 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Heavy for an office suite; 4 GB RAM for smooth editing</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="onlyoffice"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-onlyoffice" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+                <div class="appsRow appsRowLive" data-app="trilium" data-license="AGPL" data-disk-min="0.5" data-ram-min="0.25" data-gpu="none">
+                  <span class="appName">
+                    <span>Trilium <b class="appTile">Notes</b></span>
+                    <small>Notes and a knowledge base with an API.</small>
+                    <small class="appReq">Disk 0.5 GB · RAM 0.25 GB (0.5 GB recommended) · GPU: none · approx.</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="trilium"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-trilium" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Productivity">
+              <div class="appsRows">
+                <div class="appsRow appsRowLive" data-app="tasks-md" data-license="MIT" data-disk-min="0.3" data-ram-min="0.1" data-gpu="none">
+                  <span class="appName">
+                    <span>Tasks.md <b class="appTile">Tasks</b></span>
+                    <small>Task boards (kanban) saved as plain Markdown files in the vault.</small>
+                    <small class="appReq">Disk 0.3 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Web UI is built once, offline, at install</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="tasks-md"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-tasks-md" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+                <div class="appsRow appsRowLive" data-app="paisa" data-license="AGPL" data-disk-min="0.1" data-ram-min="0.1" data-gpu="none">
+                  <span class="appName">
+                    <span>Paisa <b class="appTile">Budget</b></span>
+                    <small>Personal finance and budgets on a plain-text ledger, with bank CSV import.</small>
+                    <small class="appReq">Disk 0.1 GB · RAM 0.1 GB (0.25 GB recommended) · GPU: none · approx.</small>
+                    <small class="appNote">Very light</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="paisa"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-paisa" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+              </div>
+            </section>
+            <section class="appsGroup" data-group="Creative and technical">
+              <div class="appsRows">
+                <div class="appsRow appsRowLive" data-app="node-red" data-license="Apache" data-disk-min="0.3" data-ram-min="0.2" data-gpu="none">
+                  <span class="appName">
+                    <span>Node-RED</span>
+                    <small>Flow-based automation. Flows can run code; no palette installs, no internet.</small>
+                    <small class="appReq">Disk 0.3 GB · RAM 0.2 GB (0.5 GB recommended) · GPU: none · approx.</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="node-red"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-node-red" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+                <div class="appsRow appsRowLive" data-app="comfyui" data-license="GPL" data-disk-min="15" data-ram-min="8" data-gpu="optional">
+                  <span class="appName">
+                    <span>ComfyUI</span>
+                    <small>Node-based image generation. Uses the NVIDIA GPU when free VRAM allows, else the CPU (slow).</small>
+                    <small class="appReq">Disk 15 GB · RAM 8 GB (16 GB recommended) · GPU: optional 6 / 12-24 GB · approx.</small>
+                    <small class="appNote">~7 GB download (PyTorch + CUDA); models extra, put them in the vault (SDXL ~7 GB, Flux 12-24 GB); the local AI model shares the GPU</small>
+                    <small class="appsRowMsg" data-app-msg hidden></small>
+                  </span>
+                  <span class="appsState"><span class="pill warn" data-state>Not available yet</span><small data-installed>Not installed</small><span class="appsActions" data-actions-for="comfyui"><button type="button" class="btn sm" data-app-act="install">Install</button><a class="btn sm" data-app-open href="#" target="stickllm-comfyui" hidden>Open</a><button type="button" class="btn sm danger ghost" data-app-act="uninstall" hidden>Remove</button></span></span>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Settings modal -->
+  <div class="modalWrap" id="settings" hidden>
+    <div class="modal setShell" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+      <nav class="setNav" id="setNav" aria-label="Settings sections">
+        <div class="setNavHead" id="setTitle">Settings</div>
+        <button type="button" data-sec="general">General</button>
+        <button type="button" data-sec="models">Models</button>
+        <button type="button" data-sec="downloads">Downloads</button>
+        <button type="button" data-sec="storage">Storage &amp; Vault</button>
+        <button type="button" data-sec="chats">Chats</button>
+        <button type="button" data-sec="devices">Devices &amp; Pairing</button>
+        <button type="button" data-sec="network">Network</button>
+        <button type="button" data-sec="system">System</button>
+        <button type="button" data-sec="advanced">Advanced</button>
+        <button type="button" data-sec="about">About</button>
+      </nav>
+      <div class="setBody">
+        <header class="setHead">
+          <button type="button" class="iconBtn setNavBtn" id="setNavBtn" aria-label="Settings sections" aria-controls="setNav" aria-expanded="false" title="Sections">
+            <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          </button>
+          <button type="button" class="iconBtn backBtn" id="setBack" aria-label="Back to sections"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+          <h2 id="secTitle">General</h2>
+          <button type="button" class="iconBtn" id="setClose" aria-label="Close settings (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </header>
+        <div class="setScroll">
+
+<!-- GENERAL -->
+<section class="sec" id="sec-general" data-title="General">
+  <div class="group">
+    <div class="row"><div><b>Theme</b><small>Dark is the default on the kiosk.</small></div>
+      <div class="seg" id="themeSeg"><button data-theme="dark" class="on">Dark</button><button data-theme="light">Light</button></div></div>
+    <div class="row"><div><b>Storage mode</b><small>Ephemeral never writes to disk. Vault saves chats inside the encrypted vault.</small></div>
+      <div class="seg" id="modeSeg2"><button data-mode="ephemeral" class="on">Ephemeral</button><button data-mode="vault">Vault</button></div></div>
+    <div class="row"><div><b>Web lookup by default</b><small>Same as the Web toggle in the composer. Sources are listed only when used.</small></div>
+      <label class="switch"><input type="checkbox" checked id="webDefault"><span></span></label></div>
+    <div class="row" id="layoutRow"><div><b>Layout</b><small>Desktop puts apps in movable windows with a taskbar. Auto uses Desktop on a computer with a mouse and a window at least 1024&times;600; smaller or touch screens keep a simple single-page layout. Desktop is the default. Saved for this browser only. <span id="layoutNow"></span></small></div>
+      <div class="seg" id="layoutSeg"><button data-layout="auto">Auto</button><button data-layout="desktop" class="on">Desktop</button></div></div>
+  </div>
+  <h3>Keyboard shortcuts</h3>
+  <div class="group kbd">
+    <div class="row"><span>Send message</span><span><kbd>Enter</kbd></span></div>
+    <div class="row"><span>New line</span><span><kbd>Shift</kbd> <kbd>Enter</kbd></span></div>
+    <div class="row"><span>New chat</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>O</kbd></span></div>
+    <div class="row"><span>Toggle sidebar</span><span><kbd>Ctrl</kbd> <kbd>B</kbd></span></div>
+    <div class="row"><span>Settings</span><span><kbd>Ctrl</kbd> <kbd>,</kbd></span></div>
+    <div class="row"><span>Settings sections</span><span><kbd>&uarr;</kbd> <kbd>&darr;</kbd></span></div>
+    <div class="row"><span>Lock vault</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>L</kbd></span></div>
+    <div class="row"><span>New PAIR CODE (stick screen)</span><span><kbd>F9</kbd></span></div>
+    <div class="row"><span>Show SSH password (stick screen)</span><span><kbd>F10</kbd></span></div>
+    <div class="row"><span>Close dialog</span><span><kbd>Esc</kbd></span></div>
+    <div class="row"><span>Desktop: launcher</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Space</kbd></span></div>
+    <div class="row"><span>Desktop: chat window</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>C</kbd></span></div>
+    <div class="row"><span>Desktop: next window</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>N</kbd></span></div>
+    <div class="row"><span>Desktop: maximise / restore</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>&uarr;</kbd></span></div>
+    <div class="row"><span>Desktop: minimise</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>M</kbd></span></div>
+    <div class="row"><span>Desktop: close window</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>W</kbd></span></div>
+  </div>
+</section>
+
+<!-- MODELS -->
+<section class="sec" id="sec-models" data-title="Models" hidden>
+  <div class="summary">
+    <div><small>Running</small><b id="runName">none</b><span class="pill" id="runPill">not loaded</span></div>
+    <div><small id="recGpuLabel">Recommended for this GPU</small><b id="recName">—</b><button class="link" id="probeBtn">Re-check GPU</button></div>
+    <div><small>Models folder</small><b class="mono" id="modelDir">…</b><button class="link" id="pickModelDir" type="button">Change…</button></div>
+  </div>
+  <div class="dl" id="dlBox" hidden>
+    <div class="dlTop"><span id="dlName">Downloading</span><span id="dlPct">0%</span></div>
+    <div class="bar"><i id="dlFill"></i></div>
+    <small id="dlMeta" class="muted"></small>
+    <div id="dlQueue" class="dlQueue"></div>
+  </div>
+  <div class="policyBanner" id="policyBanner" hidden></div>
+  <div class="tabs" role="tablist" aria-label="Model source">
+    <button role="tab" data-tab="browse" class="on" aria-selected="true" type="button"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>Browse catalog</button>
+    <button role="tab" data-tab="local" aria-selected="false" type="button"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 14h.01M11 14h6"/></svg>On this machine <span class="pill" id="localCount">0</span></button>
+    <span class="grow"></span><span class="muted small offlineNote" id="browseNote">Pinned catalog · type to search Hugging Face</span>
+    <button class="btn sm" id="refreshCatalog" type="button">Refresh</button>
+  </div>
+  <div class="mb">
+    <aside class="mbSide" id="modelFilters" aria-label="Model filters">
+      <div class="fBlock">
+        <label class="fTitle" for="mfTarget">Target hardware</label>
+        <select id="mfTarget"><option value="this">This machine</option><option value="custom">Custom…</option></select>
+        <small class="hwLine" id="hwLine"></small>
+        <small class="hwWarn" id="hwWarn" role="status" hidden></small>
+        <div class="customHw" id="customHw" hidden><label>VRAM <input type="number" id="cVram" value="16" min="0" max="512"> GB</label><label>RAM <input type="number" id="cRam" value="32" min="0" max="2048"> GB</label></div>
+        <label class="check1"><input type="checkbox" id="mfFits"> Fits this hardware</label>
+        <label class="fSub">Context for fit check<select id="mfCtx"><option value="8192">8k tokens</option><option value="16384">16k tokens</option><option value="32768" selected>32k tokens</option><option value="65536">64k tokens</option><option value="131072">128k tokens</option></select></label>
+      </div>
+      <div class="fBlock"><div class="fTitle">Trust</div><div class="vchecks" id="mfTrust">
+        <label title="On StickLLM's verified list (sha256 pinned)"><input type="checkbox" data-t="verified" checked><i class="tdot ok"></i>Verified</label>
+        <label title="Official publisher, not verified by StickLLM"><input type="checkbox" data-t="community" checked><i class="tdot acc"></i>Known publisher</label>
+        <label title="Not on StickLLM's verified list"><input type="checkbox" data-t="unverified" checked><i class="tdot warn"></i>Not verified</label>
+        <label title="Unknown source"><input type="checkbox" data-t="untrusted" checked><i class="tdot bad"></i>Untrusted</label>
+        <label title="Hash does not match the verified hash"><input type="checkbox" data-t="blocked" checked><i class="tdot blk"></i>Blocked</label></div></div>
+      <div class="fBlock"><div class="fTitle">Abliterated / uncensored</div><div class="seg full" id="mfAbl"><button type="button" data-v="include" class="on">Include</button><button type="button" data-v="only">Only</button><button type="button" data-v="exclude">Exclude</button></div></div>
+      <div class="fBlock"><div class="fTitle">Vision</div><div class="seg full" id="mfVis"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="only">Vision only</button></div></div>
+      <div class="fBlock"><label class="fTitle" for="mfQuant">Quant</label><select id="mfQuant"><option value="any">Any</option><option>Q2_K</option><option>Q3_K_M</option><option>Q4_K_M</option><option>Q5_K_M</option><option>Q6_K</option><option>Q8_0</option><option>F16</option></select></div>
+      <div class="fBlock"><div class="fTitle">Licence</div><div class="seg full" id="mfLic"><button type="button" data-v="any" class="on">Any</button><button type="button" data-v="commercial">Commercial</button><button type="button" data-v="noncommercial">Non-comm.</button></div></div>
+      <p class="muted small fNote">GGUF only (llama.cpp). Pickle <span class="mono">.bin</span>/<span class="mono">.pt</span> checkpoints are never offered because they can run code when loaded.</p>
+      <button class="link" id="mfReset" type="button">Reset filters</button>
+    </aside>
+    <div class="mbMain">
+      <div class="hfToken" id="hfTokenBox" hidden>
+        <div class="hfRow"><label for="hfToken"><b>Hugging Face token</b></label>
+          <input type="text" id="hfToken" class="mono secret" placeholder="hf_…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore aria-describedby="hfHint">
+          <button class="iconBtn sm" id="hfShow" type="button" aria-label="Show token" title="Show/hide"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          <button class="btn sm" id="hfTest" type="button">Test</button>
+          <span class="hfState" id="hfState"></span></div>
+        <small class="muted" id="hfHint">Optional, for gated models. Use a <b>read-only</b> token. <span id="hfWhere">Unlock the vault to keep this token on the encrypted USB settings partition.</span></small>
+      </div>
+      <div class="mbTools">
+        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mfSearch" placeholder="Search Hugging Face (GGUF)" aria-label="Search Hugging Face GGUF models"></div>
+        <label class="sortSel">Sort <select id="mfSort"><option value="fit" selected>Best fit</option><option value="size">Size</option><option value="name">Name</option><option value="running">Running</option></select></label>
+      </div>
+      <div class="mbCount"><span id="modelCount"></span><span id="policyHidden"></span></div>
+      <div class="cards" id="modelList" role="list" aria-label="Models"></div>
+    </div>
+  </div>
+
+  <div id="localTune" hidden>
+  <h3>Preset</h3>
+  <div class="presets" id="presets" role="radiogroup" aria-label="Preset">
+    <button type="button" data-preset="fast" class="on"><b>Minimum</b><small>32k ctx · q8 KV · temp 0.7</small></button>
+    <button type="button" data-preset="balanced"><b>Balanced</b><small>64k ctx · f16 KV · temp 0.7</small></button>
+    <button type="button" data-preset="long"><b>Long</b><small>128k ctx · q8 KV · temp 0.6</small></button>
+  </div>
+  <p class="muted small" id="presetCustom" hidden>Custom settings (no preset matches).</p>
+
+  <details class="adv" id="advanced">
+    <summary>Advanced</summary>
+    <div class="advBody">
+      <label class="field"><span>Context size <b id="ctxVal">8,192</b> tokens</span>
+        <input type="range" id="ctx" min="2048" max="131072" step="1024" value="32768"></label>
+      <p class="muted small" id="ctxNote">The model runs with this context. Agent Zero works best with 32,768 tokens or more.</p>
+      <div class="vram">
+        <div class="vramBar" aria-label="VRAM usage"><i class="w" id="vW"></i><i class="kv" id="vKV"></i><i class="free" id="vFree"></i></div>
+        <div class="legend"><span><i class="w"></i>Weights <b id="lW"></b></span><span><i class="kv"></i>KV cache <b id="lKV"></b></span><span><i class="free"></i>Free <b id="lFree"></b></span><span class="muted" id="vramTotal">of — GB</span></div>
+        <p class="warn" id="vramWarn" hidden>Doesn't fit in VRAM. Lower the context or use a smaller KV cache type.</p>
+      </div>
+      <div class="row2">
+        <div class="field"><span>KV cache type</span>
+          <div class="seg" id="kvSeg"><button type="button" data-kv="f16" class="on">f16</button><button type="button" data-kv="q8">q8_0</button><button type="button" data-kv="q4">q4_0</button></div></div>
+        <label class="field"><span>Temperature <b id="tempVal">0.7</b></span><input type="range" id="temp" min="0" max="2" step="0.05" value="0.7"></label>
+        <label class="field"><span>Top-p <b id="toppVal">0.9</b></span><input type="range" id="topp" min="0" max="1" step="0.01" value="0.9"></label>
+        <label class="field"><span>Top-k</span><input type="number" id="topk" value="40" min="0" max="200"></label>
+        <label class="field"><span>Repeat penalty</span><input type="number" id="rep" value="1.1" step="0.05" min="1" max="2"></label>
+        <label class="field"><span>Max reply tokens</span><input type="number" id="maxtok" value="1024" min="64" max="8192" step="64"></label>
+      </div>
+      <p class="muted small" id="tuneApplies">Context and KV cache type apply on the next Load. Temperature, Top-p, Top-k, Repeat penalty and Max reply tokens apply to Chat messages (Agent Zero uses its own settings).</p>
+      <button class="link" id="resetPreset" type="button">Reset to preset</button>
+    </div>
+  </details>
+
+  <div class="actions sticky">
+    <span class="muted" id="selHint">Select a model</span>
+    <span class="grow"></span>
+    <button class="btn danger ghost" id="delModel" type="button">Delete…</button>
+    <button class="btn" id="dlModel" type="button" hidden>Download</button>
+    <button class="btn" id="fewerLayers" type="button" hidden>Try with fewer GPU layers</button>
+    <button class="btn primary" id="activate" type="button">Load model</button>
+  </div>
+  </div>
+</section>
+
+<!-- DOWNLOADS -->
+<section class="sec" id="sec-downloads" data-title="Downloads" hidden>
+  <p class="muted">One model downloads at a time. Stop keeps the partial file so Start can resume it. Delete only removes it from this queue.</p>
+  <div class="group" id="queueList"></div>
+</section>
+
+<!-- STORAGE -->
+<section class="sec" id="sec-storage" data-title="Storage &amp; Vault" hidden>
+  <div class="vaultCard" id="vaultCard">
+    <div class="vcIcon"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg></div>
+    <div class="vcText"><b id="vcState">Checking vault…</b><small id="vcSub"></small></div>
+    <form class="vcUnlock" id="unlockForm" autocomplete="off"><input type="text" id="vaultPass" class="secret" placeholder="Vault passcode" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly aria-label="Vault passcode"><button class="btn primary">Unlock</button></form>
+    <button class="btn" id="lockBtn2" hidden>Lock</button>
+    <small class="unlockMsg" id="unlockMsg" role="alert" hidden></small>
+    <div class="vaultOther" id="vaultOther" hidden><button class="btn sm primary" id="vaultOtherSearch" type="button">Search for vault</button><button class="btn sm" id="vaultOtherPick" type="button">Pick drive…</button></div>
+  </div>
+
+  <div class="secTools"><h3>Drives</h3><span class="grow"></span>
+    <button class="btn sm" id="actFindVault" type="button" title="Scan mounts for stickllm-vault.img">Search for vault</button>
+    <button class="btn sm" id="actFindModels" type="button" title="Scan mounted volumes for .gguf model folders">Search for models</button>
+    <button class="btn sm" id="refreshDrives" type="button">Refresh</button>
+  </div>
+  <div class="drives" id="drives"></div>
+  <div class="group" id="findHits" hidden></div>
+  <p class="note calm"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>StickLLM never partitions or formats your own drives. To prepare one, use your computer's disk tools.</p>
+  <p class="muted small">Pick an existing drive or partition, then a folder. The vault is created as a file inside it. Encrypted host volumes (BitLocker, LUKS) are never opened — unlock them in the host OS first. Vault and model files are detected automatically in the folder picker.</p>
+
+  <div class="secTools"><h3>Vault location</h3></div>
+  <div class="row card"><div><b>Open an existing vault</b><small>Browse to a <span class="mono">stickllm-vault.img</span>. Vault files are detected automatically.</small></div><button class="btn sm primary" id="pickVault">Choose…</button></div>
+
+  <div class="card" id="activeVaultBox" style="margin:8px 0">
+      <div class="row"><div><b>Active vault</b><small id="activeVaultPath" class="mono">—</small></div>
+        <button class="btn sm" id="switchVaultBtn" type="button">Choose vault…</button></div>
+      <div id="vaultChoices" class="drive-list" hidden></div>
+    </div>
+<details class="adv">
+    <summary>Create a new vault file</summary>
+    <div class="advBody">
+      <p class="muted small" id="ctHint" style="margin-top:12px">Creates <span class="mono">stickllm-vault.img</span> in the selected folder. Nothing else on the drive is touched.</p>
+      <div class="row2">
+        <div class="field"><span>Folder</span><div class="pathPick"><input class="mono" id="vaultPath" value="" autocomplete="off" placeholder="/mnt/…/stickllm" readonly aria-label="Vault folder"><button class="btn sm" id="pickCreate">Choose…</button></div></div>
+        <label class="field" id="sizeField"><span>Size (GiB)</span><input type="number" id="vaultSize" value="32" min="1" max="2000"></label>
+        <label class="field"><span>Passcode (min 8)</span><input type="text" id="np1" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
+        <label class="field"><span>Confirm passcode</span><input type="text" id="np2" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="btn" id="setupWizardBtn" type="button">First-time setup…</button>
+        <div class="card" id="a0DriveCard" style="margin-top:12px">
+          <h3>Agent Zero location</h3>
+          <p class="muted small" id="a0DriveMsg">Runs from the stick by default (preinstalled).</p>
+          <div class="row gap">
+            <button type="button" class="btn" id="a0MoveSsd">Move Agent Zero to SSD (faster)</button>
+            <button type="button" class="btn ghost" id="a0RunStick" hidden>Run from stick</button>
+          </div>
+          <div class="progress" id="a0MoveBar" hidden><div id="a0MovePct" style="width:0%"></div></div>
+        </div>
+        <button class="btn primary" id="createVault">Create vault…</button>
+      </div>
+    </div>
+  </details>
+
+  <details class="adv">
+    <summary>Vault options</summary>
+    <div class="advBody">
+      <div class="row"><div><b>Grow vault</b><small>Add space to the vault file.</small></div><div class="inline"><input type="number" id="growGb" value="8" min="1" max="500" aria-label="Grow by GiB"> GiB <button class="btn sm" id="growBtn">Grow</button></div></div>
+      <div class="row"><div><b>Wipe after wrong passcodes</b><small>Destroys only this vault's key header. 0 = off.</small></div><div class="inline"><input type="number" id="wipeN" value="0" min="0" max="10" aria-label="Tries"> tries <button class="btn sm" id="wipeBtn">Apply</button></div></div>
+    </div>
+  </details>
+
+  <details class="adv" id="deleteVaultPanel">
+    <summary>Delete vault</summary>
+    <div class="advBody">
+      <p class="note warn" role="alert"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>This will erase all your data! There is no backup. Your data will be lost.</p>
+      <p class="muted small">Deletes only the selected <span class="mono">stickllm-vault.img</span> (chats, vault settings, Agent Zero memory inside the blob). Keeps sibling <span class="mono">models/</span>, STICKLLM-DATA models, USB settings LUKS (pairing / secrets), and the stick. Never formats whole disks. Clears setup markers so Create / Attach can run again for that location.</p>
+      <div class="row2">
+        <label class="field"><span>Vault location</span>
+          <select id="deleteVaultSelect" aria-label="Vault to delete">
+            <option value="">Searching…</option>
+          </select>
+        </label>
+        <div class="field" style="align-self:end"><button class="btn sm" id="deleteVaultRefresh" type="button">Refresh list</button></div>
+        <label class="field"><span>Vault passcode</span><input type="text" id="deleteVaultPass" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly aria-label="Vault passcode for delete"></label>
+        <label class="field"><span>Type <span class="mono">DELETE_VAULT</span></span><input type="text" id="deleteVaultConfirm" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="DELETE_VAULT" aria-label="Type DELETE_VAULT to confirm"></label>
+      </div>
+      <div class="row" style="gap:8px;margin-top:8px">
+        <button class="btn danger" id="deleteVaultBtn" type="button" disabled>Delete vault…</button>
+        <small class="muted" id="deleteVaultMsg" hidden></small>
+      </div>
+    </div>
+  </details>
+
+  <div class="secTools"><h3>StickLLM stick</h3></div>
+  <div class="row card"><div><b>Use free space on the stick</b><small>Turns unused space on the StickLLM USB stick into a DATA area. This only affects the StickLLM stick, never your computer's drives.</small></div><button class="btn sm" id="actClaim" type="button" title="Create a data partition on the StickLLM USB stick only">Set up…</button></div>
+
+  <div class="secTools"><h3>Move models into vault</h3><span class="grow"></span><button class="btn sm" id="refreshMovable" type="button">Refresh</button></div>
+  <div class="group" id="movable"></div>
+</section>
+
+<!-- CHATS -->
+<section class="sec" id="sec-chats" data-title="Chats" hidden>
+  <div class="group">
+    <div class="row"><div><b>Where chats live</b><small id="chatWhere">Ephemeral: in memory only, gone at reboot.</small></div>
+      <div class="seg" id="modeSeg3"><button data-mode="ephemeral" class="on">Ephemeral</button><button data-mode="vault">Vault</button></div></div>
+    <div class="row"><div><b>Save current chat to vault</b><small>Vault mode saves automatically after each reply.</small></div><button class="btn sm" id="saveChat">Save now</button></div>
+    <div class="row"><div><b>Vault for chats</b><small id="chatStoreNote">Both choices are encrypted with your vault passcode.</small></div>
+      <div class="seg" id="chatStoreSeg"><button type="button" data-store="ssd" class="on">Host SSD</button><button type="button" data-store="usb">USB stick</button></div></div>
+    <div class="row"><div><b>Keep both vaults in sync</b><small>Copies chats between the USB stick and the host SSD both ways; the newest copy wins. Runs while both are unlocked.</small></div>
+      <label class="switch"><input type="checkbox" id="chatSync" aria-label="Sync chats between USB and SSD vaults"><span></span></label></div>
+  </div>
+  <div class="secTools"><h3>Saved in vault</h3><span class="grow"></span><button class="btn sm" id="exportAll" disabled title="Coming soon">Export all (.json)</button><button class="btn sm danger ghost" id="deleteAll" disabled title="Coming soon">Delete all…</button></div>
+  <div class="group" id="savedChats"></div>
+</section>
+
+<!-- DEVICES -->
+<section class="sec" id="sec-devices" data-title="Devices &amp; Pairing" hidden>
+  <div class="pairCard sticklinkPairCard">
+    <div class="pairQrBlock" id="pairQrBlock">
+      <small>StickLink — phone (cellular OK)</small>
+      <div id="pairQr" class="pairQr" role="img" aria-label="Scan with phone to open Agent Zero over StickLink"></div>
+      <p class="muted small" id="pairQrHint">Waiting for StickLink join…</p>
+      <p class="mono small" id="pairQrUrl" hidden></p>
+      <button type="button" class="btn sm" id="pairQrRefresh">Refresh StickLink QR</button>
+    </div>
+    <div>
+      <small>StickLink join</small>
+      <p>Turn Wi‑Fi off on your phone. Scan the QR — it opens Agent Zero through StickLink (not your LAN address).</p>
+    </div>
+  </div>
+  <div class="pairCard">
+    <div><small>LAN pair (same Wi‑Fi)</small><p>On the new device, open the address below and enter the code shown <b>on the stick's screen</b>.</p>
+      <div class="mono big" id="lanUrl2">http://…/</div></div>
+    <div class="code"><small>Pair code (press F9 on the kiosk)</small><b class="mono" id="pairCodeShow">······</b><button class="btn sm" id="remint">New code</button></div>
+    <div class="sshDetails" id="sshDetails" hidden>
+      <small>SSH (GRUB Test / Terminal boots only — stick screen)</small>
+      <p class="mono" id="sshLine"></p>
+    </div>
+  </div>
+  <div class="secTools"><h3>Enter a code</h3></div>
+  <form class="inline" id="pairForm"><input id="pairIn" class="mono" inputmode="numeric" maxlength="6" placeholder="123456" aria-label="Pair code"><button class="btn primary">Pair this browser</button><span class="err" id="pairErr" hidden></span></form>
+  <div class="secTools"><h3>Paired devices</h3><span class="grow"></span><button class="btn sm danger ghost" id="revokeAll" disabled title="Coming soon — device list not tracked yet">Revoke all</button></div>
+  <div class="group" id="devices"><div class="row"><small>Paired device list — coming soon (not tracked by gateway yet).</small></div></div>
+  <p class="muted small">A new pair code signs out every browser that isn't paired again.</p>
+</section>
+
+<!-- NETWORK -->
+<section class="sec" id="sec-network" data-title="Network" hidden>
+  <div class="group">
+    <div class="row"><div><b>LAN address</b><small>Open this on any device on the same network.</small></div><span class="mono"><span id="netUrl">http://…/</span> <button class="link" id="copyUrl">Copy</button></span></div>
+    <div class="row"><div><b>Status</b><small id="netStatus">Reading the network…</small></div><span class="pill" id="netPill">…</span></div>
+    <div class="row"><div><b>Web (stick browser)</b><small id="webModeNote">Internet, Tor, or No internet for the stick kiosk / stick Chromium. Remote devices keep their own network.</small></div>
+      <div class="seg" id="webModeSeg" role="radiogroup" aria-label="Web mode">
+        <button type="button" data-web="internet" class="on" title="Normal uplink for stick Chromium">Internet</button>
+        <button type="button" data-web="tor" title="Route stick Chromium through Tor">Tor</button>
+        <button type="button" data-web="none" title="Block public web in stick Chromium">No internet</button>
+      </div>
+    </div>
+    <p class="muted small" id="webModeRemote">Applies to the <b>stick</b> kiosk browser and stick-local Chromium only. Paired phones and PCs on the LAN use their own network — StickLLM cannot force their traffic through Tor or offline. Stick-origin web lookup on the stick follows this mode.</p>
+    <p class="muted small" id="webModeStatus" hidden></p>
+  </div>
+  <h3>WiFi</h3>
+  <div class="row2">
+    <label class="field"><span>Network name (SSID)</span><input id="ssid" placeholder="" autocomplete="off"></label>
+    <label class="field"><span>Password</span><input id="wpass" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
+  </div>
+  <p class="muted small" id="wifiSsidHint">Pick a network from the list, or type a name (including hidden SSIDs).</p>
+  <div class="actions"><button class="btn" id="wifiScan">Scan</button><button class="btn primary" id="wifiBtn">Connect</button></div>
+  <div class="wifiList" id="wifiList" role="listbox" aria-label="Nearby WiFi networks" hidden></div>
+  <p class="muted small">No network yet? Run <span class="mono">stickllm-wifi-setup</span> in the stick's terminal. A WiFi access point mode is coming later.</p>
+</section>
+
+<!-- SYSTEM -->
+<section class="sec" id="sec-system" data-title="System" hidden>
+  <div class="group">
+    <div class="row"><div><b>Inference backend</b><small>Auto picks the fastest available.</small></div>
+      <div class="seg" id="backendSeg" class="comingSoonSeg" title="Coming soon — backend is auto-selected"><button class="on">Auto</button><button>CUDA</button><button>Vulkan</button><button>CPU</button></div></div>
+    <div class="row"><div><b>GPU</b><small id="sysGpu">—</small></div><span class="mono" id="sysVram">—</span></div>
+    <div class="row"><div><b>Stick storage</b><small>USB DATA partition</small></div><span class="mono" id="sysData">—</span></div>
+    <div class="row"><div><b>Memory</b><small>System RAM</small></div><span class="mono" id="sysRam">—</span></div>
+  </div>
+  <h3>Agent Zero</h3>
+  <div class="group">
+    <div class="row"><div><b>Agent Zero</b><small id="agentInstallMsg">Agent Zero is preinstalled on the stick. Optionally move it to an SSD for speed.</small></div><button class="btn sm" id="agentInstallBtn" type="button" hidden>Install Agent Zero</button></div>
+    <pre id="agentPullLog" class="mono" hidden></pre>
+    <div class="row"><div><b>Unlock all plugins</b><small id="a0PluginsMsg">Agent Zero may install and run any plugin (Plugin Hub). Off locks plugins down to StickLLM's own. Applies after a restart.</small></div>
+      <label class="switch"><input type="checkbox" id="a0PluginsUnlocked" checked><span></span></label></div>
+  </div>
+  <div class="group a0Welcome" id="a0Welcome">
+    <div class="row"><div><b>Try Agent Zero</b><small>Agent Zero works step by step on its own: it can write and run code, use files and search the web. Turn on the Agent Zero button next to Web in chat, or open it from the desktop, then try:</small></div></div>
+    <ul class="a0Examples">
+      <li>"Make a hello-world web page and open it in my browser."</li>
+      <li>"Create a spreadsheet of my monthly budget with totals and open it in Office."</li>
+      <li>"Search the web for this week's weather in my city and write a short summary."</li>
+    </ul>
+  </div>
+  <h3>Updates</h3>
+  <div class="group">
+    <div class="row"><div><b>StickLLM (live)</b><small>Updates come as a new stick image. Online updates are not available yet.</small></div><button class="btn sm" id="checkUpd" disabled title="Coming soon">Check for updates</button></div>
+  </div>
+  <h3>Help</h3>
+  <div class="group">
+    <div class="row"><div><b>Loading a model</b><small>No model loads at boot. Go to Models, pick one, choose a preset, then Reload.</small></div><button class="btn sm" data-sec-go="models">Open Models</button></div>
+    <div class="row"><div><b>Connecting another device</b><small>Open the LAN address and enter the pair code from the stick's screen.</small></div><button class="btn sm" data-sec-go="devices">Open Pairing</button></div>
+    <div class="row"><div><b>Terminal access (SSH)</b><small>F9 makes a new pair code. F10 shows the SSH password. Both work from any StickLLM screen.</small></div><button class="btn sm" id="showSsh" type="button">Show SSH password</button></div>
+  </div>
+</section>
+
+<!-- ADVANCED (0.5.9) -->
+<section class="sec" id="sec-advanced" data-title="Advanced" hidden>
+  <p class="muted small">For people who know their hardware. Wrong values can make a model fail to load; clear a field to go back to automatic.</p>
+  <h3>Advanced GPU</h3>
+  <div class="group" id="advGpus"><div class="row"><small>Reading the GPUs…</small></div></div>
+  <div class="row2">
+    <label class="field"><span>Pin models to one GPU</span><select id="advPin"><option value="">Automatic (one card if the model fits, split if it doesn't)</option></select></label>
+  </div>
+  <div class="actions"><button class="btn sm" id="advGpuSave" type="button">Save GPU choices</button><span class="muted small" id="advGpuMsg"></span></div>
+  <p class="muted small">Power presets use the card's own limits (eco, long job, default, boost). Limits reset when the stick reboots.</p>
+  <h3>Model load settings</h3>
+  <div class="row2">
+    <label class="field"><span>Model</span><select id="advModel"></select></label>
+    <label class="field"><span>Context (tokens)</span><input id="advCtx" inputmode="numeric" placeholder="auto"></label>
+  </div>
+  <div class="row2">
+    <label class="field"><span>GPU layers (-ngl)</span><input id="advNgl" inputmode="numeric" placeholder="auto"></label>
+    <label class="field"><span>Parallel slots</span><input id="advPar" inputmode="numeric" placeholder="1"></label>
+  </div>
+  <div class="row2">
+    <label class="field"><span>K cache type (-ctk)</span><select id="advCtk"></select></label>
+    <label class="field"><span>V cache type (-ctv)</span><select id="advCtv"></select></label>
+  </div>
+  <div class="row2">
+    <label class="field"><span>Override tensor (--override-tensor)</span><input id="advOt" class="mono" placeholder="e.g. exps=CPU" autocomplete="off" spellcheck="false"></label>
+    <label class="field"><span>GPU for this model</span><select id="advModelPin"><option value="">Use the GPU setting above</option></select></label>
+  </div>
+  <div class="group">
+    <div class="row"><div><b>Memory-map the model (mmap)</b><small>Off loads the whole file into RAM first.</small></div><label class="switch"><input type="checkbox" id="advMmap" checked><span></span></label></div>
+    <div class="row"><div><b>Lock model in RAM (mlock)</b><small>Stops the system swapping it out.</small></div><label class="switch"><input type="checkbox" id="advMlock"><span></span></label></div>
+  </div>
+  <div class="actions"><button class="btn primary sm" id="advLoadSave" type="button">Save for this model</button><button class="btn sm ghost" id="advLoadClear" type="button">Back to automatic</button><span class="muted small" id="advLoadMsg"></span></div>
+  <p class="muted small">Saved settings apply the next time this model loads (Reload on the Models page).</p>
+  <h3>Experimental</h3>
+  <div class="group">
+    <div class="row"><div><b>App agent</b><small>Lets chat work inside your open apps. Off by default. Turning it on with no model loaded loads Qwen3.5-4B from the stick.</small></div><label class="switch"><input type="checkbox" id="advAppAgent"><span></span></label></div>
+  </div>
+</section>
+
+<!-- ABOUT -->
+<section class="sec" id="sec-about" data-title="About" hidden>
+  <div class="about">
+    <span class="logo lg" aria-hidden="true"></span>
+    <h3>StickLLM</h3>
+    <p class="muted">Private AI on a bootable USB stick. Models run locally with llama.cpp. Nothing leaves this machine unless you turn on web lookup.</p>
+    <div class="group">
+      <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.7.0</span></div>
+      <div class="row"><span>llama.cpp</span><span class="mono" id="aboutLlama">—</span></div>
+      <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
+      <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
+    </div>
+    <h3 style="margin-top:16px">Keyboard (stick screen)</h3>
+    <div class="group kbd">
+      <div class="row"><span>New PAIR CODE</span><span><kbd>F9</kbd></span></div>
+      <div class="row"><span>Show SSH password</span><span><kbd>F10</kbd></span></div>
+    </div>
+    <p class="muted small">F9 and F10 work from any screen in this UI. SSH must be enabled this boot (GRUB menu 2 or 3).</p>
+  </div>
+</section>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Choose folder dialog (reusable) -->
+  <div class="modalWrap top2" id="picker" hidden>
+    <div class="modal fp" role="dialog" aria-modal="true" aria-labelledby="fpTitle">
+      <header class="fpHead"><h2 id="fpTitle">Choose folder</h2><button class="iconBtn" id="fpClose" aria-label="Cancel (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+      <div class="fpBar">
+        <button class="iconBtn" id="fpBackB" aria-label="Back" title="Back (Alt+←)"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <button class="iconBtn" id="fpFwd" aria-label="Forward" title="Forward (Alt+→)"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <button class="iconBtn" id="fpUp" aria-label="Up one folder" title="Up (Backspace)"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+        <div class="crumbs" id="fpCrumbs" title="Click empty space to type a path"></div>
+        <input class="mono fpPathIn" id="fpPathIn" autocomplete="off" hidden aria-label="Path">
+        <div class="fpFileTools" id="fpFileTools" hidden>
+          <div class="seg" id="fpFilter" role="radiogroup" aria-label="File type"><button data-flt="images">Images</button><button data-flt="docs">Documents</button><button data-flt="all" class="on">All</button></div>
+          <div class="seg icons" id="fpView" aria-label="View"><button data-view="list" class="on" aria-label="List view" title="List"><svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg></button><button data-view="grid" aria-label="Grid view" title="Grid"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button></div>
+        </div>
+        <button class="btn sm fpSearchBtn" id="fpSearchVault" type="button" title="Scan mounts for stickllm-vault.img">Search for vault</button>
+        <button class="btn sm fpSearchBtn" id="fpSearchModels" type="button" title="Scan this volume for .gguf model folders">Search for models</button>
+        <button class="iconBtn" id="fpNew" aria-label="New folder" title="New folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2zM12 11v5M9.5 13.5h5"/></svg></button>
+      </div>
+      <div class="fpMain">
+        <nav class="fpSide" id="fpSide" aria-label="Drives"></nav>
+        <div class="fpListWrap">
+          <div class="fpCols"><span>Name</span><span>Modified</span><span>Size</span></div>
+          <div class="fpList" id="fpList" role="listbox" tabindex="0" aria-label="Folder contents"></div>
+        </div>
+      </div>
+      <footer class="fpFoot">
+        <div class="fpSel"><small id="fpSelLabel">Selected folder</small><span class="mono" id="fpSel"></span></div>
+        <button class="btn" id="fpCancel">Cancel</button>
+        <button class="btn primary" id="fpOk">Select folder</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Uncensored acknowledgement (one-time) -->
+  <div class="modalWrap top2" id="ablAck" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="ablTitle">
+      <div class="cfBody">
+        <h2 id="ablTitle"><span class="pill abl">uncensored</span> Before you continue</h2>
+        <p>Uncensored models have had safety training removed. They may follow harmful requests and are not security-reviewed by StickLLM. Use at your own risk.</p>
+        <label class="check1"><input type="checkbox" id="ablChk"> I understand</label>
+        <div class="actions"><span class="grow"></span><button class="btn" id="ablCancel" type="button">Cancel</button><button class="btn primary" id="ablOk" type="button" disabled>Continue</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 0.5.2: not paired (LAN browser) -->
+  <div class="modalWrap top2" id="notPaired" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="npTitle">
+      <div class="cfBody">
+        <h2 id="npTitle">Not paired — re-pair this browser</h2>
+        <p id="npMsg">This browser is not paired with the stick.</p>
+        <p class="sideHint">The pair code is only shown on the stick's own screen (press F9 there). You can ask the stick to show it:</p>
+        <div class="actions"><button class="btn" id="npAsk" type="button">Show a new code on the stick screen</button></div>
+        <form id="npForm" autocomplete="off">
+          <label class="field"><span>Pair code from the stick screen</span><input id="npCode" inputmode="numeric" maxlength="9" autocomplete="one-time-code" placeholder="123 456"></label>
+          <p class="err" id="npErr" hidden></p>
+          <div class="actions"><span class="grow"></span><button class="btn primary" id="npPair" type="submit">Pair</button></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 0.5.2: kiosk — a LAN browser asks for a code while another one is paired -->
+  <div class="modalWrap top2" id="kioskPairReq" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="kprTitle">
+      <div class="cfBody">
+        <h2 id="kprTitle">Pair request</h2>
+        <p id="kioskPairReqText"></p>
+        <div class="actions"><span class="grow"></span><button class="btn" id="kprNo" type="button">Ignore</button><button class="btn primary" id="kprYes" type="button">Make new code</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 0.5.2: Agent Zero asks to install an app; only this click installs it -->
+  <div class="modalWrap top2" id="agentInstall" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="aiTitle">
+      <div class="cfBody">
+        <h2 id="aiTitle">Install an app?</h2>
+        <p id="aiText"></p>
+        <p class="err" id="aiErr" hidden></p>
+        <div class="actions"><span class="grow"></span><button class="btn" id="aiNo" type="button">Not now</button><button class="btn primary" id="aiYes" type="button">Install</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm dialog -->
+  <div class="modalWrap top2" id="confirm" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="cfTitle">
+      <div class="cfBody">
+        <h2 id="cfTitle">Are you sure?</h2>
+        <p id="cfText"></p>
+        <pre class="recovery" id="cfExtra" hidden></pre>
+        <label class="cfCheck" id="cfCheckRow" hidden><input type="checkbox" id="cfCheck"> <span id="cfCheckLabel">I understand this cannot be undone</span></label>
+        <div class="actions"><span class="grow"></span><button class="btn" id="cfCancel">Cancel</button><button class="btn danger" id="cfOk" disabled>Delete</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fixed bottom load bar: must sit above Settings modal (z-index) so Activate progress stays visible -->
+  <div class="loadStatus" id="loadStatus" hidden role="status" aria-live="polite">
+    <span class="loadStatusText" id="loadStatusText">Loading model…</span>
+    <span class="loadStatusTrack" aria-hidden="true"><span class="loadStatusFill" id="loadStatusFill"></span></span>
+    <span class="loadStatusPct" id="loadStatusPct"></span>
+    <button class="btn sm" id="fewerLayersBar" type="button" hidden>Try with fewer GPU layers</button>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</div>
+<script src="vendor/qrcode/qrcode.min.js"></script>
+<script src="app.js?v=v075ratelimit"></script>
+<script src="desktop-core.js?v=v0712sticklinkqr"></script>
+<script src="desktop.js?v=v0712sticklinkqr"></script>
+</body>
+</html>

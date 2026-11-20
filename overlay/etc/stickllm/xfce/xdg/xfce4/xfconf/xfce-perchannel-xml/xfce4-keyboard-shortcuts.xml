@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- StickLLM: no command shortcuts at all (no terminal, run dialog, xkill or
+     log-out keys). Window-manager keys (Alt+Tab, Alt+F4, ...) stay. -->
+<channel name="xfce4-keyboard-shortcuts" version="1.0">
+  <property name="commands" type="empty">
+    <property name="custom" type="empty">
+      <property name="override" type="bool" value="true"/>
+    </property>
+  </property>
+</channel>

@@ -1,0 +1,31 @@
+[Unit]
+Description=StickLLM chat UI + web gateway (HTTP :80)
+# Start as soon as control/pair exists — do not wait for llama or network-online.
+# LAN browsers need the pair page while the model is still loading.
+After=local-fs.target stickllm-console-setup.service stickllm-control.service network-pre.target
+Wants=stickllm-control.service
+# Never block UI on NetworkManager-wait-online (masked) or DHCP.
+
+[Service]
+Type=simple
+Environment=STICKLLM_UI=/opt/stickllm/ui
+Environment=STICKLLM_API=http://127.0.0.1:8080
+Environment=STICKLLM_BIND=0.0.0.0
+Environment=STICKLLM_PORT=80
+# Create paths before ProtectSystem namespace (missing RW path => status=226/NAMESPACE).
+ExecStartPre=/usr/bin/mkdir -p /run/stickllm /var/lib/stickllm
+ExecStart=/usr/local/bin/stickllm-gateway
+Restart=on-failure
+RestartSec=2
+# Bind :80 as root; keep UI readable under ProtectSystem.
+ProtectSystem=full
+ProtectHome=true
+# "-" = optional if absent at unit load; console-setup also mkdirs these.
+# Host SSD and USB DATA are the durable app install disks. The vault mount
+# stays writable because it is under /var/lib/stickllm. /var/lib/stickllm/apps
+# itself is the live overlay and is not an install target.
+ReadWritePaths=/run/stickllm -/var/lib/stickllm /tmp -/mnt/stickllm-host -/mnt/stickllm-data
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+#!/bin/bash
+# Ensure NVIDIA character devices (esp. nvidia-uvm) exist before llama.cpp CUDA init.
+set -euo pipefail
+
+# 0.6.2: nothing to do (and no modprobe noise) without an NVIDIA (10de) device.
+if ! grep -qsi '^0x10de$' /sys/bus/pci/devices/*/vendor; then
+  exit 0
+fi
+
+# Debian DKMS ships nvidia-current-*.ko; load those explicitly, then aliases.
+for m in \
+  nvidia-current nvidia \
+  nvidia-current-modeset nvidia_modeset \
+  nvidia-current-uvm nvidia_uvm \
+  nvidia-current-drm nvidia_drm
+do
+  modprobe "$m" 2>/dev/null || true
+done
+
+if command -v nvidia-modprobe >/dev/null 2>&1; then
+  # Creates /dev/nvidia-uvm (required for CUDA; nvidia-smi alone is not enough)
+  nvidia-modprobe -u -c=0 2>/dev/null || nvidia-modprobe -u 2>/dev/null || true
+fi
+
+for _ in $(seq 1 50); do
+  if [[ -e /dev/nvidia-uvm || -e /dev/nvidia-uvm-tools ]]; then
+    exit 0
+  fi
+  sleep 0.2
+done
+
+echo "stickllm-nvidia-prep: warning: /dev/nvidia-uvm still missing — CUDA may fall back to CPU" >&2
+exit 0

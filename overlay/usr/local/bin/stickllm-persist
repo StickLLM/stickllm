@@ -1,0 +1,104 @@
+#!/bin/bash
+# Explicit "Persist config" — never runs automatically.
+set -euo pipefail
+
+echo "StickLLM Persist config"
+echo "This will prepare a USB partition labeled STICKLLM-DATA for live-boot"
+echo "persistence of /etc/stickllm and optional models."
+echo
+echo "Internal disks will NOT be used."
+echo
+
+if [[ "${1:-}" != "--i-understand" ]]; then
+  echo "Refusing without confirmation."
+  echo "Re-run: sudo stickllm-persist --i-understand"
+  exit 1
+fi
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root (sudo)."
+  exit 1
+fi
+
+# Find USB disks: removable flag OR USB transport. 0.6.1 (item 13): many USB
+# HDDs/SSDs and some sticks report RM=0 but TRAN=usb. Internal SATA/NVMe
+# disks (TRAN sata/nvme/ata) are never candidates.
+is_usb_disk() {
+  local d="$1" rm tran
+  rm="$(lsblk -dn -o RM "/dev/$d" 2>/dev/null | tr -d '[:space:]')"
+  tran="$(lsblk -dn -o TRAN "/dev/$d" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$rm" == "1" || "$tran" == "usb" ]]
+}
+mapfile -t CANDIDATES < <(lsblk -dn -o NAME,TYPE | awk '$2=="disk"{print $1}' | while read -r d; do is_usb_disk "$d" && echo "$d"; done)
+
+if [[ ${#CANDIDATES[@]} -eq 0 ]]; then
+  echo "No USB disks found (removable or USB-attached)."
+  exit 1
+fi
+
+echo "USB disks:"
+for d in "${CANDIDATES[@]}"; do
+  lsblk -o NAME,SIZE,MODEL,LABEL "/dev/$d"
+done
+echo
+read -r -p "Enter disk name to add STICKLLM-DATA partition (e.g. sdb): " DISK
+DISK="${DISK#/dev/}"
+
+if [[ ! -b "/dev/$DISK" ]]; then
+  echo "Not a block device: /dev/$DISK"
+  exit 1
+fi
+
+if ! is_usb_disk "$DISK"; then
+  echo "Refusing: /dev/$DISK is neither removable nor USB-attached (internal disks are never used)."
+  exit 1
+fi
+
+read -r -p "Type PERSIST to create/format a data partition on /dev/$DISK: " CONF
+if [[ "$CONF" != "PERSIST" ]]; then
+  echo "Aborted."
+  exit 1
+fi
+
+# Create a new partition in free space if possible; else fail clearly.
+if ! command -v parted >/dev/null; then
+  echo "parted is required."
+  exit 1
+fi
+
+PART_NUM="$(lsblk -ln -o NAME "/dev/$DISK" | tail -n1 | sed -E 's/.*[^0-9]//')"
+NEXT=$((PART_NUM + 1))
+PART="/dev/${DISK}${NEXT}"
+# NVMe-style
+if [[ "$DISK" == nvme* ]] || [[ "$DISK" == mmcblk* ]]; then
+  PART="/dev/${DISK}p${NEXT}"
+fi
+
+echo "Creating partition in free space (may fail if stick has no free space)…"
+parted -s "/dev/$DISK" unit MiB print free || true
+parted -s "/dev/$DISK" -- mkpart primary ext4 -8192MiB 100% || {
+  echo "Could not create partition. Manually leave ≥8 GiB free after the live image, then retry."
+  exit 1
+}
+
+sleep 2
+# Refresh partition node
+PART="$(lsblk -ln -o NAME,LABEL "/dev/$DISK" | awk 'END{print $1}')"
+PART="/dev/$PART"
+
+mkfs.ext4 -L STICKLLM-DATA "$PART"
+mkdir -p /mnt/stickllm-data
+mount "$PART" /mnt/stickllm-data
+mkdir -p /mnt/stickllm-data/etc/stickllm
+mkdir -p /mnt/stickllm-data/opt/stickllm/models
+# live-boot persistence layout
+echo "/etc/stickllm" > /mnt/stickllm-data/persistence.conf
+echo "/opt/stickllm/models" >> /mnt/stickllm-data/persistence.conf
+cp -a /etc/stickllm/. /mnt/stickllm-data/etc/stickllm/
+echo "STICKLLM_MODE=persistent" > /mnt/stickllm-data/etc/stickllm/runtime.env
+sync
+umount /mnt/stickllm-data
+
+echo
+echo "Done. Reboot and choose a persistence-enabled boot entry if prompted."
+echo "Config under /etc/stickllm will survive reboot when persistence mounts."

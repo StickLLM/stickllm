@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""sticklinkd: stick-side sticklink connector. See /usr/local/lib/sticklink/daemon.py."""
+import sys
+sys.path.insert(0, "/usr/local/lib")
+from sticklink.daemon import main
+main()

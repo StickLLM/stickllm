@@ -1,0 +1,70 @@
+#!/bin/bash
+set -euo pipefail
+
+MODE="${STICKLLM_MODE:-ephemeral}"
+if [[ -f /etc/stickllm/runtime.env ]]; then
+  # shellcheck disable=SC1091
+  source /etc/stickllm/runtime.env || true
+  MODE="${STICKLLM_MODE:-$MODE}"
+fi
+
+echo "=== StickLLM status ==="
+echo "mode:     $MODE"
+echo "profile:  amd-rtx3090"
+echo
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null || echo "nvidia-smi: error"
+else
+  echo "nvidia-smi: not found"
+fi
+echo
+
+MODEL_BASE="/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf"
+MODEL_7B="/opt/stickllm/models/qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf"
+if [[ -f "$MODEL_BASE" ]]; then
+  echo "model:    base Qwen3.5-4B present ($(du -h "$MODEL_BASE" | awk '{print $1}'))"
+else
+  echo "model:    BASE Qwen3.5-4B MISSING — run stickllm-download-model (explicit)"
+fi
+if [[ -f "$MODEL_7B" ]]; then
+  echo "model:    7B also present ($(du -h "$MODEL_7B" | awk '{print $1}'))"
+fi
+
+echo "llama:    $(systemctl is-active stickllm-llama.service 2>/dev/null || echo unknown)"
+echo "ui:       $(systemctl is-active stickllm-ui.service 2>/dev/null || echo unknown)"
+BACKEND="cpu"
+if [[ -f /run/stickllm/llama-runtime.env ]]; then
+  BACKEND="$(awk -F= '/^backend=/{print $2; exit}' /run/stickllm/llama-runtime.env 2>/dev/null || echo cpu)"
+elif [[ -f /run/stickllm/cuda.env ]]; then
+  BACKEND="$(awk -F= '/^STICKLLM_BACKEND=/{print $2; exit}' /run/stickllm/cuda.env 2>/dev/null || echo cpu)"
+fi
+echo "backend:  ${BACKEND}"
+echo
+
+if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
+  IP="$(/usr/local/bin/stickllm-lan-ip 2>/dev/null | tr -d '[:space:]' || true)"
+else
+  IP="$(hostname -I 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./){print $i; exit}}')"
+fi
+if [[ -n "${IP:-}" ]]; then
+  echo "LAN IP:   ${IP}"
+  echo "Chat UI:  http://${IP}/"
+  echo "API:      http://${IP}/v1/chat/completions"
+  echo "Auth:     Authorization: Bearer <pair token from Chat UI → Models>"
+  echo "Raw LLM:  http://${IP}:8080/v1/chat/completions  (no pair auth)"
+else
+  echo "LAN IP:   (none yet — Ethernet or stickllm-wifi-setup)"
+  echo "Chat UI:  http://127.0.0.1/"
+  echo "API:      http://127.0.0.1/v1/chat/completions"
+  echo "Auth:     Authorization: Bearer <pair token from Chat UI → Models>"
+  echo "Raw LLM:  http://127.0.0.1:8080/v1/chat/completions  (no pair auth)"
+fi
+
+if [[ -d /lib/live/mount/persistence ]] || mount | grep -q persistence; then
+  echo
+  echo "persistence: active (USB data partition)"
+else
+  echo
+  echo "persistence: off (ephemeral — reboot clears session)"
+fi

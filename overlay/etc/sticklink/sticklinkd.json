@@ -1,0 +1,14 @@
+{
+  "ws": "wss://link.stickllm.com/v1/ws",
+  "derp": "https://relay-tor1.stickllm.com/derp",
+  "stun": "relay-tor1.stickllm.com:3478",
+  "rg": "tor1",
+  "derp_ca": null,
+  "derp_pin": null,
+  "derp_sni": null,
+  "udp_port": 0,
+  "revoked_file": null,
+  "sign_keys": [
+    "prod-1=B5FJ-W72teNI4hB-5IPB6iuEKdLGCB4YAeyubXPeoLk"
+  ]
+}

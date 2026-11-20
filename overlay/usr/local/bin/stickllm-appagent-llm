@@ -1,0 +1,93 @@
+#!/bin/bash
+# StickLLM app agent model: optional dedicated llama-server on 127.0.0.1:8796
+# (default path is the baked Qwen2.5-7B Instruct Q4_K_M). Normally unused:
+# 0.5.6+ the app agent shares the chat llama-server.
+# GPU (CUDA, all layers) when one NVIDIA GPU has enough free VRAM, else Vulkan (AMD/
+# Intel, one card, VRAM from amdgpu sysfs), else CPU.
+set -u
+MODEL="${STICKLLM_APPAGENT_MODEL:-/opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf}"
+PORT="${STICKLLM_APPAGENT_LLM_PORT:-8796}"
+CTX="${STICKLLM_APPAGENT_CTX:-8192}"
+NEED_MIB="${STICKLLM_APPAGENT_VRAM_MIB:-6500}"
+CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
+CPU_BIN="${STICKLLM_LLAMA_CPU:-/opt/stickllm/bin/llama-server-cpu}"
+LIB="${STICKLLM_LIB:-/opt/stickllm/lib}"
+CPU_LIB="${STICKLLM_LIB_CPU:-/opt/stickllm/lib-cpu}"
+VULKAN_BIN="${STICKLLM_LLAMA_VULKAN:-/opt/stickllm/bin/llama-server-vulkan}"
+LIB_VK="${STICKLLM_LIB_VULKAN:-/opt/stickllm/lib-vulkan}"
+SYSFS_DRM="${STICKLLM_SYSFS_DRM:-/sys/class/drm}"
+REGISTER_SO="${STICKLLM_CUDA_REGISTER:-$LIB/stickllm-cuda-register.so}"
+
+if [[ ! -f "$MODEL" ]]; then
+  echo "stickllm-appagent-llm: model missing: $MODEL" >&2
+  exit 1
+fi
+
+threads() {
+  local n
+  n="$(lscpu -p=core 2>/dev/null | grep -v '^#' | sort -u | wc -l)"
+  [[ "$n" =~ ^[0-9]+$ ]] && [[ "$n" -ge 1 ]] || n="$(nproc 2>/dev/null || echo 4)"
+  [[ "$n" -gt 16 ]] && n=16
+  echo "$n"
+}
+THREADS="$(threads)"
+
+# GPU index with the most free VRAM, if it has at least NEED_MIB free.
+pick_gpu() {
+  command -v nvidia-smi >/dev/null 2>&1 || return 1
+  local best
+  best="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null \
+    | tr -d ' ' | sort -t, -k2 -n -r | head -1)"
+  [[ "$best" =~ ^([0-9]+),([0-9]+)$ ]] || return 1
+  [[ "${BASH_REMATCH[2]}" -ge "$NEED_MIB" ]] || return 1
+  echo "${BASH_REMATCH[1]}"
+}
+
+# Vulkan device index (Vulkan0..) of the AMD/Intel card with the most free VRAM, if it
+# has at least NEED_MIB free. Cards are enumerated in /sys/class/drm order, which is
+# how llama.cpp's Vulkan backend numbers them on single-vendor hosts.
+pick_vulkan() {
+  local i=0 best=-1 bestfree=0 f d total used free
+  for f in "$SYSFS_DRM"/card[0-9]*/device/mem_info_vram_total; do
+    [[ -r "$f" ]] || continue
+    d="${f%/mem_info_vram_total}"
+    total="$(tr -cd '0-9' <"$f" 2>/dev/null)"
+    used="$(tr -cd '0-9' <"$d/mem_info_vram_used" 2>/dev/null)"
+    [[ -n "$total" ]] || continue
+    free=$(( (total - ${used:-0}) / 1048576 ))
+    if (( free > bestfree )); then best=$i; bestfree=$free; fi
+    i=$((i + 1))
+  done
+  (( best >= 0 && bestfree >= NEED_MIB )) || return 1
+  echo "$best"
+}
+
+common=(--model "$MODEL" --host 127.0.0.1 --port "$PORT" --ctx-size "$CTX" --parallel 1
+  --threads "$THREADS" --jinja --alias appagent)
+
+if [[ "${STICKLLM_APPAGENT_BACKEND:-auto}" != "cpu" ]] && [[ -x "$CUDA_BIN" ]] && gpu="$(pick_gpu)"; then
+  export LD_LIBRARY_PATH="${LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export GGML_BACKEND_DIR="$LIB"
+  export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="$gpu"
+  [[ -f "$REGISTER_SO" ]] && export LD_PRELOAD="$REGISTER_SO${LD_PRELOAD:+:$LD_PRELOAD}"
+  if "$CUDA_BIN" --list-devices 2>/dev/null | grep -qE '^[[:space:]]*CUDA[0-9]'; then
+    echo "stickllm-appagent-llm: cuda gpu=$gpu -ngl 99 ctx=$CTX port=$PORT" >&2
+    exec "$CUDA_BIN" "${common[@]}" --n-gpu-layers 99
+  fi
+  unset LD_PRELOAD CUDA_VISIBLE_DEVICES
+  echo "stickllm-appagent-llm: CUDA not usable, using CPU" >&2
+fi
+
+if [[ "${STICKLLM_APPAGENT_BACKEND:-auto}" != "cpu" ]] && [[ -x "$VULKAN_BIN" ]] && vk="$(pick_vulkan)"; then
+  export LD_LIBRARY_PATH="${LIB_VK}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export GGML_BACKEND_DIR="$LIB_VK"
+  echo "stickllm-appagent-llm: vulkan device=Vulkan$vk -ngl 99 ctx=$CTX port=$PORT" >&2
+  exec "$VULKAN_BIN" "${common[@]}" --device "Vulkan$vk" --n-gpu-layers 99
+fi
+
+BIN="$CPU_BIN"; L="$CPU_LIB"
+if [[ ! -x "$BIN" ]]; then BIN="$CUDA_BIN"; L="$LIB"; fi
+export LD_LIBRARY_PATH="${L}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GGML_BACKEND_DIR="$L"
+echo "stickllm-appagent-llm: cpu threads=$THREADS ctx=$CTX port=$PORT bin=$BIN" >&2
+exec "$BIN" "${common[@]}" --n-gpu-layers 0

@@ -1,0 +1,22 @@
+---
+description: Never use OneDrive for StickLLM work
+alwaysApply: true
+---
+
+# No OneDrive
+
+StickLLM work lives on the local disk. OneDrive is too slow and must not be used for this project.
+
+## Use
+
+- Worktree: `C:\Users\peter\stickllm-vault-wt`
+- Main git repo: `C:\Users\peter\stickllm`
+- ISO output: `C:\Users\peter\stickllm-vault-wt\out\`
+
+## Do not
+
+- Do not clone, build, copy models, write ISOs, or flash from `C:\Users\peter\OneDrive\...`
+- Do not bind-mount an OneDrive path into Docker
+- Do not point scripts, flash paths, or the editor workspace back at OneDrive
+
+If a path contains `OneDrive`, stop and switch to the local disk before continuing.

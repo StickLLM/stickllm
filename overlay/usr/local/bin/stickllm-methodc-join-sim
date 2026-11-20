@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Write /run StickLink join state for lab tests (root)."""
+import json
+import sys
+import time
+from pathlib import Path
+
+RUN = Path("/run/stickllm")
+RUN.mkdir(parents=True, exist_ok=True)
+mode = (sys.argv[1] if len(sys.argv) > 1 else "connected").strip()
+if mode == "connected":
+    doc = {
+        "connected": True,
+        "url": "",
+        "qr": "",
+        "at": time.time(),
+        "via": "methodc-join-sim",
+    }
+    (RUN / "sticklink-join.json").write_text(json.dumps(doc), encoding="utf-8")
+    try:
+        (RUN / "sticklink-join-url.txt").unlink(missing_ok=True)
+    except TypeError:
+        p = RUN / "sticklink-join-url.txt"
+        if p.is_file():
+            p.unlink()
+    rem = {
+        "status": "connected",
+        "at": time.time(),
+        "message": "Phone connected — QR hidden. Generate a new code after it disconnects.",
+    }
+    (RUN / "sticklink-join-remint.json").write_text(json.dumps(rem) + "\n", encoding="utf-8")
+    req = RUN / "sticklink-join-remint.req"
+    if req.is_file():
+        req.unlink()
+    print("ok connected")
+elif mode == "idle":
+    doc = {
+        "connected": False,
+        "awaiting_remint": True,
+        "url": "",
+        "qr": "",
+        "at": time.time(),
+        "via": "methodc-join-sim",
+        "reason": "test-idle",
+    }
+    (RUN / "sticklink-join.json").write_text(json.dumps(doc), encoding="utf-8")
+    rem = {
+        "status": "idle",
+        "at": time.time(),
+        "message": "Tap Generate for a new StickLink QR.",
+    }
+    (RUN / "sticklink-join-remint.json").write_text(json.dumps(rem) + "\n", encoding="utf-8")
+    print("ok idle")
+else:
+    print("usage: stickllm-methodc-join-sim connected|idle", file=sys.stderr)
+    sys.exit(2)

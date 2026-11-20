@@ -1,0 +1,28 @@
+#!/bin/bash
+# stickllm-gpu-power (0.5.9): set one NVIDIA GPU's power limit.
+# usage: stickllm-gpu-power <gpu-index> <watts>
+# Narrow on purpose (sudoers allows it): only a GPU index and whole watts are
+# accepted, and the watts are clamped to the card's own min/max limits.
+# The limit resets on reboot.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+idx="${1:-}"
+watts="${2:-}"
+if [[ $# -ne 2 || ! "$idx" =~ ^[0-9]{1,2}$ || ! "$watts" =~ ^[0-9]{1,4}$ ]]; then
+  echo "usage: stickllm-gpu-power <gpu-index> <watts>" >&2
+  exit 2
+fi
+command -v nvidia-smi >/dev/null 2>&1 || { echo "nvidia-smi missing" >&2; exit 3; }
+row="$(nvidia-smi -i "$idx" --query-gpu=power.min_limit,power.max_limit --format=csv,noheader,nounits 2>/dev/null | head -1 || true)"
+min="$(printf '%s' "$row" | cut -d, -f1 | tr -d ' ')"
+max="$(printf '%s' "$row" | cut -d, -f2 | tr -d ' ')"
+min="${min%%.*}"; max="${max%%.*}"
+if [[ ! "$min" =~ ^[0-9]+$ || ! "$max" =~ ^[0-9]+$ || "$max" -le 0 ]]; then
+  echo "GPU $idx did not report min/max power limits" >&2
+  exit 4
+fi
+(( watts < min )) && watts="$min"
+(( watts > max )) && watts="$max"
+nvidia-smi -i "$idx" -pm 1 >/dev/null 2>&1 || true
+nvidia-smi -i "$idx" -pl "$watts" >/dev/null
+echo "$watts"

@@ -1,0 +1,14 @@
+[Unit]
+Description=StickLLM Web mode (Chromium proxy / Tor / offline)
+After=local-fs.target network-pre.target
+Before=stickllm-kiosk.service stickllm-local.service stickllm-ui.service
+# Tor is started on demand by stickllm-web-mode; do not pull tor.service in here.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/bin/mkdir -p /run/stickllm /var/lib/stickllm
+ExecStart=/usr/local/bin/stickllm-web-mode apply
+
+[Install]
+WantedBy=multi-user.target

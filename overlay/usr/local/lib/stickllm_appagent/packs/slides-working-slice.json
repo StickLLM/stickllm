@@ -1,0 +1,323 @@
+{
+ "schema_version": "0.1",
+ "pack_id": "slides-working-slice-v0.2",
+ "adapter": "experiment.slides_sim",
+ "capabilities": [
+  {
+   "id": "slides.text.create",
+   "description": "Create a text box",
+   "cues": [
+    "text box",
+    "textbox",
+    "add words",
+    "add the words",
+    "write"
+   ],
+   "requires": [],
+   "inputs": {
+    "text": {
+     "type": "string",
+     "required": true
+    }
+   },
+   "actions": [
+    "add"
+   ],
+   "instructions": "New words use one line: add textbox text=\"...\". Put the user's words inside the quotes. Do not put fontsize= or at= on that line.",
+   "verify": [
+    {
+     "property": "text",
+     "source": "editor_readback",
+     "expected_from": "inputs.text"
+    }
+   ]
+  },
+  {
+   "id": "slides.text.align",
+   "description": "Align letters inside a box",
+   "cues": [
+    "centre the words",
+    "center the words",
+    "centre the text",
+    "center the text",
+    "centre the wording",
+    "center the wording",
+    "centre",
+    "center",
+    "align"
+   ],
+   "requires": [],
+   "inputs": {
+    "alignment": {
+     "type": "string",
+     "required": true
+    }
+   },
+   "actions": [
+    "align"
+   ],
+   "instructions": "Centre the words inside the box with align center. After add, omit the id. For a listed box, write align, its printed id, and center. This does not move the box.",
+   "verify": [
+    {
+     "property": "text_alignment",
+     "source": "editor_readback",
+     "expected_from": "inputs.alignment"
+    }
+   ]
+  },
+  {
+   "id": "slides.text.fontsize",
+   "description": "Set font size in points",
+   "cues": [
+    "font size",
+    "points",
+    "point",
+    "large type",
+    "huge",
+    "bigger"
+   ],
+   "requires": [],
+   "inputs": {
+    "points": {
+     "type": "number",
+     "required": true
+    }
+   },
+   "actions": [
+    "fontsize"
+   ],
+   "instructions": "A stated number of points is that number. large or huge with no number is 72. bigger with no number is 32. After add, write fontsize 72. For a listed box, write fontsize, its printed id, and the number.",
+   "verify": [
+    {
+     "property": "font_size_points",
+     "source": "editor_readback",
+     "expected_from": "inputs.points"
+    }
+   ]
+  },
+  {
+   "id": "slides.text.bold",
+   "description": "Make letters bold",
+   "cues": [
+    "bold"
+   ],
+   "requires": [],
+   "inputs": {},
+   "actions": [
+    "bold"
+   ],
+   "instructions": "After add, write bold. For a listed box, write bold and its printed id.",
+   "verify": [
+    {
+     "property": "text_bold",
+     "source": "editor_readback",
+     "expected_from": "constant:true"
+    }
+   ]
+  },
+  {
+   "id": "slides.text.reword",
+   "description": "Replace words already on the slide",
+   "cues": [
+    "title",
+    "change the title",
+    "heading",
+    "rename the title"
+   ],
+   "requires": [],
+   "inputs": {
+    "text": {
+     "type": "string",
+     "required": true
+    }
+   },
+   "actions": [
+    "placeholder"
+   ],
+   "instructions": "Write placeholder title text=\"...\" and put the user's new words inside the quotes. Then write bold and the id printed on that OBJECTS line. Do not add another box.",
+   "verify": [
+    {
+     "property": "text",
+     "source": "editor_readback",
+     "expected_from": "inputs.text"
+    }
+   ]
+  },
+  {
+   "id": "slides.text.color",
+   "description": "Colour the letters",
+   "cues": [
+    "letters",
+    "font colour",
+    "font color",
+    "red",
+    "blue",
+    "green",
+    "yellow",
+    "black",
+    "white"
+   ],
+   "requires": [],
+   "inputs": {
+    "color": {
+     "type": "string",
+     "required": true
+    }
+   },
+   "actions": [
+    "textcolor"
+   ],
+   "instructions": "Colour the letters with textcolor, the printed id of the box whose text contains the named word, and the colour. Leave every other box unchanged.",
+   "verify": [
+    {
+     "property": "text_color",
+     "source": "editor_readback",
+     "expected_from": "inputs.color"
+    }
+   ]
+  },
+  {
+   "id": "slides.text.underline",
+   "description": "Underline letters",
+   "cues": [
+    "underline"
+   ],
+   "requires": [],
+   "inputs": {},
+   "actions": [
+    "underline"
+   ],
+   "instructions": "Write underline and the id printed on the SELECTION line.",
+   "verify": [
+    {
+     "property": "text_underline",
+     "source": "editor_readback",
+     "expected_from": "constant:true"
+    }
+   ]
+  },
+  {
+   "id": "slides.objects.fill",
+   "description": "Colour a shape",
+   "cues": [
+    "fill",
+    "rectangle",
+    "shape",
+    "background"
+   ],
+   "requires": [],
+   "inputs": {
+    "color": {
+     "type": "string",
+     "required": true
+    }
+   },
+   "actions": [
+    "fill"
+   ],
+   "instructions": "Colour the rectangle, not the letters. The line order is fill, then the rectangle id, then the colour.",
+   "verify": [
+    {
+     "property": "fill",
+     "source": "editor_readback",
+     "expected_from": "inputs.color"
+    }
+   ]
+  },
+  {
+   "id": "slides.objects.move",
+   "description": "Move an existing object",
+   "cues": [
+    "move",
+    "top left",
+    "top right",
+    "bottom left",
+    "bottom right"
+   ],
+   "requires": [],
+   "inputs": {
+    "place": {
+     "type": "string",
+     "required": true
+    }
+   },
+   "actions": [
+    "move"
+   ],
+   "instructions": "Move the rectangle with move, the rectangle's printed id, and at=top-left. Do not use align to move a shape.",
+   "verify": [
+    {
+     "property": "position",
+     "source": "editor_readback",
+     "expected_from": "inputs.place"
+    }
+   ]
+  },
+  {
+   "id": "slides.deck.add",
+   "description": "Add a slide",
+   "cues": [
+    "new slide",
+    "add a slide",
+    "add slide"
+   ],
+   "requires": [],
+   "inputs": {},
+   "actions": [
+    "addslide"
+   ],
+   "instructions": "Write addslide. That line adds one blank slide. Do not add a text box.",
+   "verify": [
+    {
+     "property": "slide_count",
+     "source": "editor_readback",
+     "expected_from": "constant:plus_one"
+    }
+   ]
+  },
+  {
+   "id": "slides.deck.next",
+   "description": "Show the next slide",
+   "cues": [
+    "next page",
+    "next slide"
+   ],
+   "requires": [],
+   "inputs": {},
+   "actions": [
+    "nextslide"
+   ],
+   "instructions": "Write nextslide. That line shows the following slide. Do not add a slide and do not move an object.",
+   "verify": [
+    {
+     "property": "current_slide",
+     "source": "editor_readback",
+     "expected_from": "constant:next"
+    }
+   ]
+  },
+  {
+   "id": "slides.deck.previous",
+   "description": "Show the previous slide",
+   "cues": [
+    "previous slide",
+    "go back",
+    "previous page"
+   ],
+   "requires": [],
+   "inputs": {},
+   "actions": [
+    "prevslide"
+   ],
+   "instructions": "Write prevslide. That line shows the previous slide. Do not add a slide and do not move an object.",
+   "verify": [
+    {
+     "property": "current_slide",
+     "source": "editor_readback",
+     "expected_from": "constant:previous"
+    }
+   ]
+  }
+ ],
+ "source": "stickman 7f3b75e design/slides-working-slice.json. StickLLM loads only the capabilities whose actions its slide adapters run."
+}

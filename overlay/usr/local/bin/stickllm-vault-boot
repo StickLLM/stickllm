@@ -1,0 +1,35 @@
+#!/bin/bash
+# Boot path must never prompt for vault unlock (blocks headless Server/Local).
+# Unlock/create/attach belong in the UI only. Default session stays Ephemeral.
+# This helper only records status and exits — never reads a TTY, never unlocks.
+set -uo pipefail
+
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+DATA_MNT="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+META="${STICKLLM_VAULT_META:-}"
+if [[ -z "$META" ]]; then
+  if findmnt -n "$DATA_MNT" >/dev/null 2>&1; then
+    META="$DATA_MNT/vault-meta"
+  else
+    META="/var/lib/stickllm/vault-meta"
+  fi
+fi
+MNT="${STICKLLM_VAULT_MNT:-/var/lib/stickllm/vault}"
+
+mkdir -p "$RUN"
+if findmnt -n "$MNT" >/dev/null 2>&1; then
+  echo "unlocked" >"$RUN/vault-boot.txt"
+  exit 0
+fi
+# 0.6.0 (bug 5): USB DATA may mount after this runs, so look at both meta
+# dirs and the settings-partition marker. stickllm-vault rewrites this file
+# on every unlock and lock, so a later unlock is never reported as "absent".
+if [[ -f "$META/container" || -f "$DATA_MNT/vault-meta/container" \
+      || -f /var/lib/stickllm/vault-meta/container \
+      || -f "$DATA_MNT/stickllm-settings-part.json" ]]; then
+  # Configured but locked — leave for UI unlock; do not block boot.
+  echo "deferred-to-ui" >"$RUN/vault-boot.txt"
+  exit 0
+fi
+echo "absent" >"$RUN/vault-boot.txt"
+exit 0

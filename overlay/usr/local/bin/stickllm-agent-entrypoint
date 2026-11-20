@@ -1,0 +1,195 @@
+#!/bin/bash
+# Inside the Agent Zero container. Listen on 0.0.0.0:5099 in this netns so the
+# host can publish 127.0.0.1:5099 only. Do not start sshd (the host sshd owns
+# port 22). No host drives are mounted here.
+set -eu
+
+if [ -f /exe/self_update_manager.py ]; then
+  sed -i \
+    -e 's/--port=80/--port=5099/g' \
+    -e 's#http://127.0.0.1:80/api/health#http://127.0.0.1:5099/api/health#g' \
+    /exe/self_update_manager.py
+fi
+
+# Mute sshd and the tunnel API in supervisord. Upstream initialize.sh runs
+# "cp -r /per/* /" before supervisord starts, so /per's copy of the config
+# overwrote the /etc patch and run_tunnel_api still started and went FATAL.
+# Patch both copies. (v0.5.3)
+python3 - <<'PY'
+from pathlib import Path
+
+
+def patch(path):
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8", errors="replace")
+    path.write_text(mute(text), encoding="utf-8")
+
+
+def mute(text):
+    lines = text.splitlines()
+    out = []
+    program = ""
+    seen_autostart = False
+    # Keep SearXNG (run_searxng) — Agent Zero built-in web search. Mute only
+    # host-owned sshd and the unused tunnel API.
+    muted = {"run_sshd", "run_tunnel_api"}
+
+    def flush_autostart(buf, prog, seen):
+        if prog in muted and not seen:
+            buf.append("autostart=false")
+            buf.append("autorestart=false")
+        return buf
+
+    for line in lines:
+        if line.startswith("["):
+            # Any section ends the previous program. [eventlistener:...] after
+            # run_tunnel_api used to inherit the mute and lose its command.
+            if program:
+                out = flush_autostart(out, program, seen_autostart)
+            program = line[len("[program:") :].rstrip("]") if line.startswith("[program:") else ""
+            seen_autostart = False
+            out.append(line)
+            continue
+        if program in muted and line.startswith("command="):
+            out.append("command=/bin/true")
+            continue
+        if program in muted and line.startswith("autorestart="):
+            out.append("autorestart=false")
+            continue
+        if program in muted and line.startswith("autostart="):
+            seen_autostart = True
+            out.append("autostart=false")
+            continue
+        out.append(line)
+    if program:
+        out = flush_autostart(out, program, seen_autostart)
+    return "\n".join(out) + "\n"
+
+
+for conf in ("/etc/supervisor/conf.d/supervisord.conf", "/per/etc/supervisor/conf.d/supervisord.conf"):
+    patch(Path(conf))
+PY
+
+# /per is copied over / by initialize.sh, so patch its copy as well.
+for searx in /etc/searxng/settings.yml /per/etc/searxng/settings.yml; do
+  if [ -f "$searx" ] && ! grep -q 'bind_address:' "$searx"; then
+    sed -i '/^server:/a\  bind_address: "127.0.0.1"' "$searx"
+  fi
+  # Engine fetches must use the stick egress proxy — nft drops direct internet
+  # from the container, and SearXNG's httpx client does not honor HTTP_PROXY.
+  if [ -f "$searx" ] && ! grep -q '172.30.0.1:18080' "$searx"; then
+    printf '\n# StickLLM: route SearXNG engines through the host egress proxy.\noutgoing:\n  request_timeout: 12.0\n  proxies:\n    all://: http://172.30.0.1:18080\n' >>"$searx"
+  fi
+  # Prefer engines that still answer through a shared egress IP. Google/DDG/
+  # Brave/Startpage often CAPTCHA or suspend the stick's uplink.
+  if [ -f "$searx" ] && ! grep -q 'StickLLM: preferred search engines' "$searx"; then
+    cat >>"$searx" <<'EOF'
+
+# StickLLM: preferred search engines (shared egress IP).
+engines:
+  - name: google
+    disabled: true
+  - name: brave
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: bing
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: seznam
+    disabled: false
+  - name: wikipedia
+    disabled: false
+EOF
+  fi
+done
+
+# v0.5.9 (Nink): all Agent Zero plugins are unlocked. The plugin skills and
+# the built-in installer, scanner and validator are no longer removed.
+
+# StickLLM mounts stickllm-apps at /a0/usr/skills and /git/agent-zero/usr/skills.
+# Agent Zero's skill catalog also lists /a0/skills (Built-in). Mirror the apps
+# skill there so Tetris/Solitaire/etc. show up and load — get_abs_path("usr/skills")
+# alone was not enough for the Built-in skills UI.
+mkdir -p /a0/skills /git/agent-zero/skills
+for src in /git/agent-zero/usr/skills/stickllm-apps /a0/usr/skills/stickllm-apps; do
+  if [ -d "$src" ]; then
+    rm -rf /a0/skills/stickllm-apps /git/agent-zero/skills/stickllm-apps
+    cp -a "$src" /a0/skills/stickllm-apps
+    cp -a "$src" /git/agent-zero/skills/stickllm-apps
+    break
+  fi
+done
+
+mkdir -p /a0/usr/workdir /a0/usr/memory /a0/usr/logs /a0/usr/.cache
+
+# Prove the bridge control port from this container. Do not print the token.
+# A real open (no dry_run) is the open_app tool, so this check does not pop a tab.
+python3 - <<'PY' || true
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+out = Path("/a0/usr/open-app-container-check.json")
+token = ""
+try:
+    token = Path("/stickllm-open-app.token").read_text(encoding="utf-8").strip()
+except OSError:
+    token = ""
+url = "http://172.30.0.1:8082/open"
+
+def post(app_id, auth, dry=False):
+    body = {"id": app_id}
+    if dry:
+        body["dry_run"] = True
+    data = json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    if auth:
+        headers["Authorization"] = "Bearer " + auth
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception:
+        return 0
+
+report = {
+    "missing_token": post("minesweeper", ""),
+    "bad_id": post("nope", token),
+    "dry_run": post("minesweeper", token, dry=True) if token else 0,
+}
+out.write_text(json.dumps(report) + "\n", encoding="utf-8")
+PY
+
+# Ensure tmp dirs exist/writable (SearXNG/tempfile require this).
+# Targeted repair: A0 memory/VectorDB imports transformers -> sklearn -> scipy.special.
+# Broken scipy/numpy ABI shows: ValueError All ufuncs must have type numpy.ufunc (sph_legendre_p).
+# Only runs when the import fails - not a blanket upgrade. Needs Agent Zero container start.
+if [[ -x /opt/venv-a0/bin/python ]]; then
+  if ! /opt/venv-a0/bin/python -c "import scipy.special" >/dev/null 2>&1; then
+    echo "a0-entrypoint: repairing scipy/numpy ABI for memory/VectorDB path"
+    # Dual numpy installs (e.g. 2.3.x + 1.26.x) cause sph_legendre_p ufunc type errors.
+    /opt/venv-a0/bin/pip uninstall -y numpy 2>/dev/null || true
+    /opt/venv-a0/bin/pip uninstall -y numpy 2>/dev/null || true
+    /opt/venv-a0/bin/pip install --no-cache-dir "numpy>=2.0,<2.3" || true
+    if ! /opt/venv-a0/bin/python -c "import scipy.special" >/dev/null 2>&1; then
+      echo "a0-entrypoint: falling back to scipy==1.14.1 for ABI match"
+      /opt/venv-a0/bin/pip install --no-cache-dir "scipy==1.14.1" || true
+    fi
+    /opt/venv-a0/bin/python -c "import numpy,scipy,scipy.special; print('a0-entrypoint: numpy', numpy.__version__, 'scipy', scipy.__version__)" || true
+  fi
+fi
+mkdir -p /tmp /var/tmp
+chmod 1777 /tmp /var/tmp || true
+mkdir -p /a0/usr/logs
+# Host bind-mounts /run/stickllm/a0-init.log -> /tmp/a0-init.log when present.
+exec >>/tmp/a0-init.log 2>&1
+echo "a0-entrypoint $(date -u +%Y-%m-%dT%H:%M:%SZ) starting initialize.sh"
+exec /exe/initialize.sh main

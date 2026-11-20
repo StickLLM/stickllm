@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Calculator — StickLLM</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0e1214;color:#e4ecee;font:16px/1.4 "Segoe UI",sans-serif}
+  .wrap{width:min(320px,92vw)}
+  a{color:#2bb5a8;text-decoration:none}
+  output{display:block;background:#13181b;border:1px solid #263136;border-radius:12px;padding:16px;text-align:right;font:28px/1.2 ui-monospace,monospace;margin:12px 0;overflow:hidden}
+  .keys{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  button{font:18px/1 "Segoe UI",sans-serif;padding:16px 0;border-radius:10px;border:1px solid #263136;background:#1e272c;color:#e4ecee;cursor:pointer}
+  button.op{color:#2bb5a8}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/">StickLLM</a>
+  <output id="screen">0</output>
+  <div class="keys" id="keys"></div>
+</div>
+<script src="calc.js?v=desk2"></script>
+<script src="stickllm-adapter.js"></script>
+<script src="/apps/stickllm-bridge.js"></script>
+</body>
+</html>

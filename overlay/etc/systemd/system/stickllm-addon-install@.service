@@ -1,0 +1,11 @@
+[Unit]
+Description=StickLLM add-on %i install (pull pinned image, then stickllm-addon@%i.service)
+After=local-fs.target
+ConditionPathIsMountPoint=/var/lib/stickllm/vault
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/stickllm-addon %i install
+TimeoutStartSec=infinity
+# Started on demand by stickllm-gateway (Apps page). Its own cgroup, so a
+# stickllm-ui restart does not stop a pull. Not enabled: never at boot.

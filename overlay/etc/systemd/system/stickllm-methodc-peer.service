@@ -1,0 +1,34 @@
+[Unit]
+Description=StickLLM Method C peer (Milestone A — loopback Agent Zero only)
+Documentation=file:///usr/local/share/stickllm/docs/sticklink/METHODC-STANDALONE-MIGRATION.md
+After=network-online.target stickllm-ui.service stickllm-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# Development authorization for Milestone A only — not production pairing.
+Environment=METHODC_DEV_AUTH=1
+Environment=STICKLINK_TESTING=1
+Environment=STICKLINK_LAB=1
+Environment=STICKLINK_FAST_KDF=1
+Environment=STICKLINK_ROOT=/var/lib/sticklink
+Environment=STICKLLM_RUN=/run/stickllm
+# Loopback only — peer refuses any other SL_A0_HTTPS host.
+Environment=SL_A0_HTTPS=https://127.0.0.1
+Environment=SL_WS=wss://link.stickllm.com/v1/ws
+# Public join host (CF static /browser/*). Env file can override.
+Environment=SL_JOIN_PUBLIC_BASE=https://link.stickllm.com
+EnvironmentFile=-/etc/stickllm/methodc-peer.env
+EnvironmentFile=-/etc/stickllm/methodc-build.env
+# Call venv python directly (Debian venv is a symlink to system python; argv0 selects site-packages).
+ExecStart=/opt/stickllm/methodc-venv/bin/python /usr/local/bin/stickllm-methodc-peer
+Restart=always
+RestartSec=3
+WatchdogSec=0
+
+# No lab-PC connectivity required for A0 path.
+# Outbound: signalling WSS + WebRTC ICE only.
+
+[Install]
+WantedBy=multi-user.target

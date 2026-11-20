@@ -1,0 +1,57 @@
+# Build artifacts
+out/*
+!out/.gitkeep
+*.iso
+*.img
+*.hybrid.iso
+.cache/
+live-build/work/
+live-build/chroot/
+live-build/binary/
+live-build/.build/
+cache/
+
+# Models (large; fetched by scripts/download-model.sh)
+models/*.gguf
+models/*.gguf.partial
+models/*.partial
+models/*.bin
+models/*.sha256
+models/speech/
+models/appagent/
+!models/.gitkeep
+
+# Vendor binaries built at build time (CUDA + CPU llama; never commit SSE-only forks)
+overlay/opt/stickllm/bin/
+overlay/opt/stickllm/lib/**
+overlay/opt/stickllm/lib-cpu/
+overlay/opt/stickllm/lib-vulkan/
+!overlay/opt/stickllm/lib/
+!overlay/opt/stickllm/lib/.gitkeep
+!overlay/opt/stickllm/lib/stickllm-cuda-register.c
+scripts/lib/docker-build-llama-cpu-portable.sh
+**/_patch-dvol.sh
+**/_inject-llama*.sh
+**/_light-remaster.sh
+
+# Local / OS
+.DS_Store
+Thumbs.db
+*.swp
+.env
+.env.*
+*.log
+.venv/
+__pycache__/
+node_modules/
+.pytest_cache/
+.wrangler/
+
+# StickLink lab runtime (never commit)
+sticklink-server/lab-browser-e2e/state/
+sticklink-server/lab-browser-e2e/*.log
+sticklink-server/worker/.dev.vars
+**/dev.vars
+sticklink-server/sidecar/dist/
+
+

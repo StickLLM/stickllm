@@ -1,0 +1,1378 @@
+#!/usr/bin/env bash
+# Local-mode product path: minimal browser on HDMI → http://127.0.0.1/ (no pair).
+# Hybrid AMD iGPU + NVIDIA CUDA: compositor on non-NVIDIA DRM; llama keeps the dGPU.
+# Writes /run/stickllm/kiosk-fail.log for Term-boot diagnosis (Local has no SSH).
+set -uo pipefail
+
+TTY="${STICKLLM_TTY:-/dev/tty1}"
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+LOG="$RUN/kiosk.log"
+FAIL_LOG="$RUN/kiosk-fail.log"
+URL="${STICKLLM_KIOSK_URL:-http://127.0.0.1/}"
+WAIT_UI_SECS="${STICKLLM_KIOSK_WAIT_SECS:-180}"
+# Brief only — long waits left users on tty "Waiting for model" then a retry loop.
+WAIT_LLAMA_SECS="${STICKLLM_KIOSK_WAIT_LLAMA_SECS:-8}"
+FAIL_FILE="$RUN/kiosk-fail-count"
+PROFILE="$RUN/kiosk-profile"
+WESTON_INI="$RUN/weston.ini"
+# cage refuses to start as root ("Unable to drop root"). Chromium's sandbox
+# also refuses root; --no-sandbox paints an error bar, so the console browser
+# runs as the unprivileged stickllm user.
+KIOSK_USER="${STICKLLM_KIOSK_USER:-stickllm}"
+KIOSK_HOME="/home/${KIOSK_USER}"
+
+mkdir -p "$RUN" "$PROFILE"
+chmod 700 "$PROFILE"
+: >"$LOG"
+: >"$FAIL_LOG"
+
+serial_note() {
+  # Never write diagnostics to stdout — command substitution (e.g. renderer
+  # order) must receive only the intended payload.
+  printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true
+  printf '%s\n' "$*" >/dev/ttyS0 2>/dev/null || true
+}
+
+# weston repeats "Basic output test failed for HDMI-A-*" for the life of the
+# session. /run is tmpfs — cap the log and drop duplicate HDMI lines.
+FAIL_LOG_MAX_BYTES=262144
+FAIL_LOG_KEEP_LINES=200
+
+kiosk_fail_rotate() {
+  local sz=0
+  sz="$(stat -c%s "$FAIL_LOG" 2>/dev/null || echo 0)"
+  if [[ "${sz:-0}" -gt "$FAIL_LOG_MAX_BYTES" ]]; then
+    tail -n "$FAIL_LOG_KEEP_LINES" "$FAIL_LOG" >"$FAIL_LOG.trim" 2>/dev/null || true
+    mv -f "$FAIL_LOG.trim" "$FAIL_LOG" 2>/dev/null || true
+  fi
+}
+
+# 0.6.0 (B7): one timing line per desktop start phase, seconds since boot,
+# so a slow desktop on real hardware shows which step took the time.
+# STICKLLM_KIOSK_T phase=<name> up=<s> kiosk=<s>
+KIOSK_T0="$(cut -d' ' -f1 /proc/uptime 2>/dev/null || echo 0)"
+kiosk_mark() {
+  local up
+  up="$(cut -d' ' -f1 /proc/uptime 2>/dev/null || echo 0)"
+  printf 'STICKLLM_KIOSK_T phase=%s up=%s kiosk=%s\n' "$1" "$up" \
+    "$(awk -v a="$up" -v b="$KIOSK_T0" 'BEGIN{printf "%.1f", a-b}')" >>"$LOG" 2>/dev/null || true
+}
+
+fail_note() {
+  printf '%s\n' "$*" >>"$FAIL_LOG" 2>/dev/null || true
+  kiosk_fail_rotate
+  serial_note "$*"
+}
+
+# stdin → fail log, suppressing back-to-back duplicates and HDMI test spam.
+kiosk_fail_filter() {
+  local last="" line hdmi_seen=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$last" ]]; then
+      continue
+    fi
+    if [[ "$line" == *"Basic output test failed for HDMI-"* ]]; then
+      if [[ "$hdmi_seen" -eq 1 ]]; then
+        last="$line"
+        continue
+      fi
+      hdmi_seen=1
+      line="[once] Basic output test failed for HDMI (further copies suppressed)"
+    fi
+    last="$line"
+    printf '%s\n' "$line" >>"$FAIL_LOG" 2>/dev/null || true
+    kiosk_fail_rotate
+  done
+}
+
+paint() {
+  printf '%s\n' "$*" >>"$TTY" 2>/dev/null || true
+  printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true
+}
+
+fail_count() {
+  local n=0
+  if [[ -f "$FAIL_FILE" ]]; then
+    n="$(tr -cd '0-9' <"$FAIL_FILE" 2>/dev/null || true)"
+  fi
+  [[ -n "$n" ]] || n=0
+  printf '%s' "$n"
+}
+
+bump_fails() {
+  local n
+  n="$(fail_count)"
+  n=$((n + 1))
+  printf '%s\n' "$n" >"$FAIL_FILE" 2>/dev/null || true
+  printf '%s' "$n"
+}
+
+http_code() {
+  curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "$1" 2>/dev/null || printf '000'
+}
+
+collect_drm_diag() {
+  {
+    echo "=== $(date -Is 2>/dev/null || date) kiosk DRM diag ==="
+    echo "cmdline: $(tr '\0' ' ' </proc/cmdline 2>/dev/null || true)"
+    echo "--- dri ---"
+    ls -la /dev/dri 2>&1 || true
+    echo "--- drm connectors (connected?) ---"
+    for conn in /sys/class/drm/card*-*/status; do
+      [[ -f "$conn" ]] || continue
+      echo "$(basename "$(dirname "$conn")")=$(cat "$conn" 2>/dev/null) path=$conn"
+    done
+    echo "--- drivers ---"
+    for card in /sys/class/drm/card[0-9]; do
+      [[ -d "$card" ]] || continue
+      d="$(basename "$(readlink -f "$card/device/driver" 2>/dev/null)" 2>/dev/null || echo '?')"
+      echo "$(basename "$card") driver=$d"
+    done
+    echo "--- seatd ---"
+    systemctl is-active seatd.service 2>&1 || true
+    id -a 2>&1 || true
+    echo "--- packages ---"
+    command -v cage; command -v cog; command -v weston; command -v chromium; command -v chromium-browser
+  } >>"$FAIL_LOG" 2>/dev/null || true
+}
+
+is_nvidia_path() {
+  local p="$1" base driver
+  base="$(basename "$p")"
+  driver="$(basename "$(readlink -f "/sys/class/drm/${base}/device/driver" 2>/dev/null)" 2>/dev/null || true)"
+  case "$driver" in
+    nvidia|nvidia-current|nvidia_drm|nvidia-drm) return 0 ;;
+  esac
+  return 1
+}
+
+# simpledrm/efifb can own the console after nvidia-drm modeset=0, but cage/weston
+# need a real KMS driver (amdgpu/i915/virtio) to keep a browser on HDMI.
+is_weak_drm() {
+  local p="$1" driver
+  driver="$(drm_driver_name "$p")"
+  case "$driver" in
+    simpledrm|efi-framebuffer|efifb|bochs-drm|cirrus) return 0 ;;
+  esac
+  return 1
+}
+
+# 0.5.9: a DRM card counts for the desktop only when a monitor is connected.
+card_connected() {
+  local base conn
+  base="$(basename "$1")"
+  for conn in /sys/class/drm/"$base"-*/status; do
+    [[ -f "$conn" ]] || continue
+    [[ "$(tr -d '[:space:]' <"$conn" 2>/dev/null || true)" == "connected" ]] && return 0
+  done
+  return 1
+}
+card_boot_vga() {
+  [[ "$(tr -d '[:space:]' <"/sys/class/drm/$(basename "$1")/device/boot_vga" 2>/dev/null || true)" == "1" ]]
+}
+
+has_nvidia_drm() {
+  local c path
+  for c in /sys/class/drm/card[0-9]; do
+    [[ -d "$c" ]] || continue
+    path="/dev/dri/$(basename "$c")"
+    [[ -e "$path" ]] || continue
+    is_nvidia_path "$path" && return 0
+  done
+  return 1
+}
+
+# DRM card that already owns the Linux console (efifb/simpledrm/amdgpu fbcon).
+# Informational + fallback only — never beat a connected amdgpu/i915 HDMI.
+pick_console_drm() {
+  local fb link card path driver
+  for fb in /sys/class/graphics/fb[0-9]; do
+    [[ -e "$fb/device" ]] || continue
+    link="$(readlink -f "$fb/device" 2>/dev/null || true)"
+    [[ -n "$link" ]] || continue
+    card=""
+    if [[ "$link" =~ /drm/card[0-9]+ ]]; then
+      card="$(basename "$(echo "$link" | grep -oE 'card[0-9]+' | head -1)")"
+    else
+      # PCI device → matching DRM card
+      for c in /sys/class/drm/card[0-9]; do
+        [[ -d "$c" ]] || continue
+        if [[ "$(readlink -f "$c/device" 2>/dev/null)" == "$link" ]]; then
+          card="$(basename "$c")"
+          break
+        fi
+      done
+    fi
+    [[ -n "$card" ]] || continue
+    path="/dev/dri/$card"
+    [[ -e "$path" ]] || continue
+    if is_nvidia_path "$path"; then
+      fail_note "STICKLLM_KIOSK_CONSOLE_DRM_SKIP_NVIDIA $path"
+      continue
+    fi
+    fail_note "STICKLLM_KIOSK_CONSOLE_DRM $path fb=$(basename "$fb") driver=$(drm_driver_name "$path")"
+    printf '%s' "$path"
+    return 0
+  done
+  # boot_vga non-NVIDIA
+  for c in /sys/class/drm/card[0-9]; do
+    [[ -d "$c" ]] || continue
+    [[ "$(tr -d '[:space:]' <"$c/device/boot_vga" 2>/dev/null || true)" == "1" ]] || continue
+    path="/dev/dri/$(basename "$c")"
+    [[ -e "$path" ]] || continue
+    is_nvidia_path "$path" && continue
+    fail_note "STICKLLM_KIOSK_CONSOLE_DRM_BOOTVGA $path"
+    printf '%s' "$path"
+    return 0
+  done
+  return 1
+}
+
+# Prefer DRM card with a connected connector → exported as WLR_DRM_DEVICES.
+# Order:
+#   1) connected AMD/Intel iGPU
+#   2) connected NVIDIA (monitor on dGPU / 3090 HDMI — needs nvidia-drm modeset=1)
+#   3) virtio (QEMU), console DRM, simpledrm fallbacks
+pick_display_drm() {
+  local card driver path conn status
+  local connected_igpu="" best_igpu="" connected_virtio="" best_virtio=""
+  local connected_other="" best_other="" connected_simple="" best_simple=""
+  local connected_nvidia="" best_nvidia=""
+  local console_drm="" pick=""
+  console_drm="$(pick_console_drm || true)"
+  # A kiosk restart can make HDMI report disconnected for a few seconds.
+  # Wait for a real connector before falling back to an unplugged card.
+  local wait_i conn_state
+  for wait_i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    conn_state=0
+    for conn in /sys/class/drm/card*-*/status; do
+      [[ -f "$conn" ]] || continue
+      if [[ "$(tr -d '[:space:]' <"$conn" 2>/dev/null || true)" == "connected" ]]; then
+        conn_state=1
+        break
+      fi
+    done
+    [[ "$conn_state" -eq 1 ]] && break
+    fail_note "STICKLLM_KIOSK_DRM_WAIT attempt=$wait_i"
+    sleep 1
+  done
+  for card in /sys/class/drm/card[0-9]; do
+    [[ -d "$card" ]] || continue
+    driver="$(basename "$(readlink -f "$card/device/driver" 2>/dev/null)" 2>/dev/null || true)"
+    path="/dev/dri/$(basename "$card")"
+    [[ -e "$path" ]] || continue
+    local has_connected=0
+    for conn in "$card"-*/status; do
+      [[ -f "$conn" ]] || continue
+      status="$(tr -d '[:space:]' <"$conn" 2>/dev/null || true)"
+      if [[ "$status" == "connected" ]]; then
+        has_connected=1
+        break
+      fi
+    done
+    case "$driver" in
+      nvidia|nvidia-current|nvidia_drm|nvidia-drm)
+        [[ -z "$best_nvidia" ]] && best_nvidia="$path"
+        if [[ "$has_connected" -eq 1 && -z "$connected_nvidia" ]]; then
+          connected_nvidia="$path"
+          fail_note "STICKLLM_KIOSK_DRM_NVIDIA_CONNECTED $path"
+        else
+          fail_note "STICKLLM_KIOSK_DRM_NVIDIA_SEEN $path connected=$has_connected"
+        fi
+        ;;
+      amdgpu|i915|xe)
+        [[ -z "$best_igpu" ]] && best_igpu="$path"
+        [[ "$has_connected" -eq 1 && -z "$connected_igpu" ]] && connected_igpu="$path"
+        ;;
+      virtio_gpu|virtio-gpu|virtio-pci)
+        [[ -z "$best_virtio" ]] && best_virtio="$path"
+        [[ "$has_connected" -eq 1 && -z "$connected_virtio" ]] && connected_virtio="$path"
+        ;;
+      simpledrm|efi-framebuffer|efifb)
+        [[ -z "$best_simple" ]] && best_simple="$path"
+        [[ "$has_connected" -eq 1 && -z "$connected_simple" ]] && connected_simple="$path"
+        ;;
+      *)
+        [[ -z "$best_other" ]] && best_other="$path"
+        [[ "$has_connected" -eq 1 && -z "$connected_other" ]] && connected_other="$path"
+        ;;
+    esac
+  done
+  # 0.5.9: the boot_vga card wins when it has a monitor connected.
+  local connected_bootvga="" _bc
+  for _bc in /dev/dri/card[0-9]; do
+    [[ -e "$_bc" ]] || continue
+    is_weak_drm "$_bc" && continue
+    if card_boot_vga "$_bc" && card_connected "$_bc"; then connected_bootvga="$_bc"; break; fi
+  done
+  if [[ -n "$connected_bootvga" ]]; then pick="$connected_bootvga"
+  elif [[ -n "$connected_igpu" ]]; then pick="$connected_igpu"
+  elif [[ -n "$connected_nvidia" ]]; then pick="$connected_nvidia"
+  elif [[ -n "$best_igpu" ]]; then pick="$best_igpu"
+  elif [[ -n "$console_drm" ]] && ! is_weak_drm "$console_drm"; then pick="$console_drm"
+  elif [[ -n "$connected_virtio" ]]; then pick="$connected_virtio"
+  elif [[ -n "$best_virtio" ]]; then pick="$best_virtio"
+  elif [[ -n "$connected_simple" ]]; then pick="$connected_simple"
+  elif [[ -n "$best_simple" ]]; then pick="$best_simple"
+  elif [[ -n "$connected_other" ]]; then pick="$connected_other"
+  elif [[ -n "$best_other" ]]; then pick="$best_other"
+  elif [[ -n "$best_nvidia" ]]; then pick="$best_nvidia"
+  elif [[ -n "$console_drm" ]]; then pick="$console_drm"
+  else
+    return 1
+  fi
+  if [[ -n "$console_drm" && "$pick" != "$console_drm" ]]; then
+    fail_note "STICKLLM_KIOSK_DRM_OVERRIDE console=$console_drm pick=$pick"
+    serial_note "STICKLLM_KIOSK_DRM_OVERRIDE console=$console_drm pick=$pick"
+  fi
+  fail_note "STICKLLM_KIOSK_DRM_PICK_FINAL $pick driver=$(drm_driver_name "$pick")"
+  printf '%s' "$pick"
+  return 0
+}
+
+nvidia_connector_connected() {
+  local card conn
+  for card in /sys/class/drm/card[0-9]; do
+    [[ -d "$card" ]] || continue
+    is_nvidia_path "/dev/dri/$(basename "$card")" || continue
+    for conn in "$card"-*/status; do
+      [[ -f "$conn" ]] || continue
+      [[ "$(tr -d '[:space:]' <"$conn" 2>/dev/null || true)" == "connected" ]] && return 0
+    done
+  done
+  return 1
+}
+
+# Cage/Weston need KMS connectors. Boot keeps nvidia-drm modeset=0 so text
+# console survives; when the monitor is on a 3090, reload with modeset=1 so
+# HDMI/DP connectors appear. The "No monitor connected" tty text is often
+# painted *on* that same monitor via efifb while KMS still sees nothing.
+ensure_nvidia_kms() {
+  local modeset="" has_conn=0 force="${1:-}"
+  # PCI NVIDIA present even when modeset=0 left no usable DRM connectors.
+  if ! grep -qsi '^0x10de$' /sys/bus/pci/devices/*/vendor 2>/dev/null; then
+    return 0
+  fi
+  # Already have a real NVIDIA connector — nothing to do.
+  if nvidia_connector_connected; then
+    touch "$RUN/kiosk-kms-ok" 2>/dev/null || true
+    return 0
+  fi
+  # 0.6.0 (B2): a non-NVIDIA KMS card with a real monitor means display is elsewhere.
+  # Ignore simpledrm/efifb (always "connected") and NVIDIA itself.
+  local _kc
+  for _kc in /dev/dri/card[0-9]; do
+    [[ -e "$_kc" ]] || continue
+    is_weak_drm "$_kc" && continue
+    is_nvidia_path "$_kc" && continue
+    card_connected "$_kc" && { has_conn=1; break; }
+  done
+  [[ "$has_conn" -eq 1 ]] && return 0
+
+  # Success once per boot is enough; failures must retry (old code touched
+  # kiosk-kms-tried before the attempt and then never retried).
+  if [[ -e "$RUN/kiosk-kms-ok" && -z "$force" ]]; then
+    return 0
+  fi
+  modeset="$(tr -d '[:space:]' </sys/module/nvidia_drm/parameters/modeset 2>/dev/null || true)"
+  if [[ "$modeset" == "Y" || "$modeset" == "1" ]]; then
+    # Module claims modeset but connectors not up yet — wait briefly.
+    local _w
+    for _w in 1 2 3 4 5 6 7 8 9 10; do
+      nvidia_connector_connected && { touch "$RUN/kiosk-kms-ok" 2>/dev/null || true; return 0; }
+      sleep 1
+    done
+    fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_ON_BUT_NO_CONN"
+    # Fall through and try a full reload once.
+  fi
+  fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_RELOAD"
+  serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_RELOAD"
+  paint "  Enabling NVIDIA KMS for display…"
+  local llama_was_active=0 pers_was_active=0
+  if systemctl is-active --quiet stickllm-llama.service; then
+    llama_was_active=1
+    systemctl stop stickllm-llama.service 2>/dev/null || true
+  fi
+  if systemctl is-active --quiet nvidia-persistenced.service 2>/dev/null; then
+    pers_was_active=1
+    systemctl stop nvidia-persistenced.service 2>/dev/null || true
+  fi
+  sleep 1
+  # drm must unload before modeset; ignore failures and keep going.
+  rmmod nvidia_drm 2>>"$FAIL_LOG" || rmmod nvidia-current-drm 2>>"$FAIL_LOG" || true
+  sleep 0.5
+  # Conf file defaults modeset=0 — pass modeset=1 on the command line (wins).
+  local loaded=0
+  if modprobe nvidia_drm modeset=1 fbdev=0 2>>"$FAIL_LOG"; then
+    loaded=1
+  elif modprobe nvidia-current-drm modeset=1 fbdev=0 2>>"$FAIL_LOG"; then
+    loaded=1
+  fi
+  if [[ "$loaded" -eq 1 ]]; then
+    local _w
+    for _w in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+      modeset="$(tr -d '[:space:]' </sys/module/nvidia_drm/parameters/modeset 2>/dev/null || true)"
+      if nvidia_connector_connected; then
+        fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_OK now=$modeset wait=${_w}s"
+        serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_OK"
+        touch "$RUN/kiosk-kms-ok" 2>/dev/null || true
+        [[ "$pers_was_active" -eq 1 ]] && systemctl start --no-block nvidia-persistenced.service 2>/dev/null || true
+        [[ "$llama_was_active" -eq 1 ]] && systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+        return 0
+      fi
+      sleep 1
+    done
+    fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_LOADED_NO_CONN now=$(cat /sys/module/nvidia_drm/parameters/modeset 2>/dev/null || true)"
+  else
+    fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_FAIL"
+    serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_FAIL"
+    modprobe nvidia_drm 2>/dev/null || modprobe nvidia-current-drm 2>/dev/null || true
+  fi
+  [[ "$pers_was_active" -eq 1 ]] && systemctl start --no-block nvidia-persistenced.service 2>/dev/null || true
+  [[ "$llama_was_active" -eq 1 ]] && systemctl start --no-block stickllm-llama.service 2>/dev/null || true
+  return 1
+}
+
+# Kill compositors and force tty1/fbcon back so HDMI signal returns after a failed modeset.
+restore_display_console() {
+  local reason="${1:-kiosk-fail}"
+  fail_note "STICKLLM_KIOSK_RESTORE_CONSOLE reason=$reason"
+  serial_note "STICKLLM_KIOSK_RESTORE_CONSOLE reason=$reason"
+  # Drop DRM master: do not leave an Xorg holding CRTCs off (0.5.7: Xfce only).
+  stop_xorg 2>/dev/null || true
+  kill_stale_xorg 2>/dev/null || true
+  pkill -x cog 2>/dev/null || true
+  pkill -x chromium 2>/dev/null || true
+  pkill -x chromium-browser 2>/dev/null || true
+  sleep 0.4
+  chvt 1 2>/dev/null || true
+  # Re-bind framebuffer consoles (simpledrm/efifb/amdgpu).
+  local vtcon
+  for vtcon in /sys/class/vtconsole/vtcon*; do
+    [[ -w "$vtcon/bind" ]] || continue
+    echo 1 >"$vtcon/bind" 2>/dev/null || true
+  done
+  # Touch connector status (hotplug kick on some drivers).
+  local conn
+  for conn in /sys/class/drm/card*-*/status; do
+    [[ -f "$conn" ]] || continue
+    cat "$conn" >/dev/null 2>&1 || true
+  done
+  # SysRq 'v' = forcefully restore framebuffer console (when enabled).
+  if [[ -w /proc/sysrq-trigger ]]; then
+    echo v >/proc/sysrq-trigger 2>/dev/null || true
+  fi
+  printf '\033c' >"$TTY" 2>/dev/null || true
+}
+
+# Unbind fbcon so cage/weston can become DRM master on the iGPU.
+# Call immediately before compositor start (inverse of restore_display_console).
+release_display_for_compositor() {
+  local vtcon name
+  fail_note "STICKLLM_KIOSK_RELEASE_FOR_COMP"
+  serial_note "STICKLLM_KIOSK_RELEASE_FOR_COMP"
+  chvt 1 2>/dev/null || true
+  for vtcon in /sys/class/vtconsole/vtcon*; do
+    [[ -w "$vtcon/bind" ]] || continue
+    name="$(tr -d '[:space:]' <"$vtcon/name" 2>/dev/null || true)"
+    # Unbind framebuffer consoles only (keep VGA text vtcon0 if present).
+    if printf '%s' "$name" | grep -qiE 'frame|dummy|drm'; then
+      echo 0 >"$vtcon/bind" 2>/dev/null || true
+      fail_note "STICKLLM_KIOSK_VTCON_UNBIND $(basename "$vtcon") name=$name"
+    fi
+  done
+  sleep 0.2
+}
+
+prepare_kiosk_user() {
+  # Never run the console browser as root. The sandbox then fails and Chromium
+  # only starts with --no-sandbox, which leaves an error bar on screen.
+  if [[ "$KIOSK_USER" == "root" ]] || ! id "$KIOSK_USER" >/dev/null 2>&1; then
+    if id stickllm >/dev/null 2>&1; then
+      KIOSK_USER=stickllm
+    elif id user >/dev/null 2>&1; then
+      KIOSK_USER=user
+    fi
+  fi
+  if ! id "$KIOSK_USER" >/dev/null 2>&1 || [[ "$(id -u "$KIOSK_USER")" -eq 0 ]]; then
+    fail_note "STICKLLM_KIOSK_NO_USER"
+    return 1
+  fi
+  # audio: /dev/snd capture (USB mic / onboard). Without it Chromium getUserMedia
+  # fails even when a mic is plugged in (devices are root:audio 0660).
+  local groups="video,render,input,audio"
+  if getent group seat >/dev/null 2>&1; then
+    groups="${groups},seat"
+  fi
+  usermod -aG "$groups" "$KIOSK_USER" 2>/dev/null || true
+  KIOSK_HOME="$(getent passwd "$KIOSK_USER" | awk -F: '{print $6}')"
+  case "$KIOSK_HOME" in
+    ""|/|/nonexistent|/var/empty) KIOSK_HOME="/home/${KIOSK_USER}" ;;
+  esac
+  mkdir -p "$KIOSK_HOME"
+  chown "${KIOSK_USER}:${KIOSK_USER}" "$KIOSK_HOME" 2>/dev/null || true
+  KIOSK_UID="$(id -u "$KIOSK_USER")"
+  export XDG_RUNTIME_DIR="/run/user/${KIOSK_UID}"
+  mkdir -p "$XDG_RUNTIME_DIR" "$PROFILE" "$PROFILE/cache"
+  chmod 700 "$XDG_RUNTIME_DIR"
+  chown -R "${KIOSK_USER}:${KIOSK_USER}" "$XDG_RUNTIME_DIR" "$PROFILE" 2>/dev/null || true
+  # Allow the kiosk user to write fail/diag logs owned by the unit (root).
+  chmod 777 "$RUN" 2>/dev/null || true
+  touch "$LOG" "$FAIL_LOG" 2>/dev/null || true
+  chmod 666 "$LOG" "$FAIL_LOG" 2>/dev/null || true
+  fail_note "STICKLLM_KIOSK_USER $KIOSK_USER uid=$KIOSK_UID XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+  serial_note "STICKLLM_KIOSK_USER $KIOSK_USER uid=$KIOSK_UID"
+}
+
+ensure_xdg_runtime() {
+  if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+    prepare_kiosk_user
+  fi
+  mkdir -p "$XDG_RUNTIME_DIR"
+  chmod 700 "$XDG_RUNTIME_DIR"
+}
+
+# Run compositor/browser as KIOSK_USER — cage hard-refuses uid 0.
+run_kiosk_cmd() {
+  if [[ "$(id -u)" -eq 0 && "$KIOSK_USER" != "root" ]] && command -v runuser >/dev/null 2>&1; then
+    runuser -u "$KIOSK_USER" -- env \
+      "HOME=${KIOSK_HOME}" \
+      "USER=${KIOSK_USER}" \
+      "LOGNAME=${KIOSK_USER}" \
+      "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" \
+      "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-wayland}" \
+      "LIBSEAT_BACKEND=${LIBSEAT_BACKEND:-seatd}" \
+      "WLR_NO_HARDWARE_CURSORS=${WLR_NO_HARDWARE_CURSORS:-1}" \
+      "WLR_BACKENDS=${WLR_BACKENDS:-drm,libinput}" \
+      "WLR_RENDERER=${WLR_RENDERER}" \
+      "WLR_DRM_DEVICES=${WLR_DRM_DEVICES}" \
+      "WLR_LIBINPUT_NO_DEVICES=${WLR_LIBINPUT_NO_DEVICES:-}" \
+      "LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-}" \
+      "GALLIUM_DRIVER=${GALLIUM_DRIVER:-}" \
+      "MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-}" \
+      "GBM_BACKEND=${GBM_BACKEND:-}" \
+      "__GLX_VENDOR_LIBRARY_NAME=${__GLX_VENDOR_LIBRARY_NAME:-}" \
+      "__EGL_VENDOR_LIBRARY_FILENAMES=${__EGL_VENDOR_LIBRARY_FILENAMES:-}" \
+      "$@"
+  else
+    "$@"
+  fi
+}
+
+# Force Mesa EGL/GLX so NVIDIA GLVND ICDs (modeset=0) cannot steal the compositor.
+force_mesa_glvnd() {
+  local mesa_egl="" f
+  unset GBM_BACKEND 2>/dev/null || true
+  export __GLX_VENDOR_LIBRARY_NAME=mesa
+  for f in \
+    /usr/share/glvnd/egl_vendor.d/50_mesa.json \
+    /usr/share/glvnd/egl_vendor.d/*mesa*.json; do
+    [[ -f "$f" ]] || continue
+    mesa_egl="$f"
+    break
+  done
+  if [[ -n "$mesa_egl" ]]; then
+    export __EGL_VENDOR_LIBRARY_FILENAMES="$mesa_egl"
+    fail_note "STICKLLM_KIOSK_FORCE_MESA egl=$mesa_egl"
+  else
+    unset __EGL_VENDOR_LIBRARY_FILENAMES 2>/dev/null || true
+    fail_note "STICKLLM_KIOSK_FORCE_MESA egl=missing"
+  fi
+}
+
+apply_env_for_drm() {
+  local drm="$1" renderer="$2"
+  ensure_xdg_runtime
+  export XDG_SESSION_TYPE=wayland
+  export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-seatd}"
+  export WLR_NO_HARDWARE_CURSORS=1
+  # drm alone disables libinput → no keyboard/VT. Always include libinput on HW.
+  export WLR_BACKENDS="${WLR_BACKENDS:-drm,libinput}"
+  export WLR_RENDERER="$renderer"
+  export WLR_DRM_DEVICES="$drm"
+  # QEMU often has no keyboard — allow start without devices there only.
+  # On real USB keyboards, WLR_LIBINPUT_NO_DEVICES=1 can leave cage with zero
+  # input (keys never reach Chromium). Default off unless virtio/QEMU.
+  unset WLR_LIBINPUT_NO_DEVICES 2>/dev/null || true
+  if is_virtio_or_qemu_drm "$drm"; then
+    export WLR_LIBINPUT_NO_DEVICES="${WLR_LIBINPUT_NO_DEVICES:-1}"
+  elif [[ -n "${STICKLLM_KIOSK_LIBINPUT_NO_DEVICES:-}" ]]; then
+    export WLR_LIBINPUT_NO_DEVICES="$STICKLLM_KIOSK_LIBINPUT_NO_DEVICES"
+  fi
+  unset GBM_BACKEND __GLX_VENDOR_LIBRARY_NAME __EGL_VENDOR_LIBRARY_FILENAMES 2>/dev/null || true
+  unset WAYLAND_DISPLAY DISPLAY 2>/dev/null || true
+  unset LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE 2>/dev/null || true
+  if is_nvidia_path "$drm"; then
+    # Proprietary GLX/EGL; avoid forcing GBM_BACKEND=nvidia-drm when the
+    # nvidia-drm_gbm.so shim is missing (Debian 535 often lacks it) — pixman still works.
+    export __GLX_VENDOR_LIBRARY_NAME=nvidia
+    if [[ -e /usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so ]]; then
+      export GBM_BACKEND=nvidia-drm
+    fi
+  elif is_virtio_or_qemu_drm "$drm"; then
+    # virtio-vga often has no host GL — force Mesa software so WPE/cog can paint.
+    force_mesa_glvnd
+    export LIBGL_ALWAYS_SOFTWARE=1
+    export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
+    export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
+  else
+    # Hybrid AMD+NVIDIA with nvidia-drm modeset=0: GLVND still prefers NVIDIA EGL
+    # which fails without KMS — pin Mesa so cage/weston gles2/pixman use amdgpu.
+    force_mesa_glvnd
+  fi
+}
+
+write_weston_ini() {
+  local app="$1"
+  cat >"$WESTON_INI" <<EOF
+[core]
+backend=drm-backend.so
+shell=kiosk-shell.so
+idle-time=0
+require-input=false
+
+[shell]
+locking=false
+panel-position=none
+
+[kiosk-shell]
+exec=${app}
+EOF
+}
+
+ensure_seatd() {
+  local ok=0
+  systemctl unmask seatd.service 2>/dev/null || true
+  systemctl enable --now seatd.service 2>/dev/null || true
+  systemctl start seatd.service 2>/dev/null || true
+  sleep 1
+  if systemctl is-active --quiet seatd.service 2>/dev/null || pgrep -x seatd >/dev/null 2>&1; then
+    ok=1
+  elif command -v seatd >/dev/null 2>&1; then
+    # Last-ditch: run seatd in background for this session
+    seatd -g video -n 1 >>"$FAIL_LOG" 2>&1 &
+    sleep 1
+    pgrep -x seatd >/dev/null 2>&1 && ok=1
+  fi
+  if [[ "$ok" -eq 1 ]]; then
+    fail_note "STICKLLM_KIOSK_SEATD_OK"
+    return 0
+  fi
+  fail_note "STICKLLM_KIOSK_SEATD_FAIL"
+  return 1
+}
+
+pick_browser_bin() {
+  local prefer_chromium=0
+  # WPE/cog is flaky on virtio soft-GL and on hybrid NVIDIA GLVND (modeset=0).
+  # Chromium+ozone+SwiftShader (software GL) is the product-stable path for Local.
+  if [[ -e /dev/dri/card0 ]] && is_virtio_or_qemu_drm /dev/dri/card0; then
+    prefer_chromium=1
+  fi
+  if has_nvidia_drm; then
+    prefer_chromium=1
+  fi
+  if [[ "$prefer_chromium" -eq 1 ]]; then
+    if command -v chromium >/dev/null 2>&1; then
+      printf 'chromium'; return 0
+    fi
+    if command -v chromium-browser >/dev/null 2>&1; then
+      printf 'chromium-browser'; return 0
+    fi
+  fi
+  if command -v chromium >/dev/null 2>&1; then
+    printf 'chromium'
+  elif command -v chromium-browser >/dev/null 2>&1; then
+    printf 'chromium-browser'
+  elif command -v cog >/dev/null 2>&1; then
+    printf 'cog'
+  else
+    return 1
+  fi
+}
+
+cog_cmd() {
+  printf 'cog -P --enable-mediasource %q' "$URL"
+}
+
+# Stick-owned Chromium: auto-grant mic/camera for loopback + this stick's LAN
+# origins (no getUserMedia prompt). Remote phone/PC browsers are unaffected —
+# they still need HTTPS + a normal Allow gesture. Do not use
+# --use-fake-ui-for-media-stream: that would auto-accept capture for every
+# site in the profile (including the stick Browser window).
+stick_media_capture_urls_json() {
+  python3 - <<'PY' 2>/dev/null || true
+import json
+import os
+import re
+import subprocess
+
+urls = [
+    "http://127.0.0.1",
+    "http://127.0.0.1:*",
+    "https://127.0.0.1",
+    "https://127.0.0.1:*",
+    "http://localhost",
+    "http://localhost:*",
+    "https://localhost",
+    "https://localhost:*",
+    "http://[::1]",
+    "http://[::1]:*",
+    "https://[::1]",
+    "https://[::1]:*",
+]
+seen = set(urls)
+ipv4 = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+ips = []
+try:
+    out = subprocess.check_output(["hostname", "-I"], text=True, timeout=2)
+    ips.extend(out.split())
+except Exception:
+    pass
+for key in ("STICKLLM_PAIR_HOST", "STICKLLM_LAN_IP"):
+    val = (os.environ.get(key) or "").strip()
+    if val:
+        ips.append(val)
+for raw in ips:
+    ip = raw.strip().split("%", 1)[0]
+    if not ipv4.match(ip):
+        continue
+    if ip.startswith("127.") or ip.startswith("169.254."):
+        continue
+    for pattern in (
+        f"https://{ip}",
+        f"https://{ip}:*",
+        f"http://{ip}",
+        f"http://{ip}:*",
+    ):
+        if pattern not in seen:
+            urls.append(pattern)
+            seen.add(pattern)
+print(json.dumps({
+    "AudioCaptureAllowedUrls": urls,
+    "VideoCaptureAllowedUrls": list(urls),
+}))
+PY
+}
+
+# Keep a normal Chromium window so the tab strip stays on screen.
+# Fullscreen and app windows hide tabs, and the HDMI console then has no way
+# back to StickLLM except closing the browser.
+ensure_browser_tabs() {
+  [[ "${BROWSER:-}" == "cog" ]] && return 0
+  local dir media_json
+  media_json="$(stick_media_capture_urls_json)"
+  [[ -n "$media_json" ]] || media_json='{"AudioCaptureAllowedUrls":["http://127.0.0.1","http://127.0.0.1:*","https://127.0.0.1","https://127.0.0.1:*","http://localhost","http://localhost:*","https://localhost","https://localhost:*","http://[::1]","http://[::1]:*","https://[::1]","https://[::1]:*"],"VideoCaptureAllowedUrls":["http://127.0.0.1","http://127.0.0.1:*","https://127.0.0.1","https://127.0.0.1:*","http://localhost","http://localhost:*","https://localhost","https://localhost:*","http://[::1]","http://[::1]:*","https://[::1]","https://[::1]:*"]}'
+  for dir in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
+    mkdir -p "$dir" 2>/dev/null || continue
+    printf '%s\n' '{"FullscreenAllowed":false,"PopupsAllowedForUrls":["http://127.0.0.1","http://127.0.0.1:80","http://localhost","http://localhost:80"],"ClipboardAllowedForUrls":["http://127.0.0.1","http://localhost"]}' >"$dir/stickllm-tabs.json" 2>/dev/null || true
+    # Separate file so tab/clipboard rewrites never drop media auto-grant.
+    printf '%s\n' "$media_json" >"$dir/stickllm-media.json" 2>/dev/null || true
+  done
+  # Downloads: vault/Downloads when unlocked, blocked while locked.
+  if [[ -x /usr/local/bin/stickllm-download-policy ]]; then
+    STICKLLM_KIOSK_USER="$KIOSK_USER" /usr/local/bin/stickllm-download-policy auto >/dev/null 2>&1 || true
+  fi
+  # Web mode (Internet / Tor / No internet) for this Chromium + stick-local browsers.
+  if [[ -x /usr/local/bin/stickllm-web-mode ]]; then
+    /usr/local/bin/stickllm-web-mode apply >/dev/null 2>&1 || true
+  fi
+}
+
+# Address bar stays. Tabs stay. No --kiosk and no --app.
+# Chromium 156 paints a yellow "unsupported command-line flag" bar for
+# --ignore-certificate-errors-spki-list. The same bar is raised by
+# --no-sandbox, --ignore-certificate-errors, --disable-web-security, and
+# --test-type. Do not pass those, or --allow-insecure-localhost.
+# The console opens http://127.0.0.1/ and Agent Zero at http://127.0.0.1:5099/.
+# Graphics: --use-gl=angle --use-angle=swiftshader, not --disable-gpu.
+# With --disable-gpu on Wayland, native menus (right-click on Agent Zero and
+# other non-StickLLM pages) paint see-through: only the border shows.
+# SwiftShader keeps rendering in software and paints menus opaque. (v0.5.3)
+chromium_args() {
+  local bin="$1"
+  printf '%q' "$bin"
+  printf ' --start-maximized --ozone-platform=wayland --use-gl=angle --use-angle=swiftshader --no-first-run --disable-infobars'
+  printf ' --disable-session-crashed-bubble --hide-crash-restore-bubble'
+  printf ' --check-for-update-interval=31536000'
+  printf ' --user-data-dir=%q --disk-cache-dir=%q %q' "$PROFILE" "$PROFILE/cache" "$URL"
+}
+
+# Drop a crashed session so Chromium does not ask to open existing tabs.
+clear_restore_prompt() {
+  [[ "${BROWSER:-}" == "cog" ]] && return 0
+  local default="$PROFILE/Default" prefs
+  mkdir -p "$default"
+  rm -f "$default/Current Session" "$default/Current Tabs" \
+    "$default/Last Session" "$default/Last Tabs" 2>/dev/null || true
+  rm -rf "$default/Sessions" 2>/dev/null || true
+  prefs="$default/Preferences"
+  # First run: use the system frame (no Chromium caption buttons; the
+  # compositor ignores their minimise/maximise requests anyway).
+  [[ -f "$prefs" ]] || printf '%s\n' '{"browser":{"custom_chrome_frame":false},"session":{"restore_on_startup":5}}' > "$prefs"
+  if [[ -f "$prefs" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 - "$prefs" << 'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+if not isinstance(data, dict):
+    raise SystemExit(0)
+profile = data.get("profile")
+if not isinstance(profile, dict):
+    profile = {}
+    data["profile"] = profile
+profile["exit_type"] = "Normal"
+profile["exited_cleanly"] = True
+session = data.get("session")
+if not isinstance(session, dict):
+    session = {}
+    data["session"] = session
+session["restore_on_startup"] = 5
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(data, handle)
+PY
+  fi
+  chown -R "${KIOSK_USER}:${KIOSK_USER}" "$PROFILE" 2>/dev/null || true
+}
+
+drm_driver_name() {
+  local p="$1" base
+  base="$(basename "$p")"
+  basename "$(readlink -f "/sys/class/drm/${base}/device/driver" 2>/dev/null)" 2>/dev/null || true
+}
+
+is_virtio_or_qemu_drm() {
+  local drm="$1" driver base
+  driver="$(drm_driver_name "$drm")"
+  # QEMU virtio-vga often binds as virtio-pci (not virtio-gpu) in sysfs.
+  case "$driver" in
+    virtio*|virtio_gpu|virtio-gpu|virtio-pci) return 0 ;;
+  esac
+  base="$(basename "$drm")"
+  if grep -qi virtio "/sys/class/drm/${base}/device/uevent" 2>/dev/null; then
+    return 0
+  fi
+  if grep -Eiq 'qemu|bochs|virtio' /sys/class/dmi/id/product_name /sys/class/dmi/id/sys_vendor 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+# Renderer order: virtio/QEMU is pixman-only (gles2 hangs).
+# NVIDIA-as-display: pixman first (GBM/EGLStreams varies by driver/cage).
+# Clean amdgpu/i915 alone: gles2 then pixman.
+# stdout MUST be only the renderer tokens (no serial_note here).
+renderer_order_for_drm() {
+  local drm="$1" driver
+  driver="$(drm_driver_name "$drm")"
+  fail_note "STICKLLM_KIOSK_DRM_DRIVER $drm driver=${driver:-unknown}"
+  if is_virtio_or_qemu_drm "$drm" || is_weak_drm "$drm"; then
+    printf '%s' "pixman"
+  elif is_nvidia_path "$drm"; then
+    printf '%s' "pixman gles2"
+  elif has_nvidia_drm; then
+    printf '%s' "pixman gles2"
+  else
+    printf '%s' "gles2 pixman vulkan"
+  fi
+}
+
+# 0.5.7: Xfce (stock Debian packages, settings only) on Xorg is the only
+# on-stick desktop (sway, cage and weston are gone). If it cannot start, the
+# console says so and where the log is (hold_error).
+XFCE_XDG="${STICKLLM_XFCE_XDG:-/etc/stickllm/xfce/xdg}"
+XORG_CONF="$RUN/xorg-stickllm.conf"
+# 0.5.7: the Xorg log lives in a run dir owned by the kiosk user, and we
+# rotate it ourselves before every start. 0.5.6 used /var/log/stickllm-xorg.log
+# and an earlier Xorg left it root-owned, so the next start died with
+# "Cannot move old log file".
+XORG_LOG_DIR="${STICKLLM_XORG_LOG_DIR:-/run/stickllm/xorg}"
+XORG_LOG="${STICKLLM_XORG_LOG:-$XORG_LOG_DIR/stickllm-xorg.log}"
+XORG_PID=""
+xfce_enabled() {
+  [[ "${STICKLLM_KIOSK_XFCE:-1}" != "0" ]] || return 1
+  local b
+  for b in Xorg xfce4-session xfwm4 xhost xset wmctrl; do
+    command -v "$b" >/dev/null 2>&1 || return 1
+  done
+  [[ -d "$XFCE_XDG" && -x /usr/local/bin/stickllm-xfce-session && -x /usr/local/bin/stickllm-xfce-open ]] || return 1
+  return 0
+}
+
+# Xorg config for exactly one GPU (the display card the ladder picked); other
+# GPUs (compute cards) are never added to the X screen.
+write_xorg_conf() {
+  local drm="$1" force_drv="${2:-}" base slot busid="" drv=modesetting
+  base="$(basename "$drm")"
+  slot="$(basename "$(readlink -f "/sys/class/drm/${base}/device" 2>/dev/null)" 2>/dev/null || true)"
+  if [[ "$slot" =~ ^[0-9a-fA-F]{4}:([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-7])$ ]]; then
+    busid="PCI:$((16#${BASH_REMATCH[1]})):$((16#${BASH_REMATCH[2]})):${BASH_REMATCH[3]}"
+  fi
+  if is_nvidia_path "$drm" && [[ -e /usr/lib/xorg/modules/drivers/nvidia_drv.so || -e /usr/lib/nvidia/current/nvidia_drv.so ]]; then
+    drv=nvidia
+  fi
+  [[ -n "$force_drv" ]] && drv="$force_drv"
+  {
+    echo '# Written by stickllm-kiosk at every desktop start.'
+    echo 'Section "ServerFlags"'
+    echo '  Option "AutoAddGPU" "false"'
+    # 0.6.0 (B2): never bind the other card (RX 570 + NVIDIA) as a GPU screen.
+    echo '  Option "AutoBindGPU" "false"'
+    echo '  Option "DontVTSwitch" "true"'
+    echo '  Option "DontZap" "true"'
+    echo '  Option "BlankTime" "0"'
+    echo 'EndSection'
+    # 0.5.9: Debian keeps nvidia_drv.so / libglxserver_nvidia.so in
+    # /usr/lib/nvidia/current, which is not in the default ModulePath
+    # (0.5.8: 'Failed to load module "nvidia" (module does not exist)').
+    echo 'Section "Files"'
+    [[ "$drv" == nvidia && -d /usr/lib/nvidia/current ]] && echo '  ModulePath "/usr/lib/nvidia/current"'
+    echo '  ModulePath "/usr/lib/xorg/modules"'
+    echo 'EndSection'
+    echo 'Section "Device"'
+    echo '  Identifier "stickllm-gpu"'
+    echo "  Driver \"$drv\""
+    [[ -n "$busid" ]] && echo "  BusID \"$busid\""
+    [[ "$drv" == modesetting ]] && echo "  Option \"kmsdev\" \"/dev/dri/$base\""
+    echo 'EndSection'
+    echo 'Section "Screen"'
+    echo '  Identifier "stickllm-screen"'
+    echo '  Device "stickllm-gpu"'
+    echo 'EndSection'
+  } >"$XORG_CONF"
+  fail_note "STICKLLM_KIOSK_XORG_CONF drm=$drm driver=$drv busid=${busid:-none}"
+}
+
+stop_xorg() {
+  [[ -n "$XORG_PID" ]] || return 0
+  kill "$XORG_PID" 2>/dev/null || true
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$XORG_PID" 2>/dev/null || break
+    sleep 0.5
+  done
+  kill -9 "$XORG_PID" 2>/dev/null || true
+  XORG_PID=""
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+}
+trap 'stop_xorg' EXIT
+
+# Any Xorg on :0 not started by this kiosk run (a previous kiosk process that
+# systemd restarted, or an attempt that hung) holds the VT, the DRM master and
+# the :0 lock; the next start then fails. Kill it and clear the lock first.
+kill_stale_xorg() {
+  local pid
+  for pid in $(pgrep -x Xorg 2>/dev/null; pgrep -x Xorg.real 2>/dev/null; pgrep -f '^/usr/lib/xorg/Xorg' 2>/dev/null); do
+    [[ -n "$XORG_PID" && "$pid" == "$XORG_PID" ]] && continue
+    fail_note "STICKLLM_KIOSK_XORG_STALE pid=$pid"
+    kill "$pid" 2>/dev/null || true
+  done
+  sleep 0.5
+  for pid in $(pgrep -x Xorg 2>/dev/null; pgrep -x Xorg.real 2>/dev/null); do
+    [[ -n "$XORG_PID" && "$pid" == "$XORG_PID" ]] && continue
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+}
+
+prepare_xorg_log() {
+  mkdir -p "$XORG_LOG_DIR" 2>/dev/null || true
+  chown "${KIOSK_USER}:${KIOSK_USER}" "$XORG_LOG_DIR" 2>/dev/null || true
+  chmod 755 "$XORG_LOG_DIR" 2>/dev/null || true
+  if [[ -e "$XORG_LOG" ]]; then
+    mv -f "$XORG_LOG" "$XORG_LOG.old" 2>/dev/null || rm -f "$XORG_LOG" 2>/dev/null || true
+  fi
+  rm -f "$XORG_LOG.old.old" 2>/dev/null || true
+}
+
+# Xorg runs as root (as Xorg.wrap would); only the kiosk user may connect.
+start_xorg() {
+  local drm="$1" i
+  write_xorg_conf "$drm" "${XORG_FORCE_DRV:-}"
+  kill_stale_xorg
+  prepare_xorg_log
+  fail_note "STICKLLM_KIOSK_XORG_START drm=$drm uid=$(id -u) log=$XORG_LOG"
+  Xorg :0 vt1 -keeptty -nolisten tcp -noreset -novtswitch -config "$XORG_CONF" \
+    -logfile "$XORG_LOG" >>"$FAIL_LOG" 2>&1 &
+  XORG_PID=$!
+  for i in $(seq 1 60); do
+    if [[ -S /tmp/.X11-unix/X0 ]] && DISPLAY=:0 xset q >/dev/null 2>&1; then
+      DISPLAY=:0 xhost - >/dev/null 2>&1 || true
+      DISPLAY=:0 xhost "+SI:localuser:${KIOSK_USER}" >/dev/null 2>&1 || true
+      DISPLAY=:0 xhost "+SI:localuser:root" >/dev/null 2>&1 || true  # stickllm-control window ops
+      DISPLAY=:0 xset s off -dpms >/dev/null 2>&1 || true
+      kiosk_mark "xorg-up-$(basename "$drm")"
+      return 0
+    fi
+    kill -0 "$XORG_PID" 2>/dev/null || break
+    # 0.6.0 (B7): a fatal Xorg error (wrong driver for this card) used to
+    # cost the full 30 s before the next driver/card was tried.
+    grep -q "Fatal server error" "$XORG_LOG" 2>/dev/null && break
+    sleep 0.5
+  done
+  fail_note "STICKLLM_KIOSK_XORG_FAIL drm=$drm"
+  tail -n 40 "$XORG_LOG" >>"$FAIL_LOG" 2>/dev/null || true
+  stop_xorg
+  return 1
+}
+
+# Run one compositor+browser combo in foreground; return its exit code.
+try_launch() {
+  local label="$1" drm="$2" renderer="$3" comp="$4" browser="$5"
+  local rc=0 app run_timeout=0
+  if [[ "$browser" != "cog" ]]; then
+    clear_restore_prompt
+  fi
+  apply_env_for_drm "$drm" "$renderer"
+  # QEMU virtio often hangs in gles/pixman without painting — bound tries so ladder advances.
+  if is_virtio_or_qemu_drm "$drm"; then
+    # Chromium cold-start on software GL needs >40s before first paint in QEMU.
+    run_timeout="${STICKLLM_KIOSK_VIRTIO_TRY_SECS:-90}"
+  fi
+  # The Xfce session is long-running by design; its own start check decides.
+  [[ "$comp" == "xfce" ]] && run_timeout=0
+  chvt 1 2>/dev/null || true
+  release_display_for_compositor
+  fail_note "STICKLLM_KIOSK_TRY label=$label drm=$drm renderer=$renderer comp=$comp browser=$browser timeout=$run_timeout"
+  paint "  Starting the desktop ($label)…"
+
+  if [[ "$browser" == "cog" ]]; then
+    app="cog -P --enable-mediasource $URL"
+  else
+    app="$browser --start-maximized --ozone-platform=wayland --use-gl=angle --use-angle=swiftshader --no-first-run --disable-infobars --disable-session-crashed-bubble --hide-crash-restore-bubble --check-for-update-interval=31536000 --user-data-dir=$PROFILE --disk-cache-dir=$PROFILE/cache $URL"
+  fi
+
+  # drop_root=1 → runuser as KIOSK_USER (required for cage).
+  # drop_root=0 → stay root (weston drm-backend needs root/logind; user path fails).
+  _run() {
+    local drop_root="${1:-0}"
+    shift
+    local -a prefix=()
+    if [[ "$run_timeout" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
+      prefix=(timeout "$run_timeout")
+    fi
+    if [[ "$drop_root" -eq 1 && "$(id -u)" -eq 0 && "$KIOSK_USER" != "root" ]] \
+      && command -v runuser >/dev/null 2>&1; then
+      "${prefix[@]}" runuser -u "$KIOSK_USER" -- env \
+        "HOME=${KIOSK_HOME}" \
+        "USER=${KIOSK_USER}" \
+        "LOGNAME=${KIOSK_USER}" \
+        "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" \
+        "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-wayland}" \
+        "DISPLAY=${DISPLAY:-}" \
+        "LIBSEAT_BACKEND=${LIBSEAT_BACKEND:-seatd}" \
+        "WLR_NO_HARDWARE_CURSORS=${WLR_NO_HARDWARE_CURSORS:-1}" \
+        "WLR_BACKENDS=${WLR_BACKENDS:-drm,libinput}" \
+        "WLR_RENDERER=${WLR_RENDERER}" \
+        "WLR_DRM_DEVICES=${WLR_DRM_DEVICES}" \
+        "WLR_LIBINPUT_NO_DEVICES=${WLR_LIBINPUT_NO_DEVICES:-}" \
+        "LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-}" \
+        "GALLIUM_DRIVER=${GALLIUM_DRIVER:-}" \
+        "MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-}" \
+        "GBM_BACKEND=${GBM_BACKEND:-}" \
+        "__GLX_VENDOR_LIBRARY_NAME=${__GLX_VENDOR_LIBRARY_NAME:-}" \
+        "__EGL_VENDOR_LIBRARY_FILENAMES=${__EGL_VENDOR_LIBRARY_FILENAMES:-}" \
+        "STICKLLM_SESSION_BROWSER=${browser}" \
+        "STICKLLM_SESSION_URL=${URL}" \
+        "STICKLLM_SESSION_PROFILE=${PROFILE}" \
+        "$@"
+    else
+      # Root weston path: use root XDG runtime (seatd/logind-friendly).
+      if [[ "$drop_root" -eq 0 && "$(id -u)" -eq 0 ]]; then
+        export XDG_RUNTIME_DIR=/run/user/0
+        mkdir -p "$XDG_RUNTIME_DIR"
+        chmod 700 "$XDG_RUNTIME_DIR"
+      fi
+      "${prefix[@]}" "$@"
+    fi
+  }
+
+  set +e
+  case "$comp" in
+    xfce)
+      # 0.5.6 desktop: stock Xfce on Xorg. A session that ends within 20 s
+      # (or never starts) is a failure; the next display card is tried, then
+      # hold_error explains it on the console.
+      _rcf="${XDG_RUNTIME_DIR}/stickllm-xfce-session.rc"
+      rm -f "$_rcf"
+      echo "=== xfce launch $(date -Is 2>/dev/null || date) drm=$drm user=$KIOSK_USER ===" >>"$FAIL_LOG" 2>&1 || true
+      if start_xorg "$drm"; then
+        DISPLAY=:0 XDG_SESSION_TYPE=x11 _run 1 /usr/local/bin/stickllm-xfce-session 2>&1 | kiosk_fail_filter
+        rc=${PIPESTATUS[0]}
+        stop_xorg
+        _srow="$(cat "$_rcf" 2>/dev/null || true)"
+        _ssecs="$(sed -n 's/.*secs=\([0-9]*\).*/\1/p' <<<"$_srow")"
+        fail_note "STICKLLM_KIOSK_XFCE_SESSION ${_srow:-no-session-record} rc=$rc"
+        if [[ -z "$_srow" ]]; then
+          rc=71
+        elif [[ "${_ssecs:-0}" -lt 20 ]]; then
+          rc=70
+        else
+          rc=0
+        fi
+      else
+        rc=72
+      fi
+      ;;
+    cage)
+      # 0.5.8: pre-0.5.6 full-screen kiosk (cage + browser), only when Xfce failed.
+      ensure_seatd 2>/dev/null || true
+      export WLR_RENDERER="${renderer}"
+      echo "=== cage launch $(date -Is 2>/dev/null || date) renderer=$renderer user=$KIOSK_USER ===" >>"$FAIL_LOG" 2>&1 || true
+      # cage refuses uid 0 -> drop_root=1.
+      # shellcheck disable=SC2086
+      _run 1 cage -s -- $app 2>&1 | kiosk_fail_filter
+      rc=${PIPESTATUS[0]}
+      ;;
+    *)
+      rc=127
+      ;;
+  esac
+  set -u
+  # timeout(1) => 124: on virtio treat as failure so ladder can continue / unit restart.
+  if [[ "$rc" -eq 124 ]]; then
+    fail_note "STICKLLM_KIOSK_TRY_TIMEOUT label=$label"
+    serial_note "STICKLLM_KIOSK_TRY_TIMEOUT label=$label"
+  fi
+  fail_note "STICKLLM_KIOSK_TRY_EXIT label=$label rc=$rc"
+  serial_note "STICKLLM_KIOSK_EXIT label=$label rc=$rc"
+  # Surface compositor errors on serial (Local has no SSH in product path).
+  if [[ "$rc" -ne 0 ]]; then
+    serial_note "STICKLLM_KIOSK_FAIL_TAIL label=$label"
+    # Avoid pipe-subshell loss of serial writes
+    local _line _n=0
+    while IFS= read -r _line && [[ "$_n" -lt 40 ]]; do
+      serial_note "FAIL| $_line"
+      _n=$((_n + 1))
+    done < <(tail -n 40 "$FAIL_LOG" 2>/dev/null || true)
+    # Never leave a dead DRM master / blank HDMI after a failed try.
+    restore_display_console "try-fail:$label:rc=$rc"
+  fi
+  return "$rc"
+}
+
+hold_error() {
+  # 0.5.7: plain console message. No pair code or passwords on screen.
+  local reason="${1:-unknown}"
+  restore_display_console "hold_error"
+  printf '\033c' >"$TTY" 2>/dev/null || true
+  paint "========================================"
+  paint "  StickLLM ${STICKLLM_VERSION_LABEL}"
+  paint "========================================"
+  paint ""
+  paint "  The desktop couldn't start."
+  paint ""
+  paint "  Why:      $reason"
+  paint "  Log:      $FAIL_LOG"
+  paint "  Xorg log: $XORG_LOG"
+  paint ""
+  paint "  StickLLM still runs: open http://<this stick's IP>/ from a phone or PC"
+  paint "  on the LAN. It asks for the pair code: run stickllm-pair over SSH."
+  paint ""
+  paint "  Trying again in 45 s..."
+  sleep 45
+  exit 1
+}
+
+
+# --- main ---
+# Chat (stickllm.chat) shares the on-stick browser; local/kiosk are aliases.
+CHAT_MODE=0
+STICKLLM_VERSION_LABEL="$(python3 -c 'import json;print("v"+json.load(open("/opt/stickllm/ui/stickllm.json"))["version"])' 2>/dev/null || echo v0.6.12)"
+if grep -Eqw 'stickllm\.chat' /proc/cmdline 2>/dev/null; then
+  CHAT_MODE=1
+elif ! grep -Eqw 'stickllm\.(local|kiosk)' /proc/cmdline 2>/dev/null; then
+  hold_error "not chat/local/kiosk mode"
+fi
+
+mkdir -p "$RUN"
+prepare_kiosk_user || hold_error "no unprivileged console user"
+touch "$RUN/local-mode"
+serial_note "STICKLLM_KIOSK_START chat=$CHAT_MODE fails=$(fail_count)"
+kiosk_mark start
+collect_drm_diag
+
+if ! xfce_enabled; then
+  hold_error "the Xfce desktop (Xorg, xfce4-session, xfwm4) is not installed"
+fi
+
+BROWSER="$(pick_browser_bin || true)"
+[[ -n "${BROWSER:-}" && "$BROWSER" != "cog" ]] || hold_error "Chromium is not installed"
+ensure_browser_tabs
+
+
+# 0.5.7: the boot screen itself is stickllm-bootstatus (timer + real status).
+# The kiosk adds only short plain lines; never the pair code or passwords.
+paint ""
+paint "  Starting the desktop…"
+# Vault unlock is UI-only — never prompt on tty at boot (blocks headless Server/Local).
+# Default session Mode stays Ephemeral until the user unlocks in Settings.
+if [[ -x /usr/local/bin/stickllm-vault-boot ]]; then
+  /usr/local/bin/stickllm-vault-boot || true
+  serial_note "STICKLLM_VAULT_BOOT status=$(tr -d '[:space:]' <"$RUN/vault-boot.txt" 2>/dev/null || echo unknown) (no tty prompt)"
+fi
+
+ui_ready=0
+code="000"
+for i in $(seq 1 "$WAIT_UI_SECS"); do
+  code="$(http_code "$URL")"
+  if [[ "$code" == "200" ]]; then
+    ui_ready=1
+    serial_note "STICKLLM_KIOSK_UI_READY after=${i}s"
+    kiosk_mark ui-ready
+    break
+  fi
+  if (( i == 1 || i % 10 == 0 )); then
+    paint "  Waiting for the StickLLM service… ${i}s"
+  fi
+  sleep 1
+done
+[[ "$ui_ready" -eq 1 ]] || hold_error "UI never returned HTTP 200 (last=$code)"
+
+# 0.5.6 started the model here and printed "Model still loading" whether or
+# not it was. 0.5.7: the desktop does not wait on or claim anything about the
+# model; the boot screen and the desktop bar show the real llama state.
+
+# Ensure DRM nodes exist: amdgpu/i915 on stick HDMI; virtio_gpu in QEMU Local proof.
+modprobe amdgpu 2>/dev/null || true
+modprobe i915 2>/dev/null || true
+modprobe virtio_gpu 2>/dev/null || true
+# Monitor on 3090: modeset=0 hides connectors — enable KMS before pick.
+ensure_nvidia_kms || fail_note "STICKLLM_KIOSK_NVIDIA_KMS_WARN"
+kiosk_mark kms
+
+# 0.5.6: no monitor connected (headless server / BMC): do not fail, so systemd
+# does not restart the kiosk in a loop. Wait quietly and start when a monitor
+# is plugged in.
+any_display_connected() {
+  local conn
+  for conn in /sys/class/drm/card*-*/status; do
+    [[ -f "$conn" ]] || continue
+    [[ "$(tr -d '[:space:]' <"$conn" 2>/dev/null || true)" == "connected" ]] && return 0
+  done
+  return 1
+}
+if ! any_display_connected; then
+  _w=0
+  while ! any_display_connected && [[ "$_w" -lt 12 ]]; do
+    # Retry NVIDIA KMS while waiting — first attempt often races llama/udev.
+    if (( _w == 3 || _w == 8 )); then
+      ensure_nvidia_kms force || true
+    fi
+    sleep 1
+    _w=$((_w + 1))
+  done
+fi
+if ! any_display_connected; then
+  fail_note "STICKLLM_KIOSK_NO_DISPLAY waiting"
+  serial_note "STICKLLM_KIOSK_NO_DISPLAY waiting for a monitor (no restart loop)"
+  restore_display_console "no-display"
+  paint "  No monitor connected. The browser UI works from a phone or PC on the LAN."
+  paint "  This screen starts when a monitor is plugged in."
+  # Keep retrying NVIDIA KMS: efifb can paint this message on the same HDMI
+  # cable that KMS still has not claimed (modeset=0).
+  _w=0
+  while ! any_display_connected; do
+    if (( _w % 2 == 0 )); then
+      ensure_nvidia_kms force || true
+    fi
+    sleep 8
+    _w=$((_w + 1))
+  done
+  fail_note "STICKLLM_KIOSK_DISPLAY_APPEARED"
+  sleep 2
+fi
+
+# Restore fbcon so status text is visible while we pick DRM, then release in try_launch.
+restore_display_console "pre-launch"
+
+
+DISPLAY_DRM="$(pick_display_drm || true)"
+if [[ -z "${DISPLAY_DRM:-}" ]]; then
+  hold_error "no /dev/dri/card* with a usable display found — see $FAIL_LOG"
+fi
+fail_note "STICKLLM_KIOSK_DRM_PICK $DISPLAY_DRM"
+kiosk_mark "pick-$(basename "$DISPLAY_DRM")"
+serial_note "STICKLLM_KIOSK_BROWSER $BROWSER $URL drm=$DISPLAY_DRM driver=$(drm_driver_name "$DISPLAY_DRM")"
+
+
+# Keep a working stack forever: rc=0 (clean browser exit) relaunches SAME combo.
+# Do not advance the ladder on success — that caused clear+retry loops.
+run_stack_forever() {
+  local label="$1" drm="$2" renderer="$3" comp="$4" browser="$5"
+  local rc=1
+  while true; do
+    try_launch "$label" "$drm" "$renderer" "$comp" "$browser"
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      return "$rc"
+    fi
+    serial_note "STICKLLM_KIOSK_BROWSER_EXIT_CLEAN relaunch_same label=$label"
+    restore_display_console "browser-clean-exit"
+    paint "  Desktop closed — starting it again…"
+    sleep 1
+  done
+}
+
+# Strategy ladder — first long-running success is the product.
+# Include the picked card even when it is NVIDIA (3090-as-display).
+# 0.5.9: fallbacks are only cards with a monitor connected (0.5.8 fell back
+# to an RX 570 with nothing plugged in). Real KMS cards first, then weak ones.
+drm_list=("$DISPLAY_DRM")
+for _c in /dev/dri/card[0-9]; do
+  [[ -e "$_c" ]] || continue
+  [[ "$_c" == "$DISPLAY_DRM" ]] && continue
+  is_weak_drm "$_c" && continue
+  card_connected "$_c" || { fail_note "STICKLLM_KIOSK_DRM_SKIP_NO_MONITOR $_c"; continue; }
+  drm_list+=("$_c")
+done
+for _c in /dev/dri/card[0-9]; do
+  [[ -e "$_c" ]] || continue
+  [[ "$_c" == "$DISPLAY_DRM" ]] && continue
+  is_weak_drm "$_c" || continue
+  card_connected "$_c" || continue
+  drm_list+=("$_c")
+done
+fail_note "STICKLLM_KIOSK_DRM_LIST ${drm_list[*]}"
+
+for drm in "${drm_list[@]}"; do
+  # 0.5.7: Xfce on Xorg only, on each usable display card in turn.
+  XORG_FORCE_DRV=""
+  run_stack_forever "xfce+$BROWSER@$(basename "$drm")" "$drm" x11 xfce "$BROWSER" \
+    && exit 0
+  fail_note "STICKLLM_KIOSK_XFCE_FAIL drm=$drm"
+  serial_note "STICKLLM_KIOSK_XFCE_FAIL drm=$(basename "$drm")"
+  # 0.5.9: NVIDIA Xorg driver failed -> modesetting on the same card (needs
+  # nvidia-drm modeset=1, set by ensure_nvidia_kms) before any other card.
+  if is_nvidia_path "$drm"; then
+    XORG_FORCE_DRV=modesetting
+    fail_note "STICKLLM_KIOSK_XFCE_NVIDIA_MODESETTING drm=$drm"
+    run_stack_forever "xfce-modesetting+$BROWSER@$(basename "$drm")" "$drm" x11 xfce "$BROWSER" \
+      && exit 0
+    XORG_FORCE_DRV=""
+    fail_note "STICKLLM_KIOSK_XFCE_FAIL drm=$drm driver=modesetting"
+  fi
+done
+XORG_FORCE_DRV=""
+
+# 0.5.8: Xfce failed everywhere -> full-screen browser kiosk (cage), as before 0.5.6.
+if command -v cage >/dev/null 2>&1; then
+  for drm in "${drm_list[@]}"; do
+    for _r in pixman gles2; do
+      fail_note "STICKLLM_KIOSK_CAGE_FALLBACK drm=$drm renderer=$_r"
+      serial_note "STICKLLM_KIOSK_CAGE_FALLBACK drm=$(basename "$drm") renderer=$_r"
+      run_stack_forever "cage+$BROWSER/$_r@$(basename "$drm")" "$drm" "$_r" cage "$BROWSER" \
+        && exit 0
+    done
+  done
+fi
+
+n="$(bump_fails)"
+collect_drm_diag
+hold_error "Xfce/Xorg and the browser kiosk (cage) did not start on ${drm_list[*]} (attempt $n)."

@@ -1,0 +1,17 @@
+[Unit]
+Description=StickLLM file helper (127.0.0.1 only)
+After=local-fs.target
+
+[Service]
+Type=simple
+User=stickllm
+Group=stickllm
+# grant-vault is the privileged prefix. The helper process itself is stickllm.
+ExecStartPre=+/usr/local/bin/stickllm-files grant-vault
+ExecStart=/usr/local/bin/stickllm-files serve
+Restart=on-failure
+RestartSec=2
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

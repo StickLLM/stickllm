@@ -1,0 +1,40 @@
+#!/bin/bash
+# StickLLM (MIT). Xfce session for the on-stick screen, started by
+# stickllm-kiosk as the kiosk user on the X server it started.
+# Xfce is the stock Debian packages, unmodified. StickLLM only writes Xfce
+# settings (xfconf XML, panel launchers, kioskrc) and starts the session.
+# Locked down: no terminal (not installed), no application menu, no panel,
+# no desktop icons, no log-out button, session is never saved. When the session ends, stickllm-kiosk starts it again.
+set -u
+RCFILE="${XDG_RUNTIME_DIR:-/tmp}/stickllm-xfce-session.rc"
+SHARE=/usr/local/share/stickllm/xfce
+XDGDIR=/etc/stickllm/xfce/xdg
+UIROOT="${STICKLLM_UI_ROOT:-/opt/stickllm/ui}"
+rm -f "$RCFILE"
+
+export XDG_CONFIG_DIRS="$XDGDIR:/etc/xdg"
+export XDG_CURRENT_DESKTOP=XFCE XDG_SESSION_DESKTOP=xfce XDG_SESSION_TYPE=x11
+export XDG_CONFIG_HOME="$HOME/.config"
+unset WAYLAND_DISPLAY
+
+cfg="$XDG_CONFIG_HOME/xfce4"
+xml="$cfg/xfconf/xfce-perchannel-xml"
+rm -rf "$cfg/panel" "$xml" "$HOME/.cache/sessions" "${XDG_RUNTIME_DIR:-/tmp}/stickllm-web"
+mkdir -p "$xml"
+cp -f "$XDGDIR"/xfce4/xfconf/xfce-perchannel-xml/*.xml "$xml/" 2>/dev/null || true
+
+# 0.5.7: no xfce4-panel and no xfdesktop (default Xfce clutter). The
+# StickLLM desktop window (stickllm-xfce-open home, autostart) is full screen
+# with its own bottom bar, launcher and settings windows, like 0.5.6 on sway.
+# The root window gets the 0.5.6 desktop colour for the moment before it maps.
+xsetroot -solid '#0f1720' 2>/dev/null || true
+
+start=$(date +%s)
+if command -v dbus-launch >/dev/null 2>&1; then
+  dbus-launch --exit-with-session xfce4-session
+else
+  xfce4-session
+fi
+rc=$?
+echo "rc=$rc secs=$(( $(date +%s) - start ))" >"$RCFILE"
+exit 0

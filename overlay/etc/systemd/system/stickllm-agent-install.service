@@ -1,0 +1,13 @@
+[Unit]
+Description=StickLLM Agent Zero install (pull, smoke test, then stickllm-agent.service)
+After=local-fs.target
+ConditionPathIsMountPoint=/var/lib/stickllm/vault
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/stickllm-agent install
+TimeoutStartSec=infinity
+# Started on demand by stickllm-gateway (Apps page). Its own cgroup, so a
+# stickllm-ui restart does not stop a pull. stickllm-agent enters the host
+# mount namespace itself. When the image passes the smoke test the installer
+# hands the container to stickllm-agent.service. Not enabled: never at boot.

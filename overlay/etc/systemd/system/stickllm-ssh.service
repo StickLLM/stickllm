@@ -1,0 +1,19 @@
+[Unit]
+Description=StickLLM OpenSSH (Terminal menu 3, or Test menu 4 with chat)
+Documentation=file:///etc/motd
+# Terminal: stickllm.ssh alone. Test: stickllm.chat stickllm.ssh (same flag).
+ConditionKernelCommandLine=stickllm.ssh
+After=network.target stickllm-console-setup.service
+Wants=network.target stickllm-console-setup.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /run/sshd /run/stickllm
+ExecStartPre=/usr/bin/ssh-keygen -A
+ExecStartPre=/usr/local/bin/stickllm-ssh-bootstrap
+ExecStart=/usr/sbin/sshd -D -e
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

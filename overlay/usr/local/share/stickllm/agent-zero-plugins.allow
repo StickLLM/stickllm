@@ -1,0 +1,8 @@
+# Agent Zero third-party plugin allowlist. Empty since v0.5.4: all plugins are banned.
+#
+# Each line is fetched once, at ISO build time, at the exact commit below,
+# then hash-checked and baked read-only into the ISO. The stick never fetches
+# or installs plugins at runtime. A wrong commit or tree hash fails the build.
+# Review notes for every entry: docs/PLUGIN-REVIEWS.md.
+# Format: name  repo  commit_sha40  license  tree_sha256
+# tree_sha256 = scripts/lib/a0_plugins.py tree-hash <checkout>

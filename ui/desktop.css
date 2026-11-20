@@ -1,0 +1,279 @@
+/* StickLLM desktop layout (desktop.js). Everything is scoped to
+   body.deskMode, so the classic and mobile layouts are untouched.
+   Window chrome: WinBox.js 0.2.82 (vendor/winbox-0.2.82, Apache-2.0);
+   these rules only restyle it to the StickLLM theme.
+   TODO(0.6.8+): optimize entire desktop UI for phones — taskbar, WinBox
+   chrome, launcher and wall icons do not render well on small viewports.
+   Tracked in docs/UI-PHONE.md and CHANGELOG 0.6.8 Later. */
+body.deskMode{overflow:hidden;background:
+  radial-gradient(1400px 700px at 12% -12%, rgba(43,181,168,.20), transparent 60%),
+  radial-gradient(900px 600px at 100% 110%, rgba(108,142,240,.12), transparent 60%),
+  linear-gradient(180deg,#11171a 0%,var(--bg) 55%)}
+html[data-theme="light"] body.deskMode{background:
+  radial-gradient(1400px 700px at 12% -12%, rgba(19,138,127,.16), transparent 60%),
+  radial-gradient(900px 600px at 100% 110%, rgba(74,111,216,.10), transparent 60%),
+  linear-gradient(180deg,#e4f1ef 0%,var(--bg) 55%)}
+
+/* Boot splash block logo (stickllm-bootstatus BANNER) as a large, quiet backdrop.
+   Lives outside #app / deskLayer so icons and WinBox stay above; no desktop.js. */
+.deskSplash{display:none}
+body.deskMode > .deskSplash{
+  display:block;position:fixed;left:50%;top:calc(50% - 24px);z-index:0;
+  margin:0;padding:0;border:0;background:none;transform:translate(-50%,-50%);
+  pointer-events:none;user-select:none;white-space:pre;text-align:left;
+  font-family:ui-monospace,"Cascadia Mono",Consolas,"DejaVu Sans Mono",monospace;
+  font-size:clamp(11px,2.35vw,26px);line-height:1.12;letter-spacing:0;
+  color:color-mix(in srgb,var(--accent) 70%,var(--ink));opacity:.11}
+html[data-theme="light"] body.deskMode > .deskSplash{
+  color:color-mix(in srgb,var(--accent) 55%,var(--ink2));opacity:.09}
+
+/* Windows live in their own stacking context under the taskbar, dialogs,
+   load bar and toasts, however high WinBox counts its z-index. */
+body.deskMode .deskLayer{position:fixed;left:0;top:0;right:0;bottom:48px;z-index:1;isolation:isolate}
+body.deskMode .deskWall{position:absolute;inset:0;display:grid;grid-auto-flow:column;grid-template-rows:repeat(auto-fill,100px);grid-auto-columns:96px;gap:6px 8px;padding:18px;align-content:start;justify-content:start}
+body.deskMode .wallIcon{display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 4px;border:1px solid transparent;border-radius:12px;background:none;color:var(--ink);cursor:default;user-select:none}
+body.deskMode .wallIcon:hover{background:rgba(255,255,255,.06)}
+html[data-theme="light"] body.deskMode .wallIcon:hover{background:rgba(0,0,0,.05)}
+body.deskMode .wallIcon:focus{outline:none;background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+body.deskMode .wallIcon .deskGlyph{width:48px;height:48px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,.25)}
+body.deskMode .wallIcon .deskGlyph svg{width:26px;height:26px}
+body.deskMode .wallLabel{font-size:12.5px;font-weight:560;line-height:1.2;text-shadow:0 1px 2px rgba(0,0,0,.35)}
+html[data-theme="light"] body.deskMode .wallLabel{text-shadow:none}
+
+/* App colours (same as the Apps page icons). */
+body.deskMode [data-app="chat"] .deskGlyph{background:var(--accent)}
+body.deskMode [data-app="files"] .deskGlyph{background:#2563eb}
+body.deskMode [data-app="notepad"] .deskGlyph{background:#eab308}
+body.deskMode [data-app="minesweeper"] .deskGlyph{background:#6b7280}
+body.deskMode [data-app="solitaire"] .deskGlyph{background:#15803d}
+body.deskMode [data-app="tetris"] .deskGlyph{background:#0891b2}
+body.deskMode [data-app="calculator"] .deskGlyph{background:#f97316}
+body.deskMode [data-app="media"] .deskGlyph{background:#dc2626}
+body.deskMode [data-app="monitor"] .deskGlyph{background:#7c3aed}
+body.deskMode [data-app="chat"] .deskGlyph svg{stroke:var(--accent-ink)}
+
+/* ---- Windows (WinBox) ---- */
+/* 0.5.9: no box-shadow transition and no 1px cyan ring outside the box. On
+   the stick (software GL) the animated ring/shadow outside the window bounds
+   was not repainted after move/resize and left a cyan ghost frame. (No
+   transform layer: #app inside Chat has position:fixed children.) */
+body.deskMode .winbox{background:var(--line);border-radius:10px 10px 8px 8px;overflow:hidden;box-shadow:0 8px 22px rgba(0,0,0,.30)}
+body.deskMode .winbox.focus{background:var(--accent);box-shadow:0 12px 32px rgba(0,0,0,.45)}
+body.deskMode .winbox.max{border-radius:0}
+body.deskMode .winbox .wb-title{font:600 13px/35px var(--font);color:var(--muted);padding-left:2px}
+body.deskMode .winbox.focus .wb-title{color:var(--accent-ink)}
+body.deskMode .winbox .wb-body{background:var(--bg);margin:0 1px 1px;border-radius:0 0 7px 7px}
+body.deskMode .winbox.max .wb-body{border-radius:0}
+/* Inactive windows: mute chrome only. Never filter .wb-body — CSS filter on
+   a WinBox that holds the Agent Zero iframe forces a full-layer recomposite
+   on every A0 DOM paint and flickers the kiosk compositor. */
+body.deskMode .winbox:not(.focus) .wb-control{opacity:.65}
+html[data-theme="light"] body.deskMode .winbox:not(.focus) .wb-control{opacity:.7}
+body.deskMode .winbox .wb-control *{border-radius:6px;transition:background-color .1s}
+body.deskMode .winbox .wb-control *:hover{background-color:rgba(255,255,255,.18)}
+body.deskMode .winbox .wb-close:hover{background-color:#e2675f}
+/* Restore icon while maximised (two squares). */
+body.deskMode .winbox.max .wb-max{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.2'%3E%3Crect x='4' y='8' width='12' height='12'/%3E%3Cpath d='M8 8V4h12v12h-4'/%3E%3C/svg%3E");background-size:15px auto}
+/* Minimised windows live on the taskbar only. */
+body.deskMode .winbox.min{display:none!important}
+body.deskMode .winbox iframe{background:#fff;width:100%;height:100%;border:0;display:block;contain:strict;content-visibility:auto;isolation:isolate}
+body.deskMode .winbox .wb-body{contain:layout paint style;isolation:isolate}
+body.deskMode .winbox .wb-body > #app{height:100%;width:100%;contain:layout paint}
+
+/* ---- Taskbar ---- */
+body.deskMode .taskbar{position:fixed;left:0;right:0;bottom:0;height:48px;z-index:5;display:flex;align-items:center;gap:6px;padding:0 8px;
+  background:var(--bg2);border-top:1px solid var(--line)}
+body.deskMode .startBtn{display:flex;align-items:center;gap:8px;height:36px;padding:0 14px 0 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);font-weight:650;cursor:pointer}
+body.deskMode .startBtn:hover,body.deskMode .startBtn.on{border-color:var(--accent);background:var(--accent-soft)}
+body.deskMode .startBtn .logo{width:20px;height:20px}
+body.deskMode .taskApps{flex:1;min-width:0;display:flex;align-items:center;gap:4px;overflow:hidden;padding-left:4px}
+body.deskMode .taskBtn{position:relative;display:flex;align-items:center;gap:8px;height:38px;min-width:44px;max-width:190px;flex:0 1 190px;padding:0 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--ink2);cursor:pointer;font-size:13px}
+body.deskMode .taskBtn:hover{background:rgba(255,255,255,.06)}
+html[data-theme="light"] body.deskMode .taskBtn:hover{background:rgba(0,0,0,.05)}
+body.deskMode .taskBtn .deskGlyph{width:24px;height:24px;border-radius:6px;flex:none}
+body.deskMode .taskBtn .deskGlyph svg{width:15px;height:15px}
+body.deskMode .taskLabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.deskMode .taskBtn::after{content:"";position:absolute;left:50%;bottom:2px;width:6px;height:3px;border-radius:2px;background:var(--muted);transform:translateX(-50%);transition:width .12s ease,background .12s}
+body.deskMode .taskBtn.active{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,transparent);color:var(--ink);font-weight:600}
+body.deskMode .taskBtn.active::after{width:22px;background:var(--accent)}
+body.deskMode .taskBtn.min{opacity:.62}
+body.deskMode .taskBtn.min .taskLabel{font-style:italic}
+
+/* ---- Tray ---- */
+body.deskMode .tray{display:flex;align-items:center;gap:2px;flex:none}
+body.deskMode .trayChip{position:static}
+body.deskMode .trayChip .chip{margin:0 4px 0 0;max-width:340px}
+body.deskMode #statusPop{position:fixed;top:auto;bottom:56px;right:8px;z-index:30}
+body.deskMode .trayBtn{display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:8px;background:none;color:var(--ink2);cursor:pointer;position:relative}
+body.deskMode .trayBtn:hover{background:rgba(255,255,255,.07)}
+html[data-theme="light"] body.deskMode .trayBtn:hover{background:rgba(0,0,0,.06)}
+body.deskMode .trayBtn svg{width:19px;height:19px}
+body.deskMode .trayNet[data-state="ok"]{color:var(--ok)}
+body.deskMode .trayNet[data-state="local"]{color:var(--warn)}
+body.deskMode .trayNet[data-state="down"]{color:var(--danger)}
+body.deskMode .trayWeb[data-state="internet"]{color:var(--ok)}
+body.deskMode .trayWeb[data-state="tor"]{color:var(--warn)}
+body.deskMode .trayWeb[data-state="none"]{color:var(--danger)}
+body.deskMode .trayVault[data-state="open"]{color:var(--ok)}
+body.deskMode .trayVault[data-state="locked"]{color:var(--ink2)}
+body.deskMode .trayVault[data-state="none"]{color:var(--muted)}
+body.deskMode .trayPair{display:grid}
+body.deskMode .trayClock{min-width:54px;padding:0 6px 0 8px;text-align:right;font-size:13px;font-variant-numeric:tabular-nums;color:var(--ink2)}
+
+/* ---- Launcher ---- */
+body.deskMode .launcher{position:fixed;left:8px;bottom:56px;z-index:30;width:452px;max-width:calc(100vw - 16px);max-height:calc(100vh - 72px);overflow:auto;padding:14px;
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.5)}
+body.deskMode .launchSearch{width:100%;height:38px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);outline:none}
+body.deskMode .launchSearch:focus{border-color:var(--accent)}
+body.deskMode .launchHead{margin:14px 4px 8px;font-size:12px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+body.deskMode .launchGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+body.deskMode .launchItem{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 4px;border:1px solid transparent;border-radius:10px;background:none;color:var(--ink);cursor:pointer;font-size:12.5px}
+body.deskMode .launchItem:hover,body.deskMode .launchItem:focus-visible{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 35%,transparent);outline:none}
+body.deskMode .launchItem .deskGlyph{width:44px;height:44px;border-radius:11px}
+body.deskMode .launchItem .deskGlyph svg{width:24px;height:24px}
+body.deskMode .launchFoot{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+body.deskMode .launchAct{display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color:var(--ink2);cursor:pointer;font-size:13px}
+body.deskMode .launchAct:hover{border-color:var(--accent);color:var(--ink)}
+body.deskMode .launchAct svg{width:16px;height:16px}
+
+/* ======== 0.5.6: chat-only window, system apps, taskbar switch ======== */
+/* Chat window = chat only. Everything else is its own desktop app. */
+body.deskMode #app .sideFoot,
+body.deskMode #app .modeSeg,
+body.deskMode #app #modeHint,
+body.deskMode #app .topPair,
+body.deskMode #app #lockBtn,
+body.deskMode #app #themeBtn,
+body.deskMode #app .top [data-open],
+body.deskMode #app #appsView,
+body.deskMode #app #thread > .empty{display:none!important}
+/* 0.6.5: Agent Zero is Chat — do not show StickLLM #app chrome through the desk.
+   Legacy menuBtn rule removed (it forced the chat-slide control visible). */
+html.a0-main-chat body.deskMode > #app,
+html.a0-main-chat body.deskMode #app > .sidebar,
+html.a0-main-chat body.deskMode #app > .main > .top,
+html.a0-main-chat body.deskMode #app > .main > .thread,
+html.a0-main-chat body.deskMode #app > .main > #thread,
+html.a0-main-chat body.deskMode #app > .main > .composer,
+html.a0-main-chat body.deskMode #app #menuBtn,
+html.a0-main-chat body.deskMode #app #collapseBtn,
+html.a0-main-chat body.deskMode #app #chatTitle,
+html.a0-main-chat body.deskMode #app.collapsed #menuBtn{display:none!important}
+body.deskMode #app .sidebar{overflow:hidden}
+body.deskMode #settings{display:none!important}
+body.deskMode #deskHold{display:none!important}
+
+/* System app colours. */
+body.deskMode [data-app="browser"] .deskGlyph,body.deskMode .taskExt .deskGlyph{background:#0ea5e9}
+body.deskMode [data-app="agent"] .deskGlyph{background:#0f172a}
+body.deskMode [data-app="agent"] .deskGlyphImg{background:transparent;padding:0;overflow:hidden}
+/* Same tile size; zoom the A mark (PNG has generous padding). */
+body.deskMode [data-app="agent"] .deskGlyphImg img{
+  width:100%;height:100%;object-fit:cover;transform:scale(1.45);transform-origin:center}
+body.deskMode [data-app="store"] .deskGlyph{background:#db2777}
+body.deskMode [data-app="models"] .deskGlyph{background:#4f46e5}
+body.deskMode [data-app="settings"] .deskGlyph{background:#475569}
+body.deskMode .deskGlyph{display:grid;place-items:center;color:#fff}
+body.deskMode .deskGlyph svg{fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+body.deskMode .deskGlyphImg img{width:100%;height:100%;object-fit:cover;border-radius:12px;display:block}
+body.deskMode .deskGlyphCat{font-weight:700;font-size:15px;letter-spacing:.02em;text-transform:uppercase}
+
+/* Mounted panels fill their window. */
+body.deskMode .wb-body > .modal{position:static;width:100%!important;height:100%!important;max-width:none;max-height:none;border:0;border-radius:0;box-shadow:none}
+body.deskMode .wb-body > .modal .setNav [data-sec="models"],
+body.deskMode .wb-body > .modal .setNav [data-sec="downloads"],
+body.deskMode .wb-body > .modal #setClose,
+body.deskMode .wb-body > .modal #setBack{display:none!important}
+/* setNavBtn: .setShell.setNarrow via ResizeObserver (style.css), not viewport. */
+body.deskMode .wb-body > .modal.setShell.setNarrow{position:relative}
+body.deskMode .deskPanel{height:100%;display:flex;flex-direction:column;background:var(--panel);color:var(--ink)}
+body.deskMode .deskScroll{flex:1;min-height:0;overflow:auto;padding:18px 26px 26px}
+body.deskMode .deskTabs{display:flex;gap:4px;padding:10px 18px 0;border-bottom:1px solid var(--line2);background:var(--bg2)}
+body.deskMode .deskTabs button{border:0;background:none;padding:9px 16px;border-radius:8px 8px 0 0;color:var(--ink2);cursor:pointer;font-size:14px;border-bottom:2px solid transparent}
+body.deskMode .deskTabs button.on{color:var(--accent);font-weight:600;border-bottom-color:var(--accent);background:var(--panel)}
+body.deskMode .deskPanelHead{padding:16px 26px 12px;border-bottom:1px solid var(--line2);display:flex;flex-direction:column;gap:2px}
+body.deskMode .deskPanelHead b{font-size:17px}
+body.deskMode .deskPanelHead small{color:var(--muted)}
+body.deskMode .deskStore .appsInner{max-width:none}
+body.deskMode .deskAgentPanel{align-items:center;justify-content:center}
+body.deskMode .apCard{max-width:440px;text-align:center;padding:24px}
+body.deskMode .apCard img{width:72px;height:72px;border-radius:16px;background:#0f172a;padding:10px}
+body.deskMode .apCard h2{margin:14px 0 6px}
+body.deskMode .apCard p{color:var(--ink2);margin:6px 0}
+body.deskMode .apCard .apState{color:var(--muted);font-size:13px}
+body.deskMode .apActs{display:flex;gap:8px;justify-content:center;margin-top:16px}
+body.deskMode .winbox .wb-pop{background-size:15px auto;background-position:center;background-repeat:no-repeat;width:30px}
+
+/* ---- Taskbar: storage mode switch ---- */
+body.deskMode .traySep{width:1px;height:24px;background:var(--line);margin:0 6px}
+body.deskMode .trayMode{display:flex;align-items:center;height:34px;padding:2px;border:1px solid var(--line);border-radius:10px;background:var(--bg2)}
+body.deskMode .trayMode button{display:flex;align-items:center;gap:6px;height:28px;padding:0 11px;border:0;border-radius:8px;background:none;color:var(--muted);font-size:13px;cursor:pointer}
+body.deskMode .trayMode button svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2}
+body.deskMode .trayMode .tmLock{display:grid}
+body.deskMode .trayMode button:hover{color:var(--ink)}
+body.deskMode .trayMode button.on[data-tmode="ephemeral"]{background:color-mix(in srgb,var(--warn) 20%,var(--panel));color:var(--ink);font-weight:620;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--warn) 50%,transparent)}
+body.deskMode .trayMode button.on[data-tmode="vault"]{background:color-mix(in srgb,var(--ok) 20%,var(--panel));color:var(--ink);font-weight:620;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ok) 50%,transparent)}
+body.deskMode .trayMode[data-vault="open"] [data-tmode="vault"] .tmLock{color:var(--ok)}
+body.deskMode .trayMode[data-vault="locked"] [data-tmode="vault"] .tmLock,
+body.deskMode .trayMode[data-vault="none"] [data-tmode="vault"] .tmLock{color:var(--muted)}
+
+/* ---- Taskbar: model button ---- */
+body.deskMode .trayModel{position:relative;display:flex;align-items:center;gap:8px;height:34px;max-width:360px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);font-size:13px;cursor:pointer;overflow:hidden}
+body.deskMode .trayModel:hover{border-color:var(--accent)}
+body.deskMode .trayModel .tmName{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:580}
+body.deskMode .trayModel .tmMeta{color:var(--muted);white-space:nowrap}
+body.deskMode .trayModel .tmMeta:empty{display:none}
+body.deskMode .trayModel.none{border-style:dashed;color:var(--accent)}
+body.deskMode .trayModel .tmLoad{left:8px;right:8px;bottom:3px;height:3px}
+
+/* ---- Vault popover ---- */
+body.deskMode .vaultPop{position:fixed;right:8px;bottom:56px;z-index:30;width:340px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:10px}
+body.deskMode .vaultPop[hidden]{display:none}
+body.deskMode .vpHead{display:flex;gap:12px;align-items:center}
+body.deskMode .vpHead b{display:block;font-size:15px}
+body.deskMode .vpHead small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+body.deskMode .vpIcon{display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:var(--bg2);flex:none}
+body.deskMode .vpIcon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}
+body.deskMode .vaultPop[data-vault="open"] .vpIcon{color:var(--ok);background:color-mix(in srgb,var(--ok) 15%,var(--bg2))}
+body.deskMode .vpUnlock{display:flex;gap:8px}
+body.deskMode .vpUnlock[hidden]{display:none}
+body.deskMode .vpUnlock input{flex:1;min-width:0;height:34px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+body.deskMode .vpUnlock input:focus{border-color:var(--accent);outline:none}
+body.deskMode .vpMsg{color:var(--danger);font-size:12.5px}
+body.deskMode .vpMsg.info{color:var(--muted)}
+body.deskMode .vpActs{display:flex;flex-wrap:wrap;gap:6px}
+body.deskMode .vpActs [hidden]{display:none}
+body.deskMode .vpKeys{color:var(--muted);font-size:11.5px}
+
+/* ---- Web mode popover (0.6.11) ---- */
+body.deskMode .webPop{position:fixed;right:48px;bottom:56px;z-index:30;width:320px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 24px 64px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:10px}
+body.deskMode .webPop[hidden]{display:none}
+body.deskMode .wpHead{display:flex;gap:12px;align-items:center}
+body.deskMode .wpHead b{display:block;font-size:15px}
+body.deskMode .wpHead small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+body.deskMode .wpIcon{display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:var(--bg2);flex:none;color:var(--ok)}
+body.deskMode .webPop[data-mode="tor"] .wpIcon{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,var(--bg2))}
+body.deskMode .webPop[data-mode="none"] .wpIcon{color:var(--danger);background:color-mix(in srgb,var(--danger) 15%,var(--bg2))}
+body.deskMode .wpIcon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2}
+body.deskMode .wpModes{display:flex;flex-direction:column;gap:4px}
+body.deskMode .wpMode{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:1px solid transparent;border-radius:10px;background:none;color:var(--ink);cursor:pointer;text-align:left}
+body.deskMode .wpMode:hover,body.deskMode .wpMode.on{background:var(--bg2);border-color:var(--line)}
+body.deskMode .wpMode.on{border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+body.deskMode .wpDot{width:10px;height:10px;border-radius:50%;flex:none}
+body.deskMode .wpDot.internet{background:var(--ok)}
+body.deskMode .wpDot.tor{background:var(--warn)}
+body.deskMode .wpDot.none{background:var(--danger)}
+body.deskMode .wpLabel{display:flex;flex-direction:column;gap:1px;min-width:0}
+body.deskMode .wpLabel b{font-size:13.5px;font-weight:650}
+body.deskMode .wpLabel small{font-size:12px;color:var(--muted)}
+body.deskMode .wpNote,body.deskMode .wpStatus{color:var(--muted);font-size:12px;line-height:1.35}
+body.deskMode .wpStatus{color:var(--ink2)}
+
+/* 0.5.6 r3: taskbar menu for compositor (Chromium) windows. */
+body.deskMode .taskMenu{position:fixed;z-index:40;min-width:160px;padding:4px;border-radius:10px;background:var(--panel,#16202a);border:1px solid var(--line,rgba(255,255,255,.12));box-shadow:0 10px 30px rgba(0,0,0,.35);display:flex;flex-direction:column}
+body.deskMode .taskMenuItem{all:unset;cursor:pointer;padding:8px 12px;border-radius:7px;font-size:13px;color:var(--ink)}
+body.deskMode .taskMenuItem:hover,body.deskMode .taskMenuItem:focus-visible{background:var(--accent-soft)}
+/* 0.6.2 (A3): Agent window start progress */
+body.deskMode .apCard .apBar{height:8px;border-radius:4px;background:var(--line,#334155);overflow:hidden;margin:10px auto;max-width:320px;position:relative}
+body.deskMode .apCard .apBar i{display:block;height:100%;width:5%;background:var(--accent,#3b82f6);transition:width .6s ease}
+body.deskMode .apCard .apBar.indet i{width:30%!important;animation:apIndet 1.4s ease-in-out infinite}

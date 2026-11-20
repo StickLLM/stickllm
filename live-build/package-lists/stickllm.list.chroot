@@ -1,0 +1,114 @@
+# StickLLM amd-rtx3090 — single source of truth for live-build packages (ISS-010).
+live-boot
+live-config
+live-config-systemd
+systemd-sysv
+sudo
+curl
+wget
+ca-certificates
+pciutils
+usbutils
+network-manager
+openssh-client
+openssh-server
+parted
+e2fsprogs
+fdisk
+util-linux
+python3
+# Scanned PDF pages for a vision model (pdftoppm). Not downloaded at runtime.
+poppler-utils
+# Offline read-aloud. espeak-ng and python3-numpy are in bookworm.
+# whisper.cpp and python3-onnxruntime are not; see stickllm-speech.pin.
+espeak-ng
+python3-numpy
+jq
+iproute2
+iputils-ping
+libgomp1
+firmware-linux
+firmware-linux-nonfree
+firmware-misc-nonfree
+# 0.6.0 (B2): Polaris (RX 570/580) and other Radeon cards need these blobs or
+# amdgpu fails after taking the console from simpledrm (black screen).
+# firmware-linux-nonfree pulls it in already; listed so it can never drop out.
+firmware-amd-graphics
+firmware-iwlwifi
+firmware-realtek
+firmware-atheros
+wpasupplicant
+wireless-tools
+nvidia-driver
+nvidia-driver-libs
+nvidia-kernel-dkms
+nvidia-smi
+libcuda1
+nvidia-persistenced
+# 0.5.6 on-stick desktop: stock Debian Xfce (GPL/LGPL, unmodified, configured
+# only through settings) on Xorg (MIT). No terminal, no application menu, no
+# file manager; Recommends stay off. 0.5.7: Xfce is the only desktop (no
+# sway/cage/weston). wmctrl + xdotool + x11-utils (MIT-style) let
+# stickllm-control move/minimise the Browser windows on Xorg.
+xserver-xorg-core
+xserver-xorg-input-libinput
+x11-xserver-utils
+x11-utils
+wmctrl
+xdotool
+dbus-x11
+xfwm4
+xfce4-panel
+xfce4-session
+xfce4-settings
+xfdesktop4
+xfconf
+adwaita-icon-theme
+chromium
+seatd
+# 0.5.8: fallback full-screen kiosk when Xfce fails (cage, MIT, on wlroots MIT)
+cage
+xwayland
+# 0.5.8: Terminus console font for the loading-screen banner (setfont)
+kbd
+console-setup-linux
+libinput-bin
+libinput10
+fonts-dejavu-core
+# Vulkan (AMD/Intel llama path + Mesa ICD; loader required for llama-server-vulkan)
+mesa-vulkan-drivers
+libvulkan1
+vulkan-tools
+# Encrypted vault (Phase C feature; LUKS2 tools present for SSH-tested vault work)
+cryptsetup
+cryptsetup-bin
+# Agent Zero runtime. The agent image is pulled onto the host SSD, not baked here.
+docker.io
+# apparmor_parser so Docker can load the docker-default profile.
+apparmor
+# stickllm-agent installs its own nftables rules. dockerd is started with --iptables=false.
+nftables
+# 0.6.11: on-demand Tor for stick Chromium (Web mode). Not enabled at boot.
+tor
+# StickLink (0.7.1): sticklinkd needs these on the host Python, not only in tests.
+# v0.7.0 shipped sticklinkd without them → ModuleNotFoundError: cryptography.
+python3-cryptography
+python3-nacl
+python3-websockets
+# Method C peer venv (Milestone A): create venv + native libs for aiortc/av.
+# Python packages themselves are NOT apt — they come from vendored wheelhouse.
+python3-venv
+python3-pip
+libavformat59
+libavcodec59
+libavdevice59
+libavutil57
+libavfilter8
+libswscale6
+libswresample4
+libopus0
+libsrtp2-1
+libvpx7
+libffi8
+libssl3
+

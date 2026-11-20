@@ -1,0 +1,28 @@
+# StickLLM GRUB theme — brand on splash; menu in lower band only.
+desktop-image: "splash.png"
+title-text: ""
+message-color: "#8fa396"
+terminal-font: "Unicode Regular"
+
++ boot_menu {
+  left = 18%
+  width = 64%
+  top = 58%
+  height = 36%
+  item_font = "Unicode Regular"
+  item_color = #e8f0e9
+  selected_item_color = #7dffb3
+  item_height = 30
+  item_padding = 6
+  item_spacing = 6
+}
+
++ label {
+  id = "__timeout__"
+  left = 18%
+  top = 92%
+  width = 64%
+  align = "center"
+  text = "Booting in %d…"
+  color = "#8fa396"
+}

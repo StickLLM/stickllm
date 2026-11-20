@@ -1,0 +1,25 @@
+[Unit]
+Description=StickLLM Whisper (resident)
+After=local-fs.target
+
+[Service]
+Type=simple
+User=stickllm
+Group=stickllm
+ExecStart=/usr/local/bin/whisper-server -m /opt/stickllm/speech/ggml-tiny.en.bin --host 127.0.0.1 --port 8178 -l en -nt -ng -t 4
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+MemoryMax=1500M
+LimitCORE=0
+UMask=0077
+StandardOutput=null
+StandardError=null
+Environment=LANG=C.UTF-8
+Environment=LC_ALL=C.UTF-8
+Environment=HOME=/nonexistent
+
+[Install]
+WantedBy=multi-user.target

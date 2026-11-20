@@ -1,0 +1,101 @@
+# Restore policy (N-2)
+
+Keep the **last two recoverable product ships** plus the immutable Drive golden.
+Be honest about what a stranger can download vs what only maintainers have locally.
+
+## Public artifacts
+
+| Slot | Tag | What strangers can get | Checksum |
+|------|-----|------------------------|----------|
+| **N** (current) | `v0.7.5` | Google Drive `StickLLM-v0.7.5.iso` (StickLink Method C + rate-limit UI) | `checksums/v0.7.5.sha256` |
+| **N-1** | `v0.7.0` | Google Drive / local `StickLLM-v0.7.0.iso` | `checksums/v0.7.0.sha256` → `8b6cf78b…` |
+| Older public | `v0.4.2` / `v0.3.9` / `v0.3.8` | Drive ISOs under their original names | matching `checksums/v0.*.sha256` |
+| Golden | `v0.2.0` | [GitHub Release v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) (split `.7z` and/or Drive link in release notes) | `checksums/v0.2.sha256` → `4914087d…` |
+
+Drive folder (ISOs over GitHub’s 2 GB limit):  
+https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing  
+
+**Public current ship on that folder: `StickLLM-v0.7.5.iso`.** Older filenames (`v0.4.2`, `v0.3.9`, …) may still be listed — leave them alone.
+
+**Do not flash `v0.3.5`** — truncated/broken. Prefer **v0.7.5** (or **v0.7.0** / **v0.4.2** as restore).
+
+**Hash of record is on GitHub** (`checksums/v0.7.5.sha256`). After Drive upload, verify the ISO against that digest — do not treat a hash only on Drive as authoritative.
+
+## Maintainer / local-only
+
+| Slot | Tag | Typical local path | Checksum in git |
+|------|-----|--------------------|-----------------|
+| **N-1** | `v0.3.6` | `out/v0.3.6/stickllm-amd-rtx3090-v0.3.6.hybrid.iso` | `checksums/v0.3.6.sha256` → `fb559d9f…` |
+| N local copy | `v0.3.8` | `out/v0.3.8/StickLLM-v0.3.8.iso` | `checksums/v0.3.8.sha256` |
+| Older local | `v0.3.0` | `out/v0.3.0/stickllm-amd-rtx3090-v0.3-apiready.hybrid.iso` | `checksums/v0.3.sha256` → `f3db9113…` |
+
+The **v0.3.0** apiready ISO is **not** published on Drive or GitHub Releases. Tags + checksums stay in git for maintainers who still have the file.
+
+Older tags (`v0.2.1-local-nvidia-kbd`, `v0.3.1`–`v0.3.4`, `v0.3.7`, …) and their `out/` dirs remain recoverable locally; they are outside the rolling N/N-1 window. Never delete them when cutting the next ship.
+
+## ISO naming (future N)
+
+- **Through v0.3.6:** historical filenames (`stickllm-amd-rtx3090-v….hybrid.iso`) — do not rename.
+- **v0.3.7 and later:** exactly `StickLLM-vX.Y.Z.iso` under `out/vX.Y.Z/` (see [BUILD.md](BUILD.md)).
+
+## Rules
+
+- When cutting the next ship: keep **N** and **N-1** tags and local `out/` ISO dirs; do not delete or overwrite them.
+- Drive / Release **v0.2.0** is outside the rolling window — never retag, rewrite checksum, or replace under the same name.
+- Prior **v0.3.6** on Drive — never overwrite under the same name with a different digest.
+- Current **v0.7.5** on Drive — never overwrite under the same name with a different digest.
+- Prior **v0.4.2** / **v0.3.9** / **v0.3.8** on Drive — never overwrite under the same name with a different digest.
+- New ships get new tag names, new `out/<version>/` dirs, new `StickLLM-vX.Y.Z.iso` filenames, and new `checksums/<version>.sha256` files.
+
+## Restore N (v0.7.5) — public
+
+```text
+ISO:      Google Drive / local out/v0.7.5/StickLLM-v0.7.5.iso
+Checksum: checksums/v0.7.5.sha256
+```
+
+Flash with Rufus DD or `dd` — [FLASH.md](FLASH.md).
+
+## Restore N-1 (v0.7.0) — StickLink
+
+```text
+ISO:      out/v0.7.0/StickLLM-v0.7.0.iso (or Drive if published)
+Checksum: checksums/v0.7.0.sha256
+Expect:   8B6CF78BAB03F56B8035CA3E7633A0B9D9D113DBA319ACD1B2D217D5CA504F13
+```
+
+## Restore older public (v0.3.9)
+
+```text
+git checkout v0.3.9
+ISO:      Google Drive StickLLM-v0.3.9.iso
+Checksum: checksums/v0.3.9.sha256
+Expect:   32A37A66110EA2D2BC113D7C3B940647597252986799B007FA1FC217399A9585
+```
+
+## Restore older public (v0.3.8)
+
+```text
+git checkout v0.3.8
+ISO:      Google Drive StickLLM-v0.3.8.iso
+Checksum: checksums/v0.3.8.sha256
+Expect:   88F781545762A986BB3A1DCE9183601B7BBE173D0D56A20CA03BEF7A533201CB
+```
+
+## Restore v0.3.6 — still published
+
+```text
+git checkout v0.3.6
+ISO:      Google Drive stickllm-amd-rtx3090-v0.3.6.hybrid.iso
+Checksum: checksums/v0.3.6.sha256
+Expect:   FB559D9F0CC5182406F0851F09C1E28C302F911C01B46CAC545EF4D920E1A43D
+```
+
+## Restore golden v0.2.0
+
+```text
+git checkout v0.2.0
+ISO:      GitHub Release assets and/or Drive (see release notes)
+Checksum: checksums/v0.2.sha256
+Expect:   4914087D502D13327DBBD9196C9A4A7DF46EE079D423FF4B0BC6280E1C7B1A48
+```

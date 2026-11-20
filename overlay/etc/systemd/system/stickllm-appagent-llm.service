@@ -1,0 +1,26 @@
+[Unit]
+Description=StickLLM optional separate app agent model (Qwen3.5-4B llama-server, 127.0.0.1:8796 only)
+# 0.5.6: disabled. The app agent shares the chat llama-server. Advanced use only:
+# start this and set STICKLLM_APPAGENT_LLM_URL=http://127.0.0.1:8796 in /etc/stickllm/appagent.env.
+After=network.target
+ConditionPathExists=/opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# Reads the baked model only; keeps no files.
+DynamicUser=yes
+SupplementaryGroups=video render
+EnvironmentFile=-/etc/stickllm/appagent.env
+# Root (+) for modprobe; failure (-) never blocks the CPU fallback.
+ExecStartPre=-+/usr/local/bin/stickllm-nvidia-prep
+ExecStart=/usr/local/bin/stickllm-appagent-llm
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

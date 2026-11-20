@@ -1,0 +1,6 @@
+# Pinned for the stick image. Do not pip-install these at runtime.
+markitdown[all]==0.1.1
+PyMuPDF==1.26.4
+python-magic==0.4.27
+# Debian packages: poppler-utils tesseract-ocr tesseract-ocr-eng libmagic1
+# poppler-utils provides pdftoppm so a scanned PDF can be sent as page images.
