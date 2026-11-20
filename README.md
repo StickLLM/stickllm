@@ -71,13 +71,13 @@ Full flash notes: [docs/FLASH.md](docs/FLASH.md). Then boot: [docs/BOOT.md](docs
 
 About and `stickllm.json` say **v0.7.5**. StickLink Method C phone join plus kiosk rate-limit UX:
 
-- **PAIR_LOCK_MS = 10 minutes** on the Cloudflare Worker (was 1 hour). Docs: [PAIRING-SPEC](docs/sticklink/PAIRING-SPEC.md), [API](StickLLM/sticklink (private)).
+- **PAIR_LOCK_MS = 10 minutes** on the Cloudflare Worker (was 1 hour). Docs: private StickLLM/sticklink (PAIRING-SPEC / API).
 - **Kiosk rate-limit UI:** “Too many new codes” / “Try again in” with human minutes+seconds countdown when remint is locked.
 - **Method C peer:** remint / keepalive / QR state machine, lab grant helper, vendored wheelhouse for first-boot-free peer deps.
 - **NVIDIA KMS kiosk retry** so HDMI on a 3090 recovers when modeset raced llama.
 - Baked default model remains **Qwen2.5-7B Instruct Q4_K_M**; Agent Zero + StickLink overlay as in the 0.7 line.
 
-Release notes: [docs/sticklink/RELEASE-0.7.5.md](docs/sticklink/RELEASE-0.7.5.md).
+Release notes: private StickLLM/sticklink docs (RELEASE-0.7.5).
 
 ## What’s in v0.4.2 (older)
 
@@ -97,11 +97,11 @@ Voice chat, USB settings partition, and load-meter fixes. ISO `StickLLM-v0.4.2.i
 - llama on **127.0.0.1:8080** only
 - **StickLLM UI only** — external OpenAI-style `/v1` clients get **410** (see [FEATURES.md](FEATURES.md))
 
-Release notes: [GitHub Release v0.3.9](https://github.com/StickLLM/stickllm/releases/tag/v0.3.9).
+Release notes: v0.3.9 (Drive / private archive).
 
 ## What’s in v0.3.8
 
-Previous ship (~8.7 GB), still recoverable. It baked both the 3B and the 7B. Notes: [GitHub Release v0.3.8](https://github.com/StickLLM/stickllm/releases/tag/v0.3.8).
+Previous ship (~8.7 GB), still recoverable. It baked both the 3B and the 7B. Notes: v0.3.8 (Drive / private archive).
 
 ## Threat model (summary)
 
@@ -212,4 +212,8 @@ GitHub: [github.com/StickLLM](https://github.com/StickLLM).
 
 Bundled and downloaded third-party components (Debian/Linux, llama.cpp, Agent Zero,
 NVIDIA drivers, model weights, companion apps, etc.) remain under their own licenses.
+
+## StickLink
+
+Rendezvous/signalling server source is private ([StickLLM/sticklink](https://github.com/StickLLM/sticklink)). Prior full monorepo history is private (StickLLM/stickllm-archive).
 
