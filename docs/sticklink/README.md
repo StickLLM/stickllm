@@ -1,5 +1,8 @@
-﻿# StickLink docs
+﻿# StickLink (commercial / closed source)
 
-StickLink rendezvous/signalling server source and internal pairing docs live in the private repo **StickLLM/sticklink**.
+StickLink is Nink Inc.’s hosted rendezvous and remote-join service. It is **not open source** and is the paid connectivity layer for StickLLM.
 
-This public USB product repo keeps stick-side integration (overlay/UI) only.
+- Server + protocol docs + USB Method C client sources: private **StickLLM/sticklink**
+- Prior monorepo history: private **StickLLM/stickllm-archive**
+
+This public repo is the StickLLM USB product only. Method C ISOs are built from private sources.

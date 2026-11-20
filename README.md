@@ -67,18 +67,11 @@ Full flash notes: [docs/FLASH.md](docs/FLASH.md). Then boot: [docs/BOOT.md](docs
 
 ---
 
-## What’s in v0.7.5
+## What's in v0.7.5
 
-About and `stickllm.json` say **v0.7.5**. StickLink Method C phone join plus kiosk rate-limit UX:
+About and `stickllm.json` say **v0.7.5**. StickLink Method C phone join is included in the shipping ISO (built from **private** StickLink sources). StickLink rendezvous/signalling remains **closed source / commercial** — see [docs/sticklink/README.md](docs/sticklink/README.md).
 
-- **PAIR_LOCK_MS = 10 minutes** on the Cloudflare Worker (was 1 hour). Docs: private StickLLM/sticklink (PAIRING-SPEC / API).
-- **Kiosk rate-limit UI:** “Too many new codes” / “Try again in” with human minutes+seconds countdown when remint is locked.
-- **Method C peer:** remint / keepalive / QR state machine, lab grant helper, vendored wheelhouse for first-boot-free peer deps.
-- **NVIDIA KMS kiosk retry** so HDMI on a 3090 recovers when modeset raced llama.
-- Baked default model remains **Qwen2.5-7B Instruct Q4_K_M**; Agent Zero + StickLink overlay as in the 0.7 line.
-
-Release notes: private StickLLM/sticklink docs (RELEASE-0.7.5).
-
+Also in this line: NVIDIA KMS kiosk retry; baked default model **Qwen2.5-7B Instruct Q4_K_M**; Agent Zero overlay as in the 0.7 line.
 ## What’s in v0.4.2 (older)
 
 Voice chat, USB settings partition, and load-meter fixes. ISO `StickLLM-v0.4.2.iso` + [`checksums/v0.4.2.sha256`](checksums/v0.4.2.sha256) (`3a50eb56…`) stays published — do not overwrite.
@@ -216,4 +209,5 @@ NVIDIA drivers, model weights, companion apps, etc.) remain under their own lice
 ## StickLink
 
 Rendezvous/signalling server source is private ([StickLLM/sticklink](https://github.com/StickLLM/sticklink)). Prior full monorepo history is private (StickLLM/stickllm-archive).
+
 
