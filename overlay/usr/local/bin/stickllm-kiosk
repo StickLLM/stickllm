@@ -374,6 +374,11 @@ ensure_nvidia_kms() {
   if [[ -e "$RUN/kiosk-kms-ok" && -z "$force" ]]; then
     return 0
   fi
+  # Secure Boot rejects unsigned NVIDIA DKMS ("Key was rejected by service").
+  # Do not spin forever — BIOS must disable Secure Boot (or enroll MOK).
+  if [[ -e "$RUN/kiosk-kms-secureboot-block" ]]; then
+    return 1
+  fi
   modeset="$(tr -d '[:space:]' </sys/module/nvidia_drm/parameters/modeset 2>/dev/null || true)"
   if [[ "$modeset" == "Y" || "$modeset" == "1" ]]; then
     # Module claims modeset but connectors not up yet — wait briefly.
@@ -403,11 +408,13 @@ ensure_nvidia_kms() {
   sleep 0.5
   # Conf file defaults modeset=0 — pass modeset=1 on the command line (wins).
   local loaded=0
-  if modprobe nvidia_drm modeset=1 fbdev=0 2>>"$FAIL_LOG"; then
+  local modprobe_out=""
+  if modprobe_out="$(modprobe nvidia_drm modeset=1 fbdev=0 2>&1)"; then
     loaded=1
-  elif modprobe nvidia-current-drm modeset=1 fbdev=0 2>>"$FAIL_LOG"; then
+  elif modprobe_out="$(modprobe nvidia-current-drm modeset=1 fbdev=0 2>&1)"; then
     loaded=1
   fi
+  printf '%s\n' "$modprobe_out" >>"$FAIL_LOG" 2>/dev/null || true
   if [[ "$loaded" -eq 1 ]]; then
     local _w
     for _w in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
@@ -426,7 +433,15 @@ ensure_nvidia_kms() {
   else
     fail_note "STICKLLM_KIOSK_NVIDIA_MODESET_FAIL"
     serial_note "STICKLLM_KIOSK_NVIDIA_MODESET_FAIL"
-    modprobe nvidia_drm 2>/dev/null || modprobe nvidia-current-drm 2>/dev/null || true
+    if printf '%s\n' "$modprobe_out" | grep -qi 'Key was rejected by service\| Lockdown:.*nvidia\|Secure boot'; then
+      touch "$RUN/kiosk-kms-secureboot-block" 2>/dev/null || true
+      fail_note "STICKLLM_KIOSK_NVIDIA_SECUREBOOT_BLOCK"
+      serial_note "STICKLLM_KIOSK_NVIDIA_SECUREBOOT_BLOCK"
+      paint "  NVIDIA blocked by Secure Boot (unsigned driver)."
+      paint "  Firmware setup → Secure Boot → Disabled → Save → reboot USB-first."
+    else
+      modprobe nvidia_drm 2>/dev/null || modprobe nvidia-current-drm 2>/dev/null || true
+    fi
   fi
   [[ "$pers_was_active" -eq 1 ]] && systemctl start --no-block nvidia-persistenced.service 2>/dev/null || true
   [[ "$llama_was_active" -eq 1 ]] && systemctl start --no-block stickllm-llama.service 2>/dev/null || true
@@ -1276,9 +1291,15 @@ if ! any_display_connected; then
   paint "  No monitor connected. The browser UI works from a phone or PC on the LAN."
   paint "  This screen starts when a monitor is plugged in."
   # Keep retrying NVIDIA KMS: efifb can paint this message on the same HDMI
-  # cable that KMS still has not claimed (modeset=0).
+  # cable that KMS still has not claimed (modeset=0). Stop if Secure Boot
+  # rejected the NVIDIA modules — BIOS must change; spinning hides that.
   _w=0
   while ! any_display_connected; do
+    if [[ -e "$RUN/kiosk-kms-secureboot-block" ]]; then
+      paint "  Waiting for monitor / Secure Boot off (NVIDIA driver blocked)."
+      sleep 30
+      continue
+    fi
     if (( _w % 2 == 0 )); then
       ensure_nvidia_kms force || true
     fi
@@ -1287,7 +1308,7 @@ if ! any_display_connected; then
   done
   fail_note "STICKLLM_KIOSK_DISPLAY_APPEARED"
   sleep 2
-fi
+  fi
 
 # Restore fbcon so status text is visible while we pick DRM, then release in try_launch.
 restore_display_console "pre-launch"

@@ -78,6 +78,7 @@ def test_nft_default_deny_and_always_block(agent):
     assert "100.100.100.200 drop" in rules
     assert "tcp dport 18080 accept" in rules
     assert "1.1.1.1" in rules
+    assert "465" not in rules.split("chain agent_out", 1)[1].split("chain input", 1)[0]
     agent_out = rules.split("chain agent_out", 1)[1].split("chain input", 1)[0]
     lines = [
         ln.strip()
@@ -87,6 +88,36 @@ def test_nft_default_deny_and_always_block(agent):
     assert lines[-1] == "drop"
     # No bare "accept" of the internet after the proxy rule.
     assert "    accept\n" not in agent_out.split("18080 accept")[-1]
+
+
+def test_nft_email_outbound_opens_mail_ports(agent):
+    rules = agent.nft_ruleset(email_outbound=True)
+    agent_out = rules.split("chain agent_out", 1)[1].split("chain input", 1)[0]
+    assert "tcp dport { 465, 587, 993, 995 } accept" in agent_out
+    off = agent.nft_ruleset(email_outbound=False)
+    assert "993" not in off.split("chain agent_out", 1)[1].split("chain input", 1)[0]
+
+
+def test_write_egress_json_keeps_inode(agent, tmp_path):
+    """Docker bind-mounts egress.json by inode; replace would stale the container view."""
+    path = tmp_path / "egress.json"
+    agent._write_egress_json(path, {"web_fetch": True, "email_outbound": False})
+    before = path.stat().st_ino
+    agent._write_egress_json(path, {"web_fetch": True, "email_outbound": True})
+    after = path.stat().st_ino
+    assert before == after
+    assert json.loads(path.read_text(encoding="utf-8"))["email_outbound"] is True
+
+
+def test_scanner_email_outbound_allows_mail_upload(scan):
+    hits = scan.scan_text(
+        "curl -T draft https://smtp.gmail.com/up", web_fetch=True, email_outbound=False
+    )
+    assert any(h["kind"] == "upload" for h in hits)
+    assert scan.scan_text(
+        "curl -T draft https://smtp.gmail.com/up", web_fetch=False, email_outbound=True
+    ) == []
+    assert scan.EMAIL_OUTBOUND_PORTS == (465, 587, 993, 995)
 
 
 def test_seccomp_profile_denies_unshare():
@@ -161,6 +192,19 @@ def test_egress_host_allowed_fail_closed(agent, tmp_path, monkeypatch):
     assert agent._egress_host_allowed("example.com", "GET", False)
     assert agent._egress_host_allowed("example.com", "GET", True) == ""
     assert agent._egress_host_allowed("example.com", "POST", True) == ""
+    # Mail ports any host when email toggle on (no provider allowlist).
+    assert agent._egress_host_allowed(
+        "smtp.gmail.com", "CONNECT", False, email_outbound=True, port=587
+    ) == ""
+    assert agent._egress_host_allowed(
+        "outlook.office365.com", "CONNECT", False, email_outbound=True, port=993
+    ) == ""
+    assert agent._egress_host_allowed(
+        "imap.fastmail.com", "CONNECT", False, email_outbound=True, port=995
+    ) == ""
+    assert "web fetch" in agent._egress_host_allowed(
+        "smtp.gmail.com", "CONNECT", False, email_outbound=False, port=587
+    )
 
 
 def test_proxy_refuses_metadata(agent, tmp_path, monkeypatch):
@@ -204,3 +248,44 @@ def test_web_mode_steers_agent_egress(agent, tmp_path, monkeypatch):
     except OSError as e:
         assert "tor-down-for-test" in str(e)
     assert calls == [("example.com", 443, 5)]
+
+
+def test_email_credentials_vault_secrets_and_env_sync(agent, tmp_path, monkeypatch):
+    """Email + passkey land in secrets/; .env only while outbound is on."""
+    settings = tmp_path / "settings"
+    settings.mkdir()
+    (settings / "secrets").mkdir()
+    portable = settings / "agent-zero"
+    portable.mkdir()
+    monkeypatch.setattr(agent, "SETTINGS_MNT", settings)
+    monkeypatch.setattr(agent, "PORTABLE", portable)
+    monkeypatch.setattr(agent, "settings_mounted", lambda path=None, mounts_text=None: True)
+    monkeypatch.setattr(agent, "vault_mounted", lambda path=None, mounts_text=None: False)
+    monkeypatch.setattr(agent, "agent_email_outbound_enabled", lambda settings=None: True)
+    monkeypatch.setattr(agent, "nft_apply", lambda: 0)
+
+    out = agent.write_email_credentials("user@example.com", "app-pass-key")
+    assert out["ok"] and out["saved"]
+    assert out["email"] == "user@example.com"
+    assert out["password_set"] is True
+    secrets = settings / "secrets"
+    assert (secrets / "email-address").read_text(encoding="utf-8").strip() == "user@example.com"
+    assert (secrets / "email-password").read_text(encoding="utf-8").strip() == "app-pass-key"
+    env = (portable / ".env").read_text(encoding="utf-8")
+    assert "STICKLLM_EMAIL_ADDRESS=user@example.com" in env
+    assert "STICKLLM_EMAIL_PASSWORD=app-pass-key" in env
+
+    agent.sync_email_credentials_env(enabled=False)
+    env_off = (portable / ".env").read_text(encoding="utf-8")
+    assert "STICKLLM_EMAIL_ADDRESS" not in env_off
+    assert "STICKLLM_EMAIL_PASSWORD" not in env_off
+    # Secrets remain after outbound is turned off.
+    assert (secrets / "email-address").is_file()
+    assert (secrets / "email-password").is_file()
+
+    got = agent.read_email_credentials()
+    assert got["ok"] and got["email"] == "user@example.com"
+    assert got["password"] == "app-pass-key"
+
+    bad = agent.write_email_credentials("not-an-email", "x")
+    assert not bad["ok"]

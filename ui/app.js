@@ -5526,6 +5526,38 @@ function formatPairCode(code) {
 let pairQrLastUrl = "";
 let pairQrPollTimer = null;
 let pairQrMinting = false;
+let pairQrExpAt = 0;
+let pairQrExpTimer = null;
+function stopPairQrExpCountdown() {
+  if (pairQrExpTimer) {
+    clearInterval(pairQrExpTimer);
+    pairQrExpTimer = null;
+  }
+  pairQrExpAt = 0;
+}
+function formatJoinExpLeft(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m > 0) return m + ":" + String(r).padStart(2, "0");
+  return r + "s";
+}
+function tickPairQrExpCountdown(via) {
+  const hint = $("#pairQrHint");
+  if (!hint || !pairQrExpAt || !pairQrLastUrl) {
+    stopPairQrExpCountdown();
+    return;
+  }
+  const left = Math.max(0, Math.ceil(pairQrExpAt - Date.now() / 1000));
+  if (left <= 0) {
+    stopPairQrExpCountdown();
+    paintSticklinkQrExpired("StickLink join expired — tap Generate for a new QR.");
+    return;
+  }
+  hint.textContent =
+    "Wi‑Fi off → scan → Agent Zero (" + (via || "sticklink") + "). Expires in " +
+    formatJoinExpLeft(left) + ".";
+}
 function setPairQrButton(mode) {
   const btn = $("#pairQrRefresh");
   if (!btn) return;
@@ -5542,6 +5574,7 @@ function showPairQrPlaceholder(kind, title, sub) {
   const host = $("#pairQr");
   const urlEl = $("#pairQrUrl");
   if (!host) return;
+  stopPairQrExpCountdown();
   pairQrLastUrl = "";
   const expired = kind === "expired";
   host.innerHTML =
@@ -5569,7 +5602,14 @@ function paintSticklinkQr(url, meta) {
     setPairQrButton("generate");
     return;
   }
-  if (join === pairQrLastUrl && host.querySelector("img")) return;
+  const expAbs = Number((meta && (meta.exp || meta.expires)) || 0);
+  if (join === pairQrLastUrl && host.querySelector("img")) {
+    if (expAbs > 0) {
+      pairQrExpAt = expAbs;
+      tickPairQrExpCountdown((meta && meta.via) ? String(meta.via) : "sticklink");
+    }
+    return;
+  }
   if (typeof QRCode === "undefined") {
     if (hint) hint.textContent = "QR library missing — refresh the page.";
     return;
@@ -5597,11 +5637,20 @@ function paintSticklinkQr(url, meta) {
     }
     pairQrLastUrl = join;
     const via = (meta && meta.via) ? String(meta.via) : "sticklink";
+    const until = (meta && meta.until) ? String(meta.until) : "";
+    stopPairQrExpCountdown();
     if (hint) {
-      const until = (meta && meta.until) ? String(meta.until) : "";
-      hint.textContent = until === "lab-reboot"
-        ? "Wi‑Fi off → scan → Agent Zero (" + via + "). Stays up until the lab PC reboots."
-        : "Wi‑Fi off → scan → Agent Zero (" + via + ").";
+      if (until === "lab-reboot") {
+        hint.textContent = "Wi‑Fi off → scan → Agent Zero (" + via + "). Stays up until the lab PC reboots.";
+      } else if (expAbs > Date.now() / 1000) {
+        pairQrExpAt = expAbs;
+        tickPairQrExpCountdown(via);
+        if (!pairQrExpTimer) {
+          pairQrExpTimer = setInterval(() => tickPairQrExpCountdown(via), 1000);
+        }
+      } else {
+        hint.textContent = "Wi‑Fi off → scan → Agent Zero (" + via + ").";
+      }
     }
     if (urlEl) { urlEl.hidden = false; urlEl.textContent = join; }
     setPairQrButton("refresh");
@@ -5699,8 +5748,14 @@ function sticklinkRetryLeft(j) {
 function sticklinkJoinIsRateLimited(j) {
   if (!j || typeof j !== "object") return false;
   if (j.rate_limited) return true;
-  const st = (j.remint && j.remint.status) || "";
-  return st === "rate_limited";
+  const st = String((j.remint && j.remint.status) || "");
+  if (st === "rate_limited") return true;
+  // Restore pre-remint-UX detection: server message is enough even if
+  // remint.status was overwritten to requested/minting during a storm.
+  const msg = String(j.message || (j.remint && j.remint.message) || "").toLowerCase();
+  if (msg.indexOf("too many new codes") >= 0) return true;
+  if (msg.indexOf("rate-limited") >= 0 || msg.indexOf("rate limited") >= 0) return true;
+  return false;
 }
 function paintSticklinkQrRateLimited(j) {
   const hint = $("#pairQrHint");
@@ -5735,6 +5790,11 @@ function sticklinkRemintPhase(j) {
   };
 }
 function paintSticklinkQrMinting(j) {
+  // Rate-limit must never render as the minting / "old QR disabled" placeholder.
+  if (sticklinkJoinIsRateLimited(j)) {
+    paintSticklinkQrRateLimited(j);
+    return;
+  }
   const phase = sticklinkRemintPhase(j);
   const hint = $("#pairQrHint");
   showPairQrPlaceholder("busy", phase.title, phase.sub);
@@ -5748,6 +5808,15 @@ async function refreshSticklinkQr(force) {
   try {
     if (force) {
       if (pairQrMinting) return;
+      // Probe first: never flash "Old QR disabled" over an active rate-limit countdown.
+      try {
+        const pre = await fetch("/api/pair/sticklink-join", { cache: "no-store", headers: authHeaders() });
+        const preJ = await pre.json().catch(() => ({}));
+        if (sticklinkJoinIsRateLimited(preJ)) {
+          paintSticklinkQrRateLimited(preJ);
+          return;
+        }
+      } catch (_) { /* fall through to Generate */ }
       pairQrMinting = true;
       const prev = pairQrLastUrl || "";
       // Hide the old QR immediately so nobody scans a stale code.
@@ -5802,6 +5871,7 @@ async function refreshSticklinkQr(force) {
     if (pairQrMinting) return;
     const r = await fetch("/api/pair/sticklink-join", { cache: "no-store", headers: authHeaders() });
     const j = await r.json().catch(() => ({}));
+    // Rate-limit before minting — remint.status can stick on requested/minting.
     if (sticklinkJoinIsRateLimited(j)) {
       paintSticklinkQrRateLimited(j);
       return;
@@ -9981,6 +10051,111 @@ window.stickApp = Object.freeze({
       if (msg) msg.textContent = j.message || "Saved.";
     } catch (e) { box.checked = !want; toast("Could not save the plugin setting"); }
   });
+  load();
+})();
+
+// Settings > Network > Allow outbound email + vault Email / Password (passkey).
+(function emailOutboundSwitch() {
+  const box = document.getElementById("emailOutbound");
+  const msg = document.getElementById("emailOutboundMsg");
+  const creds = document.getElementById("emailCreds");
+  const emailIn = document.getElementById("emailAddress");
+  const passIn = document.getElementById("emailPasskey");
+  const saveBtn = document.getElementById("emailCredSave");
+  const showBtn = document.getElementById("emailPassShow");
+  const hint = document.getElementById("emailCredHint");
+  if (!box) return;
+  const defaultMsg = "Allows common encrypted mail ports (587/465/993/995). Off by default. Covers Gmail, Outlook, Yahoo, Fastmail, and other providers — not a single-host allowlist.";
+  const clearCredUi = () => {
+    if (emailIn) emailIn.value = "";
+    if (passIn) {
+      passIn.value = "";
+      passIn.classList.add("secret");
+    }
+    if (showBtn) showBtn.textContent = "Show";
+  };
+  const setCredVisible = (on) => {
+    if (!creds) return;
+    creds.hidden = !on;
+    if (!on) clearCredUi();
+  };
+  const loadCreds = () => {
+    if (!box.checked) { setCredVisible(false); return; }
+    setCredVisible(true);
+    fetch("/api/agent/email-credentials", { cache: "no-store", headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!j || !j.ok) {
+          if (hint && j && j.message) hint.textContent = j.message;
+          return;
+        }
+        if (emailIn && document.activeElement !== emailIn) emailIn.value = j.email || "";
+        if (passIn && document.activeElement !== passIn) passIn.value = j.password || "";
+        if (hint) {
+          hint.textContent = j.settings_mounted
+            ? "Saved on the encrypted USB settings partition (same vault passcode). Used when Agent Zero sends or reads mail."
+            : "Saved in the vault. Used when Agent Zero sends or reads mail.";
+        }
+      })
+      .catch(() => {});
+  };
+  const load = () => fetch("/api/agent/email-outbound", { cache: "no-store", headers: authHeaders() })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => {
+      if (j && typeof j.email_outbound === "boolean") box.checked = j.email_outbound;
+      setCredVisible(!!box.checked);
+      if (box.checked) loadCreds();
+      else clearCredUi();
+    })
+    .catch(() => {});
+  box.addEventListener("change", async () => {
+    const want = box.checked;
+    try {
+      const r = await fetch("/api/agent/email-outbound", {
+        method: "POST",
+        headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+        body: JSON.stringify({ email_outbound: want }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) {
+        box.checked = !want;
+        toast((j && j.message) || "Could not save the email setting");
+        return;
+      }
+      if (msg) msg.textContent = j.message || defaultMsg;
+      toast(j.message || (want ? "Outbound email allowed" : "Outbound email blocked"));
+      setCredVisible(want);
+      if (want) loadCreds();
+      else clearCredUi();
+    } catch (e) {
+      box.checked = !want;
+      toast("Could not save the email setting");
+    }
+  });
+  if (saveBtn) saveBtn.onclick = async () => {
+    const email = (emailIn && emailIn.value || "").trim();
+    const password = passIn ? passIn.value : "";
+    try {
+      const r = await fetch("/api/agent/email-credentials", {
+        method: "POST",
+        headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+        body: JSON.stringify({ email, password }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) {
+        toast((j && j.message) || "Could not save email credentials");
+        return;
+      }
+      if (hint && j.note) hint.textContent = j.note;
+      toast(j.message || "Email credentials saved");
+    } catch (e) {
+      toast("Could not save email credentials");
+    }
+  };
+  if (showBtn && passIn) showBtn.onclick = () => {
+    passIn.classList.toggle("secret");
+    showBtn.textContent = passIn.classList.contains("secret") ? "Show" : "Hide";
+  };
   load();
 })();
 

@@ -26,6 +26,9 @@ ALWAYS_BLOCK_NETS = ("169.254.0.0/16", "100.100.100.200/32", "fd00:ec2::254/128"
 # Blocked by default: Alibaba Cloud OSS/ECS endpoints (used in the Cohere report).
 DEFAULT_BLOCK_SUFFIXES = ("aliyuncs.com", "aliyun.com", "alicdn.com")
 
+# Encrypted mail ports when Settings → Allow outbound email is ON (any provider).
+EMAIL_OUTBOUND_PORTS = (465, 587, 993, 995)
+
 # The container may always talk to these (llama relay, apps, control bridge, itself).
 LOCAL_HOSTS = (
     "172.30.0.1",
@@ -46,7 +49,7 @@ NET_TOOLS = (
 NS_TOOLS = ("unshare", "nsenter")
 
 _URL_RE = re.compile(
-    r"\b(?P<scheme>https?|ftps?|wss?|sftp|scp|tftp|gopher|dict|telnet|ldaps?|smb|rsync|s3|oss|gs)://"
+    r"\b(?P<scheme>https?|ftps?|wss?|sftp|scp|tftp|gopher|dict|telnet|ldaps?|smb|rsync|s3|oss|gs|smtps?)://"
     r"(?P<netloc>[^\s/'\"`<>?#\\)]+)",
     re.I,
 )
@@ -132,8 +135,12 @@ def is_local(host: str) -> bool:
     return ip is not None and ip.is_loopback
 
 
-def host_verdict(host: str, web_fetch: bool = False) -> str:
-    """'' when the agent may name this host, else the reason."""
+def host_verdict(host: str, web_fetch: bool = False, email_outbound: bool = False) -> str:
+    """'' when the agent may name this host, else the reason.
+
+    ``email_outbound`` lets the agent name any public host for mail clients
+    (Gmail, Outlook, Yahoo, …). nft/proxy still restrict to EMAIL_OUTBOUND_PORTS.
+    """
     h = norm_host(host)
     if not h:
         return ""
@@ -145,7 +152,7 @@ def host_verdict(host: str, web_fetch: bool = False) -> str:
     reason = default_blocked(h)
     if reason:
         return reason
-    if web_fetch:
+    if web_fetch or email_outbound:
         ip = _ip(h)
         if ip is not None and not ip.is_global:
             return "private or reserved address"
@@ -179,7 +186,8 @@ def _hosts_in(text: str) -> list[str]:
     return hosts
 
 
-def scan_text(code: str, *, shell: bool = True, web_fetch: bool = False) -> list[dict]:
+def scan_text(code: str, *, shell: bool = True, web_fetch: bool = False,
+              email_outbound: bool = False) -> list[dict]:
     """Findings for one tool call. Empty list = allowed."""
     text = str(code or "")
     if not text.strip():
@@ -208,7 +216,7 @@ def scan_text(code: str, *, shell: bool = True, web_fetch: bool = False) -> list
     # URLs anywhere (Python requests, urllib, fetch, ...).
     for m in _URL_RE.finditer(text):
         h = norm_host(m.group("netloc"))
-        reason = host_verdict(h, web_fetch=web_fetch)
+        reason = host_verdict(h, web_fetch=web_fetch, email_outbound=email_outbound)
         if reason:
             flag("outbound_url", m.group(0), reason)
     if shell:
@@ -222,10 +230,11 @@ def scan_text(code: str, *, shell: bool = True, web_fetch: bool = False) -> list
             rest = seg[tm.end():]
             targets = [h for h in _hosts_in(rest) if not is_local(h)]
             for h in targets:
-                reason = host_verdict(h, web_fetch=web_fetch)
+                reason = host_verdict(h, web_fetch=web_fetch, email_outbound=email_outbound)
                 if reason:
                     flag("network_tool", f"{tool} {h}", reason)
-            if targets and _UPLOAD_RE.search(" " + rest + " "):
+            # Mail clients submit messages; allow when the Settings email toggle is on.
+            if targets and _UPLOAD_RE.search(" " + rest + " ") and not email_outbound:
                 flag("upload", f"{tool} {targets[0]}", "uploads from the agent to outside hosts are blocked")
     else:
         if _NS_RE.search(text):
@@ -233,7 +242,8 @@ def scan_text(code: str, *, shell: bool = True, web_fetch: bool = False) -> list
     return findings
 
 
-def scan_tool_call(tool_name: str, tool_args, *, web_fetch: bool = False) -> list[dict]:
+def scan_tool_call(tool_name: str, tool_args, *, web_fetch: bool = False,
+                   email_outbound: bool = False) -> list[dict]:
     name = str(tool_name or "").strip().lower()
     if not isinstance(tool_args, dict):
         return []
@@ -246,7 +256,9 @@ def scan_tool_call(tool_name: str, tool_args, *, web_fetch: bool = False) -> lis
     out: list[dict] = []
     for value in tool_args.values():
         if isinstance(value, str):
-            out.extend(scan_text(value, shell=shell, web_fetch=web_fetch))
+            out.extend(scan_text(
+                value, shell=shell, web_fetch=web_fetch, email_outbound=email_outbound
+            ))
     return out
 
 

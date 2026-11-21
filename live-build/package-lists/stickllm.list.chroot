@@ -3,6 +3,9 @@ live-boot
 live-config
 live-config-systemd
 systemd-sysv
+# Wall clock: Debian live images often omit timesyncd → clock never NTP-syncs
+# after Wi-Fi comes up (timedatectl: NTP service n/a). Required for TLS + logs.
+systemd-timesyncd
 sudo
 curl
 wget

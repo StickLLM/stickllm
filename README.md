@@ -9,7 +9,7 @@ to the USB or internal disks unless you explicitly approve a write.
 | | |
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
-| Current image | **v0.7.7** — `StickLLM-v0.7.7.iso`, hash in [`checksums/v0.7.7.sha256`](checksums/v0.7.7.sha256) |
+| Current image | **v0.7.8** — `StickLLM-v0.7.8.iso`, hash in [`checksums/v0.7.8.sha256`](checksums/v0.7.8.sha256) |
 | Last GitHub Release | **v0.3.9** (older public line on Drive; prior git history is private) |
 | Minimum hardware | **16 GB** system RAM · **8 GB** GPU |
 | GPU backends | **AMD:** ROCm and Vulkan · **NVIDIA:** CUDA · **Intel GPU:** Vulkan |
@@ -20,7 +20,7 @@ to the USB or internal disks unless you explicitly approve a write.
 
 ---
 
-## Get StickLLM (v0.7.7)
+## Get StickLLM (v0.7.8)
 
 ### 1. Download
 
@@ -28,24 +28,24 @@ ISO is on **Google Drive** (GitHub’s 2 GB asset limit). Same folder as the old
 
 https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing
 
-File: `StickLLM-v0.7.7.iso`
+File: `StickLLM-v0.7.8.iso`
 
 The hash of record is in this repo. Check the file you download against it.
 
-Previous published ships stay available (`StickLLM-v0.3.9.iso`, `StickLLM-v0.4.2.iso`, StickLink `v0.7.0`–`v0.7.4` lab ISOs). Do not overwrite those names.
+Previous published ships stay available (`StickLLM-v0.7.7.iso`, `StickLLM-v0.4.2.iso`, older StickLink lab ISOs). Do not overwrite those names. `v0.3.9` is outside the rolling window.
 
 ### 2. Verify checksum
 
 **Hash of record is in this repo** — verify the Drive download against it (do not rely on a hash stored only on Drive):
 
-[`checksums/v0.7.7.sha256`](checksums/v0.7.7.sha256)
+[`checksums/v0.7.8.sha256`](checksums/v0.7.8.sha256)
 
 ```powershell
-(Get-FileHash .\StickLLM-v0.7.7.iso -Algorithm SHA256).Hash
+(Get-FileHash .\StickLLM-v0.7.8.iso -Algorithm SHA256).Hash
 ```
 
 ```bash
-sha256sum StickLLM-v0.7.7.iso
+sha256sum StickLLM-v0.7.8.iso
 ```
 
 ### 3. Flash to USB
@@ -57,7 +57,7 @@ Flashing **erases** the stick. Pick the correct disk.
 **Linux:**
 
 ```bash
-sudo dd if=StickLLM-v0.7.7.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=StickLLM-v0.7.8.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 After flash, Windows often shows **no drive letter** — that is normal for this
@@ -67,9 +67,9 @@ Full flash notes: [docs/FLASH.md](docs/FLASH.md). Then boot: [docs/BOOT.md](docs
 
 ---
 
-## What's in v0.7.7
+## What's in v0.7.8
 
-About and `stickllm.json` say **v0.7.7**. StickLink Method C phone join is included in the shipping ISO (built from **private** StickLink sources). StickLink rendezvous/signalling remains **closed source / commercial** — see [docs/sticklink/README.md](docs/sticklink/README.md).
+About and `stickllm.json` say **v0.7.8**. StickLink Method C phone join is included in the shipping ISO (built from **private** StickLink sources). StickLink rendezvous/signalling remains **closed source / commercial** — see [docs/sticklink/README.md](docs/sticklink/README.md).
 
 Also in this line: NVIDIA KMS kiosk retry; baked default model **Qwen2.5-7B Instruct Q4_K_M**; Agent Zero overlay as in the 0.7 line.
 ## What’s in v0.4.2 (older)
@@ -143,7 +143,7 @@ cd stickllm
 ./scripts/download-model.sh
 ./scripts/build-llama-server.sh
 ./scripts/build.sh
-# → out/v0.7.7/StickLLM-v0.7.7.iso  (+ SHA256SUMS; integrity-checked in-build)
+# → out/v0.7.8/StickLLM-v0.7.8.iso  (+ SHA256SUMS; integrity-checked in-build)
 ```
 
 Windows (Git Bash):
@@ -161,7 +161,7 @@ Troubleshooting (e.g. Agent Zero apps open in a panel, not a new tab): [docs/TRO
 
 | Artifact | Public? |
 |---|---|
-| **v0.7.7** `StickLLM-v0.7.7.iso` + [`checksums/v0.7.7.sha256`](checksums/v0.7.7.sha256) | Hash is in git. The ISO is not (GitHub’s 2 GB limit). Put that file on the Drive folder and check it against the digest |
+| **v0.7.8** `StickLLM-v0.7.8.iso` + [`checksums/v0.7.8.sha256`](checksums/v0.7.8.sha256) | Hash is in git. The ISO is not (GitHub’s 2 GB limit). Put that file on the Drive folder and check it against the digest |
 | **v0.4.2** `StickLLM-v0.4.2.iso` + [`checksums/v0.4.2.sha256`](checksums/v0.4.2.sha256) | Older published ship — leave name/hash alone |
 | **v0.3.9** ISO on Google Drive + [`checksums/v0.3.9.sha256`](checksums/v0.3.9.sha256) | Yes — previous published ship |
 | **v0.3.8** ISO on Google Drive + [`checksums/v0.3.8.sha256`](checksums/v0.3.8.sha256) | Yes — older published ship |

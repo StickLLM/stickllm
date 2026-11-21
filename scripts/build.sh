@@ -13,10 +13,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 PROFILE="amd-rtx3090"
-# Next unshipped line. Override: STICKLLM_VERSION=0.7.8 ./scripts/build.sh
+# Next unshipped line. Override: STICKLLM_VERSION=0.7.9 ./scripts/build.sh
 # Never point this at a published ship (see refuse list below).
-# Do not rebuild under 0.7.0–0.7.5 / methodc-a / nvidia-kms — those names are cut.
-VERSION="${STICKLLM_VERSION:-0.7.7}"
+# Do not rebuild under 0.7.0–0.7.7 / methodc-a / nvidia-kms — those names are cut.
+VERSION="${STICKLLM_VERSION:-0.7.8}"
 VERSION_DIR="v${VERSION}"
 ISO_NAME="${STICKLLM_ISO_NAME:-StickLLM-v${VERSION}.iso}"
 OUT_DIR="${STICKLLM_OUT_DIR:-out}"
@@ -36,7 +36,7 @@ BASE_HF_REPO="Qwen/Qwen2.5-7B-Instruct-GGUF"
 VOL_WORK="stickllm-lb-work"
 
 case "$VERSION_DIR" in
-  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8|v0.3.9|v0.4.0|v0.4.1|v0.4.2|v0.5.0|v0.5.1|v0.5.2|v0.6.4|v0.6.6|v0.6.7|v0.6.8|v0.6.9|v0.6.10|v0.6.11|v0.6.12|v0.7.0|v0.7.1|v0.7.2|v0.7.3-methodc-a|v0.7.4-nvidia-kms|v0.7.5|v0.7.6)
+  v0.2.0|v0.2.1-local-nvidia-kbd|v0.3.0|v0.3.1|v0.3.2|v0.3.3|v0.3.4|v0.3.5|v0.3.6|v0.3.7|v0.3.8|v0.3.9|v0.4.0|v0.4.1|v0.4.2|v0.5.0|v0.5.1|v0.5.2|v0.6.4|v0.6.6|v0.6.7|v0.6.8|v0.6.9|v0.6.10|v0.6.11|v0.6.12|v0.7.0|v0.7.1|v0.7.2|v0.7.3-methodc-a|v0.7.4-nvidia-kms|v0.7.5|v0.7.6|v0.7.7)
     echo "REFUSE: VERSION=${VERSION} would overwrite a shipping artifact" >&2
     exit 1
     ;;
@@ -88,10 +88,18 @@ docker volume create "$VOL_WORK" >/dev/null
 
 echo "Assembling live-build tree on Docker volume ${VOL_WORK}…"
 
+# Lab StickLink first-boot provision token (never commit). Optional for non-Method-C bakes.
+if [[ -z "${STICKLINK_LAB_PROVISION_TOKEN:-}" && -f /c/Users/peter/sticklink-secrets/lab-provision-token ]]; then
+  STICKLINK_LAB_PROVISION_TOKEN="$(tr -d '\r\n' < /c/Users/peter/sticklink-secrets/lab-provision-token)"
+  export STICKLINK_LAB_PROVISION_TOKEN
+fi
+
 docker run --rm --privileged --network host \
   -e "STICKLLM_DEBIAN_MIRROR=${STICKLLM_DEBIAN_MIRROR:-}" \
   -e "STICKLLM_DEBIAN_SECURITY_MIRROR=${STICKLLM_DEBIAN_SECURITY_MIRROR:-}" \
   -e "STICKLLM_A0_BUNDLE=${STICKLLM_A0_BUNDLE:-1}" \
+  -e "STICKLINK_LAB_PROVISION_TOKEN=${STICKLINK_LAB_PROVISION_TOKEN:-}" \
+  -e "STICKLINK_LAB_PROVISION_URL=${STICKLINK_LAB_PROVISION_URL:-https://link.stickllm.com/v1/lab/device-provision}" \
   -v "${ROOT}:/stickllm:ro" \
   -v "${OUT_HOST}:/stickllm-out" \
   -v "${VOL_WORK}:/work" \

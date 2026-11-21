@@ -76,6 +76,21 @@ if [[ -d "$SRC/etc/systemd/system" ]]; then
   shopt -u nullglob
 fi
 
+# systemd EnvironmentFile= drops any line it cannot parse, and a UTF-8 BOM makes
+# the first assignment unparseable — strip it along with CRLF.
+if [[ -d "$SRC/etc/stickllm" ]]; then
+  install -d -m 755 /etc/stickllm
+  shopt -s nullglob
+  for f in "$SRC/etc/stickllm"/*.env; do
+    [[ -f "$f" ]] || continue
+    sed -i '1s/^\xEF\xBB\xBF//; s/\r$//' "$f" 2>/dev/null || true
+    install -m 644 "$f" "/etc/stickllm/$(basename "$f")"
+    echo "installed /etc/stickllm/$(basename "$f")"
+    installed=1
+  done
+  shopt -u nullglob
+fi
+
 if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
   sed -i 's/\r$//' "$SRC/etc/sudoers.d/stickllm" 2>/dev/null || true
   install -m 440 "$SRC/etc/sudoers.d/stickllm" /etc/sudoers.d/stickllm
@@ -85,6 +100,48 @@ if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
   else
     echo "WARNING: sudoers.d/stickllm failed visudo -cf; left previous file" >&2
   fi
+fi
+
+# NetworkManager profiles / drop-ins (ethernet DHCP retries, etc.).
+if [[ -d "$SRC/etc/NetworkManager/system-connections" ]]; then
+  install -d -m 755 /etc/NetworkManager/system-connections
+  shopt -s nullglob
+  for f in "$SRC/etc/NetworkManager/system-connections"/*.nmconnection; do
+    [[ -f "$f" ]] || continue
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    install -m 600 "$f" "/etc/NetworkManager/system-connections/$(basename "$f")"
+    echo "installed /etc/NetworkManager/system-connections/$(basename "$f")"
+    installed=1
+  done
+  shopt -u nullglob
+  nmcli connection reload >/dev/null 2>&1 || true
+fi
+if [[ -d "$SRC/etc/systemd/system/NetworkManager.service.d" ]]; then
+  install -d -m 755 /etc/systemd/system/NetworkManager.service.d
+  shopt -s nullglob
+  for f in "$SRC/etc/systemd/system/NetworkManager.service.d"/*.conf; do
+    [[ -f "$f" ]] || continue
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    install -m 644 "$f" "/etc/systemd/system/NetworkManager.service.d/$(basename "$f")"
+    echo "installed /etc/systemd/system/NetworkManager.service.d/$(basename "$f")"
+    units_changed=1
+    installed=1
+  done
+  shopt -u nullglob
+fi
+# NTP: systemd-timesyncd drop-ins (network-online wait after Wi-Fi).
+if [[ -d "$SRC/etc/systemd/system/systemd-timesyncd.service.d" ]]; then
+  install -d -m 755 /etc/systemd/system/systemd-timesyncd.service.d
+  shopt -s nullglob
+  for f in "$SRC/etc/systemd/system/systemd-timesyncd.service.d"/*.conf; do
+    [[ -f "$f" ]] || continue
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    install -m 644 "$f" "/etc/systemd/system/systemd-timesyncd.service.d/$(basename "$f")"
+    echo "installed /etc/systemd/system/systemd-timesyncd.service.d/$(basename "$f")"
+    units_changed=1
+    installed=1
+  done
+  shopt -u nullglob
 fi
 
 # Chromium enterprise policies (tabs, downloads, media auto-grant, proxy/web-mode).
@@ -172,6 +229,7 @@ if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
 fi
 
 # Method C peer env (join base / build stamp). No secrets.
+# sticklink-factory.env carries lab provision token (mode 600) when staged.
 if [[ -d "$SRC/etc/stickllm" ]]; then
   mkdir -p /etc/stickllm
   shopt -s nullglob
@@ -180,6 +238,27 @@ if [[ -d "$SRC/etc/stickllm" ]]; then
     sed -i 's/\r$//' "$f" 2>/dev/null || true
     install -m 644 "$f" "/etc/stickllm/$(basename "$f")"
     echo "installed /etc/stickllm/$(basename "$f")"
+    installed=1
+  done
+  if [[ -f "$SRC/etc/stickllm/sticklink-factory.env" ]]; then
+    sed -i 's/\r$//' "$SRC/etc/stickllm/sticklink-factory.env" 2>/dev/null || true
+    install -m 600 "$SRC/etc/stickllm/sticklink-factory.env" /etc/stickllm/sticklink-factory.env
+    echo "installed /etc/stickllm/sticklink-factory.env"
+    installed=1
+  fi
+  shopt -u nullglob
+fi
+
+# Agent Zero egress extension / shared helpers (ISO overlay under share/stickllm).
+if [[ -d "$SRC/usr/local/share/stickllm" ]]; then
+  mkdir -p /usr/local/share/stickllm
+  shopt -s nullglob
+  for f in "$SRC/usr/local/share/stickllm"/*.py \
+           "$SRC/usr/local/share/stickllm"/agent-zero-*.py; do
+    [[ -f "$f" ]] || continue
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    install -m 644 "$f" "/usr/local/share/stickllm/$(basename "$f")"
+    echo "installed /usr/local/share/stickllm/$(basename "$f")"
     installed=1
   done
   shopt -u nullglob

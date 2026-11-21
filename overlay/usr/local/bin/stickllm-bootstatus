@@ -301,6 +301,8 @@ lan_ip() {
 ensure_network() {
   # Kick NM/DHCP while stuck on Network Loading - never block the status loop.
   # nmcli device connect / connection up can hang ~90–120s on missing PHY; always timeout.
+  # Prefer explicit "connection up stickllm-ethernet" (matches WiFi path) — device
+  # connect alone can leave the baked profile idle after a failed first DHCP try.
   systemctl start --no-block NetworkManager.service 2>/dev/null || true
   if command -v nmcli >/dev/null 2>&1; then
     timeout 3 nmcli networking on >/dev/null 2>&1 || true
@@ -308,15 +310,18 @@ ensure_network() {
     [[ -n "$(lan_ip)" ]] && have_ip=1
     # Only attempt blocking connects when we still need an address.
     if [[ "$have_ip" -eq 0 ]]; then
+      timeout 3 nmcli connection reload >/dev/null 2>&1 || true
+      # Baked ethernet profile first (same pattern as stickllm-wifi).
+      timeout 8 nmcli connection up stickllm-ethernet >/dev/null 2>&1 || true
       local eth
       eth="$(timeout 3 nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null \
-        | awk -F: '$2=="ethernet" && $3!="connected"{print $1; exit}' || true)"
+        | awk -F: '$2=="ethernet" && $3!="unavailable" && $3!="connected"{print $1; exit}' || true)"
       if [[ -n "${eth:-}" ]]; then
         timeout 8 nmcli device connect "$eth" >/dev/null 2>&1 || true
       fi
       while IFS=: read -r dev typ state; do
         [[ "$typ" == "ethernet" ]] || continue
-        [[ "$state" == "connected" ]] && continue
+        [[ "$state" == "connected" || "$state" == "unavailable" ]] && continue
         timeout 3 nmcli device set "$dev" managed yes >/dev/null 2>&1 || true
         timeout 8 nmcli device connect "$dev" >/dev/null 2>&1 || true
       done < <(timeout 3 nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null || true)
@@ -331,6 +336,12 @@ ensure_network() {
       done
       timeout 3 nmcli connection reload >/dev/null 2>&1 || true
       if [[ "$have_ip" -eq 0 ]]; then
+        timeout 8 nmcli connection up stickllm-wifi >/dev/null 2>&1 || true
+      fi
+    fi
+    # Also try stickllm-wifi if present in /etc (fresh apply this boot, no DATA yet).
+    if [[ "$have_ip" -eq 0 ]] && [[ -z "$(lan_ip)" ]]; then
+      if timeout 3 nmcli -t connection show stickllm-wifi >/dev/null 2>&1; then
         timeout 8 nmcli connection up stickllm-wifi >/dev/null 2>&1 || true
       fi
     fi
@@ -928,7 +939,8 @@ draw() {
   if [[ "$mode" == "chat" || "$mode" == "local" || "$LOCAL_YIELD" -eq 1 ]]; then
     say "  Loading… console AI chat starts when READY."
   elif [[ "$phase" == "STICKLLM Network Loading" ]]; then
-    say "  Network Loading - waiting for LAN IP (cable / DHCP)."
+    say "  Network Loading - waiting for LAN IP."
+    say "  Ethernet: plug cable until link lights; WiFi: Ctrl+Alt+F2 -> stickllm-wifi-setup"
     say "  Chat UI will show as http://<lan-ip>/ once network is up."
   else
     say "  Leave this screen up - TIMER ticks every few seconds."

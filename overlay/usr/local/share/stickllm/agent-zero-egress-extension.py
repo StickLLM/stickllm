@@ -25,18 +25,25 @@ def _load_scan():
     return mod
 
 
-def _web_fetch() -> bool:
+def _egress_flags() -> tuple[bool, bool]:
+    """(web_fetch, email_outbound). Defaults: web on, email off."""
+    web, email = True, False
     for p in (
         Path("/a0/usr/egress.json"),
         Path("/stickllm-egress.json"),
     ):
         try:
             doc = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(doc, dict) and "web_fetch" in doc:
-                return bool(doc["web_fetch"])
         except (OSError, ValueError, TypeError):
             continue
-    return True
+        if not isinstance(doc, dict):
+            continue
+        if "web_fetch" in doc:
+            web = bool(doc["web_fetch"])
+        if "email_outbound" in doc:
+            email = bool(doc["email_outbound"])
+        return web, email
+    return web, email
 
 
 def _report(tool_name: str, findings: list) -> None:
@@ -78,8 +85,9 @@ class StickllmEgressGuard(Extension):
         if not self.agent:
             return
         scan = _load_scan()
+        web, email = _egress_flags()
         findings = scan.scan_tool_call(
-            tool_name, tool_args or {}, web_fetch=_web_fetch()
+            tool_name, tool_args or {}, web_fetch=web, email_outbound=email
         )
         if not findings:
             return

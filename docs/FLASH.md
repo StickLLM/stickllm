@@ -7,22 +7,21 @@ node / disk number before writing.
 
 | Image | Where | Checksum |
 |---|---|---|
-| **Current image **v0.7.7**.sha256) → `f166caa4…` |
+| **Current** v0.7.8 | Google Drive `StickLLM-v0.7.8.iso` | [`checksums/v0.7.8.sha256`](../checksums/v0.7.8.sha256) |
+| **N-1** v0.7.7 | Google Drive `StickLLM-v0.7.7.iso` | [`checksums/v0.7.7.sha256`](../checksums/v0.7.7.sha256) → `b0071a7b…` |
 
-**Hash of record is in this repo** (`checksums/v0.7.7.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous published ships (`StickLLM-v0.4.2.iso`, `StickLLM-v0.3.9.iso`, `StickLLM-v0.3.8.iso`, …) stay available under their own names — never overwrite those files with different contents.
+**Hash of record is in this repo** (`checksums/v0.7.8.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous published ships stay under their own names — never overwrite those files with different contents. `v0.3.9` is outside the rolling window (removable). Never touch Drive golden **v0.2**.
 
-N-1 restore examples: `StickLLM-v0.7.0.iso` / older Drive ships — see [RESTORE.md](RESTORE.md).
+N-1 restore: `StickLLM-v0.7.7.iso` — see [RESTORE.md](RESTORE.md).
 
 ## Verify SHA-256
 
 ```powershell
-(Get-FileHash .\StickLLM-v0.7.7.iso -Algorithm SHA256).Hash
-# expect F166CAA465B708C9D681A52BEC99CD318248DB390D532CDF9AD08FF79B96848E
+(Get-FileHash .\StickLLM-v0.7.8.iso -Algorithm SHA256).Hash
 ```
 
 ```bash
-sha256sum StickLLM-v0.7.7.iso
-# expect f166caa465b708c9d681a52bec99cd318248db390d532cdf9ad08ff79b96848e
+sha256sum StickLLM-v0.7.8.iso
 ```
 
 ## Windows
@@ -43,7 +42,7 @@ Avoid naive PowerShell `FileStream` raw write (Access Denied even when elevated)
 lsblk -d -o NAME,SIZE,MODEL,TRAN
 # REPLACE sdX with your USB device
 sudo wipefs -a /dev/sdX
-sudo dd if=StickLLM-v0.7.7.iso \
+sudo dd if=StickLLM-v0.7.8.iso \
   of=/dev/sdX bs=4M status=progress oflag=sync
 sudo eject /dev/sdX
 ```
@@ -51,14 +50,14 @@ sudo eject /dev/sdX
 Optional helper (same `dd` path):
 
 ```bash
-ISO=StickLLM-v0.7.7.iso ./scripts/flash-linux.sh /dev/sdX
+ISO=StickLLM-v0.7.8.iso ./scripts/flash-linux.sh /dev/sdX
 ```
 
 ## macOS
 
 ```bash
 diskutil list
-ISO=StickLLM-v0.7.7.iso ./scripts/flash-macos.sh /dev/diskN
+ISO=StickLLM-v0.7.8.iso ./scripts/flash-macos.sh /dev/diskN
 ```
 
 ## After flash
@@ -68,10 +67,4 @@ ISO=StickLLM-v0.7.7.iso ./scripts/flash-macos.sh /dev/diskN
 3. First boot can claim free space as `STICKLLM-DATA` for durable model downloads,
    and reserve about 256 MB beside the live image for the encrypted settings
    partition (same vault passcode; not a file inside the ISO). Until DATA
-   exists, downloads only live in the RAM overlay. A stick whose DATA partition
-   already fills the disk is not shrunk.
-4. When the vault file is already on the SSD, open it with
-   [Opening an existing vault](VAULT.md#opening-an-existing-vault).
-
-Maintainer-only flash tools and lab gates: [MAINTAINER.md](MAINTAINER.md).
-
+   exists, models live in RAM and are lost on reboot.

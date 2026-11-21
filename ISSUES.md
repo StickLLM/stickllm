@@ -12,6 +12,17 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-036 — Peer reconnect still requires a WebRTC DataChannel; durable `?rt=` WSS resume deadlocks
+| | |
+|---|---|
+| **ID** | ISS-036 |
+| **Date** | 2026-11-21 |
+| **Mode** | StickLink Always-On (stick peer + StickDroid) |
+| **Severity** | HIGH (phone can sit on *Reconnecting* with a healthy stick) |
+| **Status** | Open — needs the phone online to design and test against |
+| **Summary** | `run_one_session` runs pair confirm, `agent_ready` and `sess.bind` over the DataChannel, and only afterwards sets `sess_bound` / `use_wss`. A phone that resumes the documented Always-On way (WSS `?rt=` + `sess.resume`, no WebRTC) arrives as `sess.peer join`, after which the peer waits 120s for a `pmsg need-offer` that never comes and fails with `no need-offer from phone`. ARCHITECTURE-ALWAYS-ON-SESSION calls WSS primary and WebRTC "never required"; the peer has it backwards. |
+| **Notes** | Observed 2026-11-21 03:19 UTC: a client joined the resume mailbox within 1s of `resume.put`, then sent nothing for 120s. The build now logs `peer join <conn> via=peer\|sess.peer` plus a warning on `sess.peer`, so the next occurrence is unambiguous. Fix direction: when the joiner is `sess.peer`, run the Noise responder over `sess.frame` (the `complete_wss_handshake` machinery already exists) and skip offer/answer entirely. |
+
 ### ISS-035 — v0.7.2 TEST ISO missing stickllm-sticklink-lab-grant (A0 never loads after Method C pair)
 | | |
 |---|---|

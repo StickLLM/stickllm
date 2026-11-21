@@ -565,6 +565,17 @@
     </div>
     <p class="muted small" id="webModeRemote">Applies to the <b>stick</b> kiosk browser and stick-local Chromium only. Paired phones and PCs on the LAN use their own network — StickLLM cannot force their traffic through Tor or offline. Stick-origin web lookup on the stick follows this mode.</p>
     <p class="muted small" id="webModeStatus" hidden></p>
+    <div class="row"><div><b>Allow outbound email</b><small id="emailOutboundMsg">Allows common encrypted mail ports (587/465/993/995). Off by default. Covers Gmail, Outlook, Yahoo, Fastmail, and other providers — not a single-host allowlist.</small></div>
+      <label class="switch"><input type="checkbox" id="emailOutbound" aria-label="Allow outbound email"><span></span></label></div>
+    <div id="emailCreds" hidden>
+      <div class="row2">
+        <label class="field"><span>Email</span><input id="emailAddress" type="email" placeholder="you@example.com" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
+        <label class="field"><span>Password (passkey)</span><input id="emailPasskey" type="text" class="secret" placeholder="App password / passkey" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other"></label>
+      </div>
+      <div class="actions"><button class="btn primary" id="emailCredSave" type="button">Save to vault</button>
+        <button class="btn" id="emailPassShow" type="button">Show</button></div>
+      <p class="muted small" id="emailCredHint">Saved on the encrypted USB settings partition (same vault passcode). Used when Agent Zero sends or reads mail.</p>
+    </div>
   </div>
   <h3>WiFi</h3>
   <div class="row2">

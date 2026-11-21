@@ -61,5 +61,5 @@ These are **not** public downloads:
 | Older local | `v0.3.6` | `out/v0.3.6/stickllm-amd-rtx3090-v0.3.6.hybrid.iso` | `checksums/v0.3.6.sha256` |
 | Checkpoint | `v0.2.1-local-nvidia-kbd` | `out/v0.2.1-local-nvidia-kbd/…` | `checksums/v0.2-local-nvidia-kbd.sha256` |
 
-Public current ship: Drive **`StickLLM-v0.7.7.iso`** + [`checksums/v0.7.7.sha256`](../checksums/v0.7.7.sha256). Rolling N/N-1: [RESTORE.md](RESTORE.md).
+Public current ship: Drive **`StickLLM-v0.7.8.iso`** + [`checksums/v0.7.8.sha256`](../checksums/v0.7.8.sha256). Rolling N/N-1: [RESTORE.md](RESTORE.md).
 

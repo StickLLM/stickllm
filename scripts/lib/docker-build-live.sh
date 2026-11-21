@@ -100,6 +100,32 @@ mkdir -p config/includes.chroot/etc/stickllm config/includes.chroot/etc/stickllm
 cp /stickllm/config/profiles/amd-rtx3090.toml config/includes.chroot/etc/stickllm/profile.toml
 cp /stickllm/config/models/catalog.toml config/includes.chroot/etc/stickllm/models/catalog.toml
 
+# StickLink lab factory token: chroot hooks do not inherit docker -e, so write
+# sticklink-factory.env into includes.chroot here (mode 600). Never bake a token
+# from the repo tree — only from STICKLINK_LAB_PROVISION_TOKEN on the build host.
+if [[ -n "${STICKLINK_LAB_PROVISION_TOKEN:-}" ]]; then
+  umask 077
+  {
+    echo "# Lab factory token for StickLink first-boot provision (do not commit)."
+    echo "STICKLINK_LAB_PROVISION_TOKEN=${STICKLINK_LAB_PROVISION_TOKEN}"
+    echo "STICKLINK_LAB_PROVISION_URL=${STICKLINK_LAB_PROVISION_URL:-https://link.stickllm.com/v1/lab/device-provision}"
+  } >config/includes.chroot/etc/stickllm/sticklink-factory.env
+  chmod 600 config/includes.chroot/etc/stickllm/sticklink-factory.env
+  echo "[stickllm] wrote sticklink-factory.env into includes.chroot (token present)"
+else
+  echo "[stickllm] STICKLINK_LAB_PROVISION_TOKEN unset — Method C first-boot provision will fail until set"
+fi
+# Strip UTF-8 BOM / CRLF from baked *.env so systemd EnvironmentFile works.
+for envf in config/includes.chroot/etc/stickllm/*.env; do
+  [[ -f "$envf" ]] || continue
+  tr -d '\r' <"$envf" | sed '1s/^\xEF\xBB\xBF//' >"${envf}.nobom"
+  mv "${envf}.nobom" "$envf"
+  case "$(basename "$envf")" in
+    sticklink-factory.env) chmod 600 "$envf" ;;
+    *) chmod 644 "$envf" ;;
+  esac
+done
+
 test -x config/includes.chroot/opt/stickllm/bin/llama-server
 test -x config/includes.chroot/opt/stickllm/bin/llama-server-cpu
 test -f config/includes.chroot/opt/stickllm/lib/libllama-server-impl.so

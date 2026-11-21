@@ -1198,6 +1198,10 @@ def private_dns_v4(servers) -> list[str]:
     return keep
 
 
+# Encrypted mail: SMTPS / submission / IMAPS / POP3S (any provider when toggle ON).
+EMAIL_OUTBOUND_PORTS = (465, 587, 993, 995)
+
+
 def nft_ruleset(
     bridge: str = LLAMA_BRIDGE_IFACE,
     subnet: str = LLAMA_BRIDGE_SUBNET,
@@ -1207,6 +1211,7 @@ def nft_ruleset(
     open_app_port: int = OPEN_APP_PORT,
     egress_port: int = EGRESS_PROXY_PORT,
     dns_servers=(),
+    email_outbound: bool = False,
 ) -> str:
     """Forward rules owned by stickllm-agent. dockerd is started with --iptables=false.
 
@@ -1218,6 +1223,8 @@ def nft_ruleset(
     - Allow TCP to the host egress proxy on the bridge gateway (HTTP_PROXY).
       The proxy is what lets SearXNG / web search out when enabled; uploads and
       always-blocked hosts are refused there.
+    - When email_outbound is on: allow TCP 465/587/993/995 to the public
+      internet (smtplib/imaplib bypass HTTP_PROXY).
     - Everything else from the bridge is dropped (no raw internet).
 
     From the bridge, the host accepts only the llama relay, the static apps
@@ -1238,6 +1245,10 @@ def nft_ruleset(
     if dns_all:
         dset = "{ " + ", ".join(dns_all) + " }"
         dns_rules = f"    ip daddr {dset} udp dport 53 accept\n    ip daddr {dset} tcp dport 53 accept\n"
+    email_rules = ""
+    if email_outbound:
+        ep = "{ " + ", ".join(str(p) for p in EMAIL_OUTBOUND_PORTS) + " }"
+        email_rules = f"    tcp dport {ep} accept\n"
     return (
         f"table inet {NFT_TABLE} {{\n"
         "  chain forward {\n"
@@ -1255,6 +1266,7 @@ def nft_ruleset(
         "    ip daddr 172.16.0.0/12 drop\n"
         "    meta nfproto ipv6 drop\n"
         f"    ip daddr {gateway} tcp dport {int(egress_port)} accept\n"
+        + email_rules +
         "    drop\n"
         "  }\n"
         "  chain input {\n"
@@ -1273,7 +1285,7 @@ def nft_ruleset(
     )
 
 
-def nft_apply_text(dns_servers=None) -> str:
+def nft_apply_text(dns_servers=None, email_outbound=None) -> str:
     """Ruleset script for ``nft -f``.
 
     Debian 12 ships nftables 1.0.6, which rejects ``destroy table`` (added in
@@ -1281,10 +1293,15 @@ def nft_apply_text(dns_servers=None) -> str:
     the older idempotent prelude: it creates the table when missing, then
     drops it so the definition below is a clean load.
     """
+    if email_outbound is None:
+        email_outbound = agent_email_outbound_enabled()
     return (
         f"add table inet {NFT_TABLE}\n"
         f"delete table inet {NFT_TABLE}\n"
-        + nft_ruleset(dns_servers=host_dns_servers() if dns_servers is None else dns_servers)
+        + nft_ruleset(
+            dns_servers=host_dns_servers() if dns_servers is None else dns_servers,
+            email_outbound=bool(email_outbound),
+        )
     )
 
 
@@ -1361,6 +1378,389 @@ def agent_web_fetch_enabled(settings: Path | None = None) -> bool:
         if isinstance(doc, dict) and "web_fetch" in doc:
             return bool(doc["web_fetch"])
     return True
+
+
+def _read_egress_doc(settings: Path | None = None) -> dict:
+    root = settings if settings is not None else PORTABLE
+    for path in (root / "egress.json", Path("/run/stickllm/agent-egress.json")):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(doc, dict):
+            return doc
+    return {}
+
+
+def agent_email_outbound_enabled(settings: Path | None = None) -> bool:
+    """Whether Agent Zero may use encrypted mail ports (465/587/993/995).
+
+    Default False (secure). Stick Web mode **No internet** forces this off.
+    Opens SMTP submission / SMTPS / IMAPS / POP3S to any provider (Gmail,
+    Outlook, Yahoo, Fastmail, …) — port-based, not a host allowlist.
+    """
+    if stickllm_web_mode() == "none":
+        return False
+    doc = _read_egress_doc(settings)
+    if "email_outbound" in doc:
+        return bool(doc["email_outbound"])
+    return False
+
+
+def _write_egress_json(path: Path, doc: dict) -> None:
+    """Write egress.json in place (truncate), never rename/replace.
+
+    Agent Zero bind-mounts this file at ``/a0/usr/egress.json``. Docker pins
+    the mount to the inode at container start; ``os.replace`` would leave the
+    container reading a stale deleted inode while the host path looks updated.
+    """
+    text = json.dumps(doc, indent=2) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def set_email_outbound(enabled: bool, root: Path | None = None) -> dict:
+    """Persist email_outbound in egress.json and re-apply nft. Live for proxy."""
+    base = root if root is not None else PORTABLE
+    if root is None and not settings_mounted():
+        return {
+            "ok": False,
+            "error": "settings_locked",
+            "message": "Unlock settings first (the choice is saved on the stick).",
+        }
+    path = base / "egress.json"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        doc = {}
+        if path.is_file():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    doc = raw
+            except (OSError, ValueError, TypeError):
+                doc = {}
+        doc["email_outbound"] = bool(enabled)
+        doc.setdefault("web_fetch", True)
+        doc["note"] = (
+            "email_outbound opens TCP 465/587/993/995 (encrypted mail). "
+            "web_fetch controls HTTP(S) search/fetch."
+        )
+        _write_egress_json(path, doc)
+        run = Path("/run/stickllm/agent-egress.json")
+        try:
+            run.parent.mkdir(parents=True, exist_ok=True)
+            run.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+            os.chmod(run, 0o644)
+        except OSError:
+            pass
+    except OSError as exc:
+        return {"ok": False, "error": "write_failed", "message": f"Could not save: {exc}"}
+    nft_rc = nft_apply()
+    on = agent_email_outbound_enabled(base)
+    # Keep vault secrets; only expose them to A0/.env while mail ports are open.
+    try:
+        sync_email_credentials_env(enabled=on, root=base)
+    except Exception:
+        pass
+    return {
+        "ok": nft_rc == 0,
+        "email_outbound": on,
+        "ports": list(EMAIL_OUTBOUND_PORTS),
+        "nft_ok": nft_rc == 0,
+        "message": (
+            "Saved. Encrypted mail ports (587/465/993/995) are open."
+            if on
+            else "Saved. Encrypted mail ports are closed."
+        )
+        if nft_rc == 0
+        else "Saved the setting, but nftables did not reload — try restarting Agent Zero.",
+    }
+
+
+# Portable secrets on the encrypted USB settings partition (same vault passcode).
+# Names match stickllm_usb_settings.SECRET_NAME_RE (lowercase file names).
+EMAIL_ADDRESS_SECRET = "email-address"
+EMAIL_PASSWORD_SECRET = "email-password"
+EMAIL_ENV_ADDRESS = "STICKLLM_EMAIL_ADDRESS"
+EMAIL_ENV_PASSWORD = "STICKLLM_EMAIL_PASSWORD"
+
+
+def _usb_settings_mod():
+    cached = getattr(_usb_settings_mod, "_mod", None)
+    if cached is not None:
+        return cached
+    lib = Path("/usr/local/lib/stickllm_usb_settings.py")
+    if not lib.is_file():
+        # Dev / unit tests: sibling of this file under overlay.
+        alt = Path(__file__).resolve().parent / "stickllm_usb_settings.py"
+        lib = alt if alt.is_file() else lib
+    if not lib.is_file():
+        return None
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("stickllm_usb_settings", lib)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _usb_settings_mod._mod = mod
+    return mod
+
+
+def _email_secret_store() -> tuple[Path | None, str]:
+    """Return (secrets_dir_or_vault_settings, kind). Never speech / unmounted."""
+    if settings_mounted():
+        secrets = SETTINGS_MNT / "secrets"
+        try:
+            secrets.mkdir(parents=True, exist_ok=True)
+            os.chmod(secrets, 0o700)
+        except OSError:
+            return None, "locked"
+        mod = _usb_settings_mod()
+        if mod is not None:
+            try:
+                mod.assert_settings_mount(SETTINGS_MNT)
+            except ValueError:
+                return None, "locked"
+        return secrets, "settings"
+    if vault_mounted():
+        d = VAULT_MNT / "settings"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            os.chmod(d, 0o700)
+        except OSError:
+            return None, "locked"
+        return d, "vault"
+    return None, "locked"
+
+
+def _read_secret_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _write_secret_file(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(value + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+    os.chmod(path, 0o600)
+
+
+def _delete_secret_file(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _clean_email_address(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text or len(text) > 320 or any(ch in text for ch in "\n\r\x00"):
+        return ""
+    if "@" not in text or " " in text:
+        return ""
+    return text
+
+
+def _clean_email_password(raw: str) -> str:
+    text = str(raw or "")
+    if not text or any(ch in text for ch in "\n\r\x00"):
+        return ""
+    if len(text) > 4000:
+        return ""
+    return text
+
+
+def read_email_credentials() -> dict:
+    """Load mail account secrets. Never prints values."""
+    store, kind = _email_secret_store()
+    if store is None:
+        return {
+            "ok": False,
+            "error": "settings_locked",
+            "message": "Unlock the vault to read email credentials.",
+            "email": "",
+            "password": "",
+            "password_set": False,
+            "settings_mounted": False,
+        }
+    if kind == "settings":
+        mod = _usb_settings_mod()
+        if mod is not None:
+            try:
+                email = mod.read_secret(SETTINGS_MNT, EMAIL_ADDRESS_SECRET)
+                password = mod.read_secret(SETTINGS_MNT, EMAIL_PASSWORD_SECRET)
+            except ValueError:
+                email = _read_secret_file(store / EMAIL_ADDRESS_SECRET)
+                password = _read_secret_file(store / EMAIL_PASSWORD_SECRET)
+        else:
+            email = _read_secret_file(store / EMAIL_ADDRESS_SECRET)
+            password = _read_secret_file(store / EMAIL_PASSWORD_SECRET)
+    else:
+        email = _read_secret_file(store / EMAIL_ADDRESS_SECRET)
+        password = _read_secret_file(store / EMAIL_PASSWORD_SECRET)
+    return {
+        "ok": True,
+        "email": email,
+        "password": password,
+        "password_set": bool(password),
+        "settings_mounted": kind == "settings",
+        "where": kind,
+    }
+
+
+def write_email_credentials(email: str, password: str | None = None) -> dict:
+    """Persist Email + Password (passkey) to encrypted stick settings / vault.
+
+    ``password`` None keeps the existing passkey; empty string clears it.
+    """
+    store, kind = _email_secret_store()
+    if store is None:
+        return {
+            "ok": False,
+            "saved": False,
+            "error": "settings_locked",
+            "message": "Unlock the vault to save email credentials.",
+        }
+    addr = _clean_email_address(email)
+    if str(email or "").strip() and not addr:
+        return {
+            "ok": False,
+            "saved": False,
+            "error": "bad_email",
+            "message": "Enter a valid email address.",
+            "settings_mounted": kind == "settings",
+        }
+    mod = _usb_settings_mod() if kind == "settings" else None
+    try:
+        if not addr:
+            if mod is not None:
+                mod.delete_secret(SETTINGS_MNT, EMAIL_ADDRESS_SECRET)
+            else:
+                _delete_secret_file(store / EMAIL_ADDRESS_SECRET)
+        else:
+            if mod is not None:
+                mod.write_secret(SETTINGS_MNT, EMAIL_ADDRESS_SECRET, addr)
+            else:
+                _write_secret_file(store / EMAIL_ADDRESS_SECRET, addr)
+        if password is not None:
+            pw = _clean_email_password(password)
+            if not str(password) or not pw:
+                if mod is not None:
+                    mod.delete_secret(SETTINGS_MNT, EMAIL_PASSWORD_SECRET)
+                else:
+                    _delete_secret_file(store / EMAIL_PASSWORD_SECRET)
+            else:
+                if mod is not None:
+                    mod.write_secret(SETTINGS_MNT, EMAIL_PASSWORD_SECRET, pw)
+                else:
+                    _write_secret_file(store / EMAIL_PASSWORD_SECRET, pw)
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "saved": False,
+            "error": "bad_secret",
+            "message": str(exc),
+            "settings_mounted": kind == "settings",
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "saved": False,
+            "error": "write_failed",
+            "message": f"Could not save: {exc}",
+            "settings_mounted": kind == "settings",
+        }
+    on = agent_email_outbound_enabled()
+    try:
+        sync_email_credentials_env(enabled=on)
+    except Exception:
+        pass
+    got = read_email_credentials()
+    note = (
+        "Email credentials saved on the USB stick settings partition."
+        if kind == "settings"
+        else "USB settings partition is not open; credentials saved in the vault until that partition is available."
+    )
+    return {
+        "ok": True,
+        "saved": True,
+        "email": got.get("email") or "",
+        "password_set": bool(got.get("password_set")),
+        "settings_mounted": kind == "settings",
+        "where": kind,
+        "message": note,
+        "note": note,
+    }
+
+
+def sync_email_credentials_env(
+    enabled: bool | None = None, root: Path | None = None
+) -> None:
+    """Mirror vault email secrets into agent-zero/.env for A0 when mail is on.
+
+    When outbound email is off, remove the env keys so the container does not
+    keep a live copy while ports are closed. Secrets stay in secrets/.
+    Never print the file contents.
+    """
+    base = root if root is not None else PORTABLE
+    if not settings_mounted() and root is None:
+        return
+    path = base / ".env"
+    if enabled is None:
+        enabled = agent_email_outbound_enabled(base)
+    existing = ""
+    if path.is_file():
+        try:
+            existing = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            existing = ""
+    text = existing
+    if enabled:
+        creds = read_email_credentials()
+        addr = str(creds.get("email") or "")
+        pw = str(creds.get("password") or "")
+        if addr:
+            text = _upsert_env_key(text, EMAIL_ENV_ADDRESS, addr)
+        else:
+            text = _remove_env_key(text, EMAIL_ENV_ADDRESS)
+        if pw:
+            text = _upsert_env_key(text, EMAIL_ENV_PASSWORD, pw)
+        else:
+            text = _remove_env_key(text, EMAIL_ENV_PASSWORD)
+    else:
+        text = _remove_env_key(text, EMAIL_ENV_ADDRESS)
+        text = _remove_env_key(text, EMAIL_ENV_PASSWORD)
+    if text != existing:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+
+def _remove_env_key(text: str, key: str) -> str:
+    out: list[str] = []
+    for line in text.splitlines():
+        if _env_key_name(line) == key:
+            continue
+        out.append(line)
+    rendered = "\n".join(out)
+    if rendered and not rendered.endswith("\n"):
+        rendered += "\n"
+    return rendered
 
 
 def _tor_http_tunnel_endpoint() -> tuple[str, int]:
@@ -1453,7 +1853,14 @@ def read_egress_events() -> list[dict]:
         return []
 
 
-def _egress_host_allowed(host: str, method: str, web_fetch: bool) -> str:
+def _egress_host_allowed(
+    host: str,
+    method: str,
+    web_fetch: bool,
+    *,
+    email_outbound: bool = False,
+    port: int | None = None,
+) -> str:
     """Empty string when the proxy may continue; else a short reason."""
     try:
         scan = _load_egress_scan()
@@ -1466,6 +1873,9 @@ def _egress_host_allowed(host: str, method: str, web_fetch: bool) -> str:
         return reason
     if scan.is_local(h):
         return "proxy must not target the stick itself"
+    # Encrypted mail CONNECT (any provider) when Settings email toggle is on.
+    if email_outbound and port is not None and int(port) in EMAIL_OUTBOUND_PORTS:
+        return ""
     if not web_fetch:
         return "web fetch is off for the agent"
     m = (method or "GET").upper()
@@ -1534,12 +1944,16 @@ def run_egress_proxy(listen_host: str = LLAMA_BRIDGE_HOST, listen_port: int = EG
                     k, v = line.split(":", 1)
                     headers[k.strip().lower()] = v.strip()
             web = agent_web_fetch_enabled()
+            email = agent_email_outbound_enabled()
             if method == "CONNECT":
                 hostport = target
                 host, _, port_s = hostport.partition(":")
                 port = int(port_s or "443")
-                reason = _egress_host_allowed(host, "CONNECT", web)
-                if reason or port not in (443, 80):
+                mail_ok = email and port in EMAIL_OUTBOUND_PORTS
+                reason = _egress_host_allowed(
+                    host, "CONNECT", web, email_outbound=email, port=port
+                )
+                if reason or (port not in (443, 80) and not mail_ok):
                     record_egress_event({
                         "tool": "proxy",
                         "via": "connect",
@@ -1578,7 +1992,9 @@ def run_egress_proxy(listen_host: str = LLAMA_BRIDGE_HOST, listen_port: int = EG
             split = urlsplit(target)
             host = split.hostname or ""
             port = split.port or (443 if split.scheme == "https" else 80)
-            reason = _egress_host_allowed(host, method, web)
+            reason = _egress_host_allowed(
+                host, method, web, email_outbound=email, port=port
+            )
             if reason:
                 record_egress_event({
                     "tool": "proxy",
@@ -3314,6 +3730,8 @@ def status_document(
         "needs_install": needs_install,
         "egress_blocks": read_egress_events()[-8:],
         "web_fetch": agent_web_fetch_enabled(),
+        "email_outbound": agent_email_outbound_enabled(),
+        "email_ports": list(EMAIL_OUTBOUND_PORTS),
         "low_space": low_space,
         "message": message,
         "pull_log": pull_log_tail() if state in ("installing", "pull_failed") else "",
@@ -3848,13 +4266,21 @@ def prepare_portable(model_name: str | None = None) -> None:
             if merged != current:
                 _write_settings(settings, merged)
     ensure_env_file(root / ".env")
+    try:
+        sync_email_credentials_env(root=root)
+    except Exception:
+        pass
     egress = root / "egress.json"
     if not egress.is_file():
         egress.write_text(
             json.dumps(
                 {
                     "web_fetch": True,
-                    "note": "Set web_fetch false to disable SearXNG outbound.",
+                    "email_outbound": False,
+                    "note": (
+                        "web_fetch: SearXNG/HTTP(S). email_outbound: TCP "
+                        "465/587/993/995 (encrypted mail, any provider)."
+                    ),
                 },
                 indent=2,
             )

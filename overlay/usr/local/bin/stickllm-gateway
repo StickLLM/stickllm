@@ -1934,12 +1934,11 @@ def request_sticklink_join_remint() -> dict:
     """Ask the StickLink lab (or on-stick publisher) to mint a new join URL."""
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     now = int(time.time())
-    # Peer may already be sleeping on rate_limited while remint.req is kept —
-    # do not overwrite that status or the kiosk loses the countdown.
+    # Peer may already be sleeping on rate_limited. Do **not** write remint.req
+    # during the lock — a queued req was waking pair.open hammers and extending
+    # the home lock. Return countdown only; user Generate again after it clears.
     cur = _sticklink_remint_status()
     if str(cur.get("status") or "") == "rate_limited":
-        if not STICKLINK_JOIN_REMINT_REQ.is_file():
-            STICKLINK_JOIN_REMINT_REQ.write_text(f"{now}\n", encoding="utf-8")
         out = dict(cur)
         left = _sticklink_rate_retry_left(cur)
         if left:
@@ -5749,8 +5748,10 @@ class Handler(SimpleHTTPRequestHandler):
                         pass
             remint = _sticklink_remint_status()
             remint_st = str((remint or {}).get("status") or "")
-            # Rate limit before minting: peer keeps remint.req while sleeping,
-            # so a remint.req check alone would look like silent "Still minting".
+            req_present = STICKLINK_JOIN_REMINT_REQ.is_file()
+            # Rate limit before minting: peer may still have remint.req while
+            # sleeping, or remint.status may stick on requested/minting — never
+            # let that mask the countdown UI ("Too many new codes").
             if remint_st == "rate_limited":
                 left = _sticklink_rate_retry_left(remint or {})
                 msg = str(
@@ -5778,11 +5779,9 @@ class Handler(SimpleHTTPRequestHandler):
                 )
                 return
             # Explicit Generate in flight — do not keep reporting "connected".
-            if STICKLINK_JOIN_REMINT_REQ.is_file() or remint_st in (
-                "requested",
-                "closing",
-                "minting",
-            ):
+            # Stale remint.status=requested without remint.req is NOT minting
+            # (peer crash / cleared req mid-backoff) — fall through.
+            if remint_st in ("closing", "minting") or req_present:
                 if remint_st == "closing":
                     phase_msg = str(
                         (remint or {}).get("message") or "Ending previous session…"
@@ -6005,6 +6004,25 @@ class Handler(SimpleHTTPRequestHandler):
             lib = agent_lib()
             self._json(200, {"ok": True, "unlocked": lib.plugins_unlocked_setting(), "active": lib.PLUGINS_UNLOCKED})
             return
+        if path == "/api/agent/email-outbound":
+            if self._agent_refused():
+                return
+            lib = agent_lib()
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "email_outbound": lib.agent_email_outbound_enabled(),
+                    "ports": list(lib.EMAIL_OUTBOUND_PORTS),
+                },
+            )
+            return
+        if path == "/api/agent/email-credentials":
+            if self._agent_refused():
+                return
+            out = agent_lib().read_email_credentials()
+            self._json(200 if out.get("ok") else 409, out)
+            return
         if path == "/api/agent/status":
             self._agent_status()
             return
@@ -6092,6 +6110,42 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": "bad_json"})
                 return
             out = agent_lib().set_plugins_unlocked(req["unlocked"])
+            self._json(200 if out.get("ok") else 409, out)
+            return
+        if path == "/api/agent/email-outbound":
+            # Settings > Network > Allow outbound email (encrypted mail ports).
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(min(n, 4096)) if n else b""
+            if self._agent_refused():
+                return
+            try:
+                req = json.loads(raw.decode("utf-8") or "{}") if raw else {}
+            except (UnicodeDecodeError, ValueError):
+                req = {}
+            if not isinstance(req, dict) or not isinstance(req.get("email_outbound"), bool):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            out = agent_lib().set_email_outbound(req["email_outbound"])
+            self._json(200 if out.get("ok") else 409, out)
+            return
+        if path == "/api/agent/email-credentials":
+            # Settings > Network > Email + Password (passkey) vault secrets.
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(min(n, 8192)) if n else b""
+            if self._agent_refused():
+                return
+            try:
+                req = json.loads(raw.decode("utf-8") or "{}") if raw else {}
+            except (UnicodeDecodeError, ValueError):
+                req = {}
+            if not isinstance(req, dict):
+                self._json(400, {"ok": False, "error": "bad_json"})
+                return
+            email = req.get("email", "")
+            if "password" in req:
+                out = agent_lib().write_email_credentials(str(email or ""), str(req.get("password") or ""))
+            else:
+                out = agent_lib().write_email_credentials(str(email or ""), None)
             self._json(200 if out.get("ok") else 409, out)
             return
         if path == "/api/apps/open-link":
