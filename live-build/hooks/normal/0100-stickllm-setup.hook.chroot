@@ -152,28 +152,36 @@ systemctl enable stickllm-gpu-skip.service || true
 # the user, so neither app agent unit is enabled at boot.
 systemctl disable stickllm-appagent.service 2>/dev/null || true
 systemctl disable stickllm-appagent-llm.service 2>/dev/null || true
-# Baked base model (Qwen2.5-7B Instruct Q4_K_M split): readable by stickllm-llama.
-# 0.7.8 Lexar: Permission denied on /opt/stickllm/models/appagent → llama failed
-# with "model missing". World-traverse dirs + world-read GGUFs; keep ownership root.
+# Baked /opt/stickllm must be readable by stickllm-llama (not root).
+# 0.7.8 Lexar / 0.8.0: umask 077 during factory-token bake left GGUFs 600/700 →
+# Permission denied / "model missing". Dirs 755, models 644, bins/libs 755.
 mkdir -p /opt/stickllm /opt/stickllm/models /opt/stickllm/models/appagent /opt/stickllm/lib
-chmod 755 /opt/stickllm /opt/stickllm/models /opt/stickllm/models/appagent /opt/stickllm/lib
-if [[ -d /opt/stickllm/models/appagent ]]; then
-  find /opt/stickllm/models/appagent -type f -name '*.gguf' -exec chmod 644 {} + 2>/dev/null || true
-  find /opt/stickllm/models/appagent -type d -exec chmod 755 {} + 2>/dev/null || true
+if [[ -d /opt/stickllm ]]; then
+  find /opt/stickllm -type d -exec chmod 755 {} + 2>/dev/null || true
+  find /opt/stickllm -type f -exec chmod 644 {} + 2>/dev/null || true
+  find /opt/stickllm/bin -type f -exec chmod 755 {} + 2>/dev/null || true
+  for d in /opt/stickllm/lib /opt/stickllm/lib-cpu /opt/stickllm/lib-vulkan; do
+    [[ -d "$d" ]] || continue
+    find "$d" -type f \( -name '*.so' -o -name '*.so.*' \) -exec chmod 755 {} + 2>/dev/null || true
+  done
 fi
-# CUDA backend register preload must be readable by stickllm-llama (LD_PRELOAD).
+# CUDA backend register preload must be executable by stickllm-llama (LD_PRELOAD).
 if [[ -f /opt/stickllm/lib/stickllm-cuda-register.so ]]; then
   chmod 755 /opt/stickllm/lib/stickllm-cuda-register.so
 fi
 # Refuse a stale 4B-only chmod path: 7B split must be present for this ship.
 test -f /opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
 test -f /opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf
-# default-model.env must name the baked 7B (not legacy Qwen3.5-4B).
+# default-model.env must name the baked 7B (assignments only — ignore comments).
 if [[ -f /etc/stickllm/default-model.env ]]; then
-  grep -q 'qwen2.5-7b-instruct-q4_k_m' /etc/stickllm/default-model.env \
-    || { echo "ERROR: default-model.env must point at baked Qwen2.5-7B" >&2; exit 1; }
-  ! grep -q 'Qwen3.5-4B' /etc/stickllm/default-model.env \
-    || { echo "ERROR: default-model.env still names Qwen3.5-4B" >&2; exit 1; }
+  grep -E '^STICKLLM_MODEL=' /etc/stickllm/default-model.env | grep -q 'qwen2.5-7b-instruct-q4_k_m' \
+    || { echo "ERROR: default-model.env STICKLLM_MODEL must point at baked Qwen2.5-7B" >&2; exit 1; }
+  grep -E '^STICKLLM_MODEL_ID=' /etc/stickllm/default-model.env | grep -q 'qwen25-7b-q4km' \
+    || { echo "ERROR: default-model.env STICKLLM_MODEL_ID must be qwen25-7b-q4km" >&2; exit 1; }
+  if grep -E '^STICKLLM_' /etc/stickllm/default-model.env | grep -Eq 'Qwen3\.5-4B|qwen35-4b'; then
+    echo "ERROR: default-model.env still assigns the legacy 4B model" >&2
+    exit 1
+  fi
 fi
 
 
