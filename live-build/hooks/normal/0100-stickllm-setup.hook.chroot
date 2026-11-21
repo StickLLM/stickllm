@@ -152,11 +152,30 @@ systemctl enable stickllm-gpu-skip.service || true
 # the user, so neither app agent unit is enabled at boot.
 systemctl disable stickllm-appagent.service 2>/dev/null || true
 systemctl disable stickllm-appagent-llm.service 2>/dev/null || true
-# Base model (Qwen3.5-4B): readable by the llama and DynamicUser services.
-if [[ -f /opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf ]]; then
-  chmod 755 /opt/stickllm/models/appagent
-  chmod 644 /opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf
+# Baked base model (Qwen2.5-7B Instruct Q4_K_M split): readable by stickllm-llama.
+# 0.7.8 Lexar: Permission denied on /opt/stickllm/models/appagent → llama failed
+# with "model missing". World-traverse dirs + world-read GGUFs; keep ownership root.
+mkdir -p /opt/stickllm /opt/stickllm/models /opt/stickllm/models/appagent /opt/stickllm/lib
+chmod 755 /opt/stickllm /opt/stickllm/models /opt/stickllm/models/appagent /opt/stickllm/lib
+if [[ -d /opt/stickllm/models/appagent ]]; then
+  find /opt/stickllm/models/appagent -type f -name '*.gguf' -exec chmod 644 {} + 2>/dev/null || true
+  find /opt/stickllm/models/appagent -type d -exec chmod 755 {} + 2>/dev/null || true
 fi
+# CUDA backend register preload must be readable by stickllm-llama (LD_PRELOAD).
+if [[ -f /opt/stickllm/lib/stickllm-cuda-register.so ]]; then
+  chmod 755 /opt/stickllm/lib/stickllm-cuda-register.so
+fi
+# Refuse a stale 4B-only chmod path: 7B split must be present for this ship.
+test -f /opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
+test -f /opt/stickllm/models/appagent/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf
+# default-model.env must name the baked 7B (not legacy Qwen3.5-4B).
+if [[ -f /etc/stickllm/default-model.env ]]; then
+  grep -q 'qwen2.5-7b-instruct-q4_k_m' /etc/stickllm/default-model.env \
+    || { echo "ERROR: default-model.env must point at baked Qwen2.5-7B" >&2; exit 1; }
+  ! grep -q 'Qwen3.5-4B' /etc/stickllm/default-model.env \
+    || { echo "ERROR: default-model.env still names Qwen3.5-4B" >&2; exit 1; }
+fi
+
 
 # NM system-connections must be 600
 if [[ -d /etc/NetworkManager/system-connections ]]; then

@@ -2077,8 +2077,9 @@ def appagent_status() -> dict:
 
 
 def appagent_set(on: bool, autoload: bool = False) -> dict:
-    """0.5.9: with autoload, turning the agent on with no model loaded loads the
-    baked-in base model as the chat model first (when it is on the stick)."""
+    """0.5.9 / 0.8.0: with autoload, turning the agent on with no model loaded
+    loads the baked Qwen2.5-7B Instruct (qwen25-7b-q4km) as the chat model when
+    that GGUF is on the stick — never the optional Qwen3.5-4B catalog download."""
     loaded_now = None
     if on and autoload:
         ok, _ = llama_health_ok()

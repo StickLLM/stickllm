@@ -24,10 +24,12 @@ write_env() {
   # another user (dir is root:stickllm-llama 775). Errors are logged, not hidden.
   local tmp
   mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
-  if ! tmp="$(mktemp "$(dirname "$OUT")/.cuda.env.XXXXXX" 2>&1)"; then
-    echo "stickllm-pick-gpus: ERROR cannot create temp file next to $OUT: $tmp" >&2
+  # Do NOT capture stderr into tmp (2>&1 polluted cuda.env paths with CUDA/mktemp noise).
+  if ! tmp="$(mktemp "$(dirname "$OUT")/.cuda.env.XXXXXX")"; then
+    echo "stickllm-pick-gpus: ERROR cannot create temp file next to $OUT" >&2
     return 1
   fi
+
   if ! {
     printf 'CUDA_DEVICE_ORDER=PCI_BUS_ID\n'
     printf 'CUDA_VISIBLE_DEVICES=%s\n' "$1"
