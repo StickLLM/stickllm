@@ -6241,6 +6241,122 @@ function refreshSecLive(sec) {
   }
   if (sec === "system" || sec === "about") refreshSystemInfo().catch(() => {});
   if (sec === "advanced") refreshAdvanced().catch((e) => toast(e.message || String(e)));
+  if (sec === "experimental") refreshExperimental().catch((e) => toast(e.message || String(e)));
+}
+
+// Experimental tab: detect + offer only (scaffolding). No auto-install.
+let expState = { cards: [], offers: [], reports: [], prefs: {} };
+let expAckResolve = null;
+function expConfirm(title, body) {
+  return new Promise((resolve) => {
+    expAckResolve = resolve;
+    if ($("#expAckTitle")) $("#expAckTitle").textContent = title || "Confirm";
+    if ($("#expAckBody")) $("#expAckBody").textContent = body || "Continue only if you accept.";
+    if ($("#expAck")) $("#expAck").hidden = false;
+  });
+}
+function expAckClose(ok) {
+  if ($("#expAck")) $("#expAck").hidden = true;
+  const r = expAckResolve;
+  expAckResolve = null;
+  if (r) r(!!ok);
+}
+if ($("#expAckCancel")) $("#expAckCancel").onclick = () => expAckClose(false);
+if ($("#expAckOk")) $("#expAckOk").onclick = () => expAckClose(true);
+function paintExperimental(j) {
+  expState = j || expState;
+  if ($("#expNov3") && j && j.nov3_context) $("#expNov3").textContent = j.nov3_context;
+  if ($("#expMasterUnlock")) $("#expMasterUnlock").checked = !!(j && j.master_unlocks_enabled);
+  if ($("#expOsNote")) {
+    const maj = j && j.debian_major;
+    const ninfer = j && j.ninfer_linux_ok;
+    $("#expOsNote").textContent = maj != null
+      ? (`Detected Debian major ${maj}. NInfer-all Linux packages require Debian 13` + (ninfer ? " — OK." : " — not available until a fresh Debian 13 image."))
+      : "OS version unknown (open this page on the stick). NInfer-all Linux needs Debian 13.";
+  }
+  const box = $("#expCards");
+  if (box) {
+    const cards = (j && j.cards) || [];
+    if (!cards.length) {
+      box.innerHTML = `<div class="row"><small>No NVIDIA cards classified yet.</small></div>`;
+    } else {
+      box.innerHTML = cards.map((c) => {
+        const path = c.unlock_path === "cmpunlocker" ? "CMP unlock (cmpunlocker)"
+          : c.unlock_path === "gpu_unlock" ? "RTX 3090 unlock (gpu-unlock 2.0)" : "no unlock path";
+        const warn = c.kind === "cmp_170hx"
+          ? " Warning: CMP 170HX has no video outputs; unlock restores compute only via patched drivers."
+          : "";
+        const off = c.unlock_in_scope
+          ? `<label class="switch" title="Off by default"><input type="checkbox" data-exp-unlock="${esc(c.bus || c.pci_id || "")}" disabled><span></span></label>`
+          : `<small class="muted">${esc(c.skip_reason || "out of scope")}</small>`;
+        return `<div class="row"><div><b>${esc(c.label || c.name || "GPU")}</b><small>${esc(c.pci_id || "")}${c.bus ? " · " + esc(c.bus) : ""} · ${esc(path)}.${warn} Apply is scaffolding-only; Continue required later.</small></div>${off}</div>`;
+      }).join("");
+    }
+  }
+  const eng = $("#expEngines");
+  if (eng) {
+    const offers = (j && j.offers) || [];
+    if (!offers.length) {
+      eng.innerHTML = `<div class="row"><small>No engine offers for the detected cards.</small></div>`;
+    } else {
+      eng.innerHTML = offers.map((o) => {
+        const blocked = o.blocked ? `Blocked: ${esc(o.blocked)}` : esc(o.note || "Confirm before download");
+        const dis = o.blocked ? " disabled" : "";
+        return `<div class="row"><div><b>${esc(o.engine)}</b><small>${esc(o.card_label || "")} — ${blocked}</small></div><button class="btn sm" type="button" data-exp-engine="${esc(o.engine)}" data-exp-bus="${esc(o.card_bus || "")}"${dis}>Download…</button></div>`;
+      }).join("");
+      eng.querySelectorAll("[data-exp-engine]").forEach((b) => {
+        b.onclick = async () => {
+          const ok = await expConfirm(
+            "Download " + (b.dataset.expEngine || "engine"),
+            "This will download a third-party inference engine after Continue. Checksums will be verified. Cancel leaves the stick unchanged. (Scaffolding: download is not wired yet.)"
+          );
+          if (!ok) return;
+          try {
+            const r = await control("experimental_engine_download", { engine: b.dataset.expEngine, bus: b.dataset.expBus });
+            toast((r && r.error) || (r && r.hint) || "Download stub");
+          } catch (e) { toast(e.message || String(e)); }
+        };
+      });
+    }
+  }
+  const rep = $("#expReports");
+  if (rep) {
+    const lines = (j && j.reports) || [];
+    rep.innerHTML = lines.length
+      ? lines.map((l) => `<div class="row"><small class="mono">${esc(l)}</small></div>`).join("")
+      : `<div class="row"><small class="mono">—</small></div>`;
+  }
+  if ($("#expMsg")) $("#expMsg").textContent = (j && j.stub && j.stub.unlock_apply) ? "Scaffolding: unlocks/downloads not applied yet." : "";
+}
+async function refreshExperimental() {
+  if (!(await ensurePaired())) return;
+  const j = await control("experimental_status");
+  paintExperimental(j);
+  return j;
+}
+if ($("#expRefresh")) $("#expRefresh").onclick = () => refreshExperimental().catch((e) => toast(e.message || String(e)));
+if ($("#expMasterUnlock")) {
+  $("#expMasterUnlock").onchange = async (e) => {
+    const on = !!e.target.checked;
+    const ok = await expConfirm(
+      on ? "Allow GPU unlocks" : "Turn unlocks off",
+      on
+        ? "Enabling the master switch only allows opt-in unlocks later. Each card still needs Continue. CMP unlocks use patched drivers and have no video outputs. Cancel leaves unlocks disabled."
+        : "Turning the master switch off skips all unlocks. If an unlock was already applied, a later Continue will restore stock drivers / remove gpu_unlock targets. Cancel keeps the current setting."
+    );
+    if (!ok) {
+      e.target.checked = !on;
+      return;
+    }
+    try {
+      await control("experimental_prefs_set", { master_unlocks_enabled: on });
+      await refreshExperimental();
+      toast(on ? "Master unlocks allowed (still Confirm per card)" : "Master unlocks off");
+    } catch (ex) {
+      e.target.checked = !on;
+      toast(ex.message || String(ex));
+    }
+  };
 }
 async function refreshNetwork() {
   if (!(await ensurePaired())) return;
@@ -7015,7 +7131,8 @@ async function openSetupWizard(opts) {
 <label class="field"><span>Password</span><input id="wizWpass" type="text" class="secret" autocomplete="off"></label>
 <div id="wizWifiList" class="wifiList" role="listbox" aria-label="Nearby Wi‑Fi networks" hidden></div>
 <div class="actions"><button type="button" id="wizScan" class="btn">Scan</button>
-<button type="button" id="wizJoin" class="btn">Join Wi‑Fi</button></div>`;
+<button type="button" id="wizJoin" class="btn">Join Wi‑Fi</button></div>
+<p id="wizWifiStatus" class="muted small" hidden aria-live="polite"></p>`;
       $("#wizSsid").value = wiz.ssid;
       $("#wizWpass").value = wiz.wpass;
       $("#wizScan").onclick = async () => {
@@ -7026,12 +7143,33 @@ async function openSetupWizard(opts) {
       };
       $("#wizJoin").onclick = async () => {
         wiz.ssid = $("#wizSsid").value.trim(); wiz.wpass = $("#wizWpass").value;
+        const status = $("#wizWifiStatus");
+        const joinBtn = $("#wizJoin");
+        const setStatus = (text, ok) => {
+          if (!status) return;
+          status.hidden = !text;
+          status.textContent = text || "";
+          status.style.color = ok ? "var(--ok)" : "";
+        };
         try {
           if (!wiz.ssid) throw new Error("Enter or pick a network name");
           showErr("");
+          setStatus("Connecting to " + wiz.ssid + "…", false);
+          if (joinBtn) joinBtn.disabled = true;
           const res = await joinWifi(wiz.ssid, wiz.wpass);
+          setStatus(
+            res.online
+              ? ("Connected to " + wiz.ssid)
+              : ("Connected to " + wiz.ssid + " — waiting for uplink"),
+            true
+          );
           toast(res.online ? "Online via Wi‑Fi" : "Wi‑Fi profile saved — waiting for uplink");
-        } catch (e) { showErr(String(e.message || e)); }
+        } catch (e) {
+          setStatus("", false);
+          showErr(String(e.message || e));
+        } finally {
+          if (joinBtn) joinBtn.disabled = false;
+        }
       };
     } else if (step === STEP_STOR) {
       $("#setupTitle").textContent = "Storage";
@@ -10065,7 +10203,7 @@ window.stickApp = Object.freeze({
   const showBtn = document.getElementById("emailPassShow");
   const hint = document.getElementById("emailCredHint");
   if (!box) return;
-  const defaultMsg = "Allows common encrypted mail ports (587/465/993/995). Off by default. Covers Gmail, Outlook, Yahoo, Fastmail, and other providers — not a single-host allowlist.";
+  const defaultMsg = "Allows common encrypted mail ports (587/465/993/995). Off by default. Turn on to show Email / Password (passkey) fields and save them to the vault. Covers Gmail, Outlook, Yahoo, Fastmail, and other providers — not a single-host allowlist.";
   const clearCredUi = () => {
     if (emailIn) emailIn.value = "";
     if (passIn) {

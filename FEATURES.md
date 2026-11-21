@@ -74,6 +74,7 @@ Parked with security (do not build yet):
 - [ ] P1 Download unsupported models with explicit warning
   - TODO: decide where the approved/pinned list lives (`catalog.toml` today), how it updates, and how non-list downloads warn + verify (see MODELS.md)
 - [ ] P2 Optional large MoE recipe (Strata-style) for high-RAM machines
+- [x] P1 **v0.8.0** Debian 13 fresh image + Experimental tab scaffolding (Strata / NInfer-all offers; CMP 170HX + RTX 3090 unlock UI stubs) — [docs/DEBIAN13-EXPERIMENTAL.md](docs/DEBIAN13-EXPERIMENTAL.md); artifact `StickLLM-v0.8.0.iso`; no auto-install; no NVIDIA blobs in git; engine download / unlock apply still Confirm stubs
 
 ## Settings (persist on writable partition)
 - [ ] P0 Last boot mode is default on menu timeout (GRUB grubenv / savedefault)

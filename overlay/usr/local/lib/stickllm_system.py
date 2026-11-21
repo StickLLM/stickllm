@@ -531,6 +531,7 @@ def pci_names() -> dict[str, str]:
 # gives no useful name (nvidia-smi says "NVIDIA Graphics Device" for the CMP 170HX).
 PCI_ID_NAMES = {
     "10de:20c2": "NVIDIA CMP 170HX",
+    "10de:2082": "NVIDIA CMP 170HX",  # 10 GB SKU
     "10de:2204": "NVIDIA GeForce RTX 3090",
     "10de:2203": "NVIDIA GeForce RTX 3090 Ti",
     "10de:2208": "NVIDIA GeForce RTX 3080 Ti",

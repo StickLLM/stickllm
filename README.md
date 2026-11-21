@@ -9,7 +9,7 @@ to the USB or internal disks unless you explicitly approve a write.
 | | |
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
-| Current image | **v0.7.8** — `StickLLM-v0.7.8.iso`, hash in [`checksums/v0.7.8.sha256`](checksums/v0.7.8.sha256) |
+| Current image | **v0.8.0** — `StickLLM-v0.8.0.iso`, hash in [`checksums/v0.8.0.sha256`](checksums/v0.8.0.sha256) |
 | Last GitHub Release | **v0.3.9** (older public line on Drive; prior git history is private) |
 | Minimum hardware | **16 GB** system RAM · **8 GB** GPU |
 | GPU backends | **AMD:** ROCm and Vulkan · **NVIDIA:** CUDA · **Intel GPU:** Vulkan |
@@ -20,7 +20,7 @@ to the USB or internal disks unless you explicitly approve a write.
 
 ---
 
-## Get StickLLM (v0.7.8)
+## Get StickLLM (v0.8.0)
 
 ### 1. Download
 
@@ -28,36 +28,37 @@ ISO is on **Google Drive** (GitHub’s 2 GB asset limit). Same folder as the old
 
 https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing
 
-File: `StickLLM-v0.7.8.iso`
+File: `StickLLM-v0.8.0.iso`
 
 The hash of record is in this repo. Check the file you download against it.
 
-Previous published ships stay available (`StickLLM-v0.7.7.iso`, `StickLLM-v0.4.2.iso`, older StickLink lab ISOs). Do not overwrite those names. `v0.3.9` is outside the rolling window.
+Previous published ships stay available (`StickLLM-v0.7.8.iso`, `StickLLM-v0.4.2.iso`, older StickLink lab ISOs). Do not overwrite those names. `v0.7.7` is outside the rolling window.
 
 ### 2. Verify checksum
 
 **Hash of record is in this repo** — verify the Drive download against it (do not rely on a hash stored only on Drive):
 
-[`checksums/v0.7.8.sha256`](checksums/v0.7.8.sha256)
+[`checksums/v0.8.0.sha256`](checksums/v0.8.0.sha256)
 
 ```powershell
-(Get-FileHash .\StickLLM-v0.7.8.iso -Algorithm SHA256).Hash
+(Get-FileHash .\StickLLM-v0.8.0.iso -Algorithm SHA256).Hash
 ```
 
 ```bash
-sha256sum StickLLM-v0.7.8.iso
+sha256sum StickLLM-v0.8.0.iso
 ```
 
 ### 3. Flash to USB
 
 Flashing **erases** the stick. Pick the correct disk.
 
-**Windows:** [Rufus](https://rufus.ie/) → select the ISO → **DD Image** mode → write.
+**Windows:** [Rufus](https://rufus.ie/) → select the ISO → **DD Image** mode → write → **full readback**.
 
 **Linux:**
 
 ```bash
-sudo dd if=StickLLM-v0.7.8.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=StickLLM-v0.8.0.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo cmp -n "$(stat -c%s StickLLM-v0.8.0.iso)" StickLLM-v0.8.0.iso /dev/sdX
 ```
 
 After flash, Windows often shows **no drive letter** — that is normal for this
@@ -67,11 +68,13 @@ Full flash notes: [docs/FLASH.md](docs/FLASH.md). Then boot: [docs/BOOT.md](docs
 
 ---
 
-## What's in v0.7.8
+## What's in v0.8.0
 
-About and `stickllm.json` say **v0.7.8**. StickLink Method C phone join is included in the shipping ISO (built from **private** StickLink sources). StickLink rendezvous/signalling remains **closed source / commercial** — see [docs/sticklink/README.md](docs/sticklink/README.md).
+About and `stickllm.json` say **v0.8.0**. Base OS is **Debian 13 (trixie)**. StickLink Method C phone join / Always-On peer remains in the shipping ISO (built from **private** StickLink sources). StickLink rendezvous/signalling remains **closed source / commercial** — see [docs/sticklink/README.md](docs/sticklink/README.md).
 
-Also in this line: NVIDIA KMS kiosk retry; baked default model **Qwen2.5-7B Instruct Q4_K_M**; Agent Zero overlay as in the 0.7 line.
+Also in this line: Experimental tab scaffolding (detect/offer Strata & NInfer-all; CMP/3090 unlock stubs; master unlocks toggle — confirm-gated, no auto-install, no NVIDIA blobs in git); Wi-Fi “Connected to …” wizard ack; clearer outbound-email help; baked default model **Qwen2.5-7B Instruct Q4_K_M**; Agent Zero overlay as in the 0.7 line.
+
+**Not in the ISO:** StickDroid keep-pins APK; StickLink Worker cloud.
 ## What’s in v0.4.2 (older)
 
 Voice chat, USB settings partition, and load-meter fixes. ISO `StickLLM-v0.4.2.iso` + [`checksums/v0.4.2.sha256`](checksums/v0.4.2.sha256) (`3a50eb56…`) stays published — do not overwrite.

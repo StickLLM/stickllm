@@ -14,40 +14,40 @@ Keep the **last two** recoverable ships (**N** and **N-1**) plus Drive golden fo
 Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship):
 
 - **Golden (forever):** `v0.2.0` / Drive ISO / `checksums/v0.2.sha256` (`4914087d…`)
-- **N-1:** `v0.7.7` / Drive + `out/v0.7.7/` / `checksums/v0.7.7.sha256` (`b0071a7b…`)
-- **N:** `v0.7.8` / Drive + `out/v0.7.8/` / `checksums/v0.7.8.sha256` (cut this ship)
+- **N-1:** `v0.7.8` / Drive + `out/v0.7.8/` / `checksums/v0.7.8.sha256` (`10ddd00f…`)
+- **N:** `v0.8.0` / Drive + `out/v0.8.0/` / `checksums/v0.8.0.sha256` (cut this ship)
 
-Older public/local ships (`v0.7.6`, `v0.4.2`, `v0.3.9`, `v0.3.8`, `v0.3.6`, …) are **outside** the rolling window. Tags/checksums may remain; local `out/v0.3.9/` and Drive `StickLLM-v0.3.9.iso` may be removed. **Never** delete or overwrite Drive golden **v0.2.0**.
+Older public/local ships (`v0.7.7`, `v0.7.6`, `v0.4.2`, `v0.3.9`, `v0.3.8`, `v0.3.6`, …) are **outside** the rolling window. Tags/checksums may remain; local `out/v0.7.7/` and Drive `StickLLM-v0.7.7.iso` may be removed after N advances again. **Never** delete or overwrite Drive golden **v0.2.0**.
 
-**Do not flash `v0.3.5`** (truncated ISO). Prefer **v0.7.8** (or **v0.7.7** as restore).
+**Do not flash `v0.3.5`** (truncated ISO). Prefer **v0.8.0** (or **v0.7.8** as restore).
 
 ## Never overwrite
 
-- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.7.7`, `v0.7.8`, or any published shipping tag once cut.
+- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.7.8`, `v0.8.0`, or any published shipping tag once cut.
 - Do **not** change or replace published checksum files once shipped.
 - Do **not** overwrite the Drive / StickLLM-releases **v0.2** ISO artifact (hash `4914087d…`).
-- Do **not** overwrite the Drive **v0.7.7** ISO under the same name if contents differ (hash `b0071a7b…`).
-- Do **not** overwrite the Drive **v0.7.8** ISO under the same name if contents differ (once published).
+- Do **not** overwrite the Drive **v0.7.8** ISO under the same name if contents differ (hash `10ddd00f…`).
+- Do **not** overwrite the Drive **v0.8.0** ISO under the same name if contents differ (once published).
 - Do **not** flash or publish a later build under an existing release name if contents differ.
-- When cutting the next ship after **v0.7.8**, keep N/N-1 tags and their `out/<version>/` ISO directories; drop older slots from the rolling window as needed.
+- When cutting the next ship after **v0.8.0**, keep N/N-1 tags and their `out/<version>/` ISO directories; drop older slots from the rolling window as needed.
 
 ## New work gets new names
 
-- New product work → new tag (`v0.7.9`, `v0.8.0`, …), new `out/<version>/StickLLM-vX.Y.Z.iso`, new checksum file.
-- **Naming:** v0.3.7+ use exactly `StickLLM-vX.Y.Z.iso` (example: `StickLLM-v0.7.8.iso`). Through v0.3.6, published files stay `stickllm-amd-rtx3090-v….hybrid.iso` — never rename or rewrite those.
+- New product work → new tag (`v0.8.1`, `v0.9.0`, …), new `out/<version>/StickLLM-vX.Y.Z.iso`, new checksum file.
+- **Naming:** v0.3.7+ use exactly `StickLLM-vX.Y.Z.iso` (example: `StickLLM-v0.8.0.iso`). Through v0.3.6, published files stay `stickllm-amd-rtx3090-v….hybrid.iso` — never rename or rewrite those.
 - Rebuilds of an older line → distinct `out/` path; never overwrite a shipping ISO name. Compare hash to the shipping checksum; report bit-identical if equal.
 - WIP / abandoned experiments → branch only (`wip/…`); never replace a shipping tag or Drive ISO.
 
 ## Examples
 
 ```text
-❌ BAD: build v0.7.9 and delete out/v0.7.8/ or tag -d v0.7.8
-❌ BAD: build v0.7.8 and write over StickLLM-v0.7.7.iso on Drive
+❌ BAD: build v0.8.1 and delete out/v0.8.0/ or tag -d v0.8.0
+❌ BAD: build v0.8.0 and write over StickLLM-v0.7.8.iso on Drive
 ❌ BAD: git tag -f v0.2.0 <new-commit>
 ❌ BAD: edit checksums/v0.2.sha256 to match a different ISO
 
-✅ GOOD: out/v0.7.7/StickLLM-v0.7.7.iso + checksums/v0.7.7.sha256 (N-1; leave as-is)
-✅ GOOD: out/v0.7.8/StickLLM-v0.7.8.iso + checksums/v0.7.8.sha256 + tag v0.7.8
-✅ GOOD: out/v0.7.9/StickLLM-v0.7.9.iso + checksums/v0.7.9.sha256 + tag v0.7.9 (keep prior N/N-1)
-✅ GOOD: remove local out/v0.3.9/ or Drive StickLLM-v0.3.9.iso (outside rolling window; never touch v0.2)
+✅ GOOD: out/v0.7.8/StickLLM-v0.7.8.iso + checksums/v0.7.8.sha256 (N-1; leave as-is)
+✅ GOOD: out/v0.8.0/StickLLM-v0.8.0.iso + checksums/v0.8.0.sha256 + tag v0.8.0
+✅ GOOD: out/v0.8.1/StickLLM-v0.8.1.iso + checksums/v0.8.1.sha256 + tag v0.8.1 (keep prior N/N-1)
+✅ GOOD: remove local out/v0.7.7/ or Drive StickLLM-v0.7.7.iso (outside rolling window; never touch v0.2)
 ```

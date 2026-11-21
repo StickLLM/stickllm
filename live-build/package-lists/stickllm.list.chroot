@@ -22,10 +22,11 @@ util-linux
 python3
 # Scanned PDF pages for a vision model (pdftoppm). Not downloaded at runtime.
 poppler-utils
-# Offline read-aloud. espeak-ng and python3-numpy are in bookworm.
-# whisper.cpp and python3-onnxruntime are not; see stickllm-speech.pin.
+# Offline read-aloud. espeak-ng and python3-numpy are in Debian.
+# whisper.cpp still baked from pin; python3-onnxruntime is in trixie (also vendored wheel).
 espeak-ng
 python3-numpy
+python3-onnxruntime
 jq
 iproute2
 iputils-ping
@@ -42,9 +43,11 @@ firmware-realtek
 firmware-atheros
 wpasupplicant
 wireless-tools
+# 0.8.0: prefer nvidia-open kernel modules so CMP unlock can patch later.
+# Do not bake NVIDIA .run / firmware blobs into the public tree.
 nvidia-driver
 nvidia-driver-libs
-nvidia-kernel-dkms
+nvidia-open-kernel-dkms
 nvidia-smi
 libcuda1
 nvidia-persistenced
@@ -99,19 +102,20 @@ python3-cryptography
 python3-nacl
 python3-websockets
 # Method C peer venv (Milestone A): create venv + native libs for aiortc/av.
-# Python packages themselves are NOT apt — they come from vendored wheelhouse.
+# Python packages themselves are NOT apt — they come from vendored wheelhouse
+# (Debian 13 / Python 3.13 cp313 wheels).
 python3-venv
 python3-pip
-libavformat59
-libavcodec59
-libavdevice59
-libavutil57
-libavfilter8
-libswscale6
-libswresample4
+libavformat61
+libavcodec61
+libavdevice61
+libavutil59
+libavfilter10
+libswscale8
+libswresample5
 libopus0
 libsrtp2-1
-libvpx7
+libvpx9
 libffi8
 libssl3
 

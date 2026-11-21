@@ -254,6 +254,7 @@
         <button type="button" data-sec="network">Network</button>
         <button type="button" data-sec="system">System</button>
         <button type="button" data-sec="advanced">Advanced</button>
+        <button type="button" data-sec="experimental">Experimental</button>
         <button type="button" data-sec="about">About</button>
       </nav>
       <div class="setBody">
@@ -565,7 +566,7 @@
     </div>
     <p class="muted small" id="webModeRemote">Applies to the <b>stick</b> kiosk browser and stick-local Chromium only. Paired phones and PCs on the LAN use their own network — StickLLM cannot force their traffic through Tor or offline. Stick-origin web lookup on the stick follows this mode.</p>
     <p class="muted small" id="webModeStatus" hidden></p>
-    <div class="row"><div><b>Allow outbound email</b><small id="emailOutboundMsg">Allows common encrypted mail ports (587/465/993/995). Off by default. Covers Gmail, Outlook, Yahoo, Fastmail, and other providers — not a single-host allowlist.</small></div>
+    <div class="row"><div><b>Allow outbound email</b><small id="emailOutboundMsg">Allows common encrypted mail ports (587/465/993/995). Off by default. Turn on to show Email / Password (passkey) fields and save them to the vault. Covers Gmail, Outlook, Yahoo, Fastmail, and other providers — not a single-host allowlist.</small></div>
       <label class="switch"><input type="checkbox" id="emailOutbound" aria-label="Allow outbound email"><span></span></label></div>
     <div id="emailCreds" hidden>
       <div class="row2">
@@ -657,10 +658,27 @@
   </div>
   <div class="actions"><button class="btn primary sm" id="advLoadSave" type="button">Save for this model</button><button class="btn sm ghost" id="advLoadClear" type="button">Back to automatic</button><span class="muted small" id="advLoadMsg"></span></div>
   <p class="muted small">Saved settings apply the next time this model loads (Reload on the Models page).</p>
-  <h3>Experimental</h3>
+  <h3>App agent</h3>
   <div class="group">
     <div class="row"><div><b>App agent</b><small>Lets chat work inside your open apps. Off by default. Turning it on with no model loaded loads Qwen3.5-4B from the stick.</small></div><label class="switch"><input type="checkbox" id="advAppAgent"><span></span></label></div>
   </div>
+</section>
+
+<!-- EXPERIMENTAL (Debian 13 engines + per-card GPU unlocks) — scaffolding; no auto-install -->
+<section class="sec" id="sec-experimental" data-title="Experimental" hidden>
+  <p class="muted small" id="expNov3">On 3 November 2026 GPU unlocks and alternative engines were left as community add-ons. That is reversed here: StickLLM detects cards and offers opt-in downloads/unlocks only. Nothing installs until you press Continue.</p>
+  <div class="group">
+    <div class="row"><div><b>Allow GPU unlocks</b><small>Master switch. Off = never apply CMP or RTX 3090 unlocks (even if a card toggle is on). Use this if a driver update breaks an unlock.</small></div><label class="switch"><input type="checkbox" id="expMasterUnlock"><span></span></label></div>
+  </div>
+  <p class="muted small" id="expOsNote"></p>
+  <h3>Detected GPUs</h3>
+  <div class="group" id="expCards"><div class="row"><small>Open this page on the stick to detect GPUs…</small></div></div>
+  <h3>Engine downloads</h3>
+  <p class="muted small">Offers only engines that match the detected card. First engines: Strata and NInfer-all. NInfer Linux needs Debian 13. Cancel/Continue before any download.</p>
+  <div class="group" id="expEngines"><div class="row"><small>No offers yet.</small></div></div>
+  <h3>Status</h3>
+  <div class="group" id="expReports"><div class="row"><small class="mono">—</small></div></div>
+  <div class="actions"><button class="btn sm" id="expRefresh" type="button">Refresh detection</button><span class="muted small" id="expMsg"></span></div>
 </section>
 
 <!-- ABOUT -->
@@ -720,6 +738,17 @@
         <button class="btn" id="fpCancel">Cancel</button>
         <button class="btn primary" id="fpOk">Select folder</button>
       </footer>
+    </div>
+  </div>
+
+  <!-- Experimental Confirm (Cancel / Continue) — never auto-install -->
+  <div class="modalWrap top2" id="expAck" hidden>
+    <div class="modal small" role="alertdialog" aria-modal="true" aria-labelledby="expAckTitle">
+      <div class="cfBody">
+        <h2 id="expAckTitle">Confirm</h2>
+        <p id="expAckBody">This action needs your confirmation. Nothing is installed until you continue.</p>
+        <div class="actions"><span class="grow"></span><button class="btn" id="expAckCancel" type="button">Cancel</button><button class="btn primary" id="expAckOk" type="button">Continue</button></div>
+      </div>
     </div>
   </div>
 

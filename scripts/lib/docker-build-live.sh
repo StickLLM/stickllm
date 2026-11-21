@@ -1,9 +1,10 @@
 #!/bin/bash
-# Runs inside debian:bookworm.
+# Outer image: debian:bookworm (host tooling). Target live suite: Debian 13 trixie.
 # /stickllm = repo (ro), /work = Linux filesystem volume (rw) for live-build.
 set -euo pipefail
 
 # 0.6.7: ISO bakes one model, Qwen2.5-7B Instruct Q4_K_M. 4B/Q5 are catalog downloads.
+# 0.8.0: fresh Debian 13 (trixie) image for NInfer-all / Experimental engines.
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -23,7 +24,7 @@ SEC_MIRROR="${STICKLLM_DEBIAN_SECURITY_MIRROR:-http://security.debian.org/debian
 
 lb config \
   --architectures amd64 \
-  --distribution bookworm \
+  --distribution trixie \
   --archive-areas "main contrib non-free non-free-firmware" \
   --parent-archive-areas "main contrib non-free non-free-firmware" \
   --mirror-bootstrap "$MIRROR" \
@@ -51,7 +52,16 @@ lb config \
   --chroot-squashfs-compression-type xz
 
 echo "[stickllm] mirrors: $MIRROR / $SEC_MIRROR"
+# Prefer tracked archive lists (Debian 13 / trixie) over lb defaults.
+mkdir -p config/archives
+if [[ -f /stickllm/live-build/archives/debian.list.chroot ]]; then
+  tr -d '\r' < /stickllm/live-build/archives/debian.list.chroot > config/archives/debian.list.chroot
+fi
+if [[ -f /stickllm/live-build/archives/debian.list.binary ]]; then
+  tr -d '\r' < /stickllm/live-build/archives/debian.list.binary > config/archives/debian.list.binary
+fi
 cat config/archives/*.list.chroot 2>/dev/null || true
+grep -q trixie config/archives/debian.list.chroot
 
 mkdir -p config/package-lists
 # Honor tracked package list (ISS-010) — strip CRLF from Windows checkouts.
@@ -66,6 +76,7 @@ grep -q '^docker.io$' config/package-lists/stickllm.list.chroot
 grep -q '^chromium$' config/package-lists/stickllm.list.chroot
 grep -q '^xfwm4$' config/package-lists/stickllm.list.chroot
 grep -q '^seatd$' config/package-lists/stickllm.list.chroot
+grep -q '^nvidia-open-kernel-dkms$' config/package-lists/stickllm.list.chroot
 
 mkdir -p config/hooks/normal
 for h in /stickllm/live-build/hooks/normal/*.hook.chroot; do

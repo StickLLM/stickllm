@@ -2902,6 +2902,129 @@ def hardware_warnings(vram_gb: float, gpu_count: int, backend: str = "") -> list
         return []
 
 
+def _experimental_mod():
+    """Load Experimental classify/offer helpers (detect only; no downloads)."""
+    lib = Path(os.environ.get("STICKLLM_EXPERIMENTAL_LIB", "/usr/local/lib/stickllm_experimental.py"))
+    if not lib.is_file():
+        # stickllm-control lives at overlay/usr/local/bin → ../lib
+        alt = Path(__file__).resolve().parent.parent / "lib" / "stickllm_experimental.py"
+        lib = alt if alt.is_file() else lib
+    if not lib.is_file():
+        return None
+    try:
+        import importlib.util
+
+        mod = getattr(_experimental_mod, "_mod", None)
+        if mod is None:
+            spec = importlib.util.spec_from_file_location("stickllm_experimental", lib)
+            if spec is None or spec.loader is None:
+                return None
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _experimental_mod._mod = mod
+        return mod
+    except Exception:
+        return None
+
+
+def _experimental_gpu_rows() -> list[dict]:
+    """Prefer stickllm_system monitor rows (pci_id); else thin nvidia-smi inventory."""
+    lib = Path(os.environ.get("STICKLLM_SYSTEM_LIB", "/usr/local/lib/stickllm_system.py"))
+    if lib.is_file():
+        try:
+            import importlib.util
+
+            mod = getattr(hardware_warnings, "_mod", None)
+            if mod is None:
+                spec = importlib.util.spec_from_file_location("stickllm_system", lib)
+                if spec is not None and spec.loader is not None:
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    hardware_warnings._mod = mod
+            if mod is not None and hasattr(mod, "gpus_block"):
+                block = mod.gpus_block(running=False) or {}
+                return list(block.get("gpus") or [])
+            if mod is not None and hasattr(mod, "_nvidia_rows"):
+                return list(mod._nvidia_rows(running=False) or [])
+        except Exception:
+            pass
+    # Fallback: control's thin rows (may lack pci_id — classify still gets names).
+    rows = []
+    for g in nvidia_gpu_rows():
+        rows.append(
+            {
+                "vendor": "nvidia",
+                "index": g.get("index"),
+                "name": g.get("name") or "",
+                "memory_total_mib": g.get("total_mib"),
+                "bus": g.get("bus") or "",
+                "pci_id": g.get("pci_id") or "",
+            }
+        )
+    return rows
+
+
+def _experimental_prefs() -> dict:
+    """Master unlock toggle + per-card intent (never auto-applies)."""
+    path = RUN / "experimental.json"
+    data = read_json(path) if path.is_file() else {}
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "master_unlocks_enabled": bool(data.get("master_unlocks_enabled")),
+        "card_unlock_intent": data.get("card_unlock_intent")
+        if isinstance(data.get("card_unlock_intent"), dict)
+        else {},
+    }
+
+
+def experimental_status() -> dict:
+    """Detect GPUs + engine offers. Does not download, patch, or unlock."""
+    mod = _experimental_mod()
+    if mod is None:
+        return {"ok": False, "error": "experimental helper missing"}
+    prefs = _experimental_prefs()
+    os_release = ""
+    try:
+        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+    except Exception:
+        pass
+    snap = mod.experimental_snapshot(
+        _experimental_gpu_rows(),
+        os_release=os_release,
+        master_unlocks_enabled=prefs["master_unlocks_enabled"],
+        platform="linux",
+    )
+    snap["prefs"] = prefs
+    return snap
+
+
+def experimental_prefs_set(params: dict) -> dict:
+    """Persist master toggle / intents only. Never applies unlocks."""
+    prefs = _experimental_prefs()
+    if "master_unlocks_enabled" in params:
+        prefs["master_unlocks_enabled"] = bool(params.get("master_unlocks_enabled"))
+    intent = params.get("card_unlock_intent")
+    if isinstance(intent, dict):
+        prefs["card_unlock_intent"] = {str(k): bool(v) for k, v in intent.items()}
+    path = RUN / "experimental.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(prefs, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, **prefs, "note": "prefs saved; unlocks still require Continue (not auto-applied)"}
+
+
+def experimental_action_stub(kind: str, params: dict | None = None) -> dict:
+    """Refuse apply/download until Confirm wiring is complete — never side-effects."""
+    return {
+        "ok": False,
+        "error": "not implemented — scaffolding only",
+        "need_confirm": True,
+        "kind": kind,
+        "params": params or {},
+        "hint": "Cancel/Continue required; no NVIDIA blobs in-tree; no auto-install",
+    }
+
+
 def portable_secrets_dir() -> Path | None:
     """Encrypted USB settings secrets dir. Never the speech tree or an unmounted path."""
     if SETTINGS_MNT == SPEECH_DIR or SETTINGS_MNT == VAULT_MNT:
@@ -5891,6 +6014,17 @@ def handle(action: str, params: dict) -> dict:
         return set_gpu_prefs(params)
     if action == "gpu_power_set":
         return gpu_power_set(params)
+    # Experimental tab (Debian 13 engines + per-card unlocks): detect/prefs only.
+    if action == "experimental_status":
+        return experimental_status()
+    if action == "experimental_prefs_set":
+        return experimental_prefs_set(params)
+    if action == "experimental_engine_download":
+        return experimental_action_stub("engine_download", params)
+    if action == "experimental_unlock_apply":
+        return experimental_action_stub("unlock_apply", params)
+    if action == "experimental_unlock_disable":
+        return experimental_action_stub("unlock_disable", params)
     if action == "llama_fewer_layers":
         return llama_fewer_layers()
     if action == "model_unload":

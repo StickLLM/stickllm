@@ -11,24 +11,26 @@ export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
 echo "=== Vendoring Method C wheels → ${DEST} ==="
-docker run --rm \
+# Debian 13 (trixie) ships Python 3.13 — Method C venv must use cp313 wheels.
+# Host Docker bridge can be flaky on this lab; prefer --network host.
+docker run --rm --network host \
   -v "${REQ}:/req.txt:ro" \
   -v "${DEST}:/wheels" \
-  python:3.11-bookworm \
+  python:3.13-bookworm \
   bash -lc '
     set -euo pipefail
     pip install -q pip==25.0.1
     pip download \
       -r /req.txt \
       -d /wheels \
-      --python-version 311 \
+      --python-version 313 \
       --only-binary=:all: \
       --platform manylinux_2_17_x86_64 \
       --platform manylinux2014_x86_64 \
       --implementation cp \
-      --abi cp311
+      --abi cp313
     # Also pull any pure-python fallbacks required by the set.
-    pip download -r /req.txt -d /wheels --no-binary=:none: --python-version 311 2>/dev/null || true
+    pip download -r /req.txt -d /wheels --no-binary=:none: --python-version 313 2>/dev/null || true
     ls -lh /wheels | tail -n +1
     echo "WHEEL_COUNT=$(ls -1 /wheels | wc -l)"
   '
