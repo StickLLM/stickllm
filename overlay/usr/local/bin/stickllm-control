@@ -2083,11 +2083,17 @@ def appagent_set(on: bool, autoload: bool = False) -> dict:
     loaded_now = None
     if on and autoload:
         ok, _ = llama_health_ok()
-        if not ok and not active_model_path() and BAKED_BASE.is_file():
-            try:
-                loaded_now = activate_model(BAKED_BASE_ID)
-            except Exception as e:  # never block the agent toggle on this
-                loaded_now = {"ok": False, "error": str(e)[:200]}
+        if not ok and not active_model_path():
+            if BAKED_BASE.is_file():
+                try:
+                    loaded_now = activate_model(BAKED_BASE_ID)
+                except Exception as e:  # never block the agent toggle on this
+                    loaded_now = {"ok": False, "error": str(e)[:200]}
+            else:
+                loaded_now = {
+                    "ok": False,
+                    "error": "no model loaded — open Models and pick one (baked Qwen2.5-7B missing)",
+                }
     r = sh(["systemctl", "start" if on else "stop", APPAGENT_UNIT], timeout=60)
     if on:
         for _ in range(20):
