@@ -1,7 +1,7 @@
 ## 0.8.0 - Debian 13 + Experimental tab scaffolding
 - **Debian 13 (trixie) fresh image.** Live-build targets `trixie` (not an in-place dist-upgrade). NInfer-all Linux packages need glibc 2.41 / Debian 13. Flash requires **full readback**.
 - **Experimental tab (scaffolding).** Settings → Experimental: detect NVIDIA cards, offer Strata / NInfer-all when the card matches, CMP 170HX (`10de:20c2` 8 GB + `10de:2082` 10 GB) and RTX 3090 (`10de:2204`) unlock UI stubs with Cancel/Continue, master unlocks toggle. No auto-install; unlock/download actions stay stubs (`need_confirm`). No NVIDIA firmware / `.run` / patched `nvidia.ko` in the public tree.
-- **nvidia-open.** Bake `nvidia-open-kernel-dkms` so a later CMP unlock can patch open modules.
+- **NVIDIA driver.** Bake `nvidia-kernel-dkms` + userspace (trixie 550.x). Prefer open modules later — `nvidia-open-kernel-dkms` failed DKMS compile in the live-build chroot against 6.12.117+deb13.
 - **Wi-Fi wizard.** Setup wizard shows **Connected to …** (or waiting for uplink) after Join.
 - **Outbound email help.** Clearer copy: turn on the toggle to show Email / Password (passkey) fields.
 - **StickLink bake gaps (from live 0.7.8 Lexar).** Ship `stickllm-sticklink-enable` / `stop` / `pair-force` (sudoers had aliases, binaries missing). Method C peer: drop `Requires=` on ensure-identity oneshot; force multi-user wants symlink in chroot so the unit is not enabled-but-never-started. UI/gateway: if remint waits while peer is dead, clear stuck `remint.req` and show an error (no infinite Create-new-Key hang).

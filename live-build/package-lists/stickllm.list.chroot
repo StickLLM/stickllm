@@ -43,11 +43,13 @@ firmware-realtek
 firmware-atheros
 wpasupplicant
 wireless-tools
-# 0.8.0: prefer nvidia-open kernel modules so CMP unlock can patch later.
+# 0.8.0: proprietary nvidia-kernel-dkms for a reliable live-build chroot bake.
+# nvidia-open-kernel-dkms DKMS failed to compile against 6.12.117+deb13 in lb
+# (module build exit 2) — reopen when a working open-DKMS chroot recipe exists.
 # Do not bake NVIDIA .run / firmware blobs into the public tree.
 nvidia-driver
 nvidia-driver-libs
-nvidia-open-kernel-dkms
+nvidia-kernel-dkms
 nvidia-smi
 libcuda1
 nvidia-persistenced

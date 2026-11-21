@@ -76,7 +76,7 @@ grep -q '^docker.io$' config/package-lists/stickllm.list.chroot
 grep -q '^chromium$' config/package-lists/stickllm.list.chroot
 grep -q '^xfwm4$' config/package-lists/stickllm.list.chroot
 grep -q '^seatd$' config/package-lists/stickllm.list.chroot
-grep -q '^nvidia-open-kernel-dkms$' config/package-lists/stickllm.list.chroot
+grep -q '^nvidia-kernel-dkms$' config/package-lists/stickllm.list.chroot
 
 mkdir -p config/hooks/normal
 for h in /stickllm/live-build/hooks/normal/*.hook.chroot; do
