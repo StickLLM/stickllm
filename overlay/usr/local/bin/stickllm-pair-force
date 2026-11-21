@@ -1,0 +1,23 @@
+#!/bin/bash
+# Lab/ops: remint LAN pair code (unpairs all legacy LAN browsers).
+set -euo pipefail
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root: sudo stickllm-pair-force" >&2
+  exit 1
+fi
+export STICKLLM_RUN="${STICKLLM_RUN:-/run/stickllm}"
+out="$(/usr/local/bin/stickllm-pair --force)"
+echo "$out"
+# Show paired flag after remint (hashes only; no token print).
+python3 - <<'PY'
+import json
+from pathlib import Path
+p = Path("/run/stickllm/auth.json")
+doc = json.loads(p.read_text(encoding="utf-8"))
+print(json.dumps({
+  "paired": bool(doc.get("paired")),
+  "require_pair": bool(doc.get("require_pair", True)),
+  "has_token_hash": bool(doc.get("token_hash")),
+  "has_code_hash": bool(doc.get("code_hash")),
+}, indent=2))
+PY

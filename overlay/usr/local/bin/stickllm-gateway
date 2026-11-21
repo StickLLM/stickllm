@@ -1912,6 +1912,40 @@ def _sticklink_remint_status() -> dict:
     return {"status": "idle"}
 
 
+def _sticklink_peer_active() -> bool:
+    """True when stickllm-methodc-peer is active (Generate needs a live peer)."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "stickllm-methodc-peer.service"],
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _sticklink_clear_stuck_remint(message: str) -> dict:
+    """Drop remint.req / requested status so the UI can leave the minting spinner."""
+    try:
+        STICKLINK_JOIN_REMINT_REQ.unlink(missing_ok=True)
+    except Exception:
+        pass
+    status = {
+        "status": "idle",
+        "at": time.time(),
+        "message": message,
+        "peer_dead": True,
+    }
+    try:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        STICKLINK_JOIN_REMINT_STATUS.write_text(json.dumps(status) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    return status
+
+
 def _sticklink_rate_retry_left(remint: dict) -> int:
     """Seconds left on a peer-published rate_limited remint blob."""
     try:
@@ -1944,6 +1978,10 @@ def request_sticklink_join_remint() -> dict:
         if left:
             out["retry"] = left
         return out
+    if not _sticklink_peer_active():
+        return _sticklink_clear_stuck_remint(
+            "StickLink Method C peer is not running — start it (or reboot), then try Generate again."
+        )
     STICKLINK_JOIN_REMINT_REQ.write_text(f"{now}\n", encoding="utf-8")
     status = {"status": "requested", "at": now}
     STICKLINK_JOIN_REMINT_STATUS.write_text(json.dumps(status) + "\n", encoding="utf-8")
@@ -5749,6 +5787,30 @@ class Handler(SimpleHTTPRequestHandler):
             remint = _sticklink_remint_status()
             remint_st = str((remint or {}).get("status") or "")
             req_present = STICKLINK_JOIN_REMINT_REQ.is_file()
+            peer_active = _sticklink_peer_active()
+            # Peer dead + remint.req stuck → clear and surface an error (no infinite hang).
+            if (req_present or remint_st in ("requested", "minting", "closing")) and not peer_active:
+                remint = _sticklink_clear_stuck_remint(
+                    "StickLink Method C peer is not running — remint cancelled. Start the peer, then Generate again."
+                )
+                remint_st = "idle"
+                req_present = False
+                self._json(
+                    200,
+                    {
+                        "ok": False,
+                        "peer_active": False,
+                        "peer_dead": True,
+                        "minting": False,
+                        "connected": False,
+                        "url": "",
+                        "via": str((doc or {}).get("via") or "sticklink"),
+                        "at": (doc or {}).get("at"),
+                        "message": remint.get("message"),
+                        "remint": remint,
+                    },
+                )
+                return
             # Rate limit before minting: peer may still have remint.req while
             # sleeping, or remint.status may stick on requested/minting — never
             # let that mask the countdown UI ("Too many new codes").
@@ -5799,6 +5861,7 @@ class Handler(SimpleHTTPRequestHandler):
                     {
                         "ok": True,
                         "minting": True,
+                        "peer_active": True,
                         "connected": False,
                         "url": "",
                         "via": str((doc or {}).get("via") or "sticklink"),
@@ -6675,6 +6738,22 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 self._json(500, {"ok": False, "error": "remint_request_failed", "message": str(e)})
                 return
+            if bool((status or {}).get("peer_dead")):
+                self._json(
+                    503,
+                    {
+                        "ok": False,
+                        "peer_active": False,
+                        "peer_dead": True,
+                        "remint": status,
+                        "message": str(
+                            (status or {}).get("message")
+                            or "StickLink Method C peer is not running."
+                        ),
+                        "error": "peer_dead",
+                    },
+                )
+                return
             if str((status or {}).get("status") or "") == "rate_limited":
                 left = _sticklink_rate_retry_left(status or {})
                 self._json(
@@ -6699,6 +6778,7 @@ class Handler(SimpleHTTPRequestHandler):
                 200,
                 {
                     "ok": True,
+                    "peer_active": True,
                     "remint": status,
                     "message": "Requested a new StickLink join — waiting for the phone session to remint.",
                 },

@@ -5789,10 +5789,30 @@ function sticklinkRemintPhase(j) {
     btn: "Creating join key…",
   };
 }
+function sticklinkPeerDead(j) {
+  return !!(j && (j.peer_dead || j.peer_active === false || (j.remint && j.remint.peer_dead)
+    || String(j.error || "") === "peer_dead"));
+}
+function paintSticklinkQrPeerDead(j) {
+  const msg = (j && (j.message || (j.remint && j.remint.message)))
+    || "StickLink Method C peer is not running.";
+  showPairQrPlaceholder(
+    "expired",
+    "StickLink peer not running",
+    "Remint cancelled — start peer, then Generate",
+  );
+  const hint = $("#pairQrHint");
+  if (hint) hint.textContent = msg;
+  setPairQrButton("generate");
+}
 function paintSticklinkQrMinting(j) {
   // Rate-limit must never render as the minting / "old QR disabled" placeholder.
   if (sticklinkJoinIsRateLimited(j)) {
     paintSticklinkQrRateLimited(j);
+    return;
+  }
+  if (sticklinkPeerDead(j)) {
+    paintSticklinkQrPeerDead(j);
     return;
   }
   const phase = sticklinkRemintPhase(j);
@@ -5816,6 +5836,10 @@ async function refreshSticklinkQr(force) {
           paintSticklinkQrRateLimited(preJ);
           return;
         }
+        if (sticklinkPeerDead(preJ)) {
+          paintSticklinkQrPeerDead(preJ);
+          return;
+        }
       } catch (_) { /* fall through to Generate */ }
       pairQrMinting = true;
       const prev = pairQrLastUrl || "";
@@ -5829,6 +5853,10 @@ async function refreshSticklinkQr(force) {
           body: "{}",
         });
         const reqJ = await req.json().catch(() => ({}));
+        if (sticklinkPeerDead(reqJ) || req.status === 503) {
+          paintSticklinkQrPeerDead(reqJ);
+          return;
+        }
         if (!req.ok) {
           paintSticklinkQrExpired(
             (reqJ && (reqJ.message || reqJ.error))
@@ -5841,11 +5869,16 @@ async function refreshSticklinkQr(force) {
           return;
         }
         // Always wait for a new URL — peer ends a live session on Generate.
-        const deadline = Date.now() + 90000;
+        // Cap wait: peer-dead mid-mint must not spin forever (0.7.8 Lexar hang).
+        const deadline = Date.now() + 45000;
         while (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 400));
           const r = await fetch("/api/pair/sticklink-join", { cache: "no-store", headers: authHeaders() });
           const j = await r.json().catch(() => ({}));
+          if (sticklinkPeerDead(j)) {
+            paintSticklinkQrPeerDead(j);
+            return;
+          }
           if (sticklinkJoinIsRateLimited(j)) {
             paintSticklinkQrRateLimited(j);
             return;
@@ -5874,6 +5907,10 @@ async function refreshSticklinkQr(force) {
     // Rate-limit before minting — remint.status can stick on requested/minting.
     if (sticklinkJoinIsRateLimited(j)) {
       paintSticklinkQrRateLimited(j);
+      return;
+    }
+    if (sticklinkPeerDead(j)) {
+      paintSticklinkQrPeerDead(j);
       return;
     }
     if (j && j.minting) {

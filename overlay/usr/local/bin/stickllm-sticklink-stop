@@ -1,0 +1,13 @@
+#!/bin/bash
+# Stop StickLink Method C peer (and legacy sticklinkd if present).
+# NOPASSWD via sudoers.
+set -euo pipefail
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root: sudo stickllm-sticklink-stop" >&2
+  exit 1
+fi
+systemctl stop stickllm-methodc-peer.service 2>/dev/null || true
+systemctl stop stickllm-sticklinkd.service 2>/dev/null || true
+pkill -f 'stickllm-methodc-peer' 2>/dev/null || true
+pkill -f 'sticklinkd run' 2>/dev/null || true
+echo stopped

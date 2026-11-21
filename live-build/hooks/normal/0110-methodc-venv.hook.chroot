@@ -60,7 +60,20 @@ fi
 systemctl enable stickllm-sticklink-ensure-identity.service
 
 # Auto-start Method C peer (recovers via Restart=always). A0 is loopback-only.
+# systemctl enable in a live-build chroot can leave UnitFileState=enabled without
+# a durable multi-user wants symlink on some images — force both.
 systemctl enable stickllm-methodc-peer.service
+mkdir -p /etc/systemd/system/multi-user.target.wants
+ln -sfn /etc/systemd/system/stickllm-methodc-peer.service \
+  /etc/systemd/system/multi-user.target.wants/stickllm-methodc-peer.service
+ln -sfn /etc/systemd/system/stickllm-sticklink-ensure-identity.service \
+  /etc/systemd/system/multi-user.target.wants/stickllm-sticklink-ensure-identity.service
+test -L /etc/systemd/system/multi-user.target.wants/stickllm-methodc-peer.service
+# Sudoers helpers must exist in the image (0.7.8 bake gap: aliases without binaries).
+test -x /usr/local/bin/stickllm-sticklink-enable
+test -x /usr/local/bin/stickllm-sticklink-stop
+test -x /usr/local/bin/stickllm-pair-force
+test -x /usr/local/bin/stickllm-methodc-peer
 
 # Public join host on StickLink signalling (CF static /browser/* only; no A0 proxy).
 # Preserve overlay methodc-peer.env (keepalive / transport / expiry); only ensure base URL.

@@ -93,6 +93,15 @@ rsync -a /stickllm/overlay/ config/includes.chroot/
 find config/includes.chroot/etc/systemd -type f \( -name '*.service' -o -name '*.conf' -o -name '*.timer' -o -name '*.socket' -o -name '*.target' \) -exec chmod 644 {} +
 find config/includes.chroot/usr/local/bin -type f -exec chmod 755 {} +
 find config/includes.chroot/etc/sudoers.d -type f -exec chmod 440 {} +
+# 0.8.0: sudoers aliases for StickLink helpers must have matching binaries.
+for _slbin in stickllm-sticklink-enable stickllm-sticklink-stop stickllm-pair-force stickllm-methodc-peer; do
+  test -x "config/includes.chroot/usr/local/bin/${_slbin}" \
+    || { echo "ERROR: missing ${_slbin} in overlay (sudoers would be broken)" >&2; exit 1; }
+done
+grep -q 'stickllm-sticklink-enable' config/includes.chroot/etc/sudoers.d/stickllm
+# Peer must not Requires= oneshot identity (enabled-but-never-started bake gap).
+! grep -q '^Requires=.*stickllm-sticklink-ensure-identity' \
+  config/includes.chroot/etc/systemd/system/stickllm-methodc-peer.service
 
 mkdir -p config/includes.chroot/opt/stickllm/ui
 rsync -a /stickllm/ui/ config/includes.chroot/opt/stickllm/ui/

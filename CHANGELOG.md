@@ -4,6 +4,7 @@
 - **nvidia-open.** Bake `nvidia-open-kernel-dkms` so a later CMP unlock can patch open modules.
 - **Wi-Fi wizard.** Setup wizard shows **Connected to …** (or waiting for uplink) after Join.
 - **Outbound email help.** Clearer copy: turn on the toggle to show Email / Password (passkey) fields.
+- **StickLink bake gaps (from live 0.7.8 Lexar).** Ship `stickllm-sticklink-enable` / `stop` / `pair-force` (sudoers had aliases, binaries missing). Method C peer: drop `Requires=` on ensure-identity oneshot; force multi-user wants symlink in chroot so the unit is not enabled-but-never-started. UI/gateway: if remint waits while peer is dead, clear stuck `remint.req` and show an error (no infinite Create-new-Key hang).
 - **StickLink Always-On.** Method C peer / closed StickLink overlay from the 0.7.8 line remains in the bake (cp313 wheels for Python 3.13). StickDroid keep-pins APK and StickLink Worker cloud are **not** in the ISO.
 
 ## 0.7.8 - StickLink first-boot cloud provision + email vault creds

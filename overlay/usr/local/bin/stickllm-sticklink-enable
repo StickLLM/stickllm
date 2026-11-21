@@ -1,0 +1,34 @@
+#!/bin/bash
+# Start StickLink Method C peer (and clear a stuck remint.req so Generate works).
+# NOPASSWD via sudoers. Replaces the old sticklinkd-only helper.
+set -euo pipefail
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root: sudo stickllm-sticklink-enable" >&2
+  exit 1
+fi
+
+systemctl daemon-reload || true
+systemctl reset-failed stickllm-sticklink-ensure-identity.service 2>/dev/null || true
+systemctl reset-failed stickllm-methodc-peer.service 2>/dev/null || true
+
+# Identity is best-effort — peer must still start if provision fails offline.
+systemctl start stickllm-sticklink-ensure-identity.service 2>/dev/null || true
+
+# Ensure boot enablement (wants symlink) even if a prior bake only ran enable in chroot.
+systemctl enable stickllm-methodc-peer.service 2>/dev/null || true
+systemctl restart stickllm-methodc-peer.service
+sleep 1
+
+# Unstick Generate if peer was dead while remint.req lingered.
+rm -f /run/stickllm/sticklink-join-remint.req
+python3 - <<'PY'
+import json, time
+from pathlib import Path
+p = Path("/run/stickllm/sticklink-join-remint.json")
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps({"status": "idle", "at": time.time(), "message": "peer running"}) + "\n", encoding="utf-8")
+print("remint idle")
+PY
+
+systemctl --no-pager -l is-active stickllm-methodc-peer.service
+systemctl --no-pager -l status stickllm-methodc-peer.service | head -30
