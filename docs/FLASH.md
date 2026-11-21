@@ -22,6 +22,7 @@ N-1 restore: `StickLLM-v0.7.7.iso` — see [RESTORE.md](RESTORE.md).
 
 ```bash
 sha256sum StickLLM-v0.7.8.iso
+# expect 10ddd00f44867220e10ee706ea1e3b2eb18c6702db371a2bcccd53572179f840
 ```
 
 ## Windows
