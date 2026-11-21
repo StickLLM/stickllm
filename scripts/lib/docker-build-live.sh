@@ -124,12 +124,16 @@ cp /stickllm/config/models/catalog.toml config/includes.chroot/etc/stickllm/mode
 # sticklink-factory.env into includes.chroot here (mode 600). Never bake a token
 # from the repo tree — only from STICKLINK_LAB_PROVISION_TOKEN on the build host.
 if [[ -n "${STICKLINK_LAB_PROVISION_TOKEN:-}" ]]; then
-  umask 077
-  {
-    echo "# Lab factory token for StickLink first-boot provision (do not commit)."
-    echo "STICKLINK_LAB_PROVISION_TOKEN=${STICKLINK_LAB_PROVISION_TOKEN}"
-    echo "STICKLINK_LAB_PROVISION_URL=${STICKLINK_LAB_PROVISION_URL:-https://link.stickllm.com/v1/lab/device-provision}"
-  } >config/includes.chroot/etc/stickllm/sticklink-factory.env
+  # Scope umask 077 to the secret file only — a leaked umask made baked
+  # /opt/stickllm models 600/700 so stickllm-llama could not read them.
+  (
+    umask 077
+    {
+      echo "# Lab factory token for StickLink first-boot provision (do not commit)."
+      echo "STICKLINK_LAB_PROVISION_TOKEN=${STICKLINK_LAB_PROVISION_TOKEN}"
+      echo "STICKLINK_LAB_PROVISION_URL=${STICKLINK_LAB_PROVISION_URL:-https://link.stickllm.com/v1/lab/device-provision}"
+    } >config/includes.chroot/etc/stickllm/sticklink-factory.env
+  )
   chmod 600 config/includes.chroot/etc/stickllm/sticklink-factory.env
   echo "[stickllm] wrote sticklink-factory.env into includes.chroot (token present)"
 else
@@ -165,9 +169,14 @@ for pair in "${AA_GGUF_1}|${AA_SHA_1}" "${AA_GGUF_2}|${AA_SHA_2}"; do
     exit 1
   fi
   echo "[stickllm] bake base model ${f}…"
-  cp "/stickllm/models/appagent/${f}" config/includes.chroot/opt/stickllm/models/appagent/
+  # install -m 644: never inherit umask/source mode (stickllm-llama is not root).
+  install -m 644 "/stickllm/models/appagent/${f}" \
+    "config/includes.chroot/opt/stickllm/models/appagent/${f}"
   echo "${sha}  config/includes.chroot/opt/stickllm/models/appagent/${f}" | sha256sum -c -
 done
+chmod 755 config/includes.chroot/opt/stickllm \
+  config/includes.chroot/opt/stickllm/models \
+  config/includes.chroot/opt/stickllm/models/appagent
 # Do not also bake the old 4B / 3B next to the 7B.
 rm -f config/includes.chroot/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf
 if compgen -G "config/includes.chroot/opt/stickllm/models/*3b*" >/dev/null; then
