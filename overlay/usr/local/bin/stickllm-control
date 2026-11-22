@@ -2504,8 +2504,39 @@ def active_model_identity() -> dict:
     return out
 
 
+def _mmproj_family_key(name: str) -> str:
+    """Normalize a GGUF/mmproj basename to a family key for pairing.
+
+    Strips leading mmproj-, quant/precision suffixes, and unifies separators so
+    Qwen3VL-8B-Instruct-Q4_K_M pairs with mmproj-Qwen3VL-8B-Instruct-F16, not a
+    larger leftover projector for a different VL in the same folder.
+    """
+    low = Path(name).name.lower().replace("_", "-")
+    if low.endswith(".gguf"):
+        low = low[:-5]
+    if low.startswith("mmproj-"):
+        low = low[7:]
+    elif low.startswith("mmproj"):
+        low = low[6:].lstrip("-")
+    # Drop trailing quant / dtype tokens (repeat for -00001-of-00002 style).
+    quant = re.compile(
+        r"-(?:iq\d+-[a-z0-9]+|q\d+-k-[a-z0-9]+|q\d+-k|q\d+-0|q\d+-1|f16|f32|bf16|"
+        r"\d+-of-\d+)$"
+    )
+    while True:
+        nxt = quant.sub("", low)
+        if nxt == low:
+            break
+        low = nxt
+    return low.strip("-")
+
+
 def find_mmproj(model_path: str) -> str:
-    """Vision projector GGUF sitting next to the weights. Empty if this model is text-only."""
+    """Vision projector GGUF sitting next to the weights. Empty if this model is text-only.
+
+    When several mmproj files share a directory (HF downloads), prefer the one
+    whose family name matches the model — never pick the largest unrelated file.
+    """
     p = Path(model_path)
     if not p.is_file():
         return ""
@@ -2521,8 +2552,33 @@ def find_mmproj(model_path: str) -> str:
         return ""
     if not cands:
         return ""
-    cands.sort(key=lambda f: f.stat().st_size if f.is_file() else 0, reverse=True)
-    return str(cands[0])
+    if len(cands) == 1:
+        return str(cands[0])
+    model_key = _mmproj_family_key(p.name)
+    model_tokens = {t for t in model_key.split("-") if t and t not in {"instruct", "chat", "it"}}
+
+    def score(f: Path) -> tuple:
+        low = f.name.lower()
+        mk = _mmproj_family_key(f.name)
+        if model_key and mk == model_key:
+            match = 4
+        elif model_key and mk and (model_key in mk or mk in model_key):
+            match = 3
+        else:
+            mt = {t for t in mk.split("-") if t and t not in {"instruct", "chat", "it"}}
+            overlap = len(model_tokens & mt)
+            match = 2 if overlap >= 3 else (1 if overlap >= 2 else 0)
+        pref = 0 if ("f16" in low or "bf16" in low) else 1
+        size = -(f.stat().st_size if f.is_file() else 0)
+        # Higher match first; among equals prefer f16/bf16 then larger file.
+        return (-match, pref, size)
+
+    cands.sort(key=score)
+    best = cands[0]
+    # If nothing name-matched, still return best-effort (legacy single-folder case)
+    # but only when exactly one candidate scored >0 would we be safer — keep
+    # largest/f16 fallback for lone unmarked projectors.
+    return str(best)
 
 
 def active_model_path() -> str:
@@ -2634,6 +2690,11 @@ def _mmproj_fallback_repos(*parts: str) -> list[str]:
     if re.search(r"qwen2\.?5-?vl|qwen25-?vl", blob):
         out.append("Qwen/Qwen2.5-VL-7B-Instruct-GGUF")
         out.append("Qwen/Qwen2.5-VL-3B-Instruct-GGUF")
+    # Qwen3-VL (ggml-org / unsloth / bartowski quants often separate mmproj).
+    if re.search(r"qwen3-?vl|qwen3vl", blob):
+        out.append("ggml-org/Qwen3-VL-8B-Instruct-GGUF")
+        out.append("ggml-org/Qwen3-VL-4B-Instruct-GGUF")
+        out.append("Qwen/Qwen3-VL-8B-Instruct-GGUF")
     return out
 
 

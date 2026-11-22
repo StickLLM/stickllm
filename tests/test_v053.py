@@ -302,6 +302,29 @@ def test_c_ui_badges_and_confirms():
     assert ".vbadge" in css and ".pill.bad" in css
 
 
+def test_c_find_mmproj_prefers_matching_family(tmp_path, monkeypatch):
+    """Several mmproj files in one folder must not pick by size alone."""
+    import types
+    if "fcntl" not in sys.modules:
+        sys.modules["fcntl"] = types.ModuleType("fcntl")
+    ctl = _load(BIN / "stickllm-control", "ctl_mmproj_match")
+    model = tmp_path / "Qwen3VL-8B-Instruct-Q4_K_M.gguf"
+    model.write_bytes(b"GGUF" + b"\0" * 64)
+    wrong = tmp_path / "mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf"
+    wrong.write_bytes(b"x" * 2000)  # larger — old bug preferred this
+    right = tmp_path / "mmproj-Qwen3VL-8B-Instruct-F16.gguf"
+    right.write_bytes(b"y" * 1000)
+    assert Path(ctl.find_mmproj(str(model))).name == right.name
+    # Lone projector still returned.
+    alone_dir = tmp_path / "alone"
+    alone_dir.mkdir()
+    alone_m = alone_dir / "SomeVision-Q4_K_M.gguf"
+    alone_m.write_bytes(b"GGUF" + b"\0" * 32)
+    alone_mm = alone_dir / "mmproj-SomeVision-f16.gguf"
+    alone_mm.write_bytes(b"z" * 50)
+    assert Path(ctl.find_mmproj(str(alone_m))).name == alone_mm.name
+
+
 def test_c_mmproj_download_forwards_accept(tmp_path, monkeypatch):
     """Vision companion must use the same accept_unverified override as GGUF."""
     ctl = _load(BIN / "stickllm-control", "ctl_mmproj_accept")
