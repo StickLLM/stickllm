@@ -6679,17 +6679,18 @@ def _browser_owns(bid: str):
     return owns
 
 
-def _wm_place_later(bid: str, geo: dict | None, taskbar: int) -> None:
+def _wm_place_later(bid: str, geo: dict | None, taskbar: int, owns_fn=None) -> None:
     """Wait for a new window to map, mark it with its id, then float it at the
     requested rect. Chromium --app windows ignore --class on Wayland, so they
-    are matched by owning process and marked."""
+    are matched by owning process and marked. Terminals use the same path."""
+    owns = owns_fn(bid) if owns_fn is not None else _browser_owns(bid)
     def run():
         ipc = _wm_ipc()
         if ipc is None:
             return
         wm = _wm()
         try:
-            w = wm.wait_for(ipc, bid, _browser_owns(bid), timeout=45)
+            w = wm.wait_for(ipc, bid, owns, timeout=45)
             if w and geo:
                 wm.apply(ipc, "place", con_id=w["id"], geo=geo, taskbar_px=taskbar)
             elif w:
@@ -7028,6 +7029,12 @@ def handle(action: str, params: dict) -> dict:
         return browser_window(params)
     if action == "terminal_open":
         return terminal_open(params)
+    if action == "terminal_status":
+        return terminal_status()
+    if action == "terminal_window":
+        return terminal_window(params)
+    if action == "terminal_close":
+        return terminal_close(params)
     if action == "web_mode" or action == "web_mode_status":
         return web_mode_status()
     if action == "web_mode_set" or action == "set_web_mode":

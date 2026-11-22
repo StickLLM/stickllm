@@ -2,10 +2,11 @@
 
 0.5.7: the on-stick desktop is Xfce only (sway, cage and weston are gone).
 This module moves, sizes, minimises, restores, maximises and focuses the
-Browser windows that stickllm-control starts, using the stock X11 command
-line tools wmctrl, xdotool and xprop (Debian packages, unmodified, run as
-separate programs). Windows are found by their WM_CLASS
-(--class=stickllm-browser-<id>) or by the owning process.
+Browser and Terminal windows that stickllm-control starts, using the stock
+X11 command line tools wmctrl, xdotool and xprop (Debian packages,
+unmodified, run as separate programs). Windows are found by their WM_CLASS
+(--class=stickllm-browser-<id> / stickllm-terminal-<id>) or by the owning
+process.
 
 Same interface as the 0.5.6 sway helper: X11(), wait_for, apply, states.
 """
@@ -110,7 +111,7 @@ def active(x: X11) -> int:
 
 
 def bid_of(w: dict) -> str:
-    m = re.search(r"stickllm-browser-([0-9a-f]{12})", w.get("cls", ""))
+    m = re.search(r"stickllm-(?:browser|terminal)-([0-9a-f]{12})", w.get("cls", ""))
     return m.group(1) if m else ""
 
 
