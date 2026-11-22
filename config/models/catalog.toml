@@ -35,8 +35,8 @@ id = "vram_8gb"
 label = "8 GB VRAM (installed default)"
 min_vram_gb = 8
 series = "qwen2.5"
-# One recommend: baked 7B Q4. Q5 is an optional alternate download.
-entries = ["qwen25-7b-q4km", "qwen25-7b-q5km"]
+# One recommend: baked 7B Q4. Q5 and VL-3B are optional alternate downloads.
+entries = ["qwen25-7b-q4km", "qwen25-7b-q5km", "qwen25-vl-3b-q4km"]
 
 [[tier]]
 id = "vram_12gb"
@@ -179,6 +179,22 @@ sha256 = [
 vision = false
 probe_recommend = false
 notes = "Optional download. Slightly higher quality than Q4, but tight on 8 GB at 32K (prefer Q4 for Minimum context)."
+
+[[model]]
+id = "qwen25-vl-3b-q4km"
+name = "Qwen2.5-VL-3B Instruct Q4_K_M"
+tier = "vram_8gb"
+quality_rank = 38
+approx_size_gb = 1.9
+min_vram_gb = 8
+hf_repo = "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF"
+hf_files = ["Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"]
+sha256 = ["d02fe9b69ad8cadbbd228e387667af66612c44bed29ffc8eb1e7caf9ac486c12"]
+vision = true
+mmproj_file = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"
+mmproj_bytes = 844757728
+probe_recommend = false
+notes = "8 GB vision pick @ 32K. Download the GGUF, then tap vision for mmproj (Q8_0, ~0.85 GB). Not the Open/probe default (that stays 7B text)."
 
 [[model]]
 id = "qwen25-3b-q4km"

@@ -77,8 +77,24 @@ case "${1:-}" in
   sync-model) enter_host_mount_ns "$@" ;;
 esac
 
+docker_bin() {
+  if command -v docker >/dev/null 2>&1; then
+    command -v docker
+    return 0
+  fi
+  for c in /usr/bin/docker /usr/local/bin/docker; do
+    [[ -x "$c" ]] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
 docker_cli() {
-  DOCKER_HOST="unix://${SOCK}" docker "$@"
+  local bin
+  bin="$(docker_bin)" || {
+    echo "stickllm-agent: docker CLI missing (install docker-cli)" >&2
+    return 127
+  }
+  DOCKER_HOST="unix://${SOCK}" "$bin" "$@"
 }
 
 # Container DNS: host LAN/DHCP resolvers first, then public fallbacks
@@ -131,7 +147,7 @@ DOCKERD_USERS="${STICKLLM_DOCKERD_RUN:-/run/stickllm}/dockerd-users"
 # "agent-install", so a service stop (needs_install, restart) cannot release
 # the daemon in the middle of a pull.
 ensure_dockerd() {
-  local holder="${1:-agent}"
+  local holder="${1:-agent}" err
   # Gate again immediately before the daemon. A locked vault never reaches dockerd.
   if ! "$PYBIN" "$LIB" docker-may-start; then
     refuse_locked
@@ -141,9 +157,18 @@ ensure_dockerd() {
     echo "Mount a drive for Agent Zero" >&2
     exit 0
   fi
+  if ! docker_bin >/dev/null 2>&1; then
+    err="docker CLI missing (install docker-cli); Agent Zero cannot start"
+    echo "stickllm-agent: $err" >&2
+    "$PYBIN" "$LIB" write-status --state error --image_present true --message "$err" >/dev/null || true
+    exit 1
+  fi
   "$PYBIN" "$LIB" prepare-vault
-  if ! "$DOCKERD" ensure "$holder" 9>&-; then
-    echo "stickllm-agent: dockerd did not become ready" >&2
+  if ! err="$("$DOCKERD" ensure "$holder" 9>&- 2>&1)"; then
+    err="${err:-dockerd did not become ready}"
+    echo "stickllm-agent: $err" >&2
+    # Surface the real failure in the UI instead of looping "starting".
+    "$PYBIN" "$LIB" write-status --state error --image_present true --message "$err" >/dev/null || true
     exit 1
   fi
 }
@@ -395,6 +420,12 @@ cache_embedding() {
   # next to the image, so this is a local copy and needs no network. The
   # download below is only a fallback for a stick without the bundle; it runs
   # after the egress proxy is up, through it, and gives up after 120 s.
+  #
+  # Important: this one-shot uses --entrypoint python and therefore skips
+  # stickllm-agent-entrypoint's scipy/numpy ABI repair. A broken scipy.special
+  # (ValueError: All ufuncs must have type numpy.ufunc / sph_legendre_p) would
+  # burn the full timeout and look like a hang at "memory model (MiniLM)".
+  # Probe first and skip cleanly; the real container repairs ABI before UI.
   if "$PYBIN" "$LIB" embedding-cached; then
     return 0
   fi
@@ -409,8 +440,16 @@ cache_embedding() {
   mkdir -p "${ADDON}/state/.cache"
   local DNS_ARGS=()
   mapfile -t DNS_ARGS < <(dns_args)
-  docker_cli rm -f stickllm-a0-embed >/dev/null 2>&1 || true
-  timeout 120 env DOCKER_HOST="unix://${SOCK}" docker run --rm --name stickllm-a0-embed \
+  docker_cli rm -f stickllm-a0-embed stickllm-a0-embed-probe >/dev/null 2>&1 || true
+  if ! timeout 30 env DOCKER_HOST="unix://${SOCK}" "$(docker_bin)" run --rm --name stickllm-a0-embed-probe \
+      --network none \
+      --entrypoint /opt/venv-a0/bin/python3 \
+      "$ref" -c 'import scipy.special' >/dev/null 2>&1; then
+    echo "stickllm-agent: MiniLM preload skipped (scipy/numpy ABI); Agent Zero entrypoint repairs before UI" >&2
+    docker_cli rm -f stickllm-a0-embed-probe >/dev/null 2>&1 || true
+    return 1
+  fi
+  timeout 120 env DOCKER_HOST="unix://${SOCK}" "$(docker_bin)" run --rm --name stickllm-a0-embed \
     --network "$NETWORK" \
     "${DNS_ARGS[@]}" \
     -e HF_HUB_OFFLINE=0 \
@@ -686,7 +725,8 @@ cmd_run_container() {
     echo "stickllm-agent: chat-naming deferral files missing under ${CHAT_NAMING_DIR}" >&2
   fi
   : >>/run/stickllm/a0-init.log
-  docker_cli run -d --name "$CONTAINER" \
+  local run_err
+  if ! run_err="$(docker_cli run -d --name "$CONTAINER" \
     --log-driver local \
     --log-opt max-size=2m \
     --log-opt max-file=2 \
@@ -751,7 +791,15 @@ cmd_run_container() {
     -v "${ENTRY}:/stickllm-entrypoint.sh:ro" \
     --entrypoint /bin/bash \
     "$ref" \
-    /stickllm-entrypoint.sh
+    /stickllm-entrypoint.sh 2>&1)"; then
+    run_err="${run_err:-docker run failed}"
+    # Truncate for UI; keep the actionable part (permission denied / OCI / etc.).
+    run_err="$(printf '%s' "$run_err" | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-280)"
+    echo "stickllm-agent: $run_err" >&2
+    "$PYBIN" "$LIB" write-status --state error --image_present true --message "$run_err" >/dev/null || true
+    # Exit 0 so Restart=always does not flap steps 4↔5 forever.
+    exit 0
+  fi
   # Keep unit alive; restart container in-place if it exits (do not tear down dockerd).
   (
     for _i in $(seq 1 90); do

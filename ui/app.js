@@ -3303,8 +3303,16 @@ function hardwareDetectedLine() {
   return `Detected: ${hwInfo.gpu ? hwInfo.gpu + " " : ""}${fitGb(hwInfo.vram)} VRAM · RAM ${ram}`;
 }
 function llamaStarting() {
-  const s = String(lastLlama?.active_state || "");
-  return s === "activating" || (s === "active" && !lastLlama?.stopped);
+  // Only true while the unit is actually coming up. Steady active+running with
+  // /health ok is handled by m.running — do not treat a healthy server as Loading.
+  if (lastLlama?.stopped) return false;
+  const s = String(lastLlama?.active_state || "").toLowerCase();
+  const sub = String(lastLlama?.sub_state || "").toLowerCase();
+  if (s === "activating") return true;
+  if (sub === "start" || sub === "auto-restart") return true;
+  // Process alive, weights still mapping (health not ok yet). Callers gate on !m.running.
+  if (s === "active" && (lastLlama?.process_alive || sub === "running")) return true;
+  return false;
 }
 // Where an installed model's file lives: the baked base model is on the stick even
 // in a vault session.
@@ -3350,17 +3358,46 @@ function fitOf(m) {
   return { k: "no", need, kv, label: ramShort ? `Won't fit${ramNote}` : `Won't fit · needs ${size}`, cls: "fit-no" };
 }
 function visionTag(m, id) {
+  // Text-only defaults (Qwen Instruct, etc.) never get a vision pill.
   if (!modelSees(m)) return "";
   const ready = !!(m.mmproj || m.mmproj_ready);
   const qst = queueState("mmproj:" + id);
-  if (ready) return `<span class="pill acc" title="This model's mmproj is on disk">vision</span>`;
-  if (qst === "active" || qst === "pending") return `<span class="pill warn" title="Downloading this model's mmproj">vision…</span>`;
-  return `<button type="button" class="pill visionOff" data-mmproj="${esc(id)}" title="Download this model's mmproj from Hugging Face">vision</button>`;
+  if (ready) return `<span class="pill acc" title="Vision files are on disk — Load this model to chat with images">vision</span>`;
+  if (qst === "active" || qst === "pending") return `<span class="pill warn" title="Downloading this model's vision projector (mmproj)">vision…</span>`;
+  return `<button type="button" class="pill visionOff" data-mmproj="${esc(id)}" title="Download vision projector (mmproj) for this model — required before images work">vision</button>`;
 }
 function modelSees(m) {
-  if (m && m.vision) return true;
-  const s = `${m?.name || ""} ${m?.id || ""} ${m?.architecture || ""} ${m?.file || ""}`.toLowerCase();
-  return /(?:^|[^a-z0-9])(?:vl|vision)(?:[^a-z0-9]|$)|qwen\d*(?:\.\d+)?-?vl|llava|moondream|minicpm-?v|internvl|pixtral|smolvlm|glm-?4v|kimi-?vl|idefics/.test(s);
+  if (!m) return false;
+  // A stray mmproj next to a text model must not count as vision-capable.
+  if (m.vision || m.mmproj_file || m.mmproj_ready) return true;
+  if (m.mmproj && looksVisionName(m)) return true;
+  return looksVisionName(m);
+}
+function looksVisionName(m) {
+  const s = `${m?.name || ""} ${m?.id || ""} ${m?.architecture || ""} ${m?.file || ""} ${m?.repo || ""} ${m?.hf_repo || ""}`.toLowerCase();
+  return /(?:^|[^a-z0-9])(?:vl|vision)(?:[^a-z0-9]|$)|qwen\d*(?:\.\d+)?-?vl|llava|moondream|minicpm-?v|internvl|pixtral|smolvlm|glm-?4v|kimi-?vl|idefics|inkling/.test(s);
+}
+function offerLoadVisionModel(id) {
+  const m = findModel(id);
+  if (!m || !m.installed) return;
+  if (m.running) {
+    toast((m.name || "Model") + " is already loaded with vision");
+    return;
+  }
+  const label = m.name || id;
+  confirmBox({
+    title: "Load " + label + " for vision?",
+    text: "Vision files are ready. The default chat model is text-only — load this model to use images.",
+    extra: "Load replaces the model that is running now.",
+    word: "LOAD",
+    ok: "Load now",
+    danger: false,
+    cb: () => {
+      selectedModelId = id;
+      beginModelLoadUi(id, label);
+      paintSoon().then(() => $("#activate")?.click());
+    },
+  });
 }
 function modelVisible(m) {
   const f = state.mf;
@@ -3377,7 +3414,7 @@ function modelVisible(m) {
   if (f.vis === "only" && !modelSees(m)) return false;
   if (f.lic === "commercial" && m.license_noncommercial) return false;
   if (f.lic === "noncommercial" && !m.license_noncommercial) return false;
-  if (f.q && !m.hf && !(String(m.name || "") + " " + String(m.id || "")).toLowerCase().includes(f.q.toLowerCase())) return false;
+  if (f.q && !m.hf && !fuzzyTextMatch(modelSearchBlob(m), f.q)) return false;
   if (f.fits && fitOf(m).k === "no") return false;
   return true;
 }
@@ -3397,12 +3434,75 @@ function updateVramBar(m) {
   if ($("#vramTotal")) $("#vramTotal").textContent = `of ${fitGb(total)}${hwInfo.backend === "vulkan" && hwInfo.gpuCount > 1 ? " (one card)" : !(hwInfo.vram > 0) ? " RAM" : ""}`;
   if ($("#vramWarn")) $("#vramWarn").hidden = fit.k !== "no";
 }
+// Lightweight typo tolerance for catalog / "search within" (e.g. lnkling -> Inkling).
+function editDistance1(a, b) {
+  if (a === b) return 0;
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > 1) return 2;
+  if (la === lb) {
+    let d = 0;
+    for (let i = 0; i < la; i++) if (a[i] !== b[i] && ++d > 1) return d;
+    return d;
+  }
+  const longer = la > lb ? a : b;
+  const shorter = la > lb ? b : a;
+  let i = 0, j = 0, d = 0;
+  while (i < longer.length) {
+    if (j < shorter.length && longer[i] === shorter[j]) { i++; j++; }
+    else { if (++d > 1) return d; i++; }
+  }
+  return d;
+}
+function modelSearchBlob(m) {
+  return [m?.name, m?.id, m?.repo, m?.hf_repo, m?.file, m?.architecture].filter(Boolean).join(" ");
+}
+function modelSearchTokens(m) {
+  return modelSearchBlob(m).toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+}
+function fuzzyTextMatch(hay, needle) {
+  const q = String(needle || "").toLowerCase().trim();
+  if (!q) return true;
+  const text = String(hay || "").toLowerCase();
+  if (text.includes(q)) return true;
+  if (q.length < 3) return false;
+  for (const t of text.split(/[^a-z0-9]+/).filter(Boolean)) {
+    if (t.includes(q) || (t.length >= 3 && q.includes(t))) return true;
+    if (editDistance1(t, q) <= 1) return true;
+  }
+  return false;
+}
+function catalogFuzzyHits(q) {
+  const needle = String(q || "").trim();
+  if (needle.length < 2) return [];
+  return lastCatalog.filter((m) => fuzzyTextMatch(modelSearchBlob(m), needle));
+}
+// Prefer a catalog token within edit distance 1 so HF gets inkling not lnkling.
+function correctedSearchQuery(q) {
+  const raw = String(q || "").trim();
+  const low = raw.toLowerCase();
+  if (low.length < 3) return raw;
+  let best = "";
+  for (const m of lastCatalog) {
+    for (const t of modelSearchTokens(m)) {
+      if (t === low) return raw;
+      if (editDistance1(t, low) === 1 && t.length >= best.length) best = t;
+    }
+  }
+  return best || raw;
+}
 // A search hit for a file the catalog already lists (server sets id = catalog id,
 // e.g. the baked base 7B Q4) shows as that catalog row: one card with its
-// installed/running/Delete state, not an hf: duplicate.
+// installed/running/Delete state, not an hf: duplicate. Also merges local
+// catalog / installed rows that fuzzy-match the query ("search within").
 function searchRows() {
   const seen = new Set();
   const out = [];
+  const q = (state.mf.q || "").trim();
+  for (const row of catalogFuzzyHits(q)) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    out.push(row);
+  }
   for (const h of hfHits) {
     const row = lastCatalog.find((x) => x.id === h.id || (h.catalog_id && x.id === h.catalog_id));
     const m = row ? { ...h, ...row, hf_id: h.hf_id || h.id, repo: h.repo, file: h.file, sha256: h.sha256 || "", hf: true } : h;
@@ -3465,17 +3565,19 @@ function renderModelsList() {
   }
   const source = browseSource();
   const searching = state.mtab === "browse" && (state.mf.q || "").trim().length >= 2;
+  const localHits = searching ? catalogFuzzyHits(state.mf.q) : [];
   if ($("#browseNote")) {
     $("#browseNote").textContent = searching
       ? (hfBusy ? "Searching Hugging Face…" : "Hugging Face · GGUF only")
       : "Pinned catalog · type to search Hugging Face";
   }
-  if (searching && hfBusy && !hfHits.length) {
+  // Keep local catalog / installed fuzzy hits visible while HF loads (or fails).
+  if (searching && hfBusy && !hfHits.length && !localHits.length) {
     list.innerHTML = '<div class="emptyCards">Searching Hugging Face…</div>';
     syncModelActions();
     return;
   }
-  if (searching && hfErr && !hfHits.length) {
+  if (searching && hfErr && !hfHits.length && !localHits.length) {
     list.innerHTML = `<div class="emptyCards">${esc(hfErr)}</div>`;
     syncModelActions();
     return;
@@ -3528,6 +3630,7 @@ function renderModelsList() {
     // Optimistic id → Loading on click; only that card (never leave others stuck).
     // An active row only shows Loading while llama-server is actually starting;
     // a stopped or crashed server must not leave the card stuck on "Loading…".
+    // Once /health says this row is running, never keep the Loading badge.
     const loading = !run && (loadingModelId === id || (!loadingModelId && !!m.active && llamaStarting()));
     const rec = !!m.recommended;
     const sel = id === selectedModelId;
@@ -3631,14 +3734,17 @@ function syncModelActions() {
   if ($("#activate")) {
     $("#activate").hidden = !m.installed || (m.runnable === false && !m.running && !m.active);
     const failed = lastLlama && (lastLlama.stopped || Number(lastLlama.n_restarts || 0) >= 2);
-    $("#activate").textContent = m.running ? "Reload with these settings" : (failed ? "Load model" : (m.active ? "Loading…" : "Load model"));
+    const midLoad = !m.running && !failed && !!m.active && (loadingModelId === m.id || llamaStarting());
+    $("#activate").textContent = m.running ? "Reload with these settings" : (midLoad ? "Loading…" : "Load model");
   }
   if ($("#delModel")) $("#delModel").hidden = !m.deletable;
   const max = Number(m.ctx_max || m.ctxMax || 32768);
   try { updateDynamicPresets(m); } catch (_) {}
   if ($("#ctx")) {
-    $("#ctx").max = max;
-    if (+$("#ctx").value > max) $("#ctx").value = max;
+    $("#ctx").min = LLAMA_CTX_FLOOR;
+    $("#ctx").max = Math.max(LLAMA_CTX_FLOOR, max);
+    if (+$("#ctx").value < LLAMA_CTX_FLOOR) $("#ctx").value = LLAMA_CTX_FLOOR;
+    if (+$("#ctx").value > +$("#ctx").max) $("#ctx").value = $("#ctx").max;
     if ($("#ctxVal")) paintCtxVal();
     try { syncPresetHighlight(); } catch (_) {}
   }
@@ -3710,6 +3816,17 @@ async function refreshModelsNow() {
   // Do not clear a click just because some other model is still healthy.
   if (!selectedModelId && run && !loadingModelId) selectedModelId = run.id;
   if (!selectedModelId && lastCatalog[0]) selectedModelId = lastCatalog[0].id;
+  // Control status is authoritative for "is this load done?" — clear stuck Loading
+  // even when /api/health connect.running_model lagged (vision / mmproj /tmp runtime).
+  if (loadingModelId) {
+    const loaded = st.loaded || {};
+    const hit = lastCatalog.find((m) => m.id === loadingModelId);
+    const pathOk = sameModelPath(loaded.path, requestedLoadPath())
+      || sameModelPath(hit?.path, requestedLoadPath());
+    if (hit?.running || (loaded.running && (loaded.id === loadingModelId || pathOk))) {
+      finishLoadSuccess(hit?.name || loaded.name || requestedLoadName());
+    }
+  }
   let name = st.loaded?.name || run?.name || "none";
   if (loadingModelId) name = requestedLoadName();
   else if (loadMismatchText) name = "Load failed";
@@ -3717,12 +3834,13 @@ async function refreshModelsNow() {
   if ($("#recName")) $("#recName").textContent = String(probe.recommend_id || probe.recommend || "—");
   const pill = $("#runPill");
   if (pill) {
-    const activeLoading = !!loadingModelId || (!loadMismatchText && lastCatalog.some((m) => m.active && !m.running));
+    const loadedRun = !!(st.loaded && st.loaded.running);
+    const activeLoading = !!loadingModelId || (!loadMismatchText && lastCatalog.some((m) => m.active && !m.running && llamaStarting()));
     if (loadingModelId) {
       pill.textContent = "loading"; pill.className = "pill warn";
     } else if (loadMismatchText) {
       pill.textContent = "failed"; pill.className = "pill";
-    } else if (st.llama_ok || st.llama?.status === "ok" || run?.running) {
+    } else if (st.llama_ok || st.llama?.status === "ok" || loadedRun || run?.running) {
       pill.textContent = "running"; pill.className = "pill ok";
     } else if (activeLoading) {
       pill.textContent = "loading"; pill.className = "pill warn";
@@ -3837,19 +3955,62 @@ function downloadStillGoing(st) {
   const queued = (st?.download_queue || dlQueue).some((q) => q.state === "pending" || q.state === "active");
   return queued || ["downloading", "verifying", "starting"].includes(s);
 }
+/** After GGUF/mmproj finishes, force a fresh catalog so the card flips to Installed / Load. */
+async function refreshCatalogAfterDownload(finishedId) {
+  const raw = String(finishedId || "");
+  const isMmproj = raw.startsWith("mmproj:");
+  const id = raw.replace(/^mmproj:/, "");
+  for (let i = 0; i < 4; i++) {
+    try {
+      await refreshModelsNow();
+    } catch (_) {}
+    if (!id) {
+      renderModelsList();
+      return null;
+    }
+    const m = findModel(id);
+    if (m?.installed && (!isMmproj || m.mmproj || m.mmproj_ready)) {
+      renderModelsList();
+      return m;
+    }
+    // Brief wait for control to re-walk the models dir after rename from .partial.
+    await new Promise((r) => setTimeout(r, 400 + i * 350));
+  }
+  renderModelsList();
+  return id ? findModel(id) : null;
+}
 function startDlPoll() {
   stopDlPoll();
+  let lastDlState = "";
+  let lastDlId = "";
   dlPollTimer = setInterval(async () => {
     try {
       const st = await control("status");
+      const curState = String(st?.download?.state || "");
+      const curId = String(st?.download?.id || lastDlId || "");
+      if (curId) lastDlId = curId;
       applyDownloadView(st);
-      if (!downloadStillGoing(st)) {
-        stopDlPoll();
-        lastCatalog = st.catalog || lastCatalog;
-        renderModelsList();
-      } else if (st.catalog) {
+      if (st.catalog) {
         lastCatalog = st.catalog;
         renderModelsList();
+      }
+      const finished = !downloadStillGoing(st) || curState === "done";
+      const wasLive = ["downloading", "verifying", "starting"].includes(lastDlState);
+      lastDlState = curState || lastDlState;
+      if (!finished) return;
+      stopDlPoll();
+      const doneId = curId || lastDlId || pendingMmprojModelId || "";
+      const m = await refreshCatalogAfterDownload(doneId);
+      if (pendingMmprojModelId) {
+        const mid = pendingMmprojModelId;
+        pendingMmprojModelId = "";
+        const row = findModel(mid) || m;
+        if (row && (row.mmproj || row.mmproj_ready)) offerLoadVisionModel(mid);
+        else toast("Vision download finished — open Models and Load the vision model to use images");
+      } else if (wasLive || curState === "done") {
+        const label = (m && (m.name || m.id)) || st?.download?.name || "Model";
+        if (m?.installed) toast(`${label} is installed — tap Load to use it`);
+        else toast("Download finished — Refresh if the card still says Download");
       }
     } catch (_) {}
   }, 1500);
@@ -3866,7 +4027,7 @@ const TUNE_PRESETS = {
 };
 // Presets follow free VRAM for the selected model; floor stays 32K when it fits.
 const KV_MUL = { f16: 1, q8: 0.53, q4: 0.28 };
-const CTX_STEPS = [2048, 4096, 8192, 16384, 32768, 65536, 131072];
+const CTX_STEPS = [32768, 65536, 131072];
 function vramPoolGb() {
   const hw = hardwarePool();
   return hw.backend === "vulkan" ? (Number(hw.vramEach) || Number(hw.vram) || 0) : (Number(hw.vram) || 0);
@@ -4124,6 +4285,12 @@ function loadFinishedOk(j) {
   const wantPath = requestedLoadPath();
   if (runPath && wantPath && sameModelPath(runPath, wantPath)) return true;
   if (runPath && gotId === loadingModelId && envPath && sameModelPath(runPath, envPath)) return true;
+  // After Activate returned and we saw /health drop, env id/path matching the
+  // click is enough — runtime.env can lag on vision/mmproj loads.
+  if (loadActivateSettled && loadSawNotOk) {
+    if (gotId && gotId === loadingModelId) return true;
+    if (wantPath && sameModelPath(envPath, wantPath)) return true;
+  }
   if (!runPath && loadSawNotOk && loadActivateSettled) {
     if (gotId && gotId === loadingModelId) return true;
     if (wantPath && sameModelPath(envPath, wantPath)) return true;
@@ -4420,6 +4587,26 @@ async function retryFewerLayers() {
 if ($("#fewerLayers")) $("#fewerLayers").onclick = () => retryFewerLayers();
 if ($("#fewerLayersBar")) $("#fewerLayersBar").onclick = () => retryFewerLayers();
 
+function downloadPolicyConfirm(opts) {
+  const trust = opts.trust || "unverified";
+  const t = TRUST[trust];
+  const isBlocked = trust === "blocked" || opts.error === "blocked";
+  confirmBox({
+    title: opts.title || (isBlocked ? "Download a model with a hash mismatch?" : "Download a model that is not verified?"),
+    text: opts.text || (opts.message ? (String(opts.message).endsWith(".") ? opts.message : opts.message + ".") : UNVERIFIED_WARNING + "."),
+    extra: opts.extra || ((t ? t.l + ": " + t.d + ". " : "") + "StickLLM still checks the download against Hugging Face's own hash when it has one."),
+    word: "DOWNLOAD",
+    ok: "Download anyway",
+    cb: opts.cb,
+  });
+}
+function isDownloadPolicyGate(err) {
+  const e = String((err && err.error) || err || "").toLowerCase();
+  const msg = String((err && err.message) || err || "").toLowerCase();
+  return e === "unverified" || e === "blocked" || e === "untrusted"
+    || /^unverified\b/.test(msg) || /^blocked\b/.test(msg) || /^untrusted\b/.test(msg);
+}
+
 $("#dlModel").onclick = async () => {
   const m = findModel(selectedModelId);
   if (!m) return;
@@ -4428,39 +4615,86 @@ $("#dlModel").onclick = async () => {
     return;
   }
   const trust = modelTrust(m);
-  if (trust === "blocked") {
-    toast("Blocked: this file does not match StickLLM's verified hash.");
-    return;
-  }
+  // Never hard-block: unverified / untrusted / blocked / abliterated all warn + DOWNLOAD.
   if (trust !== "verified") {
-    confirmBox({
-      title: "Download a model that is not verified?",
-      text: UNVERIFIED_WARNING + ".",
-      extra: (TRUST[trust] ? TRUST[trust].l + ": " + TRUST[trust].d + ". " : "") + "StickLLM still checks the download against Hugging Face's own hash when it has one.",
-      word: "DOWNLOAD", ok: "Download anyway",
+    downloadPolicyConfirm({
+      trust,
+      title: trust === "blocked" ? "Download a model with a hash mismatch?" : "Download a model that is not verified?",
       cb: () => doModelDownload(m, { accept_unverified: true }),
     });
     return;
   }
   await doModelDownload(m);
 };
-async function downloadMmproj(id) {
+let pendingMmprojModelId = "";
+async function downloadMmproj(id, extra) {
   const m = findModel(id);
   if (!m) return;
+  if (!modelSees(m)) {
+    toast("This model is text-only. Search for a vision model such as Inkling or Qwen2.5-VL.");
+    return;
+  }
+  const path = m.path || m.local_path || "";
+  const trust = modelTrust(m);
+  // Same override path as GGUF download. Parent already on disk → control
+  // auto-trusts mmproj; still warn for search hits that are not verified.
+  if (!extra?.accept_unverified && !path && trust !== "verified") {
+    downloadPolicyConfirm({
+      trust,
+      title: "Download vision files that are not verified?",
+      extra: "This downloads the mmproj companion for this model from Hugging Face.",
+      cb: () => downloadMmproj(id, { accept_unverified: true }),
+    });
+    return;
+  }
   try {
     const res = await control("mmproj_download", {
       id: "mmproj:" + id,
-      repo: m.hf_repo || m.repo || "",
-      path: m.path || m.local_path || "",
+      repo: m.mmproj_repo || m.hf_repo || m.repo || "",
+      path,
       file: m.mmproj_file || "",
       bytes: m.mmproj_bytes || 0,
+      name: m.name || "",
+      ...(extra || {}),
     });
-    if (res.ok === false) throw new Error(res.error || "Could not download mmproj");
+    if (res.ok === false) {
+      if (isDownloadPolicyGate(res) && !extra?.accept_unverified) {
+        downloadPolicyConfirm({
+          trust: res.error === "blocked" ? "blocked" : trust,
+          error: res.error,
+          message: res.message || UNVERIFIED_WARNING,
+          title: "Download vision files that are not verified?",
+          extra: "This downloads the mmproj companion for this model from Hugging Face.",
+          cb: () => downloadMmproj(id, { accept_unverified: true }),
+        });
+        return;
+      }
+      throw new Error(res.message && res.error ? `${res.error}: ${res.message}` : (res.error || "Could not download mmproj"));
+    }
     applyDownloadView(res);
     renderModelsList();
-    if (!res.already) startDlPoll();
-    toast(res.note || (res.already ? "This model's mmproj is already next to it" : "Downloading this model's mmproj"));
-  } catch (e) { showError(e); }
+    if (res.already) {
+      toast(res.note || "This model's mmproj is already next to it");
+      offerLoadVisionModel(id);
+      return;
+    }
+    pendingMmprojModelId = id;
+    startDlPoll();
+    toast(res.note || "Downloading this model's mmproj — Load it when the download finishes");
+  } catch (e) {
+    const msg = String((e && e.message) || e || "");
+    if (isDownloadPolicyGate(msg) && !extra?.accept_unverified) {
+      downloadPolicyConfirm({
+        trust,
+        message: msg,
+        title: "Download vision files that are not verified?",
+        extra: "This downloads the mmproj companion for this model from Hugging Face.",
+        cb: () => downloadMmproj(id, { accept_unverified: true }),
+      });
+      return;
+    }
+    showError(e);
+  }
 }
 async function doModelDownload(m, extra) {
   try {
@@ -4476,12 +4710,35 @@ async function doModelDownload(m, extra) {
     if (dest && dest !== "…" && dest.startsWith("/")) params.dest = dest;
     Object.assign(params, extra || {});
     const res = await control("model_download", params);
+    if (res.ok === false) {
+      if (isDownloadPolicyGate(res) && !extra?.accept_unverified) {
+        downloadPolicyConfirm({
+          trust: res.error === "blocked" ? "blocked" : modelTrust(m),
+          error: res.error,
+          message: res.message || UNVERIFIED_WARNING,
+          cb: () => doModelDownload(m, { accept_unverified: true }),
+        });
+        return;
+      }
+      throw new Error(res.message && res.error ? `${res.error}: ${res.message}` : (res.error || "Could not download model"));
+    }
     if (res.download_dir && $("#modelDir")) $("#modelDir").textContent = res.download_dir;
     applyDownloadView(res);
     renderModelsList();
     startDlPoll();
     toast(res.note || (res.started ? "Download started" : "Added to the download queue"));
-  } catch (e) { showError(e); }
+  } catch (e) {
+    const msg = String((e && e.message) || e || "");
+    if (isDownloadPolicyGate(msg) && !extra?.accept_unverified) {
+      downloadPolicyConfirm({
+        trust: modelTrust(m),
+        message: msg,
+        cb: () => doModelDownload(m, { accept_unverified: true }),
+      });
+      return;
+    }
+    showError(e);
+  }
 }
 let ablCb = null;
 function askAblAck(cb) {
@@ -4561,11 +4818,22 @@ function hardenVaultPassFields(...nodes) {
       n.setAttribute("data-1p-ignore", "true");
       n.setAttribute("data-form-type", "other");
       n.setAttribute("name", "stickllm-vault-pass-" + Math.random().toString(36).slice(2, 8));
-      // Readonly until focus defeats Chrome's save-password heuristic.
+      // Readonly until interaction defeats Chrome's save-password heuristic.
+      // Clear readonly *before* focus settles: a label click focuses the input
+      // without an input pointerdown, and Chromium then ignores keystrokes for
+      // that focus session if readonly was still set when focus began
+      // (Delete vault / Create vault pass fields are wrapped in <label>).
       n.setAttribute("readonly", "readonly");
       const unlock = () => { try { n.removeAttribute("readonly"); } catch (_) {} };
-      n.addEventListener("focus", unlock, { once: true });
-      n.addEventListener("pointerdown", unlock, { once: true });
+      n.addEventListener("pointerdown", unlock);
+      n.addEventListener("touchstart", unlock, { passive: true });
+      n.addEventListener("focus", unlock);
+      const lab = n.closest("label");
+      if (lab && !lab.dataset.stickPassUnlock) {
+        lab.dataset.stickPassUnlock = "1";
+        lab.addEventListener("pointerdown", unlock);
+        lab.addEventListener("touchstart", unlock, { passive: true });
+      }
     } catch (_) {}
   });
 }
@@ -4652,7 +4920,9 @@ async function refreshDrivesLive() {
       const isStick = stickPaths.has(norm) || d.kind === "usb_stick" || /STICKLLM-DATA/i.test(String(d.label || ""));
       const label = isStick ? "StickLLM stick" : (d.label || path);
       const free = d.free_gb != null
-        ? `${d.free_gb} GiB free`
+        ? (d.total_gb != null
+          ? `${d.free_gb} GiB free of ${d.total_gb} GiB`
+          : `${d.free_gb} GiB free`)
         : (d.avail ? `${d.avail} free` : "");
       const warn = d.warn ? `<small class="muted">${esc(d.warn)}</small>` : "";
       html += `<button class="drive" data-path="${esc(path)}" type="button">
@@ -4745,7 +5015,11 @@ async function renderPickerSide() {
       if (norm === "/mnt/stickllm-settings" || norm.includes("stickllm-settings") || norm.startsWith("/dev/mapper/")) continue;
       seen.add(norm);
       const isStick = norm === "/mnt/stickllm-data" || d.kind === "usb_stick" || /STICKLLM-DATA/i.test(String(d.label || ""));
-      const free = d.free_gb != null ? d.free_gb + " GiB free" : "";
+      const free = d.free_gb != null
+        ? (d.total_gb != null
+          ? `${d.free_gb} GiB free of ${d.total_gb} GiB`
+          : `${d.free_gb} GiB free`)
+        : "";
       drivesHtml += `<button class="fpDrive" type="button" data-fpdrive="${esc(path)}"><span><b>${esc(isStick ? "StickLLM stick" : (d.label || path))}</b><small>${esc(free)}</small></span></button>`;
     }
   } catch (_) {}
@@ -5361,13 +5635,24 @@ async function deleteVaultAction() {
       throw new Error(String(err));
     }
     toast("Vault deleted");
+    // Stale setup_complete / localStorage must not flash "vault found" unlock.
+    clearVaultPresenceCache();
     setVaultChrome(false, true);
+    try { await refreshSetupState(true); } catch (_) {}
     try { await refreshStorage(); } catch (_) {}
     try { await refreshDeleteVaultList(); } catch (_) {}
     if (msg) {
       msg.hidden = false;
       msg.textContent = "Blob removed. Create or attach a vault to continue.";
     }
+    // Re-probe: no blob → full setup (not unlock-only).
+    try {
+      const probe = await probeBootVault();
+      if (!probe.found) {
+        try { closeSettings(); } catch (_) {}
+        await openSetupWizard({ force: true });
+      }
+    } catch (_) {}
   } catch (e) {
     showError(e, "Could not delete vault");
     syncDeleteVaultBtn();
@@ -5385,7 +5670,11 @@ if ($("#deleteVaultRefresh")) $("#deleteVaultRefresh").onclick = () => refreshDe
 if ($("#deleteVaultBtn")) $("#deleteVaultBtn").onclick = () => deleteVaultAction();
 if ($("#deleteVaultPanel")) {
   $("#deleteVaultPanel").addEventListener("toggle", () => {
-    if ($("#deleteVaultPanel").open) refreshDeleteVaultList().catch(() => {});
+    if (!$("#deleteVaultPanel").open) return;
+    // Ensure Delete vault pass is editable as soon as the panel opens (label /
+    // readonly-until-focus race on kiosk Chromium).
+    try { $("#deleteVaultPass")?.removeAttribute("readonly"); } catch (_) {}
+    refreshDeleteVaultList().catch(() => {});
   });
 }
 async function refreshMovableLive() {
@@ -6281,7 +6570,7 @@ function refreshSecLive(sec) {
   if (sec === "experimental") refreshExperimental().catch((e) => toast(e.message || String(e)));
 }
 
-// Experimental tab: detect + offer only (scaffolding). No auto-install.
+// Experimental tab: detect + offer; download/unlock after Cancel/Continue. No auto-install.
 let expState = { cards: [], offers: [], reports: [], prefs: {} };
 let expAckResolve = null;
 function expConfirm(title, body) {
@@ -6303,14 +6592,19 @@ if ($("#expAckOk")) $("#expAckOk").onclick = () => expAckClose(true);
 function paintExperimental(j) {
   expState = j || expState;
   if ($("#expNov3") && j && j.nov3_context) $("#expNov3").textContent = j.nov3_context;
-  if ($("#expMasterUnlock")) $("#expMasterUnlock").checked = !!(j && j.master_unlocks_enabled);
   if ($("#expOsNote")) {
     const maj = j && j.debian_major;
     const ninfer = j && j.ninfer_linux_ok;
+    const drv = j && j.driver_version ? ` Driver ${j.driver_version}.` : "";
+    const openN = j && j.nvidia_open === true ? " nvidia-open detected."
+      : (j && j.nvidia_open === false ? " Proprietary NVIDIA driver (CMP unlock needs nvidia-open)." : "");
     $("#expOsNote").textContent = maj != null
-      ? (`Detected Debian major ${maj}. NInfer-all Linux packages require Debian 13` + (ninfer ? " — OK." : " — not available until a fresh Debian 13 image."))
+      ? (`Detected Debian major ${maj}. NInfer-all Linux packages require Debian 13` + (ninfer ? " — OK." : " — not available until a fresh Debian 13 image.") + drv + openN)
       : "OS version unknown (open this page on the stick). NInfer-all Linux needs Debian 13.";
   }
+  const intent = ((j && j.prefs) || {}).card_unlock_intent || {};
+  const cmpWarn = (j && j.cmp_warning) || "CMP 170HX has no video outputs; unlock restores compute only via patched drivers.";
+  const rtxWarn = (j && j.rtx3090_warning) || "RTX 3090 unlock restores FP16/BF16/TF32 tensor rate (gpu-unlock 2.0).";
   const box = $("#expCards");
   if (box) {
     const cards = (j && j.cards) || [];
@@ -6318,16 +6612,56 @@ function paintExperimental(j) {
       box.innerHTML = `<div class="row"><small>No NVIDIA cards classified yet.</small></div>`;
     } else {
       box.innerHTML = cards.map((c) => {
+        const key = c.bus || c.pci_id || "";
         const path = c.unlock_path === "cmpunlocker" ? "CMP unlock (cmpunlocker)"
           : c.unlock_path === "gpu_unlock" ? "RTX 3090 unlock (gpu-unlock 2.0)" : "no unlock path";
-        const warn = c.kind === "cmp_170hx"
-          ? " Warning: CMP 170HX has no video outputs; unlock restores compute only via patched drivers."
-          : "";
+        const warn = c.kind === "cmp_170hx" ? (" " + cmpWarn) : (c.kind === "rtx_3090" ? (" " + rtxWarn) : "");
+        const on = !!(key && intent[key]);
         const off = c.unlock_in_scope
-          ? `<label class="switch" title="Off by default"><input type="checkbox" data-exp-unlock="${esc(c.bus || c.pci_id || "")}" disabled><span></span></label>`
+          ? `<label class="switch" title="Off by default — Cancel/Continue required"><input type="checkbox" data-exp-unlock="${esc(key)}" data-exp-path="${esc(c.unlock_path || "")}" data-exp-kind="${esc(c.kind || "")}" data-exp-label="${esc(c.label || c.name || "GPU")}"${on ? " checked" : ""}><span></span></label>`
           : `<small class="muted">${esc(c.skip_reason || "out of scope")}</small>`;
-        return `<div class="row"><div><b>${esc(c.label || c.name || "GPU")}</b><small>${esc(c.pci_id || "")}${c.bus ? " · " + esc(c.bus) : ""} · ${esc(path)}.${warn} Apply is scaffolding-only; Continue required later.</small></div>${off}</div>`;
+        return `<div class="row"><div><b>${esc(c.label || c.name || "GPU")}</b><small>${esc(c.pci_id || "")}${c.bus ? " · " + esc(c.bus) : ""} · ${esc(path)}.${esc(warn)} Continue applies or disables this card only.</small></div>${off}</div>`;
       }).join("");
+      box.querySelectorAll("[data-exp-unlock]").forEach((inp) => {
+        inp.onchange = async () => {
+          const on = !!inp.checked;
+          const key = inp.dataset.expUnlock || "";
+          const path = inp.dataset.expPath || "";
+          const kind = inp.dataset.expKind || "";
+          const label = inp.dataset.expLabel || "GPU";
+          const isCmp = kind === "cmp_170hx" || path === "cmpunlocker";
+          const ok = await expConfirm(
+            on ? ("Enable unlock — " + label) : ("Disable unlock — " + label),
+            on
+              ? (isCmp
+                ? (cmpWarn + " Continue clones cmpunlocker on-device, backs up stock modules, and runs the installer. Cold reboot required afterward. Cancel leaves this card off.")
+                : (rtxWarn + " Continue clones Zagitta gpu-unlock 2.0, builds/installs it, and sets gpu_unlock.targets for this BDF. Reboot required. Cancel leaves this card off."))
+              : (isCmp
+                ? "Continue restores stock NVIDIA modules from the StickLLM backup (upstream remove.sh is unreliable). Cold reboot recommended. Cancel keeps unlock on."
+                : "Continue removes this BDF from gpu_unlock.targets and rebuilds initramfs. Reboot recommended. Cancel keeps unlock on.")
+          );
+          if (!ok) {
+            inp.checked = !on;
+            return;
+          }
+          try {
+            const action = on ? "experimental_unlock_apply" : "experimental_unlock_disable";
+            const r = await control(action, {
+              bus: key,
+              unlock_path: path,
+              unlock_enabled: on,
+              confirmed: true,
+            });
+            await refreshExperimental();
+            const msg = (r && (r.note || r.hint)) || (on ? "Unlock apply started" : "Unlock disabled");
+            toast(msg);
+            if (r && r.needs_reboot) toast(isCmp ? "Cold reboot required (shutdown -h now)" : "Reboot required to finish unlock change");
+          } catch (ex) {
+            inp.checked = !on;
+            toast(ex.message || String(ex));
+          }
+        };
+      });
     }
   }
   const eng = $("#expEngines");
@@ -6345,12 +6679,16 @@ function paintExperimental(j) {
         b.onclick = async () => {
           const ok = await expConfirm(
             "Download " + (b.dataset.expEngine || "engine"),
-            "This will download a third-party inference engine after Continue. Checksums will be verified. Cancel leaves the stick unchanged. (Scaffolding: download is not wired yet.)"
+            "Continue downloads the matching third-party build from GitHub (Strata AppImage+CUDA engine, or NInfer-all Debian 13 / Windows archive). SHA-256 is verified. The engine is not set as StickLLM default. Cancel leaves the stick unchanged."
           );
           if (!ok) return;
           try {
-            const r = await control("experimental_engine_download", { engine: b.dataset.expEngine, bus: b.dataset.expBus });
-            toast((r && r.error) || (r && r.hint) || "Download stub");
+            const r = await control("experimental_engine_download", {
+              engine: b.dataset.expEngine,
+              bus: b.dataset.expBus,
+              confirmed: true,
+            });
+            toast((r && r.error) || (r && (r.note || r.hint)) || "Download started");
           } catch (e) { toast(e.message || String(e)); }
         };
       });
@@ -6363,7 +6701,12 @@ function paintExperimental(j) {
       ? lines.map((l) => `<div class="row"><small class="mono">${esc(l)}</small></div>`).join("")
       : `<div class="row"><small class="mono">—</small></div>`;
   }
-  if ($("#expMsg")) $("#expMsg").textContent = (j && j.stub && j.stub.unlock_apply) ? "Scaffolding: unlocks/downloads not applied yet." : "";
+  if ($("#expMsg")) {
+    const wired = j && j.wired;
+    $("#expMsg").textContent = wired
+      ? "Per-card Continue downloads engines or applies unlocks (cmpunlocker / gpu-unlock). No NVIDIA blobs in git; no master unlock toggle."
+      : "";
+  }
 }
 async function refreshExperimental() {
   if (!(await ensurePaired())) return;
@@ -6372,29 +6715,6 @@ async function refreshExperimental() {
   return j;
 }
 if ($("#expRefresh")) $("#expRefresh").onclick = () => refreshExperimental().catch((e) => toast(e.message || String(e)));
-if ($("#expMasterUnlock")) {
-  $("#expMasterUnlock").onchange = async (e) => {
-    const on = !!e.target.checked;
-    const ok = await expConfirm(
-      on ? "Allow GPU unlocks" : "Turn unlocks off",
-      on
-        ? "Enabling the master switch only allows opt-in unlocks later. Each card still needs Continue. CMP unlocks use patched drivers and have no video outputs. Cancel leaves unlocks disabled."
-        : "Turning the master switch off skips all unlocks. If an unlock was already applied, a later Continue will restore stock drivers / remove gpu_unlock targets. Cancel keeps the current setting."
-    );
-    if (!ok) {
-      e.target.checked = !on;
-      return;
-    }
-    try {
-      await control("experimental_prefs_set", { master_unlocks_enabled: on });
-      await refreshExperimental();
-      toast(on ? "Master unlocks allowed (still Confirm per card)" : "Master unlocks off");
-    } catch (ex) {
-      e.target.checked = !on;
-      toast(ex.message || String(ex));
-    }
-  };
-}
 async function refreshNetwork() {
   if (!(await ensurePaired())) return;
   const j = await control("net_info");
@@ -6402,16 +6722,35 @@ async function refreshNetwork() {
   const url = n.url || location.origin + "/";
   if ($("#netUrl")) $("#netUrl").textContent = url;
   if ($("#lanUrl2") && url) $("#lanUrl2").textContent = url;
+  const ethOk = !!(n.ethernet_ok || n.type === "Ethernet");
   const parts = [];
-  if (n.type) parts.push(n.type + (n.iface ? " (" + n.iface + ")" : ""));
-  if (n.type === "WiFi" && n.ssid) parts.push(n.ssid);
-  if (n.ip) parts.push(n.ip);
+  if (ethOk && (n.type === "Ethernet" || n.ethernet_ok)) {
+    parts.push("Ethernet" + (n.iface || n.ethernet_iface ? " (" + (n.iface || n.ethernet_iface) + ")" : ""));
+    if (n.ip) parts.push(n.ip);
+    else if (n.ethernet_carrier) parts.push("cable connected — waiting for address");
+  } else {
+    if (n.type) parts.push(n.type + (n.iface ? " (" + n.iface + ")" : ""));
+    if (n.type === "WiFi" && n.ssid) parts.push(n.ssid);
+    if (n.ip) parts.push(n.ip);
+  }
   if ($("#netStatus")) $("#netStatus").textContent = parts.length ? parts.join(" · ") : "No network connection";
   const pill = $("#netPill");
-  if (pill) { pill.textContent = n.ip ? "Connected" : "Offline"; pill.className = "pill" + (n.ip ? " ok" : ""); }
+  if (pill) {
+    const online = !!(n.ip || (ethOk && n.ethernet_carrier));
+    pill.textContent = n.ip ? "Connected" : (ethOk && n.ethernet_carrier ? "Link up" : "Offline");
+    pill.className = "pill" + (online ? " ok" : "");
+  }
   // The SSID box stays empty unless a network was saved on this stick.
   const box = $("#ssid");
   if (box && !box.value && n.ssid) box.value = n.ssid;
+  const hint = $("#wifiSsidHint");
+  if (hint) {
+    hint.textContent = ethOk
+      ? "Wi‑Fi is optional while Ethernet is connected. Scan only if you want wireless too."
+      : "Pick a network from the list, or type a name (including hidden SSIDs).";
+  }
+  const wifiHead = $("#wifiSectionTitle");
+  if (wifiHead) wifiHead.textContent = ethOk ? "WiFi (optional)" : "WiFi";
 }
 
 // 0.6.11: Internet / Tor / No internet — stick Chromium (+ stick-origin fetches).
@@ -6487,11 +6826,24 @@ async function refreshSystemInfo() {
 }
 let advState = { gpus: [], allowed: [], pin: null, cacheTypes: [] };
 function advNum(v) { const t = String(v ?? "").trim(); return t === "" ? null : t; }
+/** One row per CUDA index — inventory must never list the same GPU twice. */
+function dedupeGpuIndexRows(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows || []) {
+    if (!r || typeof r !== "object") continue;
+    const idx = Number(r.index);
+    if (!Number.isFinite(idx) || seen.has(idx)) continue;
+    seen.add(idx);
+    out.push(r);
+  }
+  return out;
+}
 async function refreshAdvanced() {
   if (!(await ensurePaired())) return;
   const g = await control("gpu_prefs_get");
-  advState.gpus = Array.isArray(g.inventory) ? g.inventory : [];
-  advState.power = Array.isArray(g.gpus) ? g.gpus : [];
+  advState.gpus = dedupeGpuIndexRows(Array.isArray(g.inventory) ? g.inventory : []);
+  advState.power = dedupeGpuIndexRows(Array.isArray(g.gpus) ? g.gpus : []);
   advState.allowed = Array.isArray(g.allowed) ? g.allowed : [];
   advState.pin = g.pin ?? null;
   renderAdvGpus();
@@ -6632,7 +6984,12 @@ if ($("#wifiScan")) $("#wifiScan").onclick = async () => {
       const p = document.createElement("p");
       p.className = "muted small";
       p.style.padding = "8px 12px";
-      p.textContent = j.ok ? "No networks found. Type the network name above (works for hidden SSIDs too)." : (j.error || "Scan failed");
+      const soft = !!(j && (j.ethernet_ok || j.wifi_optional));
+      p.textContent = j.ok
+        ? "No networks found. Type the network name above (works for hidden SSIDs too)."
+        : (soft
+          ? (j.error || "Wi‑Fi unavailable — Ethernet is connected, so Wi‑Fi is optional.")
+          : (j.error || "Scan failed"));
       list.appendChild(p);
       return;
     }
@@ -6805,6 +7162,11 @@ function clearSetupDoneLocal() {
     SETUP_KEY_OLD.forEach((k) => localStorage.removeItem(k));
   } catch (_) {}
 }
+/** Drop browser + in-memory "vault present / setup done" after delete or a miss. */
+function clearVaultPresenceCache() {
+  clearSetupDoneLocal();
+  setupStateCache = null;
+}
 function setupDone() {
   // Prefer last server answer. Stale localStorage after a vault wipe must not
   // suppress the first-boot wizard when STICKLLM-DATA says setup is incomplete.
@@ -6898,11 +7260,19 @@ async function probeBootVault() {
         }
       } catch (_) {}
     }
+    // Only trust a live blob path from setup_status — never orphan setup_complete.
     const st = await refreshSetupState(true);
-    if (st && (st.blob || (st.vault_configured && st.vault_path))) {
-      out.found = true;
-      out.path = st.vault_path || "";
-      out.blob = st.blob || "";
+    if (st && st.blob && (st.blob_exists !== false) && (st.vault_path || st.blob)) {
+      const blobPath = String(st.blob || "").trim();
+      const root = String(st.vault_path || "").trim()
+        || (blobPath.endsWith("/stickllm-vault.img")
+          ? blobPath.slice(0, -"/stickllm-vault.img".length)
+          : "");
+      if (blobPath || root) {
+        out.found = true;
+        out.path = root;
+        out.blob = blobPath || (root ? root + "/stickllm-vault.img" : "");
+      }
     }
   } catch (_) {}
   return out;
@@ -6912,11 +7282,25 @@ async function probeBootVault() {
 async function openVaultUnlockOnly(opts) {
   const force = !!(opts && opts.force);
   if ($("#setupWizard")?.classList.contains("show") && !force) return;
+  // Re-probe before showing unlock — stale setup_complete after delete must not
+  // claim "A vault was found" when the blob is gone.
+  let probe = (opts && opts.probe) || null;
+  if (!probe || typeof probe.found !== "boolean") {
+    try { probe = await probeBootVault(); } catch (_) { probe = { found: false }; }
+  }
   const st = await refreshSetupState(true);
   if (st.vault_unlocked || state.vaultOpen) {
     markSetupDone({ vault_path: st.vault_path || (opts && opts.vaultPath) || "" });
     await enterVaultModeNow();
     return;
+  }
+  const realPath = (probe && probe.found && (probe.path || ""))
+    || ((st.blob || st.blob_exists) && (st.vault_path || ""))
+    || ((opts && opts.vaultPath) || "");
+  if (!(probe && probe.found) && !(st.blob || st.blob_exists) && !st.vault_unlocked) {
+    clearVaultPresenceCache();
+    try { await refreshSetupState(true); } catch (_) {}
+    return openSetupWizard({ force: true });
   }
   let overlay = $("#setupWizard");
   if (!overlay) {
@@ -6940,7 +7324,7 @@ async function openVaultUnlockOnly(opts) {
   const body = $("#setupBody");
   const err = $("#setupErr");
   const showErr = (m) => { if (!m) { err.hidden = true; err.textContent = ""; return; } err.hidden = false; err.textContent = m; };
-  const vaultPath = ((opts && opts.vaultPath) || st.vault_path || ($("#vaultPath") && $("#vaultPath").value) || "").trim();
+  const vaultPath = (realPath || (opts && opts.vaultPath) || st.vault_path || ($("#vaultPath") && $("#vaultPath").value) || "").trim();
   if (vaultPath && $("#vaultPath")) $("#vaultPath").value = vaultPath;
   $("#setupTitle").textContent = "Welcome back";
   $("#setupBack").hidden = true;
@@ -6953,7 +7337,7 @@ async function openVaultUnlockOnly(opts) {
 <label class="field"><span>Vault passcode</span><input id="wizP1" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
 <p class="muted small">Vault: <code id="wizVaultShow"></code></p>
 </form>`;
-  $("#wizVaultShow").textContent = vaultPath || st.blob || "(saved location)";
+  $("#wizVaultShow").textContent = vaultPath || st.blob || (probe && probe.blob) || "(saved location)";
   hardenVaultPassFields($("#wizP1"));
   wireVaultPassEnterToSetupNext(body);
   setTimeout(() => $("#wizP1")?.focus(), 50);
@@ -7004,10 +7388,19 @@ async function openSetupWizard(opts) {
       // force=true: continue into wizard UI even if unlocked (storage remount).
     }
     if (!force) {
-      if (st.setup_complete || st.vault_configured || st.blob) {
-        return openVaultUnlockOnly({ vaultPath: st.vault_path || "" });
+      // Unlock-only only when a real vault blob is on disk (re-probe).
+      let probe = { found: false };
+      try { probe = await probeBootVault(); } catch (_) {}
+      if (probe.found || st.blob || st.blob_exists) {
+        return openVaultUnlockOnly({
+          vaultPath: probe.path || st.vault_path || "",
+          probe,
+        });
       }
-      if (setupDoneLocal()) return;
+      // Orphan setup flags / localStorage after delete → full create flow.
+      if (st.setup_complete || st.vault_configured || setupDoneLocal()) {
+        clearVaultPresenceCache();
+      }
     }
   }
   // Open model → Network → Storage → Vault → Recovery → System ready.
@@ -7019,6 +7412,7 @@ async function openSetupWizard(opts) {
   let vaultStepBusy = false;
   const wiz = {
     drive: null,
+    ethernetOk: false,
     vaultPath: "",
     modelsPath: "",
     dockerPath: "",
@@ -7152,68 +7546,126 @@ async function openSetupWizard(opts) {
       const label = (m && (m.name || m.id)) || "Qwen2.5-7B Instruct Q4_K_M";
       const where = m ? modelWhere(m) : "stick";
       body.innerHTML = `
-<p>Our default installed model is <strong>${esc(label)}</strong> (Qwen2.5-7B Instruct Q4_K_M) — open now or Skip and download your own later.</p>
+<p>Our default installed model is <strong>${esc(label)}</strong> (Qwen2.5-7B Instruct Q4_K_M) — text chat only. Open now or Skip and download your own later.</p>
 <div class="card" style="margin:12px 0;padding:12px">
   <div><b>${esc(label)}</b></div>
-  <div class="muted small">On the ${esc(where)} · id <code>${esc(STARTER_MODEL_ID)}</code></div>
+  <div class="muted small">On the ${esc(where)} · id <code>${esc(STARTER_MODEL_ID)}</code> · no vision</div>
 </div>
-<p class="muted small">Continue loads this model. Skip leaves the model picker for later.</p>`;
+<p class="muted small">Continue loads this text model. For images, download a vision model (Inkling, Qwen2.5-VL, …), tap its grey <b>vision</b> pill for mmproj, then Load it.</p>`;
       $("#setupSkip").textContent = "Skip";
       $("#setupNext").textContent = "Open now";
     } else if (step === STEP_NET) {
       $("#setupTitle").textContent = "Network";
-      body.innerHTML = `
-<p class="muted">Connect to Wi‑Fi or plug in a cable. Continue joins the selected network before moving on.</p>
+      body.innerHTML = `<p class="muted">Checking network…</p>`;
+      const wireWifi = () => {
+        if ($("#wizSsid")) $("#wizSsid").value = wiz.ssid;
+        if ($("#wizWpass")) $("#wizWpass").value = wiz.wpass;
+        if ($("#wizScan")) $("#wizScan").onclick = async () => {
+          try {
+            showErr("");
+            const j = await control("wifi_scan");
+            if (!j.ok && (j.ethernet_ok || j.wifi_optional || wiz.ethernetOk)) {
+              const list = $("#wizWifiList");
+              if (list) {
+                list.hidden = false;
+                list.textContent = "";
+                const p = document.createElement("p");
+                p.className = "muted small";
+                p.style.padding = "8px 12px";
+                p.textContent = j.error || "Wi‑Fi unavailable — Ethernet is connected, so you can Continue.";
+                list.appendChild(p);
+              }
+              return;
+            }
+            if (!j.ok) throw new Error(j.error || "Scan failed");
+            paintWifiList($("#wizWifiList"), (j && j.networks) || []);
+          } catch (e) { showErr(String(e.message || e)); }
+        };
+        if ($("#wizJoin")) $("#wizJoin").onclick = async () => {
+          wiz.ssid = ($("#wizSsid")?.value || "").trim(); wiz.wpass = $("#wizWpass")?.value || "";
+          const status = $("#wizWifiStatus");
+          const joinBtn = $("#wizJoin");
+          const setStatus = (text, ok) => {
+            if (!status) return;
+            status.hidden = !text;
+            status.textContent = text || "";
+            status.style.color = ok ? "var(--ok)" : "";
+          };
+          try {
+            if (!wiz.ssid) throw new Error("Enter or pick a network name");
+            showErr("");
+            setStatus("Connecting to " + wiz.ssid + "…", false);
+            if (joinBtn) joinBtn.disabled = true;
+            const res = await joinWifi(wiz.ssid, wiz.wpass);
+            setStatus(
+              res.online
+                ? ("Connected to " + wiz.ssid)
+                : ("Connected to " + wiz.ssid + " — waiting for uplink"),
+              true
+            );
+            toast(res.online ? "Online via Wi‑Fi" : "Wi‑Fi profile saved — waiting for uplink");
+          } catch (e) {
+            setStatus("", false);
+            if (wiz.ethernetOk) {
+              showErr("");
+              setStatus("Wi‑Fi failed — Ethernet is connected; you can Continue.", true);
+              toast("Wi‑Fi failed — continuing on Ethernet is fine");
+            } else {
+              showErr(String(e.message || e));
+            }
+          } finally {
+            if (joinBtn) joinBtn.disabled = false;
+          }
+        };
+      };
+      (async () => {
+        if (step !== STEP_NET) return;
+        const j = await control("net_info").catch(() => null);
+        if (step !== STEP_NET) return;
+        const n = (j && j.net) || {};
+        const ethOk = !!(n.ethernet_ok || (n.type === "Ethernet" && (n.ip || n.ethernet_carrier)));
+        wiz.ethernetOk = ethOk;
+        if (ethOk) {
+          const line = n.ip
+            ? ("Connected via Ethernet · " + n.ip)
+            : "Connected via Ethernet — waiting for address";
+          body.innerHTML = `
+<p id="wizEthStatus" style="color:var(--ok)">${esc(line)}</p>
+<p class="muted small">Wi‑Fi is optional while a cable is connected. Continue when ready.</p>
+<details id="wizWifiOptional">
+  <summary>Set up Wi‑Fi (optional)</summary>
+  <label class="field"><span>Network name (SSID)</span><input id="wizSsid" autocomplete="off"></label>
+  <label class="field"><span>Password</span><input id="wizWpass" type="text" class="secret" autocomplete="off"></label>
+  <div id="wizWifiList" class="wifiList" role="listbox" aria-label="Nearby Wi‑Fi networks" hidden></div>
+  <div class="actions"><button type="button" id="wizScan" class="btn">Scan</button>
+  <button type="button" id="wizJoin" class="btn">Join Wi‑Fi</button></div>
+</details>
+<p id="wizWifiStatus" class="muted small" hidden aria-live="polite"></p>`;
+        } else {
+          body.innerHTML = `
+<p class="muted">Plug in Ethernet or join Wi‑Fi. Continue joins the selected network before moving on.</p>
 <label class="field"><span>Network name (SSID)</span><input id="wizSsid" autocomplete="off"></label>
 <label class="field"><span>Password</span><input id="wizWpass" type="text" class="secret" autocomplete="off"></label>
 <div id="wizWifiList" class="wifiList" role="listbox" aria-label="Nearby Wi‑Fi networks" hidden></div>
 <div class="actions"><button type="button" id="wizScan" class="btn">Scan</button>
 <button type="button" id="wizJoin" class="btn">Join Wi‑Fi</button></div>
 <p id="wizWifiStatus" class="muted small" hidden aria-live="polite"></p>`;
-      $("#wizSsid").value = wiz.ssid;
-      $("#wizWpass").value = wiz.wpass;
-      $("#wizScan").onclick = async () => {
-        try {
-          const j = await control("wifi_scan");
-          paintWifiList($("#wizWifiList"), (j && j.networks) || []);
-        } catch (e) { showErr(String(e.message || e)); }
-      };
-      $("#wizJoin").onclick = async () => {
-        wiz.ssid = $("#wizSsid").value.trim(); wiz.wpass = $("#wizWpass").value;
-        const status = $("#wizWifiStatus");
-        const joinBtn = $("#wizJoin");
-        const setStatus = (text, ok) => {
-          if (!status) return;
-          status.hidden = !text;
-          status.textContent = text || "";
-          status.style.color = ok ? "var(--ok)" : "";
-        };
-        try {
-          if (!wiz.ssid) throw new Error("Enter or pick a network name");
-          showErr("");
-          setStatus("Connecting to " + wiz.ssid + "…", false);
-          if (joinBtn) joinBtn.disabled = true;
-          const res = await joinWifi(wiz.ssid, wiz.wpass);
-          setStatus(
-            res.online
-              ? ("Connected to " + wiz.ssid)
-              : ("Connected to " + wiz.ssid + " — waiting for uplink"),
-            true
-          );
-          toast(res.online ? "Online via Wi‑Fi" : "Wi‑Fi profile saved — waiting for uplink");
-        } catch (e) {
-          setStatus("", false);
-          showErr(String(e.message || e));
-        } finally {
-          if (joinBtn) joinBtn.disabled = false;
         }
-      };
+        wireWifi();
+      })();
     } else if (step === STEP_STOR) {
       $("#setupTitle").textContent = "Storage";
       const rows = drives.map((d) => {
         const sel = wiz.drive && wiz.drive.id === d.id;
+        let space = "";
+        if (d.free_gb != null && d.total_gb != null) {
+          const used = d.used_gb != null ? d.used_gb + " GB used · " : "";
+          space = `${d.free_gb} GB free of ${d.total_gb} GB (${used}live image is separate)`;
+        } else if (d.free_gb != null) {
+          space = d.free_gb + " GB free";
+        }
         return `<button type="button" class="drive-pick${sel ? " selected" : ""}" data-id="${d.id}">
-<strong>${d.label}</strong> · ${d.free_gb != null ? d.free_gb + " GB free" : ""}
+<strong>${d.label}</strong> · ${space}
 <div class="muted small">${d.path}</div></button>`;
       }).join("") || `<p class="muted">No mounted data drives found yet.</p>`;
       const um = unmounted.map((u) =>
@@ -7408,10 +7860,22 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
       if (step === STEP_NET) {
         wiz.ssid = ($("#wizSsid")?.value || "").trim();
         wiz.wpass = $("#wizWpass")?.value || "";
+        const netNow = await control("net_info").catch(() => null);
+        const nNow = (netNow && netNow.net) || {};
+        const ethOk = !!(wiz.ethernetOk || nNow.ethernet_ok
+          || (nNow.type === "Ethernet" && (nNow.ip || nNow.ethernet_carrier)));
+        wiz.ethernetOk = ethOk;
         if (wiz.ssid) {
-          const res = await joinWifi(wiz.ssid, wiz.wpass);
-          toast(res.online ? "Online via Wi‑Fi" : "Wi‑Fi profile saved");
-          if (res.ok === false) throw new Error(res.error || "Wi‑Fi join failed");
+          try {
+            const res = await joinWifi(wiz.ssid, wiz.wpass);
+            toast(res.online ? "Online via Wi‑Fi" : "Wi‑Fi profile saved");
+            if (res.ok === false) throw new Error(res.error || "Wi‑Fi join failed");
+          } catch (e) {
+            if (ethOk) toast("Wi‑Fi failed — continuing on Ethernet");
+            else throw e;
+          }
+        } else if (ethOk) {
+          toast(nNow.ip ? "Connected via Ethernet" : "Ethernet link up");
         }
       }
       if (step === STEP_STOR) {
@@ -7663,6 +8127,7 @@ async function maybeOfferSetupOrUnlock() {
   setupGateBusy = true;
   try {
     // 0.6.7: mount SSD first and prefer an existing vault over full setup.
+    // Always re-probe the real blob — never trust stale setup_complete alone.
     const probe = await probeBootVault();
     const st = await refreshSetupState(true);
     if (st.vault_unlocked || state.vaultOpen) {
@@ -7672,11 +8137,21 @@ async function maybeOfferSetupOrUnlock() {
       if (!state.vaultOpen) setVaultChrome(true);
       return;
     }
-    if (probe.found || st.setup_complete || st.vault_configured) {
-      await openVaultUnlockOnly({ vaultPath: probe.path || st.vault_path || "" });
+    if (probe.found || st.blob || st.blob_exists) {
+      await openVaultUnlockOnly({
+        vaultPath: probe.path || st.vault_path || "",
+        probe,
+      });
       return;
     }
-    if (!setupDoneLocal()) await openSetupWizard();
+    // No vault on disk: drop orphan flags and enter full setup.
+    if (st.setup_complete || st.vault_configured || setupDoneLocal()) {
+      clearVaultPresenceCache();
+      try { await refreshSetupState(true); } catch (_) {}
+      await openSetupWizard({ force: true });
+      return;
+    }
+    await openSetupWizard();
   } catch (_) {
     if (!setupDoneLocal()) openSetupWizard().catch(() => {});
   } finally {
@@ -7848,6 +8323,12 @@ async function refreshStatus() {
   } catch (e) {
     healthFails += 1;
     $("#chipModel").textContent = healthFails >= 3 ? "stick not answering" : "waiting…";
+    // Don't leave a stale "CUDA" meta next to "stick not answering" (looks like red CUDA fault).
+    if (healthFails >= 3) {
+      if ($("#chipMeta")) $("#chipMeta").textContent = "offline";
+      $("#statusChip .dot")?.classList.remove("ok", "busy");
+      if ($("#popUplink")) $("#popUplink").textContent = "No answer";
+    }
     if (loadingModelId && healthFails >= 3) {
       setLoadStatusLine(true, 1, requestedLoadName(), `Can't reach the stick (${(e && e.message) || "no answer"}) — retrying…`, false);
     }
@@ -7928,10 +8409,10 @@ function syncAttach() {
   btn.disabled = false;
   btn.title = modelVision
     ? "Attach a file or image, or paste an image into the message box"
-    : "Attach a file. It is converted to text for this model. Images need a vision model.";
+    : "Attach a file (converted to text). The loaded model is text-only — Load a vision model (Inkling / Qwen2.5-VL) for images.";
   btn.setAttribute("aria-label", "Attach a file");
   const inp = $("#input");
-  if (inp) inp.placeholder = modelVision ? "Message StickLLM — paste an image" : "Message StickLLM — attach a file";
+  if (inp) inp.placeholder = modelVision ? "Message StickLLM — paste an image" : "Message StickLLM — text model loaded (no image vision)";
 }
 function renderAttach() {
   const box = $("#attachments");
@@ -9477,19 +9958,22 @@ if ($("#mfSearch")) $("#mfSearch").addEventListener("input", (e) => {
 });
 async function runHfSearch(q) {
   try {
-    const res = await control("hf_search", { q, abl: state.mf.abl || "include", vision: state.mf.vis || "any" });
+    // Typo fix against catalog tokens (lnkling → inkling) before asking HF.
+    const hq = correctedSearchQuery(q);
+    const res = await control("hf_search", { q: hq, abl: state.mf.abl || "include", vision: state.mf.vis || "any" });
     if ((state.mf.q || "").trim() !== q) return;
     if (!res.ok) {
       hfHits = [];
-      hfErr = res.error || "Search failed";
+      hfErr = catalogFuzzyHits(q).length ? "" : (res.error || "Search failed");
     } else {
       hfHits = res.models || [];
-      hfErr = hfHits.length ? "" : (state.mf.vis === "only" ? "No vision GGUF files for that search" : state.mf.abl === "only" ? "No abliterated GGUF files for that search" : "No GGUF files for that search");
+      const emptyMsg = state.mf.vis === "only" ? "No vision GGUF files for that search" : state.mf.abl === "only" ? "No abliterated GGUF files for that search" : "No GGUF files for that search";
+      hfErr = hfHits.length || catalogFuzzyHits(q).length ? "" : emptyMsg;
     }
   } catch (e) {
     if ((state.mf.q || "").trim() !== q) return;
     hfHits = [];
-    hfErr = e.message || "Search failed";
+    hfErr = catalogFuzzyHits(q).length ? "" : (e.message || "Search failed");
   }
   hfBusy = false;
   renderModelsList();

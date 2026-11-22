@@ -589,8 +589,9 @@
     const vpPass = pop.querySelector(".vpPass");
     if (vpPass) {
       const unlock = () => { try { vpPass.removeAttribute("readonly"); } catch (_) {} };
-      vpPass.addEventListener("focus", unlock, { once: true });
-      vpPass.addEventListener("pointerdown", unlock, { once: true });
+      vpPass.addEventListener("pointerdown", unlock);
+      vpPass.addEventListener("touchstart", unlock, { passive: true });
+      vpPass.addEventListener("focus", unlock);
     }
     pop.querySelector(".vpUnlock").addEventListener("submit", (e) => {
       e.preventDefault();

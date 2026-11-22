@@ -5,12 +5,17 @@ import importlib.util
 import os
 import re
 import subprocess
+import sys
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "overlay" / "usr" / "local" / "bin"
 APP = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
 HTML = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+
+if "fcntl" not in sys.modules:
+    sys.modules["fcntl"] = types.ModuleType("fcntl")
 
 
 def _load(path: Path, name: str):
@@ -47,9 +52,30 @@ def test_llama_start_kv_flags(tmp_path):
     assert a[a.index("--cache-type-v") + 1] == "q8_0"
     assert a[a.index("--flash-attn") + 1] == "on"
     assert a[a.index("--ctx-size") + 1] == "8192"  # user value honoured (no 32768 floor)
+    assert a[a.index("--parallel") + 1] == "1"  # single-slot default (llama.cpp is 4)
     for kv in (None, "f16", "bogus"):
         a = _run_llama_start(tmp_path, kv)
         assert "--cache-type-k" not in a and "--flash-attn" not in a
+
+
+def test_llama_start_parallel_override(tmp_path):
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"GGUF")
+    fake = tmp_path / "fake-llama"
+    out = tmp_path / "args.txt"
+    fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {out}\n', encoding="utf-8")
+    fake.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("STICKLLM_")}
+    env.update({
+        "STICKLLM_MODEL": str(model), "STICKLLM_BACKEND": "cpu", "STICKLLM_RUN": str(tmp_path / "run"),
+        "STICKLLM_LLAMA_CPU": str(fake), "STICKLLM_LLAMA_CUDA": str(fake), "STICKLLM_LLAMA_VULKAN": str(fake),
+        "STICKLLM_LIB_CPU": str(tmp_path / "nolib"), "STICKLLM_CTX_SIZE": "8192",
+        "STICKLLM_PARALLEL": "4",
+    })
+    subprocess.run(["bash", str(BIN / "stickllm-llama-start")], env=env, check=True, timeout=60,
+                   capture_output=True)
+    a = out.read_text(encoding="utf-8").split("\n")
+    assert a[a.index("--parallel") + 1] == "4"
 
 
 def test_llama_start_kv_on_all_backends():
@@ -59,26 +85,38 @@ def test_llama_start_kv_on_all_backends():
 
 def test_activate_writes_kv_type(tmp_path, monkeypatch):
     monkeypatch.setenv("STICKLLM_RUN", str(tmp_path / "run"))
+    if not hasattr(os, "geteuid"):
+        monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
     c = _load(BIN / "stickllm-control", "stickllm_control_tune")
     g = tmp_path / "x.gguf"
     g.write_bytes(b"GGUF")
-    m = {"id": "x", "installed": True, "fits": True, "path": str(g), "ctx_max": 32768, "backend": "cpu"}
+    m = {"id": "x", "installed": True, "fits": True, "path": str(g), "ctx_max": 131072, "backend": "cpu",
+         "max_context": 131072, "ctx_fits_floor": True}
     monkeypatch.setattr(c, "enrich_models", lambda: [m])
     monkeypatch.setattr(c, "sh", lambda *a, **k: {"code": 0})
     monkeypatch.setattr(c, "llama_health_ok", lambda: (False, "loading"))
     monkeypatch.setattr(c, "write_offload_plan", lambda p: {})
     monkeypatch.setattr(c, "build_offload_plan", lambda: {})
     monkeypatch.setattr(c, "llama_service_snapshot", lambda **k: {})
+    monkeypatch.setattr(c, "spawn_llama_warmup", lambda *a, **k: None)
+    monkeypatch.setattr(c, "remember_last_model", lambda *a, **k: None)
     monkeypatch.setattr(c.time, "sleep", lambda s: None)
+    monkeypatch.setattr(c, "gguf_weight_bytes", lambda p: 1000)
+    monkeypatch.setattr(c, "read_gguf_meta", lambda *a, **k: {})
+    monkeypatch.setattr(c, "find_mmproj", lambda *a, **k: "")
+    monkeypatch.setattr(c, "plan_gpu_fit", lambda **k: {"ok": True, "ctx": 32768, "ctx_unfit": False, "fit": "cpu"})
     r = c.handle("model_activate", {"id": "x", "ctx_size": 8192, "kv_type": "q4_0"})
-    assert r["kv_type"] == "q4_0" and r["ctx_size"] == 8192 and r["ctx_requested"] == 8192
+    # Hard floor: requests below 32K are raised; never start under the floor.
+    assert r["kv_type"] == "q4_0" and r["ctx_size"] == 32768 and r["ctx_requested"] == 32768
     env = (tmp_path / "run" / "model.env").read_text(encoding="utf-8")
     assert "STICKLLM_KV_TYPE=q4_0" in env
+    assert "STICKLLM_CTX_SIZE=32768" in env
     assert c.active_kv_type() == "q4_0"
-    assert c.active_ctx_size() == 8192
+    assert c.active_ctx_size() == 32768
     assert c.activate_model("x", 8192, "q2")["ok"] is False
     r = c.activate_model("x", 8192, None)
-    assert r["kv_type"] == "f16"
+    assert r["kv_type"] == "q8_0"
+    assert r["ctx_size"] == 32768
 
 
 def test_gateway_sampling_passthrough():

@@ -641,6 +641,45 @@ def repair_reference_store(seed_image: Path, root_image: Path) -> list[str]:
     return healed
 
 
+def seed_layers_executable(seed: Path | None = None) -> bool:
+    """False when squashfs/NTFS bake stripped +x from layer binaries (bash 644)."""
+    seed = seed or SEED_DIR
+    overlay = seed / "overlay2"
+    if not overlay.is_dir():
+        return False
+    try:
+        for ent in overlay.iterdir():
+            if ent.name == "l" or not ent.is_dir():
+                continue
+            for rel in ("diff/usr/bin/bash", "diff/bin/bash"):
+                bash = ent / rel
+                if bash.is_file():
+                    return os.access(bash, os.X_OK)
+    except OSError:
+        return False
+    # No bash found — treat as OK so we do not force a useless materialize.
+    return True
+
+
+def chmod_overlay_exec(overlay: Path) -> int:
+    """Restore +x on overlay2 file content (squashfs/Windows bake can drop it)."""
+    fixed = 0
+    if not overlay.is_dir():
+        return 0
+    for dirpath, _dirnames, filenames in os.walk(overlay):
+        for name in filenames:
+            path = Path(dirpath) / name
+            try:
+                mode = path.stat().st_mode
+                if mode & 0o111:
+                    continue
+                os.chmod(path, mode | 0o111)
+                fixed += 1
+            except OSError:
+                continue
+    return fixed
+
+
 def ensure_seeded(root: Path | None = None) -> dict:
     """Attach the OS-installed A0 docker graph at the writable data-root.
 
@@ -670,6 +709,25 @@ def ensure_seeded(root: Path | None = None) -> dict:
         return out
     if not seed_matches_pin():
         out["error"] = "seed_pin_mismatch"
+        return out
+    # If a working graph is already on the data-root (e.g. rematerialize + chmod
+    # after a broken squashfs seed), do not bind the seed's 644 layers over it.
+    if (root / "image").is_dir() and (root / "overlay2").is_dir() and not seed_layers_executable():
+        if not seed_layers_executable(root):
+            out["chmod_fixed"] = chmod_overlay_exec(root / "overlay2")
+        out["ok"] = seed_layers_executable(root) or (root / "image").is_dir()
+        out["skipped"] = True
+        out["seed_exec_broken"] = True
+        return out
+    # Seed has no +x: RO binds would make every container exit 126. Copy once
+    # onto the writable data-root and restore execute bits.
+    if not seed_layers_executable():
+        mat = materialize_seed(root)
+        out.update({k: mat.get(k) for k in ("copied", "chmod_fixed") if k in mat})
+        out["ok"] = bool(mat.get("ok")) and seed_layers_executable(root)
+        out["mounted"] = False
+        if not out["ok"]:
+            out["error"] = mat.get("error") or "seed_layers_not_executable"
         return out
     root.mkdir(parents=True, exist_ok=True)
     seed = SEED_DIR
@@ -780,6 +838,8 @@ def materialize_seed(root: Path) -> dict:
             return out
     out["ok"] = (root / "image").is_dir() and (root / "overlay2").is_dir()
     out["copied"] = True
+    if out["ok"]:
+        out["chmod_fixed"] = chmod_overlay_exec(root / "overlay2")
     if not out["ok"]:
         out["error"] = "materialize_incomplete"
     return out

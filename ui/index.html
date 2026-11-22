@@ -376,8 +376,8 @@
     <summary>Advanced</summary>
     <div class="advBody">
       <label class="field"><span>Context size <b id="ctxVal">8,192</b> tokens</span>
-        <input type="range" id="ctx" min="2048" max="131072" step="1024" value="32768"></label>
-      <p class="muted small" id="ctxNote">The model runs with this context. Agent Zero works best with 32,768 tokens or more.</p>
+        <input type="range" id="ctx" min="32768" max="131072" step="1024" value="32768"></label>
+      <p class="muted small" id="ctxNote">StickLLM requires at least 32,768 tokens of context. Models that cannot fit that are refused.</p>
       <div class="vram">
         <div class="vramBar" aria-label="VRAM usage"><i class="w" id="vW"></i><i class="kv" id="vKV"></i><i class="free" id="vFree"></i></div>
         <div class="legend"><span><i class="w"></i>Weights <b id="lW"></b></span><span><i class="kv"></i>KV cache <b id="lKV"></b></span><span><i class="free"></i>Free <b id="lFree"></b></span><span class="muted" id="vramTotal">of — GB</span></div>
@@ -578,7 +578,7 @@
       <p class="muted small" id="emailCredHint">Saved on the encrypted USB settings partition (same vault passcode). Used when Agent Zero sends or reads mail.</p>
     </div>
   </div>
-  <h3>WiFi</h3>
+  <h3 id="wifiSectionTitle">WiFi</h3>
   <div class="row2">
     <label class="field"><span>Network name (SSID)</span><input id="ssid" placeholder="" autocomplete="off"></label>
     <label class="field"><span>Password</span><input id="wpass" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore></label>
@@ -586,7 +586,7 @@
   <p class="muted small" id="wifiSsidHint">Pick a network from the list, or type a name (including hidden SSIDs).</p>
   <div class="actions"><button class="btn" id="wifiScan">Scan</button><button class="btn primary" id="wifiBtn">Connect</button></div>
   <div class="wifiList" id="wifiList" role="listbox" aria-label="Nearby WiFi networks" hidden></div>
-  <p class="muted small">No network yet? Run <span class="mono">stickllm-wifi-setup</span> in the stick's terminal. A WiFi access point mode is coming later.</p>
+  <p class="muted small" id="wifiBootstrapHint">No network yet? Plug in Ethernet, or run <span class="mono">stickllm-wifi-setup</span> in the stick's terminal. A WiFi access point mode is coming later.</p>
 </section>
 
 <!-- SYSTEM -->
@@ -667,9 +667,6 @@
 <!-- EXPERIMENTAL (Debian 13 engines + per-card GPU unlocks) — scaffolding; no auto-install -->
 <section class="sec" id="sec-experimental" data-title="Experimental" hidden>
   <p class="muted small" id="expNov3">On 3 November 2026 GPU unlocks and alternative engines were left as community add-ons. That is reversed here: StickLLM detects cards and offers opt-in downloads/unlocks only. Nothing installs until you press Continue.</p>
-  <div class="group">
-    <div class="row"><div><b>Allow GPU unlocks</b><small>Master switch. Off = never apply CMP or RTX 3090 unlocks (even if a card toggle is on). Use this if a driver update breaks an unlock.</small></div><label class="switch"><input type="checkbox" id="expMasterUnlock"><span></span></label></div>
-  </div>
   <p class="muted small" id="expOsNote"></p>
   <h3>Detected GPUs</h3>
   <div class="group" id="expCards"><div class="row"><small>Open this page on the stick to detect GPUs…</small></div></div>
@@ -828,7 +825,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
 <script src="vendor/qrcode/qrcode.min.js"></script>
-<script src="app.js?v=v075ratelimit"></script>
+<script src="app.js?v=v081"></script>
 <script src="desktop-core.js?v=v0712sticklinkqr"></script>
 <script src="desktop.js?v=v0712sticklinkqr"></script>
 </body>

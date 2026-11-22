@@ -47,6 +47,7 @@ export MSYS2_ARG_CONV_EXCL='*'
 docker run --rm \
   -e "STICKLLM_LLAMA_TAG=${STICKLLM_LLAMA_TAG:-}" \
   -e "STICKLLM_SKIP_CUDA_BUILD=${SKIP_CUDA}" \
+  -e "STICKLLM_FORCE_LLAMA_BUILD=${STICKLLM_FORCE_LLAMA_BUILD:-}" \
   -v "${ROOT}:/work" \
   -w //work \
   nvidia/cuda:12.4.1-devel-ubuntu22.04 \

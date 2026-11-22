@@ -277,6 +277,9 @@ def test_c_control_model_download_gate(tmp_path, monkeypatch):
     assert ok["ok"] and ok["verified"] is True and ok["sha256"] == pinned
     bad = ctl._build_download_job(dict(base, sha256="d" * 64))
     assert bad["error"] == "blocked"
+    # Hash mismatch is warn+confirm, never a hard block once accepted.
+    bad_ok = ctl._build_download_job(dict(base, sha256="d" * 64, accept_unverified=True))
+    assert bad_ok["ok"] and bad_ok["verified"] is False and bad_ok["sha256"] == "d" * 64
     other = {"repo": "someone/else", "file": "x.gguf", "bytes": 10, "sha256": "e" * 64}
     gate = ctl._build_download_job(dict(other))
     assert gate["error"] == "unverified" and WARNING in gate["message"]
@@ -285,17 +288,55 @@ def test_c_control_model_download_gate(tmp_path, monkeypatch):
 
 
 def test_c_ui_badges_and_confirms():
-    js = (ROOT / "ui/app.js").read_text()
+    js = (ROOT / "ui/app.js").read_text(encoding="utf-8")
     assert f'"{WARNING}"' in js
     for needle in ("function paintVerifyBadge", "function verifyGate", "Install verified version",
                    "accept_unverified: true", "verified_version: true",
-                   "Download anyway"):
+                   "Download anyway", "function downloadPolicyConfirm",
+                   "function isDownloadPolicyGate"):
         assert needle in js, needle
     gate = js[js.index("function verifyGate"):]
     gate = gate[:gate.index("\n}\n")]
     assert "confirmBox" in gate and "confirm(" not in gate.replace("confirmBox(", "")
-    css = (ROOT / "ui/style.css").read_text()
+    css = (ROOT / "ui/style.css").read_text(encoding="utf-8")
     assert ".vbadge" in css and ".pill.bad" in css
+
+
+def test_c_mmproj_download_forwards_accept(tmp_path, monkeypatch):
+    """Vision companion must use the same accept_unverified override as GGUF."""
+    ctl = _load(BIN / "stickllm-control", "ctl_mmproj_accept")
+    monkeypatch.setattr(ctl, "parse_catalog", lambda: [])
+    monkeypatch.setattr(ctl, "get_preferred_models_dir", lambda: tmp_path)
+    captured = {}
+
+    def fake_enqueue(params):
+        captured.update(params)
+        return {"ok": True, "started": True, "note": "queued", "accept": params.get("accept_unverified")}
+
+    monkeypatch.setattr(ctl, "enqueue_download", fake_enqueue)
+    # Without accept and without parent on disk → still queues only after flag set by caller.
+    out = ctl.download_mmproj({
+        "repo": "ggml-org/Inkling-2-Mini-GGUF",
+        "file": "mmproj-Inkling-2-Mini-bf16.gguf",
+        "bytes": 640_000_000,
+        "accept_unverified": True,
+    })
+    assert out["ok"] is True
+    assert captured.get("accept_unverified") is True
+    assert captured.get("file", "").startswith("mmproj")
+    # Parent GGUF on disk auto-trusts companion (no accept flag required).
+    parent = tmp_path / "Inkling-2-Mini-IQ4_NL.gguf"
+    parent.write_bytes(b"GGUF" + b"\0" * 32)
+    captured.clear()
+    out2 = ctl.download_mmproj({
+        "repo": "ggml-org/Inkling-2-Mini-GGUF",
+        "path": str(parent),
+        "file": "mmproj-Inkling-2-Mini-bf16.gguf",
+        "bytes": 640_000_000,
+    })
+    assert out2["ok"] is True
+    assert captured.get("accept_unverified") is True
+    assert captured.get("beside") == str(tmp_path)
 
 
 def test_c_agent_zero_is_told_and_cannot_bypass():

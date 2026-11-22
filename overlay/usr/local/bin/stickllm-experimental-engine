@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Download Strata / NInfer-all after Cancel/Continue. Verify SHA-256. No auto-install.
+
+Usage:
+  stickllm-experimental-engine --i-understand --engine strata [--platform linux] [--cuda cuda13]
+  stickllm-experimental-engine --i-understand --engine ninfer-all [--platform linux] [--cuda cuda12.9]
+  stickllm-experimental-engine --plan-only --engine strata   # resolve assets, no download
+
+Never vendors NVIDIA blobs. Engines land under /var/lib/stickllm/experimental/engines/.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+LIB = Path(os.environ.get("STICKLLM_EXPERIMENTAL_LIB", "/usr/local/lib/stickllm_experimental.py"))
+RUN = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
+DEST_ROOT = Path(
+    os.environ.get(
+        "STICKLLM_EXPERIMENTAL_ENGINES",
+        "/var/lib/stickllm/experimental/engines",
+    )
+)
+PROGRESS = RUN / "experimental-download.json"
+
+
+def _load_mod():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("stickllm_experimental", LIB)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"missing experimental lib: {LIB}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _write_progress(data: dict) -> None:
+    RUN.mkdir(parents=True, exist_ok=True)
+    data = dict(data)
+    data["updated"] = int(time.time())
+    tmp = PROGRESS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(PROGRESS)
+
+
+def _debian_major() -> int | None:
+    try:
+        text = Path("/etc/os-release").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    mod = _load_mod()
+    return mod.debian_major(text)
+
+
+def _download(url: str, dest: Path, *, expected: int = 0) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "StickLLM-Experimental/0.8.1"},
+    )
+    downloaded = 0
+    with urllib.request.urlopen(req, timeout=120) as resp, open(part, "wb") as out:
+        while True:
+            chunk = resp.read(1024 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+            downloaded += len(chunk)
+            _write_progress(
+                {
+                    "state": "downloading",
+                    "file": dest.name,
+                    "bytes": downloaded,
+                    "total": expected or int(resp.headers.get("Content-Length") or 0),
+                    "url": url,
+                }
+            )
+    part.replace(dest)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--i-understand", action="store_true", help="required to download")
+    ap.add_argument("--plan-only", action="store_true", help="resolve assets only")
+    ap.add_argument("--engine", required=True, choices=("strata", "ninfer-all"))
+    ap.add_argument("--platform", default="linux", choices=("linux", "windows"))
+    ap.add_argument("--cuda", default="", help="cuda13 / cuda12 / cuda12.9 / cuda13.4")
+    ap.add_argument("--dest", default="", help="override destination directory")
+    ap.add_argument("--release-json", default="", help="offline release JSON path (tests)")
+    args = ap.parse_args(argv)
+
+    mod = _load_mod()
+    if args.release_json:
+        release = json.loads(Path(args.release_json).read_text(encoding="utf-8"))
+    else:
+        try:
+            release = mod.fetch_github_latest(mod.engine_api_for(args.engine))
+        except Exception as exc:
+            _write_progress({"state": "failed", "error": f"release fetch failed: {exc}"})
+            print(f"release fetch failed: {exc}", file=sys.stderr)
+            return 1
+
+    maj = _debian_major()
+    plan = mod.plan_engine_download(
+        args.engine,
+        release,
+        platform=args.platform,
+        cuda=args.cuda,
+        debian_major_version=maj,
+    )
+    if args.plan_only:
+        print(json.dumps(plan, indent=2))
+        return 0 if not plan.get("blocked") else 2
+
+    if not args.i_understand:
+        print("Refusing without --i-understand (Cancel/Continue required).", file=sys.stderr)
+        return 1
+    if plan.get("blocked"):
+        _write_progress({"state": "failed", "error": plan["blocked"], "plan": plan})
+        print(plan["blocked"], file=sys.stderr)
+        return 2
+    assets = [a for a in (plan.get("assets") or []) if a.get("url")]
+    if not assets:
+        print("no assets to download", file=sys.stderr)
+        return 2
+
+    dest_root = Path(args.dest) if args.dest else DEST_ROOT / args.engine / str(plan.get("tag") or "latest")
+    dest_root.mkdir(parents=True, exist_ok=True)
+    _write_progress({"state": "starting", "engine": args.engine, "dest": str(dest_root), "plan": plan})
+
+    checksums: dict[str, str] = {}
+    sha_asset = next((a for a in assets if a.get("role") == "checksums"), None)
+    if sha_asset:
+        sha_path = dest_root / sha_asset["name"]
+        _download(sha_asset["url"], sha_path, expected=int(sha_asset.get("size") or 0))
+        checksums = mod.parse_sha256sums(sha_path.read_text(encoding="utf-8", errors="replace"))
+
+    saved = []
+    for asset in assets:
+        if asset.get("role") == "checksums":
+            continue
+        name = asset["name"]
+        path = dest_root / name
+        _download(asset["url"], path, expected=int(asset.get("size") or 0))
+        expect = checksums.get(name, "")
+        if expect:
+            got = mod.file_sha256(str(path))
+            if got != expect:
+                _write_progress(
+                    {
+                        "state": "failed",
+                        "error": f"sha256 mismatch for {name}",
+                        "expected": expect,
+                        "got": got,
+                    }
+                )
+                print(f"sha256 mismatch for {name}: got {got} want {expect}", file=sys.stderr)
+                return 3
+        saved.append({"name": name, "path": str(path), "sha256_ok": bool(expect)})
+
+    result = {
+        "state": "done",
+        "ok": True,
+        "engine": args.engine,
+        "tag": plan.get("tag"),
+        "dest": str(dest_root),
+        "files": saved,
+        "note": "Downloaded only — not set as default engine; launch/install needs a further confirm.",
+    }
+    _write_progress(result)
+    (dest_root / "stickllm-download.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

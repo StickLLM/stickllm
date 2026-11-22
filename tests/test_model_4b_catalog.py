@@ -111,11 +111,16 @@ def test_catalog_vram_tier_recommends():
         "qwen25-32b-q4km",
         "qwen25-72b-q3km",
         "qwen35-4b-q4km",
+        "qwen25-vl-3b-q4km",
     ):
         assert f'id = "{mid}"' in text
     assert 'base_model_id = "qwen25-7b-q4km"' in text
     four = text.split('id = "qwen35-4b-q4km"', 1)[1].split("[[model]]")[0]
     assert "probe_recommend = false" in four
+    vl = text.split('id = "qwen25-vl-3b-q4km"', 1)[1].split("[[model]]")[0]
+    assert "vision = true" in vl
+    assert "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf" in vl
+    assert "probe_recommend = false" in vl
     assert 'id = "vram_dual_24gb"' in text
 
 
@@ -216,14 +221,17 @@ def test_ui_search_installed_first_and_merges_catalog():
     assert "const have = (m) => Number(!m.installed);" in body
     assert "if (have(a) !== have(b)) return have(a) - have(b);" in body
     assert "return searchRows();" in js and "function searchRows()" in js
+    assert "function correctedSearchQuery" in js and "function catalogFuzzyHits" in js
+    assert "editDistance1" in js
 
 
 def test_ui_search_sort_behaviour(tmp_path):
     """Run the merge + sort logic in node with a tiny harness."""
     js = _js()
-    a = js.index("function searchRows()")
+    a = js.index("// Lightweight typo tolerance")
     b = js.index("function browseSource()")
     harness = (
+        "let state={mf:{q:''}};"
         f"let hfHits=[{{id:'x',name:'Qwen3.5-9B',installed:false}},{{id:'{BASE_ID}',hf_id:'hf:u:f',catalog_id:'{BASE_ID}',installed:true,sha256:'ab'}}];"
         f"let lastCatalog=[{{id:'{BASE_ID}',name:'Qwen2.5-7B Instruct Q4_K_M',installed:true,running:true,deletable:false,sha256:['ab']}}];"
         + js[a:b]
@@ -232,7 +240,32 @@ def test_ui_search_sort_behaviour(tmp_path):
         f"if(r[0].id!=='{BASE_ID}'||!r[0].running||r[0].deletable!==false||r[0].sha256!=='ab'||r.length!==2)throw new Error(JSON.stringify(r));"
     )
     f = tmp_path / "h.js"
-    f.write_text(harness)
+    f.write_text(harness, encoding="utf-8")
+    subprocess.run(["node", str(f)], check=True)
+
+
+def test_ui_search_fuzzy_lnkling(tmp_path):
+    """Typo lnkling matches catalog Inkling and corrects the HF query."""
+    js = _js()
+    a = js.index("// Lightweight typo tolerance")
+    b = js.index("function browseSource()")
+    harness = (
+        "let state={mf:{q:'lnkling'}};"
+        "let hfHits=[];"
+        "let lastCatalog=["
+        "{id:'local-inkling',name:'thinkingmachines_Inkling-2-Mini-Q4_K_M',installed:true},"
+        "{id:'qwen25-7b-q4km',name:'Qwen2.5-7B Instruct Q4_K_M',installed:true}"
+        "];"
+        + js[a:b]
+        + "const hits=catalogFuzzyHits('lnkling');"
+        "if(hits.length!==1||hits[0].id!=='local-inkling')throw new Error('fuzzy '+JSON.stringify(hits));"
+        "const cq=correctedSearchQuery('lnkling');"
+        "if(cq!=='inkling')throw new Error('correct '+cq);"
+        "const rows=searchRows();"
+        "if(rows.length!==1||rows[0].id!=='local-inkling')throw new Error('rows '+JSON.stringify(rows));"
+    )
+    f = tmp_path / "h.js"
+    f.write_text(harness, encoding="utf-8")
     subprocess.run(["node", str(f)], check=True)
 
 

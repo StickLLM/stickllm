@@ -988,9 +988,15 @@ def gguf_arch_dims(meta: dict) -> dict:
     n_embd = num(f"{arch}.embedding_length")
     n_head = num(f"{arch}.attention.head_count")
     n_kv = num(f"{arch}.attention.head_count_kv", f"{arch}.attention.head_count")
-    head_dim = num(f"{arch}.attention.key_length")
+    head_dim = num(f"{arch}.attention.key_length", f"{arch}.attention.value_length")
     if not head_dim and n_embd and n_head:
         head_dim = max(1, n_embd // n_head)
+    # Inkling / some MoE GGUFs omit head_count; derive from embd ÷ head_dim.
+    if not n_head and n_embd and head_dim:
+        n_head = max(1, n_embd // head_dim)
+    if not n_kv and n_head:
+        n_kv = n_head
+    n_expert = num(f"{arch}.expert_count")
     # Hybrid models (Qwen3.5 / Qwen3.8) run full attention every Nth layer.
     # The other layers are recurrent and do not grow a KV cache with context.
     interval = num(f"{arch}.full_attention_interval")
@@ -1006,6 +1012,7 @@ def gguf_arch_dims(meta: dict) -> dict:
         "n_head": n_head,
         "n_kv_head": n_kv,
         "head_dim": head_dim,
+        "n_expert": n_expert,
     }
 
 
@@ -1014,6 +1021,22 @@ def gguf_arch_dims(meta: dict) -> dict:
 GPU_SUITABLE_MIB = 16000
 # CUDA context + compute buffers held back before layer weights.
 GPU_BUFFER_BYTES = int(1.5 * (1024**3))
+# Product floor for Agent Zero / tools. Never Load below this.
+LLAMA_CTX_FLOOR = 32768
+# KV cache byte multiplier vs f16 (llama.cpp --cache-type-k/v).
+_KV_BYTE_MUL = {
+    "f16": 1.0,
+    "bf16": 1.0,
+    "f32": 2.0,
+    "q8_0": 0.5,
+    "q8": 0.5,
+    "q5_1": 0.5,
+    "q5_0": 0.5,
+    "q4_1": 0.25,
+    "q4_0": 0.25,
+    "q4": 0.25,
+    "iq4_nl": 0.25,
+}
 _MOE_ARCH = frozenset(
     {"mixtral", "qwen2moe", "qwen3moe", "deepseek2", "phi3moe", "grok", "olmoe"}
 )
@@ -1244,18 +1267,27 @@ def moe_expert_count(meta: dict, dims: dict) -> int:
     return 0
 
 
-def kv_bytes_per_token(dims: dict, n_layer: int, file_bytes: int) -> int:
-    """K+V f16 bytes per token. Uses GGUF dims, else a 70B GQA ballpark."""
+def kv_bytes_per_token(
+    dims: dict,
+    n_layer: int,
+    file_bytes: int,
+    kv_type: str = "f16",
+) -> int:
+    """K+V bytes per token. Base is f16; kv_type scales (q8≈½, q4≈¼)."""
     n_kv = int(dims.get("n_kv_head") or 0)
     head = int(dims.get("head_dim") or 0)
     n_kv_layer = int(dims.get("n_kv_layer") or n_layer or 0)
     if n_kv_layer > 0 and n_kv > 0 and head > 0:
-        return 2 * n_kv_layer * n_kv * head * 2
-    gib = file_bytes / (1024**3)
-    if gib >= 30:
-        # Llama-3 70B: 80 layers * 8 kv heads * 128 * 2 bytes * K and V.
-        return 320 * 1024
-    return max(8192, int(56000 * (max(gib, 0.1) / 5.1)))
+        base = 2 * n_kv_layer * n_kv * head * 2
+    else:
+        gib = file_bytes / (1024**3)
+        if gib >= 30:
+            # Llama-3 70B: 80 layers * 8 kv heads * 128 * 2 bytes * K and V.
+            base = 320 * 1024
+        else:
+            base = max(8192, int(56000 * (max(gib, 0.1) / 5.1)))
+    mul = _KV_BYTE_MUL.get(str(kv_type or "f16").strip().lower(), 1.0)
+    return max(1024, int(base * mul))
 
 
 def estimate_tok_s(file_bytes: int, gpu_count: int, offload_fraction: float) -> int:
@@ -1291,6 +1323,8 @@ def plan_gpu_fit(
     meta: dict | None = None,
     gpus: list[dict] | None = None,
     ngl_override: int | None = None,
+    extra_gpu_bytes: int = 0,
+    kv_type: str = "f16",
 ) -> dict:
     """Choose -ngl / tensor-split for the GPUs we will actually use.
 
@@ -1299,51 +1333,52 @@ def plan_gpu_fit(
       2. --tensor-split proportional to free VRAM so every card is used.
       3. Dense -ngl = floor( (free VRAM - KV(ctx) - 1.5 GiB buffers) / per-layer weight ).
          Cap at n_layer+1 when that is a full offload. Never the sentinel 99.
-         The same formula is used for one GPU with the rest of the weights in RAM.
-         mmap stays at the llama.cpp default (callers must not pass --no-mmap).
-      4. MoE: when spilling experts with --n-cpu-moe keeps attention on GPU and
-         that fits better than dropping whole layers, use -ngl 99 and --n-cpu-moe.
-         Still across every suitable GPU.
+      4. MoE: always -ngl 99; spill experts with --n-cpu-moe when needed.
+         Never shrink context below LLAMA_CTX_FLOOR — Activate refuses instead.
     """
     meta = meta or {}
     dims = gguf_arch_dims(meta)
     n_layer, layer_src = estimate_n_layer(dims, file_bytes)
-    ctx = max(256, int(ctx or 8192))
-    # Never plan (or run) past the model's trained context. Never raised.
+    ctx = max(LLAMA_CTX_FLOOR, int(ctx or LLAMA_CTX_FLOOR))
     ctx_max = int(dims.get("n_ctx_train") or 0)
     if ctx_max > 0:
         ctx = min(ctx, ctx_max)
-    kv_bpt = kv_bytes_per_token(dims, n_layer, file_bytes)
+    kv_bpt = kv_bytes_per_token(dims, n_layer, file_bytes, kv_type=kv_type)
     kv = kv_bpt * ctx
     weights = max(1, int(file_bytes))
+    extra = max(0, int(extra_gpu_bytes or 0))
+    buffer = GPU_BUFFER_BYTES + extra
     all_rows = gpus if gpus is not None else nvidia_gpu_rows()
-    cards = suitable_gpus(gpus, need_bytes=weights + kv + GPU_BUFFER_BYTES)
-    # 0.5.9: one card when the model fits on it (or the pinned card).
-    cards = place_cards(cards, weights + kv + GPU_BUFFER_BYTES, all_rows=all_rows)
+    n_exp = moe_expert_count(meta, dims)
+    is_moe = n_exp > 1
+    moe_non_expert = int(weights * 0.15) if is_moe else weights
+    place_need = (moe_non_expert if is_moe else weights) + kv + buffer
+    cards = suitable_gpus(gpus, need_bytes=place_need)
+    cards = place_cards(cards, place_need, all_rows=all_rows)
     ctx_shrunk_from = 0
+    ctx_unfit = False
 
     def _free_bytes(cs: list[dict]) -> int:
         return sum(int(g.get("free_mib") or 0) or int(g.get("total_mib") or 0) for g in cs) * 1024 * 1024
 
-    # 0.6.2: shrink the context before falling back to a partial offload.
-    # A smaller KV cache that keeps every layer on the GPU is far faster than
-    # spilling layers to RAM. Never below 4096 tokens; never with a manual -ngl.
-    if (ngl_override is None and cards and kv_bpt > 0
-            and weights + kv + GPU_BUFFER_BYTES > _free_bytes(cards)):
-        floor_ctx = min(ctx, 4096)
-        small = suitable_gpus(gpus, need_bytes=weights + kv_bpt * floor_ctx + GPU_BUFFER_BYTES)
-        small = place_cards(small, weights + kv_bpt * floor_ctx + GPU_BUFFER_BYTES, all_rows=all_rows)
-        room = _free_bytes(small) - weights - GPU_BUFFER_BYTES if small else 0
+    # Dense only: may shrink toward a larger-than-floor ctx, never below floor.
+    if (not is_moe and ngl_override is None and cards and kv_bpt > 0
+            and weights + kv + buffer > _free_bytes(cards)):
+        floor_ctx = LLAMA_CTX_FLOOR
+        small = suitable_gpus(gpus, need_bytes=weights + kv_bpt * floor_ctx + buffer)
+        small = place_cards(small, weights + kv_bpt * floor_ctx + buffer, all_rows=all_rows)
+        room = _free_bytes(small) - weights - buffer if small else 0
         fit_ctx = (int(room // kv_bpt) // 1024) * 1024 if room > 0 else 0
         if fit_ctx >= floor_ctx and fit_ctx < ctx:
             ctx_shrunk_from = ctx
             ctx = fit_ctx
             kv = kv_bpt * ctx
             cards = small
+        elif fit_ctx < floor_ctx:
+            ctx_unfit = True
+
     gpu_count = len(cards)
     devices = ",".join(str(g.get("device") or g["index"]) for g in cards)
-    # Proportions follow free VRAM. A card reporting 0 free still gets its total
-    # so tensor-split does not drop it.
     shares = []
     free_sum = 0
     for g in cards:
@@ -1353,58 +1388,65 @@ def plan_gpu_fit(
         free_sum += int(g.get("free_mib") or 0) or int(g.get("total_mib") or 0)
     tensor_split = ",".join(str(s) for s in shares) if gpu_count > 1 else ""
     budget = free_sum * 1024 * 1024
-    need = weights + kv + GPU_BUFFER_BYTES
-    # Per-layer size is the weight share. KV and the 1.5 GiB buffer are subtracted
-    # once from free VRAM, not folded into the per-layer divisor.
+    need = weights + kv + buffer
     weight_per_layer = weights / n_layer
 
     def layers_that_fit(budget_bytes: int) -> int:
-        usable = budget_bytes - kv - GPU_BUFFER_BYTES
+        usable = budget_bytes - kv - buffer
         if usable <= 0 or weight_per_layer <= 0:
             return 0
         return max(0, int(usable // weight_per_layer))
 
-    n_exp = moe_expert_count(meta, dims)
-    is_moe = n_exp > 1
     n_cpu_moe = 0
-    # llama.cpp treats one extra slot as the output layer. 99 stays MoE-only.
     full_ngl = n_layer + 1
     if gpu_count == 0:
         ngl = 0
         fit = "cpu"
         offload_frac = 0.0
-    elif not is_moe and need <= budget:
-        ngl = full_ngl
-        fit = "full"
-        offload_frac = 1.0
-    elif is_moe and need <= budget:
-        ngl = full_ngl
-        fit = "full"
-        offload_frac = 1.0
+        # Caller supplied GPU rows but none can hold ≥32K + usable offload → refuse.
+        if gpus is not None and len(gpus) > 0:
+            ctx_unfit = True
     elif is_moe:
-        # Expert tensors dominate. ~15% dense/attention is the documented
-        # stand-in when the tensor table is not parsed. Keeping those on GPU
-        # with -ngl 99 and moving expert blocks via --n-cpu-moe beats dropping
-        # whole layers, when the dense slice itself fits.
-        non_expert = int(weights * 0.15)
+        non_expert = moe_non_expert
         expert_bytes = max(1, weights - non_expert)
         per_expert = expert_bytes / n_layer
-        left = budget - GPU_BUFFER_BYTES - kv - non_expert
-        if left >= 0:
+
+        def _moe_at(ctx_tokens: int) -> tuple[int, int, int] | None:
+            kv_need = kv_bpt * ctx_tokens
+            left = budget - buffer - kv_need - non_expert
+            if left < 0:
+                return None
             on_gpu = int(left // per_expert) if per_expert else n_layer
             on_gpu = max(0, min(n_layer, on_gpu))
-            n_cpu_moe = n_layer - on_gpu
+            return on_gpu, n_layer - on_gpu, kv_need
+
+        got = _moe_at(ctx)
+        if got is None and ngl_override is None and kv_bpt > 0:
+            floor_ctx = LLAMA_CTX_FLOOR
+            room = budget - buffer - non_expert
+            fit_ctx = (int(room // kv_bpt) // 1024) * 1024 if room > 0 else 0
+            if fit_ctx >= floor_ctx and fit_ctx < ctx:
+                ctx_shrunk_from = ctx
+                ctx = fit_ctx
+                got = _moe_at(ctx)
+            else:
+                ctx_unfit = True
+        if got is not None:
+            on_gpu, n_cpu_moe, kv = got
             ngl = 99
-            fit = "moe"
+            fit = "full" if n_cpu_moe == 0 else "moe"
             offload_frac = min(1.0, 0.15 + 0.85 * (on_gpu / n_layer))
         else:
-            ngl = min(layers_that_fit(budget), n_layer)
-            n_cpu_moe = 0
-            fit = "partial" if ngl < n_layer else "full"
-            offload_frac = ngl / full_ngl
+            ngl = 99
+            n_cpu_moe = n_layer
+            fit = "unfit"
+            offload_frac = 0.15
+            ctx_unfit = True
+    elif need <= budget:
+        ngl = full_ngl
+        fit = "full"
+        offload_frac = 1.0
     else:
-        # Cap at the transformer blocks. Output stays in RAM unless the whole
-        # file fit (handled above). Never emit 99 for a dense model.
         ngl = min(layers_that_fit(budget), n_layer)
         fit = "partial"
         offload_frac = min(1.0, ngl / full_ngl)
@@ -1416,7 +1458,14 @@ def plan_gpu_fit(
         offload_frac = min(1.0, ngl / full_ngl)
 
     tok_s = estimate_tok_s(weights, max(1, gpu_count), offload_frac if gpu_count else 0.05)
-    if gpu_count == 0:
+    if ctx_unfit or (ctx_max > 0 and ctx_max < LLAMA_CTX_FLOOR) or ctx < LLAMA_CTX_FLOOR:
+        ctx_unfit = True
+        fit = "unfit"
+        caption = (
+            f"needs ≥{LLAMA_CTX_FLOOR} context; not enough VRAM for KV + usable offload "
+            f"(need more VRAM, q8/q4 KV, or a smaller model)"
+        )
+    elif gpu_count == 0:
         caption = "CPU"
     elif fit == "full":
         caption = (
@@ -1436,8 +1485,10 @@ def plan_gpu_fit(
             if gpu_count > 1
             else f"1 GPU, partial offload, about {tok_s} tok/s"
         )
+    if ctx_shrunk_from and not ctx_unfit:
+        caption = caption + f"; context reduced to {ctx} to keep the model on the GPU"
     gpu_bytes = 0
-    if gpu_count and ngl > 0 and fit != "cpu":
+    if gpu_count and ngl > 0 and fit not in ("cpu", "unfit"):
         if fit == "full":
             gpu_bytes = weights + kv
         elif fit == "moe":
@@ -1445,7 +1496,7 @@ def plan_gpu_fit(
         else:
             gpu_bytes = int(weight_per_layer * min(ngl, n_layer)) + kv
     return {
-        "ok": True,
+        "ok": not ctx_unfit,
         "n_gpu_layers": int(ngl),
         "n_layer": n_layer,
         "layer_source": layer_src,
@@ -1455,9 +1506,9 @@ def plan_gpu_fit(
         "gpu_count": gpu_count,
         "devices": devices,
         "tensor_split": tensor_split,
-        "caption": caption + (f"; context reduced to {ctx} to keep the model on the GPU"
-                              if ctx_shrunk_from else ""),
+        "caption": caption,
         "ctx_shrunk_from": int(ctx_shrunk_from),
+        "ctx_unfit": bool(ctx_unfit),
         "tok_s": tok_s,
         "ctx": ctx,
         "ctx_max": ctx if ctx_shrunk_from else ctx_max,
@@ -1471,7 +1522,7 @@ def plan_gpu_fit(
 
 def _model_ctx_and_path() -> tuple[str, int]:
     path = ""
-    ctx = 8192
+    ctx = LLAMA_CTX_FLOOR
     envf = RUN / "model.env"
     if envf.is_file():
         try:
@@ -1492,6 +1543,24 @@ def _model_ctx_and_path() -> tuple[str, int]:
     return path, ctx
 
 
+def _active_mmproj_bytes() -> int:
+    """Bytes for an activated mmproj (vision) so the planner reserves VRAM."""
+    envf = RUN / "model.env"
+    try:
+        if not envf.is_file():
+            return 0
+        mm = ""
+        for line in envf.read_text(encoding="utf-8").splitlines():
+            if line.startswith("STICKLLM_MMPROJ="):
+                mm = line.split("=", 1)[1].strip()
+                break
+        if mm and Path(mm).is_file():
+            return int(Path(mm).stat().st_size)
+    except OSError:
+        return 0
+    return 0
+
+
 def build_offload_plan(*, honor_override: bool = True) -> dict:
     path, ctx = _model_ctx_and_path()
     if not path or not Path(path).is_file():
@@ -1502,11 +1571,28 @@ def build_offload_plan(*, honor_override: bool = True) -> dict:
         return {"ok": False, "error": str(e), "n_gpu_layers": 0, "gpu_count": 0}
     meta = read_gguf_meta(path, max_keys=800)
     override = read_ngl_override() if honor_override else None
+    kv = "f16"
+    try:
+        kv = active_kv_type()
+    except Exception:
+        kv = "f16"
+    # Capacity plan: assume the card is empty (outgoing weights may still hold
+    # free_mib near zero while we are restarting into the new ctx).
+    rows = []
+    for row in nvidia_gpu_rows():
+        r = dict(row)
+        tot = int(r.get("total_mib") or 0)
+        if tot > 0:
+            r["free_mib"] = tot
+        rows.append(r)
     plan = plan_gpu_fit(
         file_bytes=file_bytes,
-        ctx=ctx,
+        ctx=max(LLAMA_CTX_FLOOR, int(ctx or LLAMA_CTX_FLOOR)),
         meta=meta,
+        gpus=rows or None,
         ngl_override=override,
+        extra_gpu_bytes=_active_mmproj_bytes(),
+        kv_type=kv,
     )
     plan["model"] = path
     return plan
@@ -2220,12 +2306,6 @@ def llama_fewer_layers() -> dict:
     return r
 
 
-# Product floor for Agent Zero (first system+tools assemble ~10k tokens).
-# llama-start still honours an explicit smaller STICKLLM_CTX_SIZE; activate /
-# estimate only *default* to this when VRAM/RAM fit allows.
-LLAMA_CTX_FLOOR = 32768
-
-
 def estimate_context_budget(
     *,
     vram_gb: float,
@@ -2234,70 +2314,59 @@ def estimate_context_budget(
     backend: str,
     model_max_ctx: int = 0,
     dims: dict | None = None,
+    kv_type: str = "q8_0",
 ) -> dict:
     """Suggest a max context size from free memory after loading weights.
 
-    Formula (documented for UI/ops):
-      free_mem_after ≈ mem_gb - approx_size_gb * 1.05   # weights + small overhead
-      If GGUF dims known (n_kv_layer, n_kv_head, head_dim):
-        kv_bytes/token ≈ 2 * n_kv_layer * n_kv_head * head_dim * 2  # K+V, f16
-        n_kv_layer is block_count, or block_count / full_attention_interval
-        for hybrid models whose other layers are recurrent.
-      Else ballpark from weight size (calibrated ~7B @ ~56 KiB/token):
-        kv_bytes/token ≈ 56000 * (approx_size_gb / 5.1)
-      max_ctx_mem = floor(free_mem_after_bytes / kv_bytes_per_token)
-      Clamp to [2048, model_max_ctx] (GGUF context_length when available).
-      GPU hosts are not capped at 32K. A CPU host stays at 8K.
-      Default suggestion prefers LLAMA_CTX_FLOOR (32K) when it fits — required
-      for Agent Zero; 8K is only suggested when 32K does not fit.
+    Hard product rule: never offer below LLAMA_CTX_FLOOR (32K). If 32K cannot
+    fit, ctx_fits_floor is False and Activate must refuse (no silent 8K/26K).
+
+    Dense: free_mem_after ≈ mem_gb - approx_size_gb * 1.05
+    MoE / ≥12 GiB: only ~15% non-expert must stay on GPU; experts spill.
+    kv_bytes/token from GGUF dims (or size ballpark), scaled by kv_type
+    (product default q8_0 ≈ ½ of f16).
     """
     dims = dims or {}
     size = max(0.1, float(approx_size_gb or 0) or 2.0)
     gpu = backend in ("cuda", "vulkan") and vram_gb > 0.5
     mem_gb = float(vram_gb if gpu else ram_gb) or 0.0
-    free_after = max(0.0, mem_gb - size * 1.05)
-    # Leave a little headroom for runtime / fragmentation.
+    moe_like = size >= 12.0 or int(dims.get("n_expert") or 0) > 1
+    if gpu and moe_like:
+        free_after = max(0.0, mem_gb - size * 0.15 * 1.05 - 1.5)
+    else:
+        free_after = max(0.0, mem_gb - size * 1.05)
     free_after *= 0.85
 
     n_layer = int(dims.get("n_kv_layer") or dims.get("n_layer") or 0)
     n_kv = int(dims.get("n_kv_head") or 0)
     head_dim = int(dims.get("head_dim") or 0)
     if n_layer > 0 and n_kv > 0 and head_dim > 0:
-        kv_bpt = 2 * n_layer * n_kv * head_dim * 2  # K+V f16
+        kv_bpt = 2 * n_layer * n_kv * head_dim * 2
     else:
         kv_bpt = int(56000 * (size / 5.1))
     kv_bpt = max(8192, kv_bpt)
+    mul = _KV_BYTE_MUL.get(str(kv_type or "q8_0").strip().lower(), 0.5)
+    kv_bpt = max(1024, int(kv_bpt * mul))
 
-    max_from_mem = int((free_after * (1024**3)) // kv_bpt) if free_after > 0 else 2048
+    max_from_mem = int((free_after * (1024**3)) // kv_bpt) if free_after > 0 else 0
     train_ctx = int(model_max_ctx or dims.get("n_ctx_train") or 0)
     if train_ctx <= 0:
         train_ctx = LLAMA_CTX_FLOOR
-    # CPU hosts stay small. GPU hosts follow the GGUF context length.
-    ceiling = train_ctx if gpu else min(train_ctx, 8192)
-    hi = max(2048, min(ceiling, max(2048, max_from_mem)))
-    # Snap down to a friendly step.
-    step = 1024 if hi <= 8192 else 2048
-    hi = max(2048, (hi // step) * step)
-    # Default suggestion: Agent Zero floor when it fits; else 8k/4k/hi.
-    if hi >= LLAMA_CTX_FLOOR:
-        suggested = LLAMA_CTX_FLOOR
-    elif hi >= 8192:
-        suggested = 8192
-    elif hi >= 4096:
-        suggested = 4096
-    else:
-        suggested = hi
-    if suggested > hi:
-        suggested = hi
+    hi = min(train_ctx, max(0, max_from_mem))
+    step = 2048
+    hi = (hi // step) * step if hi >= step else 0
+    fits_floor = hi >= LLAMA_CTX_FLOOR and train_ctx >= LLAMA_CTX_FLOOR
+    if fits_floor:
+        hi = max(hi, LLAMA_CTX_FLOOR)
     return {
-        "ctx_min": 2048,
+        "ctx_min": LLAMA_CTX_FLOOR,
         "ctx_max": hi,
-        "ctx_suggested": suggested,
+        "ctx_suggested": LLAMA_CTX_FLOOR,
         "ctx_model_max": train_ctx,
+        "ctx_fits_floor": fits_floor,
         "free_mem_after_gb": round(free_after, 2),
         "kv_bytes_per_token": kv_bpt,
     }
-
 
 def detect_backend() -> str:
     """Prefer runtime breadcrumb from pick-gpus / llama-start over nvidia-smi."""
@@ -2532,7 +2601,8 @@ def _is_abliterated(*parts: str) -> bool:
 
 _VISION_RE = re.compile(
     r"(?:^|[^a-z0-9])(?:vl|vision)(?:[^a-z0-9]|$)"
-    r"|qwen\d*(?:\.\d+)?-?vl|llava|moondream|minicpm-?v|internvl|pixtral|smolvlm|glm-?4v|kimi-?vl|idefics",
+    r"|qwen\d*(?:\.\d+)?-?vl|llava|moondream|minicpm-?v|internvl|pixtral|smolvlm"
+    r"|glm-?4v|kimi-?vl|idefics|inkling",
     re.I,
 )
 
@@ -2548,6 +2618,79 @@ def _pick_mmproj(files: list[tuple[str, int]]) -> tuple[str, int] | None:
         return (pref, -pair[1])
 
     return sorted(files, key=score)[0]
+
+
+def _mmproj_fallback_repos(*parts: str) -> list[str]:
+    """Repos that often host the projector when a quant-only mirror does not.
+
+    Example: austindixson/Inkling-2-Mini-IQ4_NL-GGUF has the GGUF only;
+    ggml-org/Inkling-2-Mini-GGUF has mmproj-Inkling-2-Mini-BF16.gguf.
+    """
+    blob = " ".join(p for p in parts if p).lower().replace("_", "-")
+    out: list[str] = []
+    if "inkling" in blob:
+        out.append("ggml-org/Inkling-2-Mini-GGUF")
+    # Qwen2.5-VL mirrors sometimes omit mmproj; official Qwen GGUF has it.
+    if re.search(r"qwen2\.?5-?vl|qwen25-?vl", blob):
+        out.append("Qwen/Qwen2.5-VL-7B-Instruct-GGUF")
+        out.append("Qwen/Qwen2.5-VL-3B-Instruct-GGUF")
+    return out
+
+
+def _hf_list_mmproj(repo: str) -> list[tuple[str, int]]:
+    """GGUF mmproj files at the root of an HF repo tree."""
+    if not repo or "/" not in repo:
+        return []
+    try:
+        tree = _hf_get_json(
+            "https://huggingface.co/api/models/"
+            + urllib.parse.quote(repo, safe="/")
+            + "/tree/main",
+            timeout=20,
+        )
+    except Exception:
+        return []
+    cands: list[tuple[str, int]] = []
+    if not isinstance(tree, list):
+        return cands
+    for sib in tree:
+        if not isinstance(sib, dict):
+            continue
+        name = str(sib.get("path") or sib.get("rfilename") or "")
+        if "mmproj" not in name.lower() or not name.lower().endswith(".gguf"):
+            continue
+        try:
+            size = int(sib.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size > 0:
+            cands.append((name, size))
+    return cands
+
+
+def _resolve_mmproj(
+    repo: str,
+    hf_file: str = "",
+    nbytes: int = 0,
+    *name_hints: str,
+) -> tuple[str, str, int] | None:
+    """Return (repo, file, bytes) for this model's projector, with fallbacks."""
+    if hf_file and nbytes > 0 and "mmproj" in hf_file.lower():
+        return repo, hf_file, nbytes
+    cands = _hf_list_mmproj(repo)
+    picked = _pick_mmproj(cands)
+    if picked:
+        return repo, picked[0], picked[1]
+    seen = {repo}
+    for alt in _mmproj_fallback_repos(repo, hf_file, *name_hints):
+        if alt in seen:
+            continue
+        seen.add(alt)
+        cands = _hf_list_mmproj(alt)
+        picked = _pick_mmproj(cands)
+        if picked:
+            return alt, picked[0], picked[1]
+    return None
 
 
 def _sidecar_repo(model_path: str) -> str:
@@ -2672,6 +2815,14 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
                 break
             ablit = _is_abliterated(repo, name)
             picked = _pick_mmproj(mmproj_files)
+            mmproj_repo = repo
+            if not picked and looks_vision(repo, name):
+                # Quant-only mirrors (e.g. Inkling IQ4_NL) often omit mmproj;
+                # resolve from a known companion repo so the vision pill works.
+                resolved = _resolve_mmproj(repo, "", 0, name)
+                if resolved:
+                    mmproj_repo, mm_name, mm_size = resolved
+                    picked = (mm_name, mm_size)
             sees = bool(picked) or looks_vision(repo, name)
             if vision == "only" and not sees:
                 continue
@@ -2729,6 +2880,7 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
                     "vision": sees,
                     "mmproj_file": picked[0] if picked else "",
                     "mmproj_bytes": picked[1] if picked else 0,
+                    "mmproj_repo": mmproj_repo if picked else "",
                     "mmproj_ready": bool(picked) and Path(picked[0]).name.lower() in installed_names,
                 }
             )
@@ -3703,12 +3855,28 @@ def _build_download_job(params: dict) -> dict:
         if nbytes <= 0:
             return {"ok": False, "error": "model size is unknown, so it cannot be queued safely"}
         # Verified models list = catalog.toml sha256 (docs/VERIFIED.md).
+        # Soft gates only: UI must warn + confirm; never hard-block a user download.
+        # accept_unverified covers unverified / untrusted / abliterated / hash-mismatch override.
         pinned = _catalog_sha_index().get((repo, hf_file), "")
+        accepted = params.get("accept_unverified") is True
         if pinned and re.fullmatch(r"[0-9a-f]{64}", sha) and sha != pinned:
-            return {"ok": False, "error": "blocked",
-                    "message": "This file's hash does not match StickLLM's verified hash. Not downloaded."}
-        if not pinned and params.get("accept_unverified") is not True:
-            return {"ok": False, "error": "unverified", "message": UNVERIFIED_WARNING + ". Confirm on screen to download."}
+            if not accepted:
+                return {
+                    "ok": False,
+                    "error": "blocked",
+                    "message": (
+                        "This file's hash does not match StickLLM's verified hash. "
+                        "Confirm on screen to download anyway."
+                    ),
+                }
+            # User overrode the pin mismatch — keep their hash, do not force the pin.
+            pinned = ""
+        if not pinned and not accepted:
+            return {
+                "ok": False,
+                "error": "unverified",
+                "message": UNVERIFIED_WARNING + ". Confirm on screen to download.",
+            }
         if pinned:
             sha = pinned
         return {
@@ -3866,10 +4034,16 @@ def _enqueue_download(params: dict) -> dict:
 
 
 def download_mmproj(params: dict) -> dict:
-    """Queue the mmproj that belongs to this model. It is not shared with other models."""
-    repo = str(params.get("repo") or "").strip()
+    """Queue the mmproj that belongs to this model. It is not shared with other models.
+
+    mmproj is never on the verified GGUF list, so the same accept_unverified
+    override as model_download applies. When the parent GGUF is already on
+    disk, auto-trust the companion (user already accepted / installed that model).
+    """
+    repo = str(params.get("repo") or params.get("mmproj_repo") or "").strip()
     model_path = str(params.get("path") or "").strip()
     hf_file = str(params.get("file") or "").strip()
+    name_hint = str(params.get("name") or params.get("model_name") or "").strip()
     try:
         nbytes = int(params.get("bytes") or 0)
     except (TypeError, ValueError):
@@ -3881,36 +4055,16 @@ def download_mmproj(params: dict) -> dict:
             "ok": False,
             "error": "No Hugging Face repo is known for this file. Search for the model, then click its vision tag.",
         }
-    if not hf_file or nbytes <= 0 or "mmproj" not in hf_file.lower():
-        try:
-            tree = _hf_get_json(
-                "https://huggingface.co/api/models/"
-                + urllib.parse.quote(repo, safe="/")
-                + "/tree/main",
-                timeout=20,
-            )
-        except Exception as exc:
-            return {"ok": False, "error": f"Could not read that repo: {exc}"}
-        cands: list[tuple[str, int]] = []
-        if isinstance(tree, list):
-            for sib in tree:
-                if not isinstance(sib, dict):
-                    continue
-                name = str(sib.get("path") or sib.get("rfilename") or "")
-                if "mmproj" not in name.lower() or not name.lower().endswith(".gguf"):
-                    continue
-                try:
-                    size = int(sib.get("size") or 0)
-                except (TypeError, ValueError):
-                    size = 0
-                if size > 0:
-                    cands.append((name, size))
-        picked = _pick_mmproj(cands)
-        if not picked:
-            return {"ok": False, "error": "That Hugging Face repo has no mmproj file for this model."}
-        hf_file, nbytes = picked
+    resolved = _resolve_mmproj(repo, hf_file, nbytes, name_hint, model_path)
+    if not resolved:
+        return {
+            "ok": False,
+            "error": "That Hugging Face repo has no mmproj file for this model.",
+        }
+    repo, hf_file, nbytes = resolved
     dest = ""
-    if model_path and Path(model_path).is_file():
+    parent_on_disk = bool(model_path and Path(model_path).is_file())
+    if parent_on_disk:
         dest = str(Path(model_path).parent)
         already = Path(dest) / Path(hf_file).name
         try:
@@ -3918,12 +4072,15 @@ def download_mmproj(params: dict) -> dict:
                 return {"ok": True, "already": True, "note": "This model's mmproj is already next to it."}
         except OSError:
             pass
+    # Forward UI override; auto-accept when the parent GGUF is already installed.
+    accepted = params.get("accept_unverified") is True or parent_on_disk
     payload = {
         "id": str(params.get("id") or "") or ("mmproj:" + repo.replace("/", "__") + ":" + Path(hf_file).name),
         "repo": repo,
         "file": hf_file,
         "bytes": nbytes,
         "name": "mmproj · " + Path(hf_file).name,
+        "accept_unverified": True if accepted else False,
     }
     if dest:
         payload["beside"] = dest
@@ -4537,25 +4694,37 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
             backend=backend,
             model_max_ctx=model_max_ctx,
             dims=dims,
+            kv_type="q8_0",
         )
         offload_caption = ""
         offload_ngl = None
         offload_fit = ""
+        mmproj_preview = 0
         if first and Path(first).is_file():
             try:
                 nbytes = gguf_weight_bytes(Path(first))
             except OSError:
                 nbytes = int(max(size_gb, 0.1) * 1e9)
-            preview_ctx = int(budget.get("ctx_suggested") or LLAMA_CTX_FLOOR)
+            preview_ctx = LLAMA_CTX_FLOOR
+            mm_path = find_mmproj(first) if first else ""
+            if mm_path and Path(mm_path).is_file():
+                try:
+                    mmproj_preview = int(Path(mm_path).stat().st_size)
+                except OSError:
+                    mmproj_preview = 0
             preview = plan_gpu_fit(
                 file_bytes=nbytes,
                 ctx=preview_ctx,
                 meta=meta if first else {},
                 gpus=gpu_rows,
+                extra_gpu_bytes=mmproj_preview,
+                kv_type="q8_0",
             )
             offload_caption = str(preview.get("caption") or "")
             offload_ngl = preview.get("n_gpu_layers")
             offload_fit = str(preview.get("fit") or "")
+            if preview.get("ctx_unfit") or not preview.get("ok", True):
+                budget["ctx_fits_floor"] = False
         entry = {
             "installed": installed,
             "runnable": runnable,
@@ -4584,6 +4753,7 @@ def enrich_models(vram_gb: float | None = None, extra: list[dict] | None = None)
             "ctx_min": budget["ctx_min"],
             "ctx_max": budget["ctx_max"],
             "ctx_suggested": budget["ctx_suggested"],
+            "ctx_fits_floor": bool(budget.get("ctx_fits_floor", True)),
             "free_mem_after_gb": budget["free_mem_after_gb"],
             "architecture": dims.get("architecture") or "",
             "offload_caption": offload_caption,
@@ -4906,13 +5076,18 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
         (RUN / "model-arch.txt").write_text(arch + "\n", encoding="utf-8")
     except OSError:
         pass
-    ctx_lo = int(m.get("ctx_min") or 2048)
+    train_max = int(m.get("max_context") or m.get("ctx_model_max") or m.get("ctx_max") or 0)
+    if train_max and train_max < LLAMA_CTX_FLOOR:
+        return {
+            "ok": False,
+            "error": (
+                f"this model only supports {train_max} context; "
+                f"StickLLM requires at least {LLAMA_CTX_FLOOR}"
+            ),
+        }
     ctx_hi = int(m.get("ctx_max") or LLAMA_CTX_FLOOR)
     if ctx_size is None:
-        # Prefer Agent Zero 32K floor when the VRAM fit allows; never invent a
-        # larger value than ctx_hi (estimate_context_budget).
-        floor = LLAMA_CTX_FLOOR if ctx_hi >= LLAMA_CTX_FLOOR else ctx_hi
-        ctx = int(m.get("ctx_suggested") or floor)
+        ctx = LLAMA_CTX_FLOOR
     else:
         try:
             ctx = int(ctx_size)
@@ -4921,10 +5096,73 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     load = load_settings_for(model_id)
     if load.get("ctx"):
         ctx = int(load["ctx"])  # Settings > Advanced per-model ctx wins
-    ctx = max(ctx_lo, min(ctx_hi, ctx))
-    kv = KV_TYPES.get(str(kv_type or "f16").strip().lower())
+    # Hard floor: never start below 32K (raise requests; refuse if unfit below).
+    if ctx < LLAMA_CTX_FLOOR:
+        ctx = LLAMA_CTX_FLOOR
+    if ctx_hi and ctx_hi < LLAMA_CTX_FLOOR:
+        return {
+            "ok": False,
+            "error": (
+                f"not enough VRAM for {LLAMA_CTX_FLOOR} context with this model — "
+                f"need more VRAM or a smaller model (largest fit estimate was {ctx_hi})"
+            ),
+        }
+    if ctx_hi >= LLAMA_CTX_FLOOR:
+        ctx = min(ctx, ctx_hi)
+    # Product default is q8_0 (Minimum preset) — smaller KV helps hit the 32K floor.
+    kv = KV_TYPES.get(str(kv_type if kv_type is not None else "q8_0").strip().lower())
     if kv is None:
         return {"ok": False, "error": "kv_type must be f16, q8_0 or q4_0"}
+    # Planner gate: refuse rather than silently drop below 32K.
+    try:
+        nbytes = gguf_weight_bytes(Path(path))
+    except OSError:
+        nbytes = int(float(m.get("approx_size_gb") or 0) * (1024**3)) or 1
+    meta = {}
+    try:
+        meta = read_gguf_meta(path)
+    except Exception:
+        meta = {}
+    mm_extra = 0
+    mm_guess = str(m.get("mmproj") or find_mmproj(path) or "")
+    if mm_guess and Path(mm_guess).is_file():
+        try:
+            mm_extra = int(Path(mm_guess).stat().st_size)
+        except OSError:
+            mm_extra = 0
+    # Plan against card capacity (total), not current free — the outgoing model
+    # still holds VRAM until restart, which would false-refuse a valid 32K load.
+    fit_gpus: list[dict] = []
+    if m.get("backend") != "cpu":
+        for row in nvidia_gpu_rows():
+            r = dict(row)
+            tot = int(r.get("total_mib") or 0)
+            if tot > 0:
+                r["free_mib"] = tot
+            fit_gpus.append(r)
+    plan = plan_gpu_fit(
+        file_bytes=nbytes,
+        ctx=ctx,
+        meta=meta,
+        extra_gpu_bytes=mm_extra,
+        kv_type=kv,
+        gpus=fit_gpus,
+    )
+    if m.get("backend") != "cpu" and (plan.get("ctx_unfit") or not plan.get("ok", True) or int(plan.get("ctx") or 0) < LLAMA_CTX_FLOOR):
+        return {
+            "ok": False,
+            "error": (
+                plan.get("caption")
+                or (
+                    f"not enough VRAM for {LLAMA_CTX_FLOOR} context with usable offload — "
+                    "need more VRAM or a smaller model"
+                )
+            ),
+            "ctx_size": ctx,
+            "plan": {k: plan.get(k) for k in ("fit", "n_cpu_moe", "expected_gpu_mib", "ctx", "caption")},
+        }
+    if plan.get("ctx") and int(plan["ctx"]) >= LLAMA_CTX_FLOOR:
+        ctx = int(plan["ctx"])
     RUN.mkdir(parents=True, exist_ok=True)
     # A normal Load uses the VRAM fit. "Fewer GPU layers" is a separate override.
     try:
@@ -6721,7 +6959,13 @@ class Handler(BaseHTTPRequestHandler):
             # (e.g. EIO on flaky STICKLLM-DATA). UI needs a JSON body.
             sys.stderr.write(f"stickllm-control handle({action!r}) crashed: {e!r}\n")
             result = {"ok": False, "error": f"control error: {e}"}
-        self._send(200 if result.get("ok", True) or "code" in result else 500, result)
+        # Soft policy gates (unverified / blocked) stay HTTP 200 so the UI can
+        # offer Download anyway without treating the response as a hard failure.
+        soft = str(result.get("error") or "") in ("unverified", "blocked")
+        self._send(
+            200 if result.get("ok", True) or soft or "code" in result else 500,
+            result,
+        )
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):

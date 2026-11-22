@@ -3046,6 +3046,15 @@ for key in ("STICKLLM_CLR_LOC", "STICKLLM_CLR_SETUP"):
     elif key == "STICKLLM_CLR_SETUP" and cleared_meta and doc.get("setup_complete"):
         # Active vault meta was cleared; drop the reboot wizard skip flag.
         unlink(p)
+    elif key == "STICKLLM_CLR_SETUP" and doc.get("setup_complete"):
+        # Blob gone (this destroy) or pointer missing — never leave unlock-only
+        # claiming a vault that is not on disk.
+        try:
+            still = Path(candidate).is_file() if candidate else False
+        except Exception:
+            still = False
+        if not still:
+            unlink(p)
 PY
 }
 

@@ -1,0 +1,601 @@
+#!/usr/bin/env python3
+"""Apply / disable CMP (cmpunlocker) or RTX 3090 (gpu-unlock 2.0) after Continue.
+
+Usage:
+  stickllm-experimental-unlock --i-understand apply --path cmpunlocker --bus 0000:81:00.0
+  stickllm-experimental-unlock --i-understand apply --path gpu_unlock --bus 0000:21:00.0
+  stickllm-experimental-unlock --i-understand disable --path gpu_unlock --bus 0000:21:00.0
+  stickllm-experimental-unlock --dry-run apply --path cmpunlocker --bus 0000:81:00.0
+
+Safety:
+  - No NVIDIA firmware / patched .ko in StickLLM git; clone upstream on device.
+  - Refuse Secure Boot, refused drivers, proprietary-for-CMP, 32 GB CMP subsystem.
+  - Backup stock modules before CMP patch; StickLLM-owned rollback (upstream remove.sh is unreliable).
+  - Do not silently rewrite StickLLM GRUB beyond adding gpu_unlock.targets= / needed iommu.
+  - Cold reboot required after CMP apply (reported; not forced).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+LIB = Path(os.environ.get("STICKLLM_EXPERIMENTAL_LIB", "/usr/local/lib/stickllm_experimental.py"))
+ROOT = Path(os.environ.get("STICKLLM_EXPERIMENTAL_ROOT", "/var/lib/stickllm/experimental"))
+STATE = ROOT / "unlock-state.json"
+RUN = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
+PROGRESS = RUN / "experimental-unlock.json"
+GRUB_DEFAULT = Path("/etc/default/grub")
+GRUB_CMDLINE_KEY = "GRUB_CMDLINE_LINUX_DEFAULT"
+
+
+def _load_mod():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("stickllm_experimental", LIB)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"missing experimental lib: {LIB}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _run(cmd: list[str], *, check: bool = False, timeout: int = 600) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=check)
+
+
+def _write_progress(data: dict) -> None:
+    RUN.mkdir(parents=True, exist_ok=True)
+    data = dict(data)
+    data["updated"] = int(time.time())
+    tmp = PROGRESS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(PROGRESS)
+
+
+def _load_state() -> dict:
+    if not STATE.is_file():
+        return {"cards": {}}
+    try:
+        data = json.loads(STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"cards": {}}
+    if not isinstance(data, dict):
+        return {"cards": {}}
+    cards = data.get("cards")
+    if not isinstance(cards, dict):
+        data["cards"] = {}
+    return data
+
+
+def _save_state(state: dict) -> None:
+    ROOT.mkdir(parents=True, exist_ok=True)
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(STATE)
+
+
+def secure_boot_enabled() -> bool | None:
+    """True/False if detectable, else None."""
+    for path in (
+        Path("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"),
+        Path("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c".lower()),
+    ):
+        try:
+            raw = path.read_bytes()
+            if len(raw) >= 5:
+                return raw[4] == 1
+        except OSError:
+            continue
+    if shutil.which("mokutil"):
+        p = _run(["mokutil", "--sb-state"])
+        text = (p.stdout or "") + (p.stderr or "")
+        if "enabled" in text.lower():
+            return True
+        if "disabled" in text.lower():
+            return False
+    return None
+
+
+def nvidia_open_present() -> bool | None:
+    """True if nvidia-open modules/source look present; False proprietary-only; None unknown."""
+    # modinfo sourceversion / filename hints
+    p = _run(["modinfo", "-F", "filename", "nvidia"])
+    fn = (p.stdout or "").strip()
+    if not fn:
+        # Try open module name
+        p2 = _run(["modinfo", "-F", "filename", "nvidia"])
+        fn = (p2.stdout or "").strip()
+    if fn:
+        low = fn.lower()
+        if "nvidia-open" in low or "/nvidia/open" in low:
+            return True
+        if "nvidia" in low:
+            # Check for open DKMS tree
+            if Path("/usr/src").exists():
+                opens = list(Path("/usr/src").glob("nvidia-open-*"))
+                if opens:
+                    return True
+            # Proprietary path typically under /lib/modules/.../updates/dkms/nvidia.ko*
+            return False
+    # Package probe
+    p = _run(["dpkg-query", "-W", "-f=${Package}\\n", "nvidia-open-kernel-dkms", "nvidia-kernel-dkms"])
+    pkgs = set((p.stdout or "").split())
+    if "nvidia-open-kernel-dkms" in pkgs:
+        return True
+    if "nvidia-kernel-dkms" in pkgs:
+        return False
+    return None
+
+
+def driver_version() -> str:
+    p = _run(
+        [
+            "nvidia-smi",
+            "--query-gpu=driver_version",
+            "--format=csv,noheader",
+        ]
+    )
+    line = (p.stdout or "").strip().splitlines()
+    return line[0].strip() if line else ""
+
+
+def read_grub_cmdline() -> str:
+    if not GRUB_DEFAULT.is_file():
+        return ""
+    for line in GRUB_DEFAULT.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.strip().startswith(GRUB_CMDLINE_KEY + "="):
+            raw = line.split("=", 1)[1].strip()
+            if raw.startswith('"') and raw.endswith('"'):
+                return raw[1:-1]
+            return raw
+    return ""
+
+
+def write_grub_cmdline(new_val: str) -> None:
+    """Replace GRUB_CMDLINE_LINUX_DEFAULT only; leave other StickLLM policy alone."""
+    text = GRUB_DEFAULT.read_text(encoding="utf-8", errors="replace") if GRUB_DEFAULT.is_file() else ""
+    lines = text.splitlines()
+    out = []
+    found = False
+    quoted = f'{GRUB_CMDLINE_KEY}="{new_val}"'
+    for line in lines:
+        if line.strip().startswith(GRUB_CMDLINE_KEY + "="):
+            out.append(quoted)
+            found = True
+        else:
+            out.append(line)
+    if not found:
+        out.append(quoted)
+    GRUB_DEFAULT.parent.mkdir(parents=True, exist_ok=True)
+    GRUB_DEFAULT.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def set_gpu_unlock_targets(bdfs: list[str], *, enable: bool) -> dict:
+    """Add/remove gpu_unlock.targets= for the given BDFs. Preserve other tokens."""
+    cur = read_grub_cmdline()
+    tokens = [t for t in cur.split() if t]
+    others = [t for t in tokens if not t.startswith("gpu_unlock.targets=")]
+    existing = []
+    for t in tokens:
+        if t.startswith("gpu_unlock.targets="):
+            existing = [x for x in t.split("=", 1)[1].split(",") if x]
+    have = set(existing)
+    want = {b for b in bdfs if b}
+    if enable:
+        have |= want
+    else:
+        have -= want
+    if have:
+        others.append("gpu_unlock.targets=" + ",".join(sorted(have)))
+    new_val = " ".join(others)
+    write_grub_cmdline(new_val)
+    return {"cmdline": new_val, "targets": sorted(have)}
+
+
+def ensure_iommu_passthrough() -> dict:
+    """Add iommu=pt + amd/intel_iommu=on only if missing. Never remove StickLLM tokens."""
+    cur = read_grub_cmdline()
+    tokens = cur.split()
+    low = " ".join(tokens).lower()
+    added = []
+    # Detect vendor from /proc/cpuinfo
+    cpu = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").lower()
+    if "authenticamd" in cpu or "amd" in cpu:
+        if "amd_iommu=on" not in low:
+            tokens.append("amd_iommu=on")
+            added.append("amd_iommu=on")
+    else:
+        if "intel_iommu=on" not in low:
+            tokens.append("intel_iommu=on")
+            added.append("intel_iommu=on")
+    if "iommu=pt" not in low:
+        tokens.append("iommu=pt")
+        added.append("iommu=pt")
+    if added:
+        write_grub_cmdline(" ".join(tokens))
+    return {"added": added, "cmdline": read_grub_cmdline()}
+
+
+def backup_nvidia_modules() -> dict:
+    """Copy loaded nvidia*.ko* into StickLLM backup dir for CMP rollback."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest = ROOT / "backups" / f"nvidia-modules-{stamp}"
+    dest.mkdir(parents=True, exist_ok=True)
+    copied = []
+    p = _run(["modinfo", "-F", "filename", "nvidia"])
+    base = (p.stdout or "").strip()
+    if base:
+        src = Path(base)
+        if src.is_file():
+            # Copy siblings in same dir matching nvidia*.ko*
+            for f in src.parent.glob("nvidia*.ko*"):
+                shutil.copy2(f, dest / f.name)
+                copied.append(str(dest / f.name))
+    meta = {
+        "dir": str(dest),
+        "files": copied,
+        "modinfo": _run(["modinfo", "nvidia"]).stdout or "",
+        "driver_version": driver_version(),
+        "ts": stamp,
+    }
+    (dest / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    return meta
+
+
+def restore_nvidia_modules(backup_dir: str) -> dict:
+    bdir = Path(backup_dir)
+    if not bdir.is_dir():
+        return {"ok": False, "error": f"backup missing: {backup_dir}"}
+    restored = []
+    p = _run(["modinfo", "-F", "filename", "nvidia"])
+    target_dir = Path((p.stdout or "").strip()).parent if (p.stdout or "").strip() else None
+    if target_dir is None or not target_dir.is_dir():
+        # Common DKMS path
+        mods = list(Path("/lib/modules").glob("*/updates/dkms"))
+        target_dir = mods[0] if mods else None
+    if target_dir is None:
+        return {"ok": False, "error": "cannot locate nvidia module directory"}
+    for f in bdir.glob("nvidia*.ko*"):
+        shutil.copy2(f, target_dir / f.name)
+        restored.append(str(target_dir / f.name))
+    _run(["depmod", "-a"])
+    if shutil.which("update-initramfs"):
+        _run(["update-initramfs", "-u"])
+    return {"ok": True, "restored": restored, "dir": str(target_dir)}
+
+
+def clone_or_update(url: str, dest: Path) -> None:
+    if (dest / ".git").is_dir():
+        _run(["git", "-C", str(dest), "fetch", "--depth", "1", "origin"], check=False)
+        _run(["git", "-C", str(dest), "reset", "--hard", "origin/HEAD"], check=False)
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        shutil.rmtree(dest)
+    _run(["git", "clone", "--depth", "1", url, str(dest)], check=True, timeout=300)
+
+
+def apply_cmp(*, bus: str, dry_run: bool) -> dict:
+    mod = _load_mod()
+    sb = secure_boot_enabled()
+    open_drv = nvidia_open_present()
+    ver = driver_version()
+    card = mod.classify_nvidia_card("10de:20c2", bus=bus)  # refined by caller if needed
+    # Prefer real classify from sysfs if available
+    try:
+        from pathlib import Path as P
+
+        base = P("/sys/bus/pci/devices") / bus
+        if base.is_dir():
+            ven = (base / "vendor").read_text().strip().replace("0x", "")
+            dev = (base / "device").read_text().strip().replace("0x", "")
+            sub_v = (base / "subsystem_vendor").read_text().strip().replace("0x", "")
+            sub_d = (base / "subsystem_device").read_text().strip().replace("0x", "")
+            card = mod.classify_nvidia_card(
+                f"{ven}:{dev}",
+                subsystem_id=f"{sub_v}:{sub_d}",
+                bus=bus,
+            )
+    except OSError:
+        pass
+    gate = mod.unlock_preflight(
+        card,
+        driver_version=ver,
+        secure_boot=sb,
+        nvidia_open=open_drv,
+        already_applied=False,
+    )
+    if not gate.get("ok"):
+        return {
+            "ok": False,
+            "applied": False,
+            "status": "failed",
+            "reason": gate.get("reason") or "preflight failed",
+            "report": mod.unlock_report_line(card, "failed", gate.get("reason") or "preflight"),
+        }
+    if dry_run:
+        return {
+            "ok": True,
+            "applied": False,
+            "dry_run": True,
+            "status": "ready",
+            "reason": "dry-run; would clone cmpunlocker, backup modules, run install.sh",
+            "report": mod.unlock_report_line(card, "skipped", "dry-run ready"),
+            "gate": gate,
+        }
+
+    work = ROOT / "src" / "cmpunlocker"
+    _write_progress({"state": "cloning", "path": "cmpunlocker"})
+    clone_or_update(mod.CMPUNLOCKER_GIT, work)
+    backup = backup_nvidia_modules()
+    # Prevent upstream install from rewriting GRUB: snapshot cmdline, restore after, then add iommu only if needed.
+    before_cmdline = read_grub_cmdline()
+    env = os.environ.copy()
+    env["STICKLLM_CMPUNLOCKER"] = "1"
+    _write_progress({"state": "installing", "path": "cmpunlocker", "backup": backup.get("dir")})
+    # Do not pass --profile on mixed hosts; let installer classify by PCI ID.
+    proc = subprocess.run(
+        ["bash", "./install.sh"],
+        cwd=str(work),
+        capture_output=True,
+        text=True,
+        timeout=1800,
+        env=env,
+    )
+    # Restore exact StickLLM cmdline, then add only missing iommu tokens.
+    write_grub_cmdline(before_cmdline)
+    iommu = ensure_iommu_passthrough()
+    if shutil.which("update-grub"):
+        _run(["update-grub"])
+    if proc.returncode != 0:
+        restore_nvidia_modules(backup.get("dir") or "")
+        return {
+            "ok": False,
+            "applied": False,
+            "status": "failed",
+            "reason": f"cmpunlocker install failed (rc={proc.returncode})",
+            "stdout": (proc.stdout or "")[-4000:],
+            "stderr": (proc.stderr or "")[-4000:],
+            "report": mod.unlock_report_line(card, "failed", f"install rc={proc.returncode}"),
+            "backup": backup,
+        }
+    state = _load_state()
+    state.setdefault("cards", {})[bus] = {
+        "path": "cmpunlocker",
+        "applied": True,
+        "backup": backup.get("dir"),
+        "ts": int(time.time()),
+        "needs_cold_reboot": True,
+        "iommu": iommu,
+        "label": card.get("label"),
+        "pci_id": card.get("pci_id"),
+    }
+    _save_state(state)
+    return {
+        "ok": True,
+        "applied": True,
+        "status": "applied",
+        "reason": "patched nvidia-open; cold reboot required (shutdown -h now)",
+        "needs_cold_reboot": True,
+        "backup": backup,
+        "iommu": iommu,
+        "report": mod.unlock_report_line(
+            card, "applied", "cmpunlocker install ok; cold reboot required"
+        ),
+        "stdout": (proc.stdout or "")[-2000:],
+    }
+
+
+def disable_cmp(*, bus: str, dry_run: bool) -> dict:
+    mod = _load_mod()
+    state = _load_state()
+    entry = (state.get("cards") or {}).get(bus) or {}
+    backup = entry.get("backup") or ""
+    if dry_run:
+        return {
+            "ok": True,
+            "applied": False,
+            "dry_run": True,
+            "status": "ready",
+            "reason": "dry-run; would restore stock modules from StickLLM backup",
+            "backup": backup,
+        }
+    if backup:
+        restored = restore_nvidia_modules(str(backup))
+        if not restored.get("ok"):
+            return {
+                "ok": False,
+                "status": "failed",
+                "reason": restored.get("error") or "restore failed",
+                "report": f"Found: CMP at {bus} -> Unlock: failed (restore)",
+            }
+    else:
+        # Best-effort: run upstream remove if tree exists (known incomplete).
+        work = ROOT / "src" / "cmpunlocker"
+        if (work / "remove.sh").is_file():
+            subprocess.run(["bash", "./remove.sh", "--yes"], cwd=str(work), timeout=600)
+    if bus in (state.get("cards") or {}):
+        del state["cards"][bus]
+        _save_state(state)
+    return {
+        "ok": True,
+        "applied": False,
+        "status": "disabled",
+        "reason": "stock modules restored; cold reboot recommended",
+        "needs_cold_reboot": True,
+        "report": f"Found: CMP at {bus} -> Unlock: skipped (disabled; cold reboot recommended)",
+    }
+
+
+def apply_gpu_unlock(*, bus: str, dry_run: bool) -> dict:
+    mod = _load_mod()
+    sb = secure_boot_enabled()
+    card = mod.classify_nvidia_card(mod.PCI_RTX_3090, bus=bus)
+    try:
+        base = Path("/sys/bus/pci/devices") / bus
+        if base.is_dir():
+            ven = (base / "vendor").read_text().strip().replace("0x", "")
+            dev = (base / "device").read_text().strip().replace("0x", "")
+            card = mod.classify_nvidia_card(f"{ven}:{dev}", bus=bus)
+    except OSError:
+        pass
+    gate = mod.unlock_preflight(card, secure_boot=sb, already_applied=False)
+    if not gate.get("ok"):
+        return {
+            "ok": False,
+            "applied": False,
+            "status": "failed",
+            "reason": gate.get("reason") or "preflight failed",
+            "report": mod.unlock_report_line(card, "failed", gate.get("reason") or "preflight"),
+        }
+    if card.get("kind") != "rtx_3090":
+        return {
+            "ok": False,
+            "applied": False,
+            "status": "failed",
+            "reason": "gpu_unlock path is scoped to RTX 3090 (10de:2204) only",
+            "report": mod.unlock_report_line(card, "failed", "out of scope"),
+        }
+    if dry_run:
+        return {
+            "ok": True,
+            "applied": False,
+            "dry_run": True,
+            "status": "ready",
+            "reason": "dry-run; would clone gpu-unlock, make install, set gpu_unlock.targets",
+            "report": mod.unlock_report_line(card, "skipped", "dry-run ready"),
+            "gate": gate,
+        }
+    work = ROOT / "src" / "gpu-unlock"
+    _write_progress({"state": "cloning", "path": "gpu_unlock"})
+    clone_or_update(mod.GPU_UNLOCK_GIT, work)
+    _write_progress({"state": "building", "path": "gpu_unlock"})
+    # Prefer Debian package path; falls back to make install.
+    proc = subprocess.run(
+        ["make", "install-deb"],
+        cwd=str(work),
+        capture_output=True,
+        text=True,
+        timeout=3600,
+    )
+    if proc.returncode != 0:
+        proc = subprocess.run(
+            ["make", "install"],
+            cwd=str(work),
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "applied": False,
+            "status": "failed",
+            "reason": f"gpu-unlock build/install failed (rc={proc.returncode})",
+            "stderr": (proc.stderr or "")[-4000:],
+            "report": mod.unlock_report_line(card, "failed", f"install rc={proc.returncode}"),
+        }
+    targets = set_gpu_unlock_targets([bus], enable=True)
+    if shutil.which("update-grub"):
+        _run(["update-grub"])
+    if shutil.which("update-initramfs"):
+        _run(["update-initramfs", "-u"])
+    state = _load_state()
+    state.setdefault("cards", {})[bus] = {
+        "path": "gpu_unlock",
+        "applied": True,
+        "ts": int(time.time()),
+        "targets": targets,
+        "label": card.get("label"),
+        "pci_id": card.get("pci_id"),
+        "needs_reboot": True,
+    }
+    _save_state(state)
+    return {
+        "ok": True,
+        "applied": True,
+        "status": "applied",
+        "reason": "gpu_unlock installed; reboot to load initramfs module",
+        "needs_reboot": True,
+        "targets": targets,
+        "report": mod.unlock_report_line(card, "applied", "gpu_unlock.targets set; reboot required"),
+        "stdout": (proc.stdout or "")[-2000:],
+    }
+
+
+def disable_gpu_unlock(*, bus: str, dry_run: bool) -> dict:
+    mod = _load_mod()
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "status": "ready",
+            "reason": "dry-run; would drop bus from gpu_unlock.targets",
+        }
+    targets = set_gpu_unlock_targets([bus], enable=False)
+    if shutil.which("update-grub"):
+        _run(["update-grub"])
+    if shutil.which("update-initramfs"):
+        _run(["update-initramfs", "-u"])
+    state = _load_state()
+    if bus in (state.get("cards") or {}):
+        del state["cards"][bus]
+        _save_state(state)
+    return {
+        "ok": True,
+        "applied": False,
+        "status": "disabled",
+        "reason": "gpu_unlock.targets updated; reboot to drop unlock",
+        "needs_reboot": True,
+        "targets": targets,
+        "report": f"Found: RTX 3090 at {bus} -> Unlock: skipped (disabled; reboot recommended)",
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--i-understand", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("action", choices=("apply", "disable", "status"))
+    ap.add_argument("--path", choices=("cmpunlocker", "gpu_unlock"), default="")
+    ap.add_argument("--bus", default="")
+    args = ap.parse_args(argv)
+
+    if args.action == "status":
+        print(json.dumps(_load_state(), indent=2))
+        return 0
+
+    if not args.i_understand and not args.dry_run:
+        print("Refusing without --i-understand (Cancel/Continue required).", file=sys.stderr)
+        return 1
+    if not args.bus:
+        print("--bus required", file=sys.stderr)
+        return 2
+    if not args.path:
+        print("--path required", file=sys.stderr)
+        return 2
+
+    _write_progress({"state": "starting", "action": args.action, "path": args.path, "bus": args.bus})
+    if args.path == "cmpunlocker":
+        result = apply_cmp(bus=args.bus, dry_run=args.dry_run) if args.action == "apply" else disable_cmp(
+            bus=args.bus, dry_run=args.dry_run
+        )
+    else:
+        result = (
+            apply_gpu_unlock(bus=args.bus, dry_run=args.dry_run)
+            if args.action == "apply"
+            else disable_gpu_unlock(bus=args.bus, dry_run=args.dry_run)
+        )
+    _write_progress({"state": "done", **result})
+    print(json.dumps(result, indent=2))
+    return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

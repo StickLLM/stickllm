@@ -1,5 +1,6 @@
-"""Experimental tab: classify GPUs and gate engine offers (no network)."""
+"""Experimental tab: classify GPUs, gate offers, plan downloads, unlock preflight."""
 import importlib.util
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +52,14 @@ def test_offers_3090_ninfer_needs_debian_13():
     assert strata and not strata[0]["blocked"]
 
 
+def test_offers_windows_builds_catalogued():
+    m = _load()
+    cards = [m.classify_nvidia_card("10de:2204", bus="0000:21:00.0")]
+    win = m.engine_offers(cards, debian_major_version=13, platform="windows")
+    assert any(o["engine"] == "strata" and not o["blocked"] for o in win)
+    assert any(o["engine"] == "ninfer-all" and not o["blocked"] for o in win)
+
+
 def test_locked_cmp_blocks_engines():
     m = _load()
     cards = [m.classify_nvidia_card("10de:20c2", memory_total_mib=8192)]
@@ -78,14 +87,145 @@ def test_report_line_and_driver_gate():
     assert bad is False and "615.78.08" in reason
 
 
-def test_snapshot_master_off():
+def test_unlock_preflight_cmp_needs_open_and_allowlist():
     m = _load()
-    snap = m.experimental_snapshot(
-        [{"vendor": "nvidia", "pci_id": "10de:2204", "bus": "0000:21:00.0", "memory_total_mib": 24576, "name": "RTX 3090"}],
-        os_release='VERSION_ID="13"\n',
-        master_unlocks_enabled=False,
-    )
+    c = m.classify_nvidia_card("10de:20c2", bus="0000:81:00.0")
+    gate = m.unlock_preflight(c, driver_version="615.71.09", secure_boot=False, nvidia_open=False)
+    assert gate["ok"] is False and "nvidia-open" in gate["reason"]
+    gate2 = m.unlock_preflight(c, driver_version="615.71.09", secure_boot=False, nvidia_open=True)
+    assert gate2["ok"] is True
+    gate3 = m.unlock_preflight(c, driver_version="615.78.08", secure_boot=False, nvidia_open=True)
+    assert gate3["ok"] is False
+    gate4 = m.unlock_preflight(c, driver_version="615.71.09", secure_boot=True, nvidia_open=True)
+    assert gate4["ok"] is False and "Secure Boot" in gate4["reason"]
+
+
+def test_unlock_preflight_3090():
+    m = _load()
+    c = m.classify_nvidia_card("10de:2204", bus="0000:21:00.0")
+    gate = m.unlock_preflight(c, secure_boot=False)
+    assert gate["ok"] is True
+    assert "gpu_unlock" in (gate.get("path") or "")
+
+
+def test_snapshot_per_card_intent_no_master_toggle():
+    m = _load()
+    rows = [{"vendor": "nvidia", "pci_id": "10de:2204", "bus": "0000:21:00.0", "memory_total_mib": 24576, "name": "RTX 3090"}]
+    snap = m.experimental_snapshot(rows, os_release='VERSION_ID="13"\n', card_unlock_intent={})
     assert snap["ninfer_linux_ok"] is True
     assert snap["auto_install"] is False
-    assert any("master toggle off" in r for r in snap["reports"])
+    assert "master_unlocks_enabled" not in snap
+    assert snap["wired"]["download"] is True
+    assert any("off by default" in r for r in snap["reports"])
+    on = m.experimental_snapshot(
+        rows,
+        os_release='VERSION_ID="13"\n',
+        card_unlock_intent={"0000:21:00.0": True},
+    )
+    assert any("intent on" in r for r in on["reports"])
     assert "3 November" in snap["nov3_context"]
+
+
+def test_name_fallback_3090():
+    m = _load()
+    cards = m.classify_inventory(
+        [{"vendor": "nvidia", "name": "NVIDIA GeForce RTX 3090", "bus": "0000:10:00.0", "memory_total_mib": 24576}]
+    )
+    assert cards and cards[0]["kind"] == "rtx_3090" and cards[0]["unlock_in_scope"] is True
+
+
+def test_plan_strata_and_ninfer_from_fixture():
+    m = _load()
+    strata_release = {
+        "tag_name": "v0.2.18",
+        "html_url": "https://github.com/Niko1221/Strata/releases/tag/v0.2.18",
+        "assets": [
+            {
+                "name": "Strata-0.2.18-linux-x86_64.AppImage",
+                "browser_download_url": "https://example.test/AppImage",
+                "size": 100,
+            },
+            {
+                "name": "strata-engine-0.1.64-linux-x86_64-cuda-cuda13.tar.gz",
+                "browser_download_url": "https://example.test/engine",
+                "size": 200,
+            },
+            {
+                "name": "Strata-0.2.18-windows-x64-setup.exe",
+                "browser_download_url": "https://example.test/setup.exe",
+                "size": 50,
+            },
+            {
+                "name": "strata-engine-0.1.64-windows-x86_64-cuda-cuda13.tar.gz",
+                "browser_download_url": "https://example.test/win-engine",
+                "size": 60,
+            },
+            {
+                "name": "SHA256SUMS.txt",
+                "browser_download_url": "https://example.test/SHA256SUMS.txt",
+                "size": 10,
+            },
+        ],
+    }
+    linux = m.plan_engine_download("strata", strata_release, platform="linux", cuda="cuda13")
+    assert not linux["blocked"]
+    names = [a["name"] for a in linux["assets"]]
+    assert any(n.endswith(".AppImage") for n in names)
+    assert any("cuda13" in n and "linux" in n for n in names)
+    assert any("SHA256" in n for n in names)
+    win = m.plan_engine_download("strata", strata_release, platform="windows", cuda="cuda13")
+    assert not win["blocked"]
+    assert any("setup.exe" in a["name"] for a in win["assets"])
+
+    ninfer_release = {
+        "tag_name": "2026-11-21.4",
+        "html_url": "https://github.com/iamwavecut/ninfer-all/releases/tag/2026-11-21.4",
+        "assets": [
+            {
+                "name": "ninfer-linux-x64-cuda12.9-sm70-75-80-86-89-bd8195f42e87.tar.gz.001",
+                "browser_download_url": "https://example.test/n1",
+                "size": 10,
+            },
+            {
+                "name": "ninfer-linux-x64-cuda12.9-sm70-75-80-86-89-bd8195f42e87.tar.gz.002",
+                "browser_download_url": "https://example.test/n2",
+                "size": 10,
+            },
+            {
+                "name": "SHA256SUMS-ninfer-linux-x64-cuda12.9-sm70-75-80-86-89-bd8195f42e87.txt",
+                "browser_download_url": "https://example.test/nsha",
+                "size": 5,
+            },
+            {
+                "name": "ninfer-windows-x64-cuda12.9-sm70-75-80-86-89-bd8195f42e87.7z.001",
+                "browser_download_url": "https://example.test/w1",
+                "size": 10,
+            },
+            {
+                "name": "SHA256SUMS-ninfer-windows-x64-cuda12.9-sm70-75-80-86-89-bd8195f42e87.txt",
+                "browser_download_url": "https://example.test/wsha",
+                "size": 5,
+            },
+        ],
+    }
+    blocked = m.plan_engine_download(
+        "ninfer-all", ninfer_release, platform="linux", cuda="cuda12.9", debian_major_version=12
+    )
+    assert blocked["blocked"]
+    ok = m.plan_engine_download(
+        "ninfer-all", ninfer_release, platform="linux", cuda="cuda12.9", debian_major_version=13
+    )
+    assert not ok["blocked"]
+    assert len([a for a in ok["assets"] if a.get("role") == "payload"]) == 2
+    win_n = m.plan_engine_download(
+        "ninfer-all", ninfer_release, platform="windows", cuda="cuda12.9", debian_major_version=13
+    )
+    assert not win_n["blocked"]
+    assert any(".7z." in a["name"] for a in win_n["assets"])
+
+
+def test_parse_sha256sums():
+    m = _load()
+    text = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899  foo.bin\n"
+    got = m.parse_sha256sums(text)
+    assert got["foo.bin"] == "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"

@@ -92,8 +92,13 @@ list_devices_has_cuda() {
   if [[ -f "$REGISTER_SO" ]]; then
     envcmd+=("LD_PRELOAD=$REGISTER_SO")
   fi
-  out="$("${envcmd[@]}" "$CUDA_BIN" --list-devices 2>/dev/null || true)"
-  echo "$out" | grep -qE '^[[:space:]]*CUDA[0-9]'
+  # Capture stderr: b12617+ may print ggml_cuda_init on stderr while
+  # --list-devices still says "(none)" until device labels catch up.
+  out="$("${envcmd[@]}" "$CUDA_BIN" --list-devices 2>&1 || true)"
+  if echo "$out" | grep -qE '^[[:space:]]*CUDA[0-9]'; then
+    return 0
+  fi
+  echo "$out" | grep -qE 'ggml_cuda_init: found [1-9][0-9]* CUDA device'
 }
 
 list_devices_has_vulkan() {

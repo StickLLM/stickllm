@@ -1,6 +1,21 @@
+## 0.8.1 - Experimental engines + model/load fixes
+- **Delete vault → no stale unlock.** After vault delete (and on Settings reopen), UI re-probes for a real `stickllm-vault.img`; orphan `setup_complete` / localStorage no longer shows “A vault was found — enter passcode”. No blob → full setup automatically. Control `setup_status` only reports configured when the blob exists (or vault is unlocked); destroy clears orphan setup markers.
+- **Experimental tab works for real (Cancel/Continue).** Strata + NInfer-all download via `stickllm-experimental-engine` (GitHub latest, SHA-256 verify, no default-engine swap). CMP unlock via cmpunlocker + RTX 3090 via Zagitta gpu-unlock 2.0 in `stickllm-experimental-unlock` (clone on-device; stock module backup/rollback; GRUB cmdline preserved except `gpu_unlock.targets=` / missing iommu). Per-card off-by-default; **no master unlock toggle**. No NVIDIA blobs in git.
+- **GPU offer gating.** Detect PCI IDs; offer engines only for supported cards; locked CMP blocks engine offers until unlocked; NInfer Linux requires Debian 13; Windows asset plans catalogued.
+- **llama.cpp b12617 + mmproj.** Bake ships upstream b12617 CUDA llama-server (vision/mmproj path); CUDA register shim rebuilt.
+- **Vision override policy.** mmproj download may use `accept_unverified` (mmproj is never on the verified GGUF list); auto-trust companion when the parent GGUF is already on disk.
+- **VL-3B catalog.** Optional `qwen25-vl-3b-q4km` (Qwen2.5-VL-3B Instruct Q4_K_M + mmproj Q8_0) for 8 GB @ 32K; not Open/probe default.
+- **MoE / 32K floor.** Activate refuses instead of silently shrinking below the 32K context floor when VRAM cannot hold ≥32K + usable offload; MoE uses `-ngl 99` + `--n-cpu-moe` spill.
+- **HF typo search.** Catalog / search-within fuzzy match (e.g. `lnkling` → Inkling) before and alongside HF results.
+- **Download → Installed refresh.** After a successful download, Installed / Load lists refresh so the new GGUF appears without a reboot.
+- **Free-space UI.** Settings shows DATA / host free space honestly (`data_free_gb`).
+- **firmware-mediatek.** Explicit package for mt7921/mt7922/mt7925 Wi-Fi + BT on Debian 13.
+- **A0 MiniLM skip.** One-shot embed preload probes scipy ABI first; skips cleanly when broken so boot does not hang on “memory model (MiniLM)” (entrypoint repairs before UI).
+- **Still blocked for full CMP unlock on this bake:** proprietary `nvidia-kernel-dkms` (CMP needs nvidia-open + allowlisted driver). Live mixed-host unlock verify remains lab follow-up.
+
 ## 0.8.0 - Debian 13 + Experimental tab scaffolding
 - **Debian 13 (trixie) fresh image.** Live-build targets `trixie` (not an in-place dist-upgrade). NInfer-all Linux packages need glibc 2.41 / Debian 13. Flash requires **full readback**.
-- **Experimental tab (scaffolding).** Settings → Experimental: detect NVIDIA cards, offer Strata / NInfer-all when the card matches, CMP 170HX (`10de:20c2` 8 GB + `10de:2082` 10 GB) and RTX 3090 (`10de:2204`) unlock UI stubs with Cancel/Continue, master unlocks toggle. No auto-install; unlock/download actions stay stubs (`need_confirm`). No NVIDIA firmware / `.run` / patched `nvidia.ko` in the public tree.
+- **Experimental tab (scaffolding).** Settings → Experimental: detect NVIDIA cards, offer Strata / NInfer-all when the card matches, CMP 170HX (`10de:20c2` 8 GB + `10de:2082` 10 GB) and RTX 3090 (`10de:2204`) unlock UI stubs with Cancel/Continue. No auto-install; unlock/download actions were stubs. No NVIDIA firmware / `.run` / patched `nvidia.ko` in the public tree.
 - **NVIDIA driver.** Bake `nvidia-kernel-dkms` + userspace (trixie 550.x). Prefer open modules later — `nvidia-open-kernel-dkms` failed DKMS compile in the live-build chroot against 6.12.117+deb13.
 - **Model load.** Baked default path is Qwen2.5-7B Instruct under `/opt/stickllm/models/appagent` (world-readable); fix `default-model.env` away from missing Qwen3.5-4B; `stickllm-pick-gpus` no longer captures CUDA/mktemp stderr into `cuda.env` filenames; ensure `stickllm-cuda-register.so` is mode 755. App-agent Advanced copy matches real autoload (7B, not 4B).
 - **Wi-Fi wizard.** Setup wizard shows **Connected to …** (or waiting for uplink) after Join.

@@ -91,6 +91,15 @@ if [[ -d "$SRC/etc/stickllm" ]]; then
   shopt -u nullglob
 fi
 
+# Pinned model catalog (HF allow-list + hashes). Lab hotfix path for Models page.
+if [[ -f "$SRC/etc/stickllm/models/catalog.toml" ]]; then
+  install -d -m 755 /etc/stickllm/models
+  sed -i '1s/^\xEF\xBB\xBF//; s/\r$//' "$SRC/etc/stickllm/models/catalog.toml" 2>/dev/null || true
+  install -m 644 "$SRC/etc/stickllm/models/catalog.toml" /etc/stickllm/models/catalog.toml
+  echo "installed /etc/stickllm/models/catalog.toml"
+  installed=1
+fi
+
 if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
   sed -i 's/\r$//' "$SRC/etc/sudoers.d/stickllm" 2>/dev/null || true
   install -m 440 "$SRC/etc/sudoers.d/stickllm" /etc/sudoers.d/stickllm
@@ -158,6 +167,89 @@ if [[ -d "$SRC/etc/chromium/policies/managed" ]]; then
     installed=1
   done
   shopt -u nullglob
+fi
+
+# CUDA/Vulkan/CPU llama-server + shared libs (lab hotfix; backs up previous tree).
+if [[ -d "$SRC/opt/stickllm/bin" ]] || [[ -d "$SRC/opt/stickllm/lib" ]]; then
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  bak="/var/lib/stickllm/llama-bak-$ts"
+  mkdir -p "$bak"
+  if [[ -d /opt/stickllm/bin ]]; then
+    cp -a /opt/stickllm/bin "$bak/bin" 2>/dev/null || true
+  fi
+  if [[ -d /opt/stickllm/lib ]]; then
+    cp -a /opt/stickllm/lib "$bak/lib" 2>/dev/null || true
+  fi
+  echo "backed up previous llama tree → $bak"
+  if [[ -d "$SRC/opt/stickllm/bin" ]]; then
+    mkdir -p /opt/stickllm/bin
+    shopt -s nullglob
+    for f in "$SRC/opt/stickllm/bin"/llama-server*; do
+      [[ -f "$f" ]] || continue
+      base="$(basename "$f")"
+      rm -f "/opt/stickllm/bin/$base"
+      install -m 755 "$f" "/opt/stickllm/bin/$base"
+      echo "installed /opt/stickllm/bin/$base"
+      installed=1
+    done
+    shopt -u nullglob
+  fi
+  if [[ -d "$SRC/opt/stickllm/lib" ]]; then
+    mkdir -p /opt/stickllm/lib
+    # Drop stale StickLLM sonames (e.g. libggml-cpu.so.0.29.0) that shadow the
+    # upstream CUDA tree and cause "no CPU backend found" on load.
+    echo "purge stale ggml/llama sonames in /opt/stickllm/lib"
+    shopt -s nullglob
+    for stale in /opt/stickllm/lib/libggml*.so.0* \
+                 /opt/stickllm/lib/libllama*.so.0* \
+                 /opt/stickllm/lib/libmtmd*.so.0* \
+                 /opt/stickllm/lib/libllama-server-impl.so \
+                 /opt/stickllm/lib/libggml-cpu.so \
+                 /opt/stickllm/lib/libggml-base.so \
+                 /opt/stickllm/lib/libggml.so \
+                 /opt/stickllm/lib/libllama.so \
+                 /opt/stickllm/lib/libmtmd.so \
+                 /opt/stickllm/lib/libllama-common.so; do
+      [[ -e "$stale" || -L "$stale" ]] || continue
+      rm -f "$stale"
+      echo "purged $stale"
+    done
+    shopt -u nullglob
+    # Replace shipped llama/ggml/mtmd/cuda runtime objects; keep unrelated files.
+    shopt -s nullglob
+    for f in "$SRC/opt/stickllm/lib"/*; do
+      [[ -e "$f" ]] || continue
+      base="$(basename "$f")"
+      case "$base" in
+        libggml*|libllama*|libmtmd*|libcudart*|libcublas*|libcublasLt*|libnccl*|stickllm-cuda-register.*)
+          rm -f "/opt/stickllm/lib/$base"
+          cp -a "$f" "/opt/stickllm/lib/$base"
+          # Symlinks keep mode from source; regular files need +x for .so
+          if [[ -f "/opt/stickllm/lib/$base" && ! -L "/opt/stickllm/lib/$base" ]]; then
+            chmod 755 "/opt/stickllm/lib/$base" 2>/dev/null || true
+          fi
+          echo "installed /opt/stickllm/lib/$base"
+          installed=1
+          ;;
+        *)
+          echo "skipping non-llama lib: $base" >&2
+          ;;
+      esac
+    done
+    shopt -u nullglob
+    # Upstream CUDA builds ship arch-specific libggml-cpu-*.so but no default
+    # libggml-cpu.so; without it llama-server fails: "no CPU backend found".
+    if [[ ! -e /opt/stickllm/lib/libggml-cpu.so ]]; then
+      for cand in libggml-cpu-x64.so libggml-cpu-haswell.so libggml-cpu-zen4.so libggml-cpu-sse42.so; do
+        if [[ -f "/opt/stickllm/lib/$cand" ]]; then
+          ln -sfn "$cand" /opt/stickllm/lib/libggml-cpu.so
+          echo "linked /opt/stickllm/lib/libggml-cpu.so -> $cand"
+          installed=1
+          break
+        fi
+      done
+    fi
+  fi
 fi
 
 if [[ -d "$SRC/opt/stickllm/ui" ]]; then
@@ -262,6 +354,12 @@ if [[ -d "$SRC/usr/local/share/stickllm" ]]; then
     installed=1
   done
   shopt -u nullglob
+  if [[ -f "$SRC/usr/local/share/stickllm/verified.json" ]]; then
+    sed -i 's/\r$//' "$SRC/usr/local/share/stickllm/verified.json" 2>/dev/null || true
+    install -m 644 "$SRC/usr/local/share/stickllm/verified.json" /usr/local/share/stickllm/verified.json
+    echo "installed /usr/local/share/stickllm/verified.json"
+    installed=1
+  fi
 fi
 
 # Baked Agent Zero stickllm-apps skill seed (ISO + settings open).
@@ -282,9 +380,39 @@ if [[ -d "$SRC/usr/local/share/stickllm/agent-zero-skills" ]]; then
   done < <(find "$SRC/usr/local/share/stickllm/agent-zero-skills" -type f -print0)
 fi
 
+# Optional .deb drops (lab hotfix). Used to restore docker-cli on sticks built
+# before the Debian trixie docker.io / docker-cli split was listed in the ISO.
+if [[ -d "$SRC/debs" ]]; then
+  shopt -s nullglob
+  for deb in "$SRC/debs"/*.deb; do
+    [[ -f "$deb" ]] || continue
+    if dpkg -i "$deb"; then
+      echo "installed deb $(basename "$deb")"
+      installed=1
+    else
+      echo "WARNING: dpkg -i failed for $(basename "$deb")" >&2
+      apt-get -y -f install >/dev/null 2>&1 || true
+      if dpkg -i "$deb"; then
+        echo "installed deb $(basename "$deb") after fix"
+        installed=1
+      else
+        echo "ERROR: could not install $(basename "$deb")" >&2
+        exit 1
+      fi
+    fi
+  done
+  shopt -u nullglob
+fi
+
 if [[ "$installed" -eq 0 ]]; then
   echo "Nothing to install under $SRC" >&2
   exit 1
+fi
+
+# Retired lab-only force-activate helper — never leave it on the stick.
+if [[ -e /usr/local/bin/stickllm-lab-ctx32 ]]; then
+  rm -f /usr/local/bin/stickllm-lab-ctx32
+  echo "removed /usr/local/bin/stickllm-lab-ctx32"
 fi
 
 if [[ "$units_changed" -eq 1 ]]; then

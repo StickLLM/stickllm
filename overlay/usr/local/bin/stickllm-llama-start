@@ -126,9 +126,13 @@ cuda_devices_ok() {
       ${REGISTER_SO:+LD_PRELOAD="$REGISTER_SO"} \
       CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES-}" \
       GGML_BACKEND_DIR="$GGML_BACKEND_DIR" \
-      "$CUDA_BIN" --list-devices 2>/dev/null || true
+      "$CUDA_BIN" --list-devices 2>&1 || true
   )"
-  echo "$out" | grep -qE '^[[:space:]]*CUDA[0-9]'
+  if echo "$out" | grep -qE '^[[:space:]]*CUDA[0-9]'; then
+    return 0
+  fi
+  # b12617+: register shim inits CUDA; list-devices may still print (none).
+  echo "$out" | grep -qE 'ggml_cuda_init: found [1-9][0-9]* CUDA device'
 }
 
 if [[ -z "$MODEL" ]]; then
@@ -227,8 +231,12 @@ if [[ -n "$ctk" || -n "$ctv" ]]; then
     kv_extra+=(--flash-attn on)
   fi
 fi
+# Default one slot (llama.cpp defaults to 4). Multi-slot is available via
+# Settings > Advanced (STICKLLM_PARALLEL); single-user chat TTFT stays lower.
 if [[ "${STICKLLM_PARALLEL:-}" =~ ^[0-9]+$ ]] && (( STICKLLM_PARALLEL >= 1 )); then
   kv_extra+=(--parallel "$STICKLLM_PARALLEL")
+else
+  kv_extra+=(--parallel 1)
 fi
 [[ "${STICKLLM_NO_MMAP:-}" == "1" ]] && kv_extra+=(--no-mmap)
 [[ "${STICKLLM_MLOCK:-}" == "1" ]] && kv_extra+=(--mlock)

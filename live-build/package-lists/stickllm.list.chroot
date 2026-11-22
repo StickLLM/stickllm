@@ -41,6 +41,10 @@ firmware-amd-graphics
 firmware-iwlwifi
 firmware-realtek
 firmware-atheros
+# MediaTek mt7921/mt7922/mt7925 Wi-Fi + BT (common on AMD laptops). Not pulled
+# by firmware-misc-nonfree on trixie; missing → mt7921e "hardware init failed"
+# and BT firmware request errno -2 (ENOENT).
+firmware-mediatek
 wpasupplicant
 wireless-tools
 # 0.8.0: proprietary nvidia-kernel-dkms for a reliable live-build chroot bake.
@@ -91,7 +95,9 @@ vulkan-tools
 cryptsetup
 cryptsetup-bin
 # Agent Zero runtime. The agent image is pulled onto the host SSD, not baked here.
+# Debian trixie splits the CLI out of docker.io; both are required (dockerd + docker).
 docker.io
+docker-cli
 # apparmor_parser so Docker can load the docker-default profile.
 apparmor
 # stickllm-agent installs its own nftables rules. dockerd is started with --iptables=false.

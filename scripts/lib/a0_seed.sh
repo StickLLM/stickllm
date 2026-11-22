@@ -131,4 +131,14 @@ if [[ ! -d "$OUT/overlay2" ]] || [[ -z "$(ls -A "$OUT/overlay2" 2>/dev/null | he
   echo "a0_seed: ERROR $OUT/overlay2 is empty" >&2
   exit 1
 fi
+# Windows/Docker Desktop bind mounts often drop +x when the seed lands in
+# includes.chroot. Squashfs then bakes 644 forever and every container exits
+# 126 (Permission denied on /bin/bash). Force execute bits before bake.
+find "$OUT/overlay2" -type f -exec chmod a+x {} +
+BASH_SAMPLE="$(find "$OUT/overlay2" -path '*/diff/usr/bin/bash' -type f | head -1 || true)"
+if [[ -z "$BASH_SAMPLE" || ! -x "$BASH_SAMPLE" ]]; then
+  echo "a0_seed: ERROR overlay bash is not executable after chmod ($BASH_SAMPLE)" >&2
+  ls -la "$BASH_SAMPLE" 2>&1 || true
+  exit 1
+fi
 echo "a0_seed: OK -> $OUT ($(du -sh "$OUT" | awk '{print $1}'))"

@@ -2037,10 +2037,15 @@ def resolve_model() -> tuple[str, str, str, str]:
         model_path = kv.get("STICKLLM_MODEL") or ""
         model_id = kv.get("STICKLLM_MODEL_ID") or ""
     running = ""
-    rt = RUN_DIR / "llama-runtime.env"
-    if rt.is_file():
+    # Prefer /run; llama-start falls back to /tmp when the unprivileged unit
+    # cannot write under /run/stickllm (same path stickllm-control reads).
+    for rt in (RUN_DIR / "llama-runtime.env", Path("/tmp/stickllm-llama-runtime.env")):
+        if not rt.is_file():
+            continue
         rtkv = _parse_env_kv(read_text_safe(rt))
         running = rtkv.get("model") or rtkv.get("STICKLLM_MODEL") or ""
+        if running:
+            break
     if not model_path:
         model_path = running
     if not model_name and model_path:

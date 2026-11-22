@@ -99,10 +99,12 @@ fits detected VRAM + free disk). Other catalog rows may still download manually.
 |---|---|
 | `qwen35-4b-q4km` | Optional download for weak GPU / RAM-only — **not** baked, **not** Open default, `probe_recommend = false` |
 | `qwen25-7b-q5km` | Optional 7B Q5 (needs ~10 GB); prefer Q4 on true 8 GB @ 32K |
+| `qwen25-vl-3b-q4km` | Optional **vision** download (Qwen2.5-VL-3B Instruct Q4_K_M + mmproj Q8_0) — 8 GB @ 32K; not Open/probe default |
 | `qwen25-3b-q4km` | Optional small download |
 
-Rule: **never load or advertise mmproj on RAM-only / failsafe paths.** Vision pins
-(Qwen2.5-VL + mmproj) remain separate when added later.
+Rule: **never load or advertise mmproj on RAM-only / failsafe paths.** Vision catalog
+rows (`vision = true`) pin an `mmproj_file` companion; download the GGUF, then tap
+the grey **vision** pill for mmproj before Load.
 
 Exact filenames and hashes: `config/models/catalog.toml`.
 

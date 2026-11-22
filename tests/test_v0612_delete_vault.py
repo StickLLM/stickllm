@@ -87,12 +87,51 @@ def test_ui_delete_vault_panel():
     assert "async function deleteVaultAction" in app
     assert 'control("vault_delete"' in app
     assert 'confirm: "DELETE_VAULT"' in app
-    assert "prepareForVaultLock" in app.split("async function deleteVaultAction", 1)[1].split(
+    delete_fn = app.split("async function deleteVaultAction", 1)[1].split(
         "if ($(\"#deleteVaultConfirm\"))", 1
     )[0]
+    assert "prepareForVaultLock" in delete_fn
+    assert "clearVaultPresenceCache" in delete_fn
+    assert "openSetupWizard" in delete_fn
     assert "refreshDeleteVaultList" in app
     assert "vaultDeleteLabel" in app
     assert 'deleteVaultPass' in app
+    # Readonly must clear before focus settles (label-click / kiosk Chromium).
+    harden = app.split("function hardenVaultPassFields", 1)[1].split(
+        "function wireVaultPassEnterToSetupNext", 1
+    )[0]
+    assert 'closest("label")' in harden
+    assert "once: true" not in harden
+    toggle = app.split('deleteVaultPanel").addEventListener("toggle"', 1)[1].split(
+        "async function refreshMovableLive", 1
+    )[0]
+    assert 'removeAttribute("readonly")' in toggle
+
+
+def test_ui_no_stale_unlock_after_delete():
+    """After delete / on Settings reopen: re-probe; no vault → full setup, not unlock."""
+    app = APP.read_text(encoding="utf-8")
+    assert "function clearVaultPresenceCache" in app
+    unlock = app.split("async function openVaultUnlockOnly", 1)[1].split(
+        "async function openSetupWizard", 1
+    )[0]
+    assert "probeBootVault" in unlock
+    assert "openSetupWizard({ force: true })" in unlock or 'openSetupWizard({ force: true })' in unlock
+    gate = app.split("async function maybeOfferSetupOrUnlock", 1)[1].split(
+        "async function refreshStatus", 1
+    )[0]
+    assert "probe.found || st.blob || st.blob_exists" in gate
+    assert "st.setup_complete || st.vault_configured" in gate
+    assert "clearVaultPresenceCache" in gate
+    # Must not open unlock-only from setup_complete alone.
+    assert "probe.found || st.setup_complete || st.vault_configured" not in gate
+    ctl = CTL.read_text(encoding="utf-8")
+    status = ctl.split("def setup_status(", 1)[1].split("def setup_mark_complete(", 1)[0]
+    assert "blob_exists" in status
+    assert "Only a real blob on disk" in status or "orphan" in status.lower()
+    vault = VAULT.read_text(encoding="utf-8")
+    destroy_clr = vault.split("clear_config_after_destroy()", 1)[1].split("cmd_destroy()", 1)[0]
+    assert "not leave unlock-only" in destroy_clr or "still =" in destroy_clr
 
 
 def test_vault_md_documents_delete():
@@ -108,7 +147,9 @@ def test_vault_md_documents_delete():
 
 def test_changelog_mentions_delete_vault():
     log = LOG.read_text(encoding="utf-8")
-    assert log.lstrip().startswith("## 0.6.12")
-    head = log.split("## 0.6.11", 1)[0]
-    assert "Delete vault" in head
-    assert "DELETE_VAULT" in head
+    assert "## 0.6.12" in log
+    section = log.split("## 0.6.12", 1)[1].split("## 0.6.11", 1)[0]
+    assert "Delete vault" in section
+    assert "DELETE_VAULT" in section
+    # 0.8.1+: stale unlock after delete
+    assert "no stale unlock" in log.lower() or "re-probe" in log.lower()

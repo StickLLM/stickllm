@@ -56,8 +56,27 @@ case "${1:-}" in
   ensure|release|halt|run|stale) enter_host_mount_ns "$@" ;;
 esac
 
+# Prefer a real docker CLI. Debian trixie ships it in docker-cli (/usr/bin/docker),
+# while dockerd stays in docker.io (/usr/sbin/dockerd). PATH for services often
+# omits /usr/sbin; keep both bins discoverable.
+docker_bin() {
+  if command -v docker >/dev/null 2>&1; then
+    command -v docker
+    return 0
+  fi
+  for c in /usr/bin/docker /usr/local/bin/docker; do
+    [[ -x "$c" ]] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
 docker_cli() {
-  DOCKER_HOST="unix://${SOCK}" docker "$@"
+  local bin
+  bin="$(docker_bin)" || {
+    echo "stickllm-dockerd: docker CLI missing (install docker-cli)" >&2
+    return 127
+  }
+  DOCKER_HOST="unix://${SOCK}" "$bin" "$@"
 }
 
 use_systemd() {
@@ -102,7 +121,29 @@ dockerd_persist_log() {
 }
 
 daemon_up() {
-  [[ -S "$SOCK" ]] && docker_cli info >/dev/null 2>&1
+  [[ -S "$SOCK" ]] || return 1
+  if docker_bin >/dev/null 2>&1; then
+    docker_cli info >/dev/null 2>&1
+    return $?
+  fi
+  # No CLI yet: treat a live API ping as ready so ensure can finish and surface
+  # the missing-CLI error from stickllm-agent instead of looping forever.
+  "$PYBIN" - "$SOCK" <<'PY' >/dev/null 2>&1
+import socket, sys
+sock = sys.argv[1]
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(2)
+s.connect(sock)
+s.sendall(b"GET /_ping HTTP/1.0\r\nHost: localhost\r\n\r\n")
+data = b""
+while True:
+    chunk = s.recv(4096)
+    if not chunk:
+        break
+    data += chunk
+s.close()
+sys.exit(0 if b"\r\n\r\nOK" in data or data.rstrip().endswith(b"OK") else 1)
+PY
 }
 
 # True when the running dockerd shares this mount namespace (the host one).
@@ -150,11 +191,24 @@ wait_ready() {
   return 1
 }
 
+dockerd_bin() {
+  if command -v dockerd >/dev/null 2>&1; then
+    command -v dockerd
+    return 0
+  fi
+  [[ -x /usr/sbin/dockerd ]] && { printf '%s\n' /usr/sbin/dockerd; return 0; }
+  return 1
+}
+
 start_daemon_background() {
-  local persist_log
+  local persist_log bin
   persist_log="$(dockerd_persist_log)"
+  bin="$(dockerd_bin)" || {
+    echo "stickllm-dockerd: dockerd is not installed" >&2
+    return 1
+  }
   # data-root is the host SSD folder. iptables stay off; nftables rules are ours.
-  dockerd \
+  "$bin" \
     --data-root "${DOCKER_DIR}" \
     --host "unix://${SOCK}" \
     --pidfile "$PIDFILE" \
@@ -170,15 +224,16 @@ cmd_run() {
     exit 0
   fi
   resolve_docker_dir || exit 0
-  if ! command -v dockerd >/dev/null 2>&1; then
+  local bin
+  bin="$(dockerd_bin)" || {
     echo "stickllm-dockerd: dockerd is not installed" >&2
     exit 1
-  fi
+  }
   mkdir -p /run/stickllm
   local persist_log
   persist_log="$(dockerd_persist_log)"
   # Foreground: the unit's cgroup holds dockerd, not an add-on's.
-  dockerd \
+  "$bin" \
     --data-root "${DOCKER_DIR}" \
     --host "unix://${SOCK}" \
     --pidfile "$PIDFILE" \
@@ -200,6 +255,10 @@ cmd_ensure() {
   exec 8>"$LOCK"
   flock -w 60 8 || { echo "stickllm-dockerd: lock busy" >&2; exit 1; }
   : >"${USERS_DIR}/${user}"
+  if ! docker_bin >/dev/null 2>&1; then
+    echo "stickllm-dockerd: docker CLI missing (install docker-cli)" >&2
+    exit 1
+  fi
   if daemon_up; then
     if dockerd_in_this_ns; then
       local persist_log
@@ -213,7 +272,7 @@ cmd_ensure() {
     echo "stickllm-dockerd: restarting dockerd in the host mount namespace" >&2
     stop_dockerd
   fi
-  if ! command -v dockerd >/dev/null 2>&1; then
+  if ! dockerd_bin >/dev/null 2>&1; then
     echo "stickllm-dockerd: dockerd is not installed" >&2
     exit 1
   fi
