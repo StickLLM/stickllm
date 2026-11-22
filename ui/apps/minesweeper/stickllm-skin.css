@@ -1,0 +1,137 @@
+/* StickLLM player skin — hide solver/analyser chrome; keep a playable board. */
+html, body {
+  margin: 0;
+  overflow: hidden;
+  background: #1a1d23;
+  color: #e8eaed;
+}
+
+body.stickllm-ms #headerPanel {
+  height: 44px !important;
+  overflow: hidden !important;
+  background: #22262e;
+  border-bottom: 1px solid #333842;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+
+body.stickllm-ms #headerPanel img {
+  width: 28px !important;
+  height: 28px;
+}
+
+body.stickllm-ms #title {
+  font-size: 18px !important;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+body.stickllm-ms #buttonBar,
+body.stickllm-ms #switchButton,
+body.stickllm-ms #exportBarBottom,
+body.stickllm-ms #downloadBar,
+body.stickllm-ms #messageBarBottom,
+body.stickllm-ms #AnalysisButton,
+body.stickllm-ms #urlQueryString,
+body.stickllm-ms label[for="urlQueryString"],
+body.stickllm-ms #play0,
+body.stickllm-ms #play1,
+body.stickllm-ms #analysis0,
+body.stickllm-ms #analysis1,
+body.stickllm-ms #xRayLaunchButton,
+body.stickllm-ms #selectPlayer,
+body.stickllm-ms #selectAnalyser,
+body.stickllm-ms #exportToPtta,
+body.stickllm-ms #exportToLlama {
+  display: none !important;
+}
+
+/* Compact left rail: difficulty + new game only */
+body.stickllm-ms #controls {
+  top: 44px !important;
+  width: 168px !important;
+  zoom: 1 !important;
+  padding: 10px 8px;
+  box-sizing: border-box;
+  background: #22262e;
+  border-right: 1px solid #333842;
+  color: #e8eaed;
+}
+
+body.stickllm-ms #controls .radioButtons label,
+body.stickllm-ms #controls .block label {
+  color: #c5c9d1;
+}
+
+body.stickllm-ms #controls input[type="text"] {
+  width: 64px;
+  background: #12141a;
+  border: 1px solid #3a4050;
+  color: #e8eaed;
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+body.stickllm-ms #controls select {
+  width: 140px;
+  background: #12141a;
+  border: 1px solid #3a4050;
+  color: #e8eaed;
+  border-radius: 4px;
+}
+
+body.stickllm-ms #NewGame,
+body.stickllm-ms #repeatGame {
+  width: 100%;
+  margin-top: 8px !important;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: #3b82f6;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+body.stickllm-ms #repeatGame {
+  background: #374151;
+}
+
+body.stickllm-ms #wholeboard {
+  left: 168px !important;
+  top: 44px !important;
+  bottom: 0 !important;
+  right: 0 !important;
+  background: #1a1d23;
+}
+
+body.stickllm-ms #display {
+  background: #22262e;
+}
+
+/* Never leave solver popups painting over the board (iframe + stuck builders). */
+body.stickllm-ms #localStorage,
+body.stickllm-ms #noGuessBuilder {
+  display: none !important;
+}
+
+body.stickllm-ms #controls label[for="playstyle"],
+body.stickllm-ms #playstyle,
+body.stickllm-ms #overlay {
+  display: none !important;
+}
+
+/* Hide the Style / Overlay label rows (sibling text nodes sit in parent divs). */
+body.stickllm-ms #controls > div:has(#playstyle),
+body.stickllm-ms #controls > div:has(#overlay) {
+  display: none !important;
+}
+
+body.stickllm-ms #messageLineBottom,
+body.stickllm-ms #messageLine {
+  color: #9aa0a6;
+  font-size: 13px !important;
+}

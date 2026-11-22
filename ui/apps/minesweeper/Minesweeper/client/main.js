@@ -234,6 +234,16 @@ async function startup() {
     }
 
     localStorageButton.style.display = "none";
+    // StickLLM desk: never leave analyser/local-storage/No-Guess overlays stuck
+    // open across reloads (inline style=block outlives .modal { display:none }).
+    try {
+        if (localStorageModal) localStorageModal.style.display = "none";
+        if (ngModal) ngModal.style.display = "none";
+        if (propertiesPanel) propertiesPanel.style.display = "none";
+        if (docNgMode) docNgMode.checked = false;
+        if (typeof ngCancel !== "undefined") ngCancel = false;
+        if (ngText) ngText.innerHTML = "";
+    } catch (_) {}
 
     const rngParm = urlParams.get('rng');
     if (rngParm == "old") {

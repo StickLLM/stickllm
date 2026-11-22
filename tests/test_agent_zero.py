@@ -1719,6 +1719,18 @@ def test_playable_apps_have_adapters_and_solitaire_maps_cards_by_position():
     assert ".s4c1r102 .cardFront{background-image:url(KC." in css
 
 
+def test_minesweeper_stickllm_player_skin():
+    """StickLLM hides solver popups / analyser chrome; keep a playable board."""
+    ms = ROOT / "ui" / "apps" / "minesweeper"
+    page = (ms / "index.html").read_text(encoding="utf-8")
+    assert 'href="stickllm-skin.css"' in page
+    assert 'id="localStorage" class="modal" style="display: none;"' in page
+    assert 'id="noGuessBuilder" class="modal" style="display: none;"' in page
+    assert (ms / "stickllm-skin.css").is_file()
+    adapter = (ms / "stickllm-adapter.js").read_text(encoding="utf-8")
+    assert "stickllm-ms" in adapter and "stickllmSkin" in adapter
+
+
 def test_tetris_adapter_plays_turn_by_turn_and_suggests_a_placement():
     agent = _load(AGENT, "stickllm_agent_tetris")
     assert "tetris" in agent.APPS_PLAYABLE_IDS

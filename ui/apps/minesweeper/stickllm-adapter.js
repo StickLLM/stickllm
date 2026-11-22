@@ -2,6 +2,54 @@
 (function () {
   "use strict";
 
+  function stickllmSkin() {
+    try {
+      document.body.classList.add("stickllm-ms");
+      const title = document.getElementById("title");
+      if (title) title.textContent = "Minesweeper";
+      const ng = document.getElementById("noGuessMode");
+      if (ng) {
+        if (ng.checked) {
+          ng.checked = false;
+          try { if (typeof noGuessCancel === "function") noGuessCancel(); } catch (_) {}
+        }
+      }
+      try { if (typeof ngCancel !== "undefined") ngCancel = true; } catch (_) {}
+      [
+        "localStorage", "noGuessBuilder", "properties", "xRayPanel",
+        "exportBarBottom", "xRayLaunchButton", "selectAnalyser",
+        "exportToPtta", "exportToLlama", "downloadBar", "AnalysisButton",
+      ].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.style.display = "none";
+      });
+      const play1 = document.getElementById("play1");
+      if (play1) play1.style.display = "none";
+      const auto = document.getElementById("autoplay");
+      if (auto) auto.checked = false;
+      // Drop solver welcome / stuck builder text from the status line.
+      try {
+        const msg = document.getElementById("messageLineBottom");
+        if (msg && /solver|Annie|No Guess|Working|FAILED/i.test(msg.textContent || "")) {
+          msg.textContent = "";
+        }
+        const msg2 = document.getElementById("messageLine");
+        if (msg2 && /solver|Annie|No Guess|Working|FAILED/i.test(msg2.textContent || "")) {
+          msg2.textContent = "";
+        }
+      } catch (_) {}
+    } catch (_) {}
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", stickllmSkin);
+  } else {
+    stickllmSkin();
+  }
+  window.addEventListener("load", stickllmSkin);
+  setTimeout(stickllmSkin, 0);
+  setTimeout(stickllmSkin, 400);
+
   function cell(tile) {
     if (!tile) return "?";
     if (tile.isFlagged && tile.isFlagged()) return "F";

@@ -508,6 +508,8 @@ async function createNoGuessGame(header, index) {
 	serverGames.set(header.id, game);
 
 	ngModal.style.display = "none";
+	ngCancel = false;
+	if (ngText) ngText.innerHTML = "";
 
 	return game;
 

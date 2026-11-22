@@ -17,6 +17,11 @@ def test_boot_probes_ssd_before_wizard():
     assert app.index("STEP_MODEL") < app.index("STEP_VAULT")
     assert "setupBlocksAgent" in app
     assert "setSetupChrome" in app
+    # LAN pair: vault already open must not block Open Agent Zero when local
+    # stickllm.setup.v067 is missing (wizard ran on the kiosk).
+    block = app.split("function setupBlocksAgent", 1)[1].split("\n}", 1)[0]
+    assert "state.vaultOpen" in block
+    assert "return false" in block
 
 
 def test_vault_create_enters_mode_before_recovery():

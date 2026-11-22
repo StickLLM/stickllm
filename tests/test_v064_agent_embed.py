@@ -34,15 +34,15 @@ def test_ui_chat_uses_same_origin_embed():
     desk = (ROOT / "ui/desktop.js").read_text(encoding="utf-8")
     html = (ROOT / "ui/index.html").read_text(encoding="utf-8")
     assert 'return "/agent-zero/"' in app
-    assert "opts.embed === false" in app
+    assert "opts.popoutTls" in app or "opts.embed === false" in app
     assert "agentUrlIsLoopback" in app
     assert "detectLocalHost()" in app
     assert "http://127.0.0.1:5099/" not in app or "never open raw" in app.lower() or "Never open raw" in app
-    # Kiosk must not be sent to raw :5099 (Chromium connection-refused page).
-    assert "can't connect to 127.0.0.1" in app
+    # Kiosk / LAN / StickLink must prefer same-origin embed (not raw :5099 / :5443).
+    assert "StickLink Method C" in app or "can't connect to 127.0.0.1" in app
     assert "deskAppUrl(id, opts)" in app or "deskAppUrl(id,opts)" in app
     assert "urlFor(id, opts)" in desk or "urlFor(id,opts)" in desk
-    assert 'embed: false' in desk
+    assert "same-origin /agent-zero/" in desk or "embed: false" in desk
     assert 'href="/agent-zero/"' in html
     assert "https://127.0.0.1:5443/" not in html
     # No UI default to loopback Agent ports.

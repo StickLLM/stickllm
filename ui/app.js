@@ -233,6 +233,9 @@ async function afterPairSuccess() {
   try { await primeAppsSession(true); } catch (_) {}
   startAppStatus();
   startOpenAppEvents();
+  // Sync setup_complete from the stick so setupBlocksAgent() does not keep
+  // Agent Zero closed on a paired browser that never ran the wizard locally.
+  try { await refreshSetupState(true); } catch (_) {}
   try { await refreshStatus(); } catch (_) {}
   try { await refreshAgentLink(); } catch (_) {}
   try { await refreshModels(); } catch (_) {}
@@ -3231,7 +3234,12 @@ function setSetupChrome(on) {
 /** True while first-boot wizard (or unlock-only) is on screen — no Agent Zero yet. */
 function setupBlocksAgent() {
   if (setupWizardShowing() || document.body.classList.contains("setup-active")) return true;
-  return !setupDone();
+  if (setupDone()) return false;
+  // Vault already open this session (kiosk unlocked; LAN / StickLink pair): allow
+  // Agent Zero even when this browser never wrote stickllm.setup.v067. Server
+  // often already has setup_complete; without this gate Open was a silent no-op.
+  if (state.vaultOpen) return false;
+  return true;
 }
 
 /** After create/unlock: vault mode + chrome. Never auto-start Agent Zero —
