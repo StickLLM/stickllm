@@ -301,7 +301,9 @@ if [[ "${STICKLLM_A0_BUNDLE:-1}" != "0" ]]; then
   if [[ "${STICKLLM_A0_SEED:-1}" != "0" ]]; then
     echo "[stickllm] installing Agent Zero docker graph into OS image (/opt/stickllm/docker)"
     apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-cli rsync >/dev/null
+    # Build host is debian:bookworm (CLI still inside docker.io). Trixie live
+    # image lists docker-cli separately in package-lists; do not require it here.
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io rsync >/dev/null
     A0_SEED_OUT=config/includes.chroot/opt/stickllm/docker
     rm -rf "$A0_SEED_OUT"
     A0_SEED_WORK=/work/stickllm-a0-seed-work \
