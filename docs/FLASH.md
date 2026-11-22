@@ -7,21 +7,21 @@ node / disk number before writing.
 
 | Image | Where | Checksum |
 |---|---|---|
-| **Current** v0.8.1 | Google Drive `StickLLM-v0.8.1.iso` | [`checksums/v0.8.1.sha256`](../checksums/v0.8.1.sha256) |
-| **N-1** v0.8.0 | Google Drive `StickLLM-v0.8.0.iso` | [`checksums/v0.8.0.sha256`](../checksums/v0.8.0.sha256) → `ed106281…` |
+| **Current** v0.8.2 | Google Drive `StickLLM-v0.8.2.iso` | [`checksums/v0.8.2.sha256`](../checksums/v0.8.2.sha256) → `c678993c…` |
+| **N-1** v0.8.1 | Google Drive `StickLLM-v0.8.1.iso` | [`checksums/v0.8.1.sha256`](../checksums/v0.8.1.sha256) → `c16b44c5…` |
 
-**Hash of record is in this repo** (`checksums/v0.8.1.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous published ships stay under their own names — never overwrite those files with different contents. `v0.7.8` is outside the rolling window (removable). Never touch Drive golden **v0.2**.
+**Hash of record is in this repo** (`checksums/v0.8.2.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous published ships stay under their own names — never overwrite those files with different contents. `v0.8.0` is outside the rolling window (removable). Never touch Drive golden **v0.2**.
 
-N-1 restore: `StickLLM-v0.8.0.iso` — see [RESTORE.md](RESTORE.md).
+N-1 restore: `StickLLM-v0.8.1.iso` — see [RESTORE.md](RESTORE.md).
 
 ## Verify SHA-256
 
 ```powershell
-(Get-FileHash .\StickLLM-v0.8.1.iso -Algorithm SHA256).Hash
+(Get-FileHash .\StickLLM-v0.8.2.iso -Algorithm SHA256).Hash
 ```
 
 ```bash
-sha256sum StickLLM-v0.8.1.iso
+sha256sum StickLLM-v0.8.2.iso
 ```
 
 ## Windows
@@ -43,24 +43,24 @@ Avoid naive PowerShell `FileStream` raw write (Access Denied even when elevated)
 lsblk -d -o NAME,SIZE,MODEL,TRAN
 # REPLACE sdX with your USB device
 sudo wipefs -a /dev/sdX
-sudo dd if=StickLLM-v0.8.1.iso \
+sudo dd if=StickLLM-v0.8.2.iso \
   of=/dev/sdX bs=4M status=progress oflag=sync
 # Full readback (required for v0.8.0+)
-sudo cmp -n "$(stat -c%s StickLLM-v0.8.1.iso)" StickLLM-v0.8.1.iso /dev/sdX
+sudo cmp -n "$(stat -c%s StickLLM-v0.8.2.iso)" StickLLM-v0.8.2.iso /dev/sdX
 sudo eject /dev/sdX
 ```
 
 Optional helper (same `dd` path):
 
 ```bash
-ISO=StickLLM-v0.8.1.iso ./scripts/flash-linux.sh /dev/sdX
+ISO=StickLLM-v0.8.2.iso ./scripts/flash-linux.sh /dev/sdX
 ```
 
 ## macOS
 
 ```bash
 diskutil list
-ISO=StickLLM-v0.8.1.iso ./scripts/flash-macos.sh /dev/diskN
+ISO=StickLLM-v0.8.2.iso ./scripts/flash-macos.sh /dev/diskN
 ```
 
 ## After flash
@@ -73,10 +73,10 @@ ISO=StickLLM-v0.8.1.iso ./scripts/flash-macos.sh /dev/diskN
    exists, models live in RAM and are lost on reboot.
 4. Confirm Debian 13: `grep VERSION_ID /etc/os-release` should show `13`.
 
-## Debian 13 line — **v0.8.1**
+## Debian 13 line — **v0.8.2**
 
 NInfer-all Linux builds need **Debian 13**. Artifact:
-`out/v0.8.1/StickLLM-v0.8.1.iso` (fresh image, not an in-place dist-upgrade),
+`out/v0.8.2/StickLLM-v0.8.2.iso` (fresh image, not an in-place dist-upgrade),
 flashed then verified with a **full readback** of the written ISO bytes. See
 [DEBIAN13-EXPERIMENTAL.md](DEBIAN13-EXPERIMENTAL.md). Never overwrite shipping ISO names
-(`v0.8.0`, golden `v0.2.0`).
+(`v0.8.1`, `v0.8.0`, golden `v0.2.0`).
