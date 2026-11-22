@@ -326,23 +326,20 @@ function agentUrlIsLoopback(u) {
   }
 }
 function agentPageUrl(status, opts) {
-  // Same-origin /agent-zero/ for Chat iframe AND the stick kiosk.
-  // Never open raw http://127.0.0.1:5099/ from the UI — while Agent Zero is
-  // starting, Chromium shows "can't connect to 127.0.0.1" on the kiosk and on
-  // laptops. The gateway embed returns a proper status instead.
-  // LAN pop-out (embed:false off-stick) may still use :5443 after cert trust.
-  const embed = !(opts && opts.embed === false);
-  if (embed || detectLocalHost()) {
-    if (status && status.agent_embed) return status.agent_embed;
-    if (status && status.agent_url && String(status.agent_url).indexOf("/agent-zero") >= 0) return status.agent_url;
-    return "/agent-zero/";
+  // Same-origin /agent-zero/ for Chat iframe, kiosk, LAN-paired desktop, and
+  // StickLink Method C. 5099 is loopback-only; :5443 is not muxed and breaks
+  // cellular / StickLink open. Only opts.popoutTls requests the legacy TLS port.
+  if (opts && opts.popoutTls && !detectLocalHost()) {
+    const advertised = status && status.agent_popout_url;
+    if (advertised && String(advertised).indexOf("/agent-zero") < 0 && !agentUrlIsLoopback(advertised)) {
+      return advertised;
+    }
+    const host = location.hostname || "127.0.0.1";
+    return "https://" + host + ":5443/";
   }
-  const advertised = status && (status.agent_popout_url || status.agent_url);
-  if (advertised && String(advertised).indexOf("/agent-zero") < 0 && !agentUrlIsLoopback(advertised)) {
-    return advertised;
-  }
-  const host = location.hostname || "127.0.0.1";
-  return "https://" + host + ":5443/";
+  if (status && status.agent_embed) return status.agent_embed;
+  if (status && status.agent_url && String(status.agent_url).indexOf("/agent-zero") >= 0) return status.agent_url;
+  return "/agent-zero/";
 }
 function agentIsInstalled(s) {
   return !!(s && (s.image_present || s.state === "running" || s.state === "starting" || s.state === "error"));
@@ -6495,8 +6492,13 @@ function applyPairKioskUi() {
   if (show) show.textContent = "(see stick screen)";
 }
 applyPairKioskUi();
-/** One pairing for StickLLM and Agent: a paired LAN tab gets a one-time
- *  link that signs this browser in to the Agent port (its own cookie). */
+/** Open Agent Zero for kiosk + paired LAN / StickLink clients.
+ *
+ * Prefer same-origin /agent-zero/ (gateway → loopback :5099). Do NOT mint a
+ * :5443 handoff on every click: 5099 is loopback-only, :5443 needs a second
+ * self-signed cert trust, and StickLink Method C / LAN peer only muxes the
+ * StickLLM origin (so :5443 is unreachable over the tunnel). Optional :5443
+ * pop-out remains via deskAppUrl({ embed: false }) / Open in new tab. */
 function openAgentPaired(e) {
   const a = e.target && e.target.closest ? e.target.closest("#agentLink, #agentDeskIcon") : null;
   if (!a || e.button || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -6504,9 +6506,12 @@ function openAgentPaired(e) {
   e.stopPropagation();
   // Desktop layout (0.5.6): Agent is its own window on the desktop.
   if (window.stickDesk && window.stickDesk.handles("agent") && window.stickDesk.openApp("agent")) return;
-  const fallback = a.href;
+  const fallback = (a.href && String(a.href).indexOf("/agent-zero") >= 0)
+    ? a.href
+    : agentPageUrl(agentLastStatus, { embed: true });
+  // Only hand off to :5443 when the link already targets that port (legacy).
   let resolve = null;
-  if (!detectLocalHost() && token) {
+  if (!detectLocalHost() && token && /:5443\b/.test(String(a.href || ""))) {
     resolve = async () => {
       try {
         const r = await fetch("/api/agent/handoff", {
@@ -6514,7 +6519,7 @@ function openAgentPaired(e) {
           headers: authHeaders({ "Content-Type": "application/json" }), body: "{}",
         });
         const j = await r.json().catch(() => ({}));
-        if (r.ok && j.url) return j.url;
+        if (r.ok && j.url && !agentUrlIsLoopback(j.url)) return j.url;
       } catch (_) {}
       return fallback;
     };
@@ -10486,28 +10491,10 @@ async function followAgentInstall(id, name) {
 }
 async function deskAppUrl(id, opts) {
   if (id === "agent") {
-    // Chat iframe + stick kiosk: always /agent-zero/ (never raw :5099).
-    // LAN pop-out only: mint :5443 handoff.
-    if (!(opts && opts.embed === false) || detectLocalHost()) {
-      return agentPageUrl(agentLastStatus, { embed: true });
-    }
-    let fallback = ($("#agentLink") && $("#agentLink").href) || "";
-    if (fallback.indexOf("/agent-zero") >= 0) fallback = "";
-    if (agentUrlIsLoopback(fallback)) fallback = "";
-    if (!fallback) fallback = agentPageUrl(agentLastStatus, { embed: false });
-    if (fallback && fallback.indexOf("/agent-zero") >= 0) fallback = "";
-    if (agentUrlIsLoopback(fallback)) fallback = agentPageUrl(null, { embed: false });
-    if (token) {
-      try {
-        const r = await fetch("/api/agent/handoff", {
-          method: "POST", cache: "no-store",
-          headers: authHeaders({ "Content-Type": "application/json" }), body: "{}",
-        });
-        const j = await r.json().catch(() => ({}));
-        if (r.ok && j.url && !agentUrlIsLoopback(j.url)) return j.url;
-      } catch (_) {}
-    }
-    return fallback || agentPageUrl(agentLastStatus, { embed: true });
+    // Always same-origin /agent-zero/ (kiosk + LAN + StickLink). Never raw
+    // :5099. Legacy :5443 only when opts.popoutTls is set explicitly.
+    if (opts && opts.popoutTls) return agentPageUrl(agentLastStatus, { popoutTls: true });
+    return agentPageUrl(agentLastStatus);
   }
   const a = catalogApps.get(id);
   if (!a || !a.open_url) return "";

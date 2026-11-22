@@ -866,9 +866,8 @@
       f.style.cssText = "width:100%;height:100%;border:0;display:block;contain:strict;isolation:isolate";
       frameHooks(f, spec.id);
       wb.body.appendChild(f);
-      // 0.6.1 (item 24): on a LAN browser the Agent window loads
-      // https://<ip>:5443, whose self-signed certificate can't be accepted
-      // inside a frame. Always offer a new tab instead of a dead frame.
+      // LAN / StickLink: Agent loads same-origin /agent-zero/ in the frame.
+      // Offer a same-origin new tab if the frame stays blank (pair cookie lag).
       if (spec.id === "agent" && !isLocal()) {
         const bar = document.createElement("div");
         bar.className = "dkFrameFallback";
@@ -918,7 +917,10 @@
   // An app that refuses to be framed opens outside the desktop: a kiosk
   // Chrome window on the stick's own screen, a named tab on a paired laptop.
   function openOutside(id) {
-    const pop = id === "agent" || id === CHAT ? { embed: false } : undefined;
+    // Agent Zero: stay on same-origin /agent-zero/ even in a new tab.
+    // :5443 handoff breaks StickLink (no tunnel to that port) and often fails
+    // on LAN until a second self-signed cert is trusted.
+    const pop = undefined;
     return urlFor(id, pop).then((u) => {
       if (!u) return;
       if (isLocal()) openBrowser(u, appTitle(id), true);

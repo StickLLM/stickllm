@@ -10,7 +10,7 @@ When the user says open/start/show an app, use open_app, not the browser tool.
 app_state and app_act work for minesweeper, solitaire, tetris, notepad, and calculator. files, media, and monitor open with open_app only. If an app was just added, start a new Agent Zero chat so old context does not hide it.
 
 Actions for app_act:
-Minesweeper: {"reveal":[row,col]} or {"flag":[row,col]}.
+Minesweeper: {"new_game":true} (beginner 9x9), then {"reveal":[row,col]} or {"flag":[row,col]} (row first). Flag only after the first reveal.
 Solitaire: {"move":"t3->f1"}, {"move":"t2->t5","card":"9H"}, {"draw":true}, {"click":"t4"}, {"undo":true}, or {"new_game":true}. Piles are stock, waste, f1-f4 (foundations), t1-t7 (tableau). Cards are rank A 2-9 T J Q K plus suit S H D C; # is face down; the last card is on top. An illegal move returns ok false and changes nothing.
 Tetris: {"new_game":true}, then {"place":"suggested"} or {"place":{"col":3,"rot":1}} (rotate, shift so the piece's leftmost cell is in col, hard drop). Also {"left":2}, {"right":1}, {"rotate":1}, {"soft_drop":1}, {"hard_drop":true}, {"pause":true}, {"resume":true}. Turn mode: after your first action the piece does not fall on its own, so take your time. {"mode":"realtime"} turns gravity back on. state has board (20 rows x 10 cols, # settled), view (@ = falling piece), current, next, rotations (cols each rotation can use), and suggest (a good placement). Cols are 0-9.
 Notepad: {"set_text":"..."} or {"save_as":"notes.txt"}.

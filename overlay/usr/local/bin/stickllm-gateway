@@ -3464,7 +3464,11 @@ class Handler(SimpleHTTPRequestHandler):
             )
             doc["agent_url"] = self._agent_public_url()
             doc["agent_embed"] = AGENT_EMBED_PREFIX + "/"
-            doc["agent_popout_url"] = doc["agent_url"]
+            # Optional dedicated TLS listener — not the default open path.
+            # StickLink mux and paired :443 already proxy /agent-zero/; :5443
+            # is unreachable from cellular / Method C and must not be advertised
+            # as agent_url (that broke LAN-paired desktop Open Agent Zero).
+            doc["agent_popout_url"] = self._agent_popout_tls_url()
             doc["gateway_port"] = AGENT_TLS_PORT
         except Exception:
             self._json(500, {"ok": False, "error": "agent status failed"})
@@ -3472,15 +3476,16 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(200, doc)
 
     def _agent_public_url(self) -> str:
-        # Console browsers are already on the stick. Open the loopback HTTP UI
-        # so they do not handshake the self-signed :5443 certificate. 5099 is
-        # published on 127.0.0.1 only. LAN clients keep the paired TLS port.
+        # Default open URL is always same-origin /agent-zero/.
+        # 5099 is loopback-only; never hand LAN/StickLink clients raw :5099 or
+        # force :5443 (self-signed + not muxed).
+        return AGENT_EMBED_PREFIX + "/"
+
+    def _agent_popout_tls_url(self) -> str:
+        # Legacy dedicated Agent TLS port. Prefer /agent-zero/ unless a client
+        # explicitly asks for popoutTls.
         if self._is_loopback():
-            try:
-                port = int(agent_lib().AGENT_PORT)
-            except Exception:
-                port = 5099
-            return f"http://127.0.0.1:{port}/"
+            return AGENT_EMBED_PREFIX + "/"
         host = (self.headers.get("Host") or "").split(":")[0].strip()
         if not host or host == "0.0.0.0":
             host = discover_lan_ip() or "127.0.0.1"
