@@ -7,8 +7,8 @@ Be honest about what a stranger can download vs what only maintainers have local
 
 | Slot | Tag | What strangers can get | Checksum |
 |------|-----|------------------------|----------|
-| **N** (current) | `v0.8.1` | Google Drive `StickLLM-v0.8.1.iso` (Experimental engines wired + model/load fixes on Debian 13) | `checksums/v0.8.1.sha256` |
-| **N-1** | `v0.8.0` | Google Drive `StickLLM-v0.8.0.iso` | `checksums/v0.8.0.sha256` |
+| **N** (current) | `v0.8.1` | Google Drive `StickLLM-v0.8.1.iso` (Experimental engines wired + model/load fixes on Debian 13) / `out/v0.8.1/` | `checksums/v0.8.1.sha256` → `c16b44c5…` |
+| **N-1** | `v0.8.0` | Google Drive `StickLLM-v0.8.0.iso` | `checksums/v0.8.0.sha256` → `ed106281…` |
 | Older public | `v0.7.8` / `v0.7.7` / `v0.7.6` / `v0.4.2` / `v0.3.8` / … | Drive ISOs under their original names (optional retention) | matching `checksums/v0.*.sha256` |
 | Golden | `v0.2.0` | [GitHub Release v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) (split `.7z` and/or Drive link in release notes) | `checksums/v0.2.sha256` → `4914087d…` |
 
@@ -49,7 +49,7 @@ Older tags and `out/` dirs remain recoverable locally when kept; they are outsid
 
 ```text
 ISO:      Google Drive / local out/v0.8.1/StickLLM-v0.8.1.iso
-Checksum: checksums/v0.8.1.sha256
+Checksum: checksums/v0.8.1.sha256 → c16b44c5…
 ```
 
 Flash with Rufus DD or `dd`, then **full readback** — [FLASH.md](FLASH.md).
@@ -58,7 +58,7 @@ Flash with Rufus DD or `dd`, then **full readback** — [FLASH.md](FLASH.md).
 
 ```text
 ISO:      Google Drive StickLLM-v0.8.0.iso / E:\stickllm-isos\StickLLM-v0.8.0.iso
-Checksum: checksums/v0.8.0.sha256
+Checksum: checksums/v0.8.0.sha256 → ed106281…
 ```
 
 ## Restore older public (v0.7.8)
