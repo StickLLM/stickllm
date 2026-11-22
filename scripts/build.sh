@@ -16,7 +16,7 @@ PROFILE="amd-rtx3090"
 # Current ship line. Override only for a *new* unshipped version.
 # Never point this at a published ship (see refuse list below).
 # Do not rebuild under 0.7.0–0.8.0 / methodc-a / nvidia-kms — those names are cut.
-VERSION="${STICKLLM_VERSION:-0.8.1}"
+VERSION="${STICKLLM_VERSION:-0.8.2}"
 VERSION_DIR="v${VERSION}"
 ISO_NAME="${STICKLLM_ISO_NAME:-StickLLM-v${VERSION}.iso}"
 OUT_DIR="${STICKLLM_OUT_DIR:-out}"
