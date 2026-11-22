@@ -3936,21 +3936,39 @@ def _html(text: str) -> str:
     )
 
 
+def _model_env_value(key: str) -> str:
+    """Read one KEY=value from the running StickLLM model.env."""
+    env_path = Path(os.environ.get("STICKLLM_MODEL_ENV", "/run/stickllm/model.env"))
+    prefix = f"{key}="
+    try:
+        for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith(prefix):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
 def _model_path() -> str:
     """Full GGUF path from the running StickLLM model, when one is recorded."""
     override = os.environ.get("STICKLLM_AGENT_MODEL", "").strip()
     if override:
         return override
-    env_path = Path(os.environ.get("STICKLLM_MODEL_ENV", "/run/stickllm/model.env"))
-    try:
-        for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.startswith("STICKLLM_MODEL="):
-                value = line.split("=", 1)[1].strip().strip('"').strip("'")
-                if value:
-                    return value
-    except OSError:
-        pass
-    return ""
+    return _model_env_value("STICKLLM_MODEL")
+
+
+def _mmproj_path() -> str:
+    """Projector path for the active VL model, when StickLLM loaded one."""
+    override = os.environ.get("STICKLLM_AGENT_MMPROJ", "").strip()
+    if override:
+        return override if Path(override).is_file() else ""
+    path = _model_env_value("STICKLLM_MMPROJ")
+    return path if path and Path(path).is_file() else ""
+
+
+def _model_vision() -> bool:
+    """True when llama-server was started with an on-disk mmproj (multimodal)."""
+    return bool(_mmproj_path())
 
 
 def _model_name() -> str:
@@ -4010,21 +4028,23 @@ def _util_model_kwargs() -> dict[str, object]:
     return kwargs
 
 
-def model_settings(model_name: str) -> dict[str, object]:
+def model_settings(model_name: str, *, vision: bool | None = None) -> dict[str, object]:
     """Legacy settings.json fields this Agent Zero image still migrates.
 
     v2.14 reads the active model from the model-config preset. On first start
     it also copies these fields into the plugin config when they are present.
+    vision follows the active StickLLM mmproj (VL models) unless overridden.
     """
     chat_kwargs = _model_kwargs()
     util_kwargs = _util_model_kwargs()
+    sees = _model_vision() if vision is None else bool(vision)
     return {
         "chat_model_provider": LOCAL_PROVIDER,
         "chat_model_name": model_name,
         "chat_model_api_base": LLAMA_BASE,
         "chat_model_ctx_length": 32768,
         "chat_model_ctx_history": 0.7,
-        "chat_model_vision": False,
+        "chat_model_vision": sees,
         "chat_model_kwargs": dict(chat_kwargs),
         "util_model_provider": LOCAL_PROVIDER,
         "util_model_name": model_name,
@@ -4035,19 +4055,21 @@ def model_settings(model_name: str) -> dict[str, object]:
     }
 
 
-def merge_model_settings(existing: dict, model_name: str) -> dict:
+def merge_model_settings(existing: dict, model_name: str, *, vision: bool | None = None) -> dict:
     """Set the StickLLM model fields and leave every other user field in place."""
     merged = dict(existing) if isinstance(existing, dict) else {}
-    merged.update(model_settings(model_name))
+    merged.update(model_settings(model_name, vision=vision))
     return merged
 
 
-def preset_text(model_name: str) -> str:
+def preset_text(model_name: str, *, vision: bool | None = None) -> str:
     # device: cpu keeps the small MiniLM embedding off the GPU.
     # Chat and utility use the llama-server relay on the agent bridge.
     # The server process itself stays on 127.0.0.1:8080.
     # timeout makes a dead relay a chat error instead of an endless spinner.
     name = json.dumps(model_name)
+    sees = _model_vision() if vision is None else bool(vision)
+    vision_line = "true" if sees else "false"
     return (
         "- name: Default\n"
         "  chat:\n"
@@ -4056,7 +4078,7 @@ def preset_text(model_name: str) -> str:
         f"    api_base: {LLAMA_BASE}\n"
         "    ctx_length: 32768\n"
         "    ctx_history: 0.7\n"
-        "    vision: false\n"
+        f"    vision: {vision_line}\n"
         "    kwargs:\n"
         f"      api_base: {LLAMA_BASE}\n"
         "      api_key: dummy\n"
@@ -4158,7 +4180,7 @@ def seed_embedding(root: Path | None = None, hf_home: Path | None = None,
     return ok and embedding_cached(root)
 
 
-def _sync_plugin_model_config(root: Path, model_name: str) -> None:
+def _sync_plugin_model_config(root: Path, model_name: str, *, vision: bool | None = None) -> None:
     """Update an already-migrated plugin config. Leave preset selection alone."""
     path = root / "model-config" / "config.json"
     if not path.is_file():
@@ -4169,6 +4191,7 @@ def _sync_plugin_model_config(root: Path, model_name: str) -> None:
         return
     if not isinstance(data, dict):
         return
+    sees = _model_vision() if vision is None else bool(vision)
     changed = False
     slots = (
         ("chat_model", "ctx_history", 0.7, _model_kwargs),
@@ -4184,7 +4207,7 @@ def _sync_plugin_model_config(root: Path, model_name: str) -> None:
         slot["ctx_length"] = 32768
         slot[ratio_key] = ratio
         if section == "chat_model":
-            slot["vision"] = False
+            slot["vision"] = sees
         kwargs = slot.get("kwargs")
         if not isinstance(kwargs, dict):
             kwargs = {}
@@ -4448,7 +4471,13 @@ def sync_model(wait: float = 300.0, poll: float = 2.0, model_name: str | None = 
         if merged != current:
             _write_settings(settings, merged)
             changed = True
-    out = {"ok": True, "model": model, "changed": changed, "ts": int(time.time())}
+    out = {
+        "ok": True,
+        "model": model,
+        "changed": changed,
+        "vision": _model_vision(),
+        "ts": int(time.time()),
+    }
     try:
         Path("/run/stickllm/agent-model-sync.json").write_text(json.dumps(out) + "\n", encoding="utf-8")
     except OSError:

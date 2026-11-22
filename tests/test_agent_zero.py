@@ -280,16 +280,20 @@ def test_agent_page_is_not_rewritten_under_agent():
     assert not hasattr(agent, "rewrite_text")
     assert not hasattr(agent, "upstream_path")
     assert not hasattr(agent, "rewrite_location")
-    preset = agent.preset_text("qwen.gguf")
+    preset = agent.preset_text("qwen.gguf", vision=False)
     assert agent.LLAMA_BASE in preset
     assert "172.30.0.1:8080/v1" in preset
     assert "device: cpu" in preset
     assert "llama_cpp" in preset
     assert "timeout: 90" in preset
     assert "api_key: dummy" in preset
+    assert "vision: false" in preset
     assert "enable_thinking: false" in preset
     assert preset.index("  utility:") < preset.index("enable_thinking: false")
     assert preset.index("enable_thinking: false") < preset.index("  embedding:")
+    assert "vision: true" in agent.preset_text("qwen-vl.gguf", vision=True)
+    assert agent.model_settings("qwen-vl.gguf", vision=True)["chat_model_vision"] is True
+    assert agent.model_settings("qwen.gguf", vision=False)["chat_model_vision"] is False
     script = _script()
     assert "HF_HUB_OFFLINE" in script
     assert "embedding-cached" in script
@@ -835,7 +839,7 @@ def test_model_settings_merge_keeps_user_fields_and_uses_the_relay(tmp_path):
         "chat_model_name": "openai/gpt-5.6-terra",
         "workdir_path": "/a0/usr/workdir",
     }
-    merged = agent.merge_model_settings(existing, model_id)
+    merged = agent.merge_model_settings(existing, model_id, vision=False)
     assert merged["auth_login"] == "kept"
     assert merged["secrets"] == {"token": "leave-me"}
     assert merged["workdir_path"] == "/a0/usr/workdir"
@@ -846,12 +850,15 @@ def test_model_settings_merge_keeps_user_fields_and_uses_the_relay(tmp_path):
     assert merged["chat_model_api_base"] == agent.LLAMA_BASE
     assert merged["util_model_api_base"] == agent.LLAMA_BASE
     assert merged["chat_model_ctx_length"] == 32768
+    assert merged["chat_model_vision"] is False
     assert merged["chat_model_kwargs"]["api_key"] == "dummy"
     assert merged["chat_model_kwargs"]["timeout"] == 90
     assert "extra_body" not in merged["chat_model_kwargs"]
     assert merged["util_model_kwargs"]["extra_body"]["chat_template_kwargs"][
         "enable_thinking"
     ] is False
+    vis = agent.merge_model_settings(existing, model_id, vision=True)
+    assert vis["chat_model_vision"] is True
     headers = agent.agent_proxy_headers(
         {
             "Host": "192.168.72.70:5443",

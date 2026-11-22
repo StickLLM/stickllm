@@ -3,6 +3,7 @@
 See [docs/NEXT-0.8.3.md](docs/NEXT-0.8.3.md).
 
 - **`find_mmproj` family-name match.** Prefer mmproj whose family matches the model weights (Qwen3VL-8B ↔ matching projector). Stop picking the largest leftover VL-3B mmproj in the same folder. Qwen3-VL mmproj download fallback repos. Lab-hotfixed; needs bake confirmation.
+- **Agent Zero `vision` follows active mmproj.** `stickllm_agent` was hardcoding `chat_model_vision: false` / preset `vision: false`, so A0 never sent images even when StickLLM chat + llama-server multimodal worked. Sync now reads `STICKLLM_MMPROJ` / `model.env` via `_model_vision()` / `_mmproj_path()` into `model_settings`, `preset_text`, and plugin `config.json`. Lab-hotfixed; needs bake confirmation.
 
 ## 0.8.2 - Experimental engines wired (NInfer / Strata Set default)
 - **Set default / Use wired.** Confirm switches StickLLM chat, `/health`, and Agent Zero off llama.cpp onto downloaded **NInfer-all** or **Strata** on `127.0.0.1:8080` (`stickllm-exp-engine.service` + `stickllm-experimental-serve`). Extract multipart NInfer / AppImage Strata on switch. **Use llama.cpp** restores llama-server. Active engine persisted under `/var/lib/stickllm/experimental/active-engine.json`.
