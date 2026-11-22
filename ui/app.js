@@ -10870,6 +10870,51 @@ function deskAgent() {
     preinstalled: seed,
     vaultUnlocked: !!(s.vault_unlocked || state.vaultOpen) };
 }
+async function refreshActiveVaultUI(v) {
+  const pathEl = $("#activeVaultPath");
+  if (!pathEl) return;
+  const root = (v && (v.root || v.path || v.mount || v.blob)) || "";
+  const st = (v && (v.status || v.state)) || "";
+  pathEl.textContent = root ? (String(root) + (st ? " · " + st : "")) : "No vault unlocked";
+}
+async function loadVaultChoices() {
+  const box = $("#vaultChoices");
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = "<small>Searching…</small>";
+  try {
+    const res = await control("vault_search", {});
+    const hits = Array.isArray(res.hits) ? res.hits : (Array.isArray(res.vaults) ? res.vaults : (Array.isArray(res.results) ? res.results : []));
+    if (!hits.length) {
+      box.innerHTML = "<small class=\"muted\">No vault files found. Use Choose… under Create, or Search for vault.</small>";
+      return;
+    }
+    box.innerHTML = hits.map((h) => {
+      const p = h.path || h.blob || h;
+      return `<button class="drive-pick" type="button" data-vaultpick="${esc(String(p))}"><b>${esc(String(p))}</b><small>${esc(h.label || h.kind || "")}</small></button>`;
+    }).join("");
+    box.querySelectorAll("[data-vaultpick]").forEach((b) => {
+      b.onclick = async () => {
+        const path = b.dataset.vaultpick;
+        if ($("#vaultPath")) $("#vaultPath").value = path.replace(/\/stickllm-vault\.img$/, "").replace(/\/$/, "");
+        try {
+          await control("vault_bind", { path });
+        } catch (_) {
+          try { await control("vault_use", { path }); } catch (e2) { showError(e2, "Could not select vault"); return; }
+        }
+        toast("Vault selected — unlock with your passcode");
+        box.hidden = true;
+        try { await refreshStorage(); } catch (_) {}
+      };
+    });
+  } catch (e) {
+    box.innerHTML = "<small class=\"muted\">Search unavailable — use Search for vault below.</small>";
+  }
+}
+if ($("#setupWizardBtn")) $("#setupWizardBtn").onclick = () => openSetupWizard({ force: true });
+if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices();
+try { hardenVaultPassFields($("#vaultPass"), $("#np1"), $("#np2"), $("#deleteVaultPass")); } catch (_) {}
+
 window.stickApp = Object.freeze({
   openSettings, closeSettings, showSec, lockVault, showApps, toast,
   setSessionMode, setWebMode, refreshWebMode, focusVaultUnlock, refreshApps, refreshAgentLink, refreshModels, installAgent,
@@ -11009,11 +11054,19 @@ window.stickApp = Object.freeze({
 })();
 
 // 0.6.1 (item 25): Settings > Agent Zero > Unlock all plugins.
+// Outside the main IIFE — use window.stickApp.authHeaders (authHeaders is not global).
 (function a0PluginsSwitch() {
   const box = document.getElementById("a0PluginsUnlocked");
   const msg = document.getElementById("a0PluginsMsg");
   if (!box) return;
-  const load = () => fetch("/api/agent/plugins", { cache: "no-store", headers: authHeaders() })
+  const pluginAuth = (extra) => {
+    try {
+      const fn = window.stickApp && window.stickApp.authHeaders;
+      if (typeof fn === "function") return fn(extra || {});
+    } catch (_) {}
+    return Object.assign({ "X-StickLLM-Client": "ui" }, extra || {});
+  };
+  const load = () => fetch("/api/agent/plugins", { cache: "no-store", headers: pluginAuth() })
     .then((r) => (r.ok ? r.json() : null))
     .then((j) => { if (j && typeof j.unlocked === "boolean") box.checked = j.unlocked; })
     .catch(() => {});
@@ -11022,13 +11075,28 @@ window.stickApp = Object.freeze({
     try {
       const r = await fetch("/api/agent/plugins", {
         method: "POST",
-        headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+        headers: pluginAuth({ "Content-Type": "application/json" }),
         body: JSON.stringify({ unlocked: want }),
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.ok) { box.checked = !want; toast((j && j.message) || "Could not save the plugin setting"); return; }
+      if (!r.ok || !j.ok) {
+        box.checked = !want;
+        try {
+          if (window.stickApp && typeof window.stickApp.toast === "function") {
+            window.stickApp.toast((j && j.message) || "Could not save the plugin setting");
+          }
+        } catch (_) {}
+        return;
+      }
       if (msg) msg.textContent = j.message || "Saved.";
-    } catch (e) { box.checked = !want; toast("Could not save the plugin setting"); }
+    } catch (e) {
+      box.checked = !want;
+      try {
+        if (window.stickApp && typeof window.stickApp.toast === "function") {
+          window.stickApp.toast("Could not save the plugin setting");
+        }
+      } catch (_) {}
+    }
   });
   load();
 })();
@@ -11060,9 +11128,15 @@ window.stickApp = Object.freeze({
   };
   const emailAuth = (extra) => {
     try {
-      if (typeof authHeaders === "function") return authHeaders(extra || {});
+      const fn = window.stickApp && window.stickApp.authHeaders;
+      if (typeof fn === "function") return fn(extra || {});
     } catch (_) {}
     return Object.assign({ "X-StickLLM-Client": "ui" }, extra || {});
+  };
+  const emailToast = (m) => {
+    try {
+      if (window.stickApp && typeof window.stickApp.toast === "function") window.stickApp.toast(m);
+    } catch (_) {}
   };
   const loadCreds = () => {
     if (!box.checked) { setCredVisible(false); return; }
@@ -11151,53 +11225,6 @@ window.stickApp = Object.freeze({
   load();
 })();
 
-if ($("#setupWizardBtn")) $("#setupWizardBtn").onclick = () => openSetupWizard({ force: true });
-
-
-async function refreshActiveVaultUI(v) {
-  const pathEl = $("#activeVaultPath");
-  if (!pathEl) return;
-  const root = (v && (v.root || v.path || v.mount || v.blob)) || "";
-  const st = (v && (v.status || v.state)) || "";
-  pathEl.textContent = root ? (String(root) + (st ? " · " + st : "")) : "No vault unlocked";
-}
-async function loadVaultChoices() {
-  const box = $("#vaultChoices");
-  if (!box) return;
-  box.hidden = false;
-  box.innerHTML = "<small>Searching…</small>";
-  try {
-    const res = await control("vault_search", {});
-    const hits = Array.isArray(res.hits) ? res.hits : (Array.isArray(res.vaults) ? res.vaults : (Array.isArray(res.results) ? res.results : []));
-    if (!hits.length) {
-      box.innerHTML = "<small class=\"muted\">No vault files found. Use Choose… under Create, or Search for vault.</small>";
-      return;
-    }
-    box.innerHTML = hits.map((h) => {
-      const p = h.path || h.blob || h;
-      return `<button class="drive-pick" type="button" data-vaultpick="${esc(String(p))}"><b>${esc(String(p))}</b><small>${esc(h.label || h.kind || "")}</small></button>`;
-    }).join("");
-    box.querySelectorAll("[data-vaultpick]").forEach((b) => {
-      b.onclick = async () => {
-        const path = b.dataset.vaultpick;
-        if ($("#vaultPath")) $("#vaultPath").value = path.replace(/\/stickllm-vault\.img$/, "").replace(/\/$/, "");
-        try {
-          await control("vault_bind", { path });
-        } catch (_) {
-          try { await control("vault_use", { path }); } catch (e2) { showError(e2, "Could not select vault"); return; }
-        }
-        toast("Vault selected — unlock with your passcode");
-        box.hidden = true;
-        try { await refreshStorage(); } catch (_) {}
-      };
-    });
-  } catch (e) {
-    box.innerHTML = "<small class=\"muted\">Search unavailable — use Search for vault below.</small>";
-  }
-}
-if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices();
-
-
 /* 0.6.5: StickLLM chat UI + Chat icon retired — Agent Zero is the only chat.
    Hide composer / New chat / chat-slide chrome (not merely disable). In deskMode
    #app is no longer mounted as Chat, so park/hide the whole shell so it cannot
@@ -11252,6 +11279,9 @@ if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices(
 // Do not auto-start Agent Zero on model-ready / vault-unlock / timer — first-boot
 // and wizard-end opens break A0; user opens Chat from the desktop when ready.
 document.addEventListener("stickllm:vault-unlocked", () => {
-  try { refreshAgentLink(); } catch (_) {}
+  try {
+    if (window.stickApp && typeof window.stickApp.refreshAgentLink === "function") {
+      window.stickApp.refreshAgentLink();
+    }
+  } catch (_) {}
 });
-try { hardenVaultPassFields($("#vaultPass"), $("#np1"), $("#np2"), $("#deleteVaultPass")); } catch (_) {}

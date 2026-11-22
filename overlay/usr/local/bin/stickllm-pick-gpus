@@ -13,6 +13,46 @@ CUDA_BIN="${STICKLLM_LLAMA_CUDA:-/opt/stickllm/bin/llama-server}"
 VULKAN_BIN="${STICKLLM_LLAMA_VULKAN:-/opt/stickllm/bin/llama-server-vulkan}"
 REGISTER_SO="${STICKLLM_CUDA_REGISTER:-$LIB/stickllm-cuda-register.so}"
 
+# b12617 may ship lib*.so.1.0.0 without SONAME symlinks. Without .so.1 / libggml-cuda.so.0
+# the CUDA llama-server fails to load and we fall back to Vulkan on NVIDIA. This MUST run
+# on every boot (pick-gpus is ExecStartPre for stickllm-llama) — stickllm-hotfix alone is
+# not enough; a clean flash never runs hotfix.
+ensure_cuda_sonames() {
+  local lib="$LIB"
+  [[ -d "$lib" ]] || return 0
+  _link_soname() {
+    local ver="$1" link="$2"
+    if [[ -f "$lib/$ver" ]]; then
+      if [[ ! -e "$lib/$link" ]] || [[ "$(readlink -f "$lib/$link" 2>/dev/null || true)" != "$(readlink -f "$lib/$ver")" ]]; then
+        ln -sfn "$ver" "$lib/$link" 2>/dev/null || true
+      fi
+    fi
+  }
+  _link_soname libllama.so.1.0.0 libllama.so.1
+  _link_soname libllama-common.so.1.0.0 libllama-common.so.1
+  _link_soname libggml.so.1.0.0 libggml.so.1
+  _link_soname libggml-base.so.1.0.0 libggml-base.so.1
+  _link_soname libmtmd.so.1.0.0 libmtmd.so.1
+  _link_soname libllama.so.1.0.0 libllama.so
+  _link_soname libllama-common.so.1.0.0 libllama-common.so
+  _link_soname libggml.so.1.0.0 libggml.so
+  _link_soname libggml-base.so.1.0.0 libggml-base.so
+  _link_soname libmtmd.so.1.0.0 libmtmd.so
+  if [[ -f "$lib/libggml-cuda.so" && ! -e "$lib/libggml-cuda.so.0" ]]; then
+    ln -sfn libggml-cuda.so "$lib/libggml-cuda.so.0" 2>/dev/null || true
+  fi
+  if [[ ! -e "$lib/libggml-cpu.so" ]]; then
+    local cand
+    for cand in libggml-cpu-x64.so libggml-cpu-haswell.so libggml-cpu-zen4.so libggml-cpu-sse42.so; do
+      if [[ -f "$lib/$cand" ]]; then
+        ln -sfn "$cand" "$lib/libggml-cpu.so" 2>/dev/null || true
+        break
+      fi
+    done
+  fi
+}
+ensure_cuda_sonames
+
 # Filled by the CUDA picker: all suitable GPUs, split by free VRAM.
 STICKLLM_TENSOR_SPLIT=""
 STICKLLM_GPU_COUNT=0

@@ -2552,8 +2552,6 @@ def find_mmproj(model_path: str) -> str:
         return ""
     if not cands:
         return ""
-    if len(cands) == 1:
-        return str(cands[0])
     model_key = _mmproj_family_key(p.name)
     model_tokens = {t for t in model_key.split("-") if t and t not in {"instruct", "chat", "it"}}
 
@@ -2575,9 +2573,10 @@ def find_mmproj(model_path: str) -> str:
 
     cands.sort(key=score)
     best = cands[0]
-    # If nothing name-matched, still return best-effort (legacy single-folder case)
-    # but only when exactly one candidate scored >0 would we be safer — keep
-    # largest/f16 fallback for lone unmarked projectors.
+    # Do NOT attach an unrelated projector. Wrong mmproj (e.g. VL-3B with VL-4B)
+    # fails llama with n_embd mismatch. score()[0] == 0 means match == 0.
+    if score(best)[0] == 0:
+        return ""
     return str(best)
 
 
@@ -6670,6 +6669,27 @@ def terminal_window(params: dict) -> dict:
     return {"ok": bool(res.get("ok")), "id": tid, "op": op, "window": res.get("window")}
 
 
+def terminal_yield(params: dict | None = None) -> dict:
+    """Minimise every visible StickLLM Terminal (desk click → yield under WinBox)."""
+    params = params or {}
+    taskbar = _taskbar_px(params)
+    live = _list_x11_terminals()
+    done: list[str] = []
+    errors: list[str] = []
+    for row in live:
+        if row.get("minimised"):
+            continue
+        tid = str(row.get("id") or "")
+        if not tid:
+            continue
+        res = terminal_window({"id": tid, "op": "minimise", "taskbar": taskbar})
+        if res.get("ok"):
+            done.append(tid)
+        else:
+            errors.append(f"{tid}:{res.get('error') or res.get('message') or 'fail'}")
+    return {"ok": True, "minimised": done, "errors": errors, "count": len(done)}
+
+
 def _ssh_password_local() -> str:
     """Per-boot SSH password from ssh-bootstrap. Never log or return this."""
     try:
@@ -7608,6 +7628,8 @@ def handle(action: str, params: dict) -> dict:
         return terminal_status()
     if action == "terminal_window":
         return terminal_window(params)
+    if action == "terminal_yield":
+        return terminal_yield(params)
     if action == "terminal_close":
         return terminal_close(params)
     if action == "terminal_ssh_password_clipboard":

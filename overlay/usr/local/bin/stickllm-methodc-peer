@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Stick Method C peer entrypoint. Prefers /opt/stickllm/methodc-venv when present."""
+import os
+import sys
+
+sys.path.insert(0, "/usr/local/lib")
+# Debian venv bin/python is a symlink to /usr/bin/python3 — realpath() is identical
+# to the system interpreter, so do NOT compare realpaths. Detect the venv via
+# sys.prefix / VIRTUAL_ENV, then exec the venv launcher path (argv0) so site-packages load.
+VENV = "/opt/stickllm/methodc-venv"
+venv_py = f"{VENV}/bin/python"
+in_venv = sys.prefix.startswith(VENV) or os.environ.get("VIRTUAL_ENV") == VENV
+if os.path.isfile(venv_py) and not in_venv:
+    os.execv(venv_py, [venv_py, os.path.abspath(__file__)] + sys.argv[1:])
+
+from sticklink.methodc_peer import main
+import asyncio
+
+asyncio.run(main())

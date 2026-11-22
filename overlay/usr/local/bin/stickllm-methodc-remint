@@ -1,0 +1,132 @@
+#!/bin/bash
+# Lab helper: clear remint hammer, show status, or wait out rate-limit then remint once.
+# NOPASSWD via /etc/sudoers.d/stickllm.
+set -euo pipefail
+RUN=/run/stickllm
+ACTION="${1:-status}"
+
+clear_req() {
+  rm -f "$RUN/sticklink-join-remint.req"
+  echo "cleared remint.req"
+}
+
+case "$ACTION" in
+  clear)
+    clear_req
+    /opt/stickllm/methodc-venv/bin/python - <<'PY'
+import json, time
+from pathlib import Path
+Path("/run/stickllm/sticklink-join-remint.json").write_text(
+    json.dumps({"status": "idle", "at": time.time(), "message": "waiting for Generate"}) + "\n"
+)
+print("remint status idle")
+PY
+    ;;
+  status)
+    /opt/stickllm/methodc-venv/bin/python - <<'PY'
+import json, time, subprocess
+from pathlib import Path
+for name in ("sticklink-join-remint.json", "sticklink-join.json"):
+    p = Path("/run/stickllm") / name
+    if not p.is_file():
+        print(name, "MISSING")
+        continue
+    doc = json.loads(p.read_text())
+    if name.endswith("join.json"):
+        left = int(doc.get("exp") or 0) - int(time.time())
+        print(
+            name,
+            "has_url",
+            bool(doc.get("url")),
+            "left",
+            left,
+            "home",
+            doc.get("home"),
+            "connected",
+            doc.get("connected"),
+        )
+    else:
+        print(name, {k: doc.get(k) for k in ("status", "retry", "at", "message", "exp") if k in doc})
+print("remint.req", (Path("/run/stickllm") / "sticklink-join-remint.req").is_file())
+print("peer", subprocess.getoutput("systemctl is-active stickllm-methodc-peer"))
+ids = Path("/var/lib/sticklink/device.ids.json")
+if ids.is_file():
+    doc = json.loads(ids.read_text())
+    print(
+        "identity",
+        "dev" if doc.get("dev") else "no-dev",
+        "home" if doc.get("home") else "no-home",
+        "ak" if doc.get("ak") else "no-ak",
+    )
+else:
+    print("identity MISSING")
+PY
+    ;;
+  wait-remint)
+    clear_req
+    /opt/stickllm/methodc-venv/bin/python - <<'PY'
+import json, time, subprocess
+from pathlib import Path
+
+RUN = Path("/run/stickllm")
+deadline = time.time() + 700
+while time.time() < deadline:
+    r = {}
+    rp = RUN / "sticklink-join-remint.json"
+    if rp.is_file():
+        try:
+            r = json.loads(rp.read_text())
+        except Exception:
+            r = {}
+    st = r.get("status")
+    retry = int(r.get("retry") or 0)
+    if st == "rate_limited" and retry > 0:
+        wait = min(max(retry, 1), 30)
+        print(f"rate_limited retry={retry}; sleeping {wait}s", flush=True)
+        time.sleep(wait)
+        r["retry"] = max(0, retry - wait)
+        rp.write_text(json.dumps(r) + "\n")
+        continue
+    break
+
+(RUN / "sticklink-join-remint.req").write_text("remint\n")
+(RUN / "sticklink-join-remint.json").write_text(
+    json.dumps({"status": "requested", "at": time.time()}) + "\n"
+)
+print("remint requested", flush=True)
+deadline = time.time() + 90
+while time.time() < deadline:
+    r = (
+        json.loads((RUN / "sticklink-join-remint.json").read_text())
+        if (RUN / "sticklink-join-remint.json").is_file()
+        else {}
+    )
+    j = (
+        json.loads((RUN / "sticklink-join.json").read_text())
+        if (RUN / "sticklink-join.json").is_file()
+        else {}
+    )
+    st = r.get("status")
+    print(f"poll {st} url={bool(j.get('url'))} exp={j.get('exp')}", flush=True)
+    if st == "done" and j.get("url"):
+        left = int(j.get("exp") or 0) - int(time.time())
+        print(f"REMINT_OK left={left}s home={j.get('home')} via={j.get('via')}")
+        raise SystemExit(0)
+    if st in ("failed", "error"):
+        print("REMINT_FAIL", r)
+        raise SystemExit(1)
+    if st == "rate_limited":
+        print("still rate_limited", r.get("retry"))
+        time.sleep(5)
+        continue
+    time.sleep(1)
+print("REMINT_TIMEOUT")
+subprocess.run(["journalctl", "-u", "stickllm-methodc-peer", "-n", "40", "--no-pager"], check=False)
+raise SystemExit(1)
+PY
+    ;;
+  *)
+    echo "usage: stickllm-methodc-remint [clear|status|wait-remint]" >&2
+    exit 2
+    ;;
+esac

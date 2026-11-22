@@ -52,11 +52,17 @@
   };
   // Desktop order: Agent Zero once (no separate Chat icon), then Browser /
   // Terminal / Store; starter + catalog apps; Models/Settings at the end.
+  // Terminal is stick-screen only (native X11) — omitted on LAN / StickLink.
   const FRONT = ["agent", "browser", "terminal", "store"];
   const BACK = ["models", "settings"];
   let catalog = [];         // [{id,title,label,color,svg,frame,running,state}] from app.js
   const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
   const catalogApp = (id) => catalog.find((a) => a.id === id) || null;
+  // Stick kiosk Chromium loads via loopback; LAN / StickLink use the stick IP.
+  function isLocal() {
+    const h = location.hostname;
+    return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+  }
   function appTitle(id) {
     if (has(SYS, id)) return SYS[id].title;
     if (has(APPS, id)) return APPS[id].title;
@@ -64,8 +70,15 @@
     return c ? c.title : id;
   }
   function appOrder() {
-    return FRONT.concat(Object.keys(APPS), catalog.map((a) => a.id), BACK);
+    const front = isLocal() ? FRONT : FRONT.filter((id) => id !== "terminal");
+    return front.concat(Object.keys(APPS), catalog.map((a) => a.id), BACK);
   }
+  function hideTerminalOffStick() {
+    document.querySelectorAll('a.deskIcon[data-starter="terminal"]').forEach((a) => {
+      a.hidden = !isLocal();
+    });
+  }
+  hideTerminalOffStick();
 
   let on = false;
   // Published by app.js (window.stickApp); absent until app.js has run.
@@ -936,10 +949,6 @@
     return { id: CHAT, title: "Agent Zero", w: 1000, h: 720, pinned: true, mountNode: ui.agentPanel };
   }
   const POP_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.2'%3E%3Cpath d='M14 4h6v6M20 4l-9 9M18 14v6H4V6h6'/%3E%3C/svg%3E";
-  function isLocal() {
-    const h = location.hostname;
-    return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
-  }
   function urlFor(id, opts) {
     const api = appApi();
     return Promise.resolve(api.deskAppUrl ? api.deskAppUrl(id, opts) : "").then((u) => u || "");
@@ -1449,9 +1458,34 @@
     browserWins.filter((x) => x && !x.minimised).forEach((x) => { x.minimised = true; browserOp(x.id, "minimise"); });
   }
   function yieldTerminal() {
+    // Prefer one-shot server yield (all orphans + tracked). Per-id fallback
+    // if the new action is missing on an older stickllm-control.
+    const api = appApi();
+    const taskbar = Math.round(48 * (window.devicePixelRatio || 1));
+    if (api.control && isLocal()) {
+      api.control("terminal_yield", { taskbar: taskbar }).then((res) => {
+        if (res && res.ok === false) {
+          terminalWins.filter((x) => x && !x.minimised).forEach((x) => terminalOp(x.id, "minimise"));
+          return;
+        }
+        terminalWins.forEach((x) => { if (x) x.minimised = true; });
+        setTimeout(pollTerminal, 400);
+      }).catch(() => {
+        terminalWins.filter((x) => x && !x.minimised).forEach((x) => terminalOp(x.id, "minimise"));
+      });
+      return;
+    }
     terminalWins.filter((x) => x && !x.minimised).forEach((x) => { x.minimised = true; terminalOp(x.id, "minimise"); });
   }
-  function yieldNative() { yieldBrowser(); yieldTerminal(); }
+  let yieldAt = 0;
+  function yieldNative() {
+    // Debounce: WinBox focus + capture pointerdown both fire on one click.
+    const now = Date.now();
+    if (now - yieldAt < 250) return;
+    yieldAt = now;
+    yieldBrowser();
+    yieldTerminal();
+  }
   let extMenu = null;
   function hideExtMenu() {
     if (extMenu) { extMenu.remove(); extMenu = null; }
@@ -1510,6 +1544,7 @@
     }).catch(() => {});
   }
   function pollTerminal() {
+    if (!isLocal()) { terminalWins = []; return; }
     clearTimeout(terminalT);
     const api = appApi();
     if (!on || !api.control || !isLocal()) return;
@@ -1665,6 +1700,7 @@
       if (!wantDesktop()) return;
       on = true;
       document.body.classList.add("deskMode");
+      hideTerminalOffStick();
       ui = build();
       // Overlays must not sit inside a window (WinBox windows contain
       // fixed-position children): dialogs, load bar and toast go to <body>.
@@ -1678,13 +1714,19 @@
         onchange: renderTasks,
       });
       // Desk Chromium is _NET_WM_STATE_BELOW, so native Terminal/Browser always
-      // paint above WinBox apps. Any WinBox focus must yield those X11 windows
-      // (minimise) — titlebar/body clicks only called wm.focus before.
+      // paint above WinBox apps. Yield on focus AND on any desk pointerdown —
+      // clicking an already-focused WinBox does not call wm.focus, so Terminal
+      // used to stay on top until the user hit the taskbar.
       const _wmFocus = wm.focus.bind(wm);
       wm.focus = (id) => {
-        if (nativeCovers()) yieldNative();
+        yieldNative();
         return _wmFocus(id);
       };
+      ui.layer.addEventListener("pointerdown", (e) => {
+        if (!isLocal()) return;
+        if (e.target && e.target.closest && e.target.closest(".taskExt, .taskMenu")) return;
+        yieldNative();
+      }, true);
       syncCatalog();
       ui.catObs = new MutationObserver(scheduleCatalog);
       const di = $("#deskIcons"), al = $("#agentLink");
@@ -1850,7 +1892,7 @@
   // Public hooks for app.js.
   window.stickDesk = {
     active: () => on,
-    handles: (id) => on && (has(APPS, id) || has(SYS, id) || !!catalogApp(id)),
+    handles: (id) => on && (id !== "terminal" || isLocal()) && (has(APPS, id) || has(SYS, id) || !!catalogApp(id)),
     // app.js: openSettings(sec) in the desktop picks the window.
     onSettings: (sec) => {
       if (!on || !wm) return;

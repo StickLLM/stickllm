@@ -11,6 +11,42 @@ OUT_LIB="overlay/opt/stickllm/lib"
 OUT_LIB_VK="overlay/opt/stickllm/lib-vulkan"
 mkdir -p overlay/opt/stickllm/bin "$OUT_LIB" "$OUT_LIB_VK"
 
+# Always create SONAME symlinks even when reusing a prior llama tree.
+# v0.8.3 bake skipped rebuild (binaries already present) and never ran
+# docker-build-llama.sh link_soname → shipping ISO missing .so.1 / .so.0 → Vulkan on RTX.
+ensure_overlay_cuda_sonames() {
+  local lib="$OUT_LIB"
+  [[ -d "$lib" ]] || return 0
+  _link() {
+    local ver="$1" link="$2"
+    if [[ -f "$lib/$ver" ]]; then
+      ln -sfn "$ver" "$lib/$link"
+    fi
+  }
+  _link libllama.so.1.0.0 libllama.so.1
+  _link libllama-common.so.1.0.0 libllama-common.so.1
+  _link libggml.so.1.0.0 libggml.so.1
+  _link libggml-base.so.1.0.0 libggml-base.so.1
+  _link libmtmd.so.1.0.0 libmtmd.so.1
+  _link libllama.so.1.0.0 libllama.so
+  _link libllama-common.so.1.0.0 libllama-common.so
+  _link libggml.so.1.0.0 libggml.so
+  _link libggml-base.so.1.0.0 libggml-base.so
+  _link libmtmd.so.1.0.0 libmtmd.so
+  if [[ -f "$lib/libggml-cuda.so" && ! -e "$lib/libggml-cuda.so.0" ]]; then
+    ln -sfn libggml-cuda.so "$lib/libggml-cuda.so.0"
+  fi
+  if [[ ! -e "$lib/libggml-cpu.so" ]]; then
+    local cand
+    for cand in libggml-cpu-x64.so libggml-cpu-haswell.so libggml-cpu-zen4.so libggml-cpu-sse42.so; do
+      if [[ -f "$lib/$cand" ]]; then
+        ln -sfn "$cand" "$lib/libggml-cpu.so"
+        break
+      fi
+    done
+  fi
+}
+
 # On Windows/Git Bash, -x can be flaky for ELF binaries; size check is enough.
 if [[ -f "$OUT_BIN" && -s "$OUT_BIN" && -f "$OUT_CPU" && -s "$OUT_CPU" \
   && -f "$OUT_VK" && -s "$OUT_VK" \
@@ -18,6 +54,8 @@ if [[ -f "$OUT_BIN" && -s "$OUT_BIN" && -f "$OUT_CPU" && -s "$OUT_CPU" \
   && ( -f "$OUT_LIB_VK/libggml-vulkan.so" || -f "$OUT_LIB_VK/libggml-vulkan.so.0" ) \
   && "${STICKLLM_FORCE_LLAMA_BUILD:-}" != "1" ]]; then
   echo "llama-server already built: $OUT_BIN (+ vulkan $OUT_VK + cpu $OUT_CPU)"
+  ensure_overlay_cuda_sonames
+  echo "ensured CUDA SONAME symlinks under $OUT_LIB"
   exit 0
 fi
 

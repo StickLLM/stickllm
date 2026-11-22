@@ -19,27 +19,33 @@ Lab drivers: gitignored `out/_hotfix_*.py` (recreate from this table if missing)
 
 ---
 
-## Decision tree (new stick = v0.8.2 clean flash)
+## Decision tree (new stick)
 
 ```text
-Flash StickLLM-v0.8.2.iso (hash c678993c…) + full readback
-  ├─ VERIFY ONLY (baked in 0.8.2): Experimental Set default / progress /
-  │     installed, unlock curl+git, email fields, Minesweeper board-tile,
-  │     A0 /agent-zero/ + setupBlocksAgent + embed CSS, VL-7B catalog,
-  │     32K floor, download override, HF fuzzy, firmware-mediatek,
-  │     open_app → requesting client (device cookie / agent_lan)
-  ├─ MUST HOTFIX until v0.8.3 ISO exists (live-only today) — §1 rows marked MUST:
-  │     CUDA sonames, mmproj family, vision budget, A0 vision+attach,
-  │     A0 first-start, Terminal icon/taskbar/Desktop, paste+z-order,
-  │     SSH Copy, About stickllm.com, Experimental copy, vault USB storage,
-  │     sudoers-ssh (+ helpers NOPASSWD), re-push A0 open/Minesweeper if verify fails,
-  │     LAN browser desk open (pair gate + single-click wall icons)
-  └─ DATA PLANE (§3): Mount Seagate/host → models + vault; Claim STICKLLM-DATA;
-        optional STICKLLM-EXT
+Flash StickLLM-v0.8.3.iso (hash 26ceba9f…) + full readback
+  ├─ VERIFY MOST of User A 1–14 (vision/Terminal/UI) — usually baked
+  ├─ MUST HOTFIX on clean v0.8.3 until v0.8.4:
+  │     #1 CUDA sonames — BAKE REGRESSION: shipping v0.8.3 still boots
+  │     Vulkan on RTX (soname links missing; pick-gpus had no ensure;
+  │     stickllm-hotfix alone never runs at first boot)
+  └─ DATA PLANE (§3): Mount Seagate/host → models + vault; Claim STICKLLM-DATA
+
+Flash StickLLM-v0.8.2.iso (hash c678993c…) — older restore
+  ├─ VERIFY BAKED-0.8.2 rows; MUST hotfix full §1 A table (incl. CUDA sonames)
+  └─ DATA PLANE (§3)
 ```
 
-If the stick is already a **v0.8.3** bake that includes NEXT-0.8.3 “Must bake”
-rows, skip those pushes — still run every **Verify** command once.
+**v0.8.3 CUDA soname bake regression (2026-11-22):** Item 15 was marked
+“in tree” because `stickllm-hotfix ensure_cuda_sonames` + `docker-build-llama.sh
+link_soname` existed — but the ISO still shipped `/opt/stickllm/lib` **without**
+`.so.1` / `libggml-cuda.so.0` (llama rebuild skipped; skip path did not link),
+and **nothing at boot** created them (`stickllm-pick-gpus` in the ISO had no
+`ensure_cuda_sonames`). Fresh flash → `STICKLLM_BACKEND=vulkan` on 3090.
+**Live fix:** `out/_hotfix_cuda_boot_path.py` (preferred) or
+`_hotfix_cuda_sonames_v082.py`. **Next cut (v0.8.4) — DO NOT LEAVE OFF:**
+see [NEXT-0.8.4.md](NEXT-0.8.4.md) **#1** — `ensure_cuda_sonames` in
+`stickllm-pick-gpus` (already in tree) + bake gate that fails without it.
+Do **not** overwrite `StickLLM-v0.8.3.iso`.
 
 ---
 
@@ -59,7 +65,7 @@ rows, skip those pushes — still run every **Verify** command once.
 
 | # | Item | Script (`out/…`) | Verify (must pass) |
 |---|------|------------------|--------------------|
-| 1 | **CUDA `.so.1` + `libggml-cuda.so.0` sonames** (else Vulkan on NVIDIA) | `_hotfix_cuda_sonames_v082.py` | `/api/health` → `backend=cuda`; `cat /run/stickllm/cuda.env` has `STICKLLM_BACKEND=cuda`; process `/opt/stickllm/bin/llama-server` (not `-vulkan`); `ls /opt/stickllm/lib/libllama-common.so.1 /opt/stickllm/lib/libggml-cuda.so.0`; `grep -c ensure_cuda_sonames /usr/local/bin/stickllm-hotfix` ≥ 1 |
+| 1 | **CUDA `.so.1` + `libggml-cuda.so.0` sonames** (else Vulkan on NVIDIA) — **MUST on clean v0.8.2 and v0.8.3** until v0.8.4 | `_hotfix_cuda_sonames_v082.py` (+ push `stickllm-pick-gpus` with `ensure_cuda_sonames` for reboot survival) | `/api/health` → `backend=cuda`; `cat /run/stickllm/cuda.env` has `STICKLLM_BACKEND=cuda`; process `/opt/stickllm/bin/llama-server` (not `-vulkan`); `ls /opt/stickllm/lib/libllama-common.so.1 /opt/stickllm/lib/libggml-cuda.so.0`; `grep -c ensure_cuda_sonames /usr/local/bin/stickllm-pick-gpus` ≥ 1 (boot path) **and/or** hotfix ≥ 1 |
 | 2 | **`find_mmproj` family match** | `_hotfix_mmproj_match.py` | `grep -n _mmproj_family_key /usr/local/bin/stickllm-control`; load Qwen3-VL-8B → matching mmproj (not VL-3B leftover); unit `tests/test_v053.py::test_c_find_mmproj_prefers_matching_family` |
 | 3 | **Chat vision attach budget** | `_hotfix_vision_budget.py` | `grep IMAGE_TOKEN_ESTIMATE=1024 /usr/local/bin/stickllm-convert`; ~50 KB photo `/api/chat` describes image (not “no image”); `tests/test_attachments.py` |
 | 4 | **A0 vision follows mmproj** | `_hotfix_a0_vision.py` then `_hotfix_a0_vision_flag.py` | `grep -n _model_vision /usr/local/lib/stickllm_agent.py`; after VL load: `stickllm-agent sync-model`; preset/plugin `vision: true` |
@@ -175,7 +181,8 @@ rows, skip those pushes — still run every **Verify** command once.
 ## §4 Out of scope
 
 - StickLink Method C product ship (rows 44–49 are lab-only reminders).  
-- Cutting/flashing `v0.8.3` — only when explicitly requested; new name only.  
+- Cutting/flashing a new ISO — only when explicitly requested; new name only
+  (`v0.8.4` / `StickLLM-v0.8.4.iso`). Never overwrite shipping `v0.8.3`.  
 - Do **not** resume unrelated Multitask agents (e.g. Wire A0 phone images).
 
 ---

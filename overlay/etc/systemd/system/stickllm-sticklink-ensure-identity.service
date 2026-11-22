@@ -1,0 +1,22 @@
+[Unit]
+Description=StickLLM StickLink first-boot device identity + cloud register
+Documentation=file:///usr/local/share/stickllm/docs/sticklink/METHODC-STANDALONE-MIGRATION.md
+DefaultDependencies=no
+After=network-online.target
+Wants=network-online.target
+Before=stickllm-methodc-peer.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=STICKLINK_ROOT=/var/lib/sticklink
+EnvironmentFile=-/etc/stickllm/sticklink-factory.env
+ExecStart=/usr/local/bin/stickllm-sticklink-ensure-identity
+# Retry a few times if DNS/WSS path is not ready yet at early boot.
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=12
+StartLimitIntervalSec=120
+
+[Install]
+WantedBy=multi-user.target

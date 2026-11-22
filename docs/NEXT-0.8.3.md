@@ -4,6 +4,30 @@ Post-**v0.8.2** punch list. Do not cut/flash until bake confirms these. Shipping
 
 **Stick swap recovery (live hotfixes vs baked):** see **[HOTFIX-AFTER-STICK-SWAP.md](HOTFIX-AFTER-STICK-SWAP.md)** — every live kiosk fix that must be re-applied after putting in a new stick, plus what is already in the v0.8.2 ISO.
 
+## User A checklist (1–15) — tree status before bake
+
+All of these are **in `release/v0.8.3` HEAD** (incl. what used to look “live-only” as 9–15).
+Committed in `6bcf4ca` / earlier vision+Terminal commits. **Not** in shipping v0.8.2 ISO.
+Bake agent owns `StickLLM-v0.8.3.iso` — do not start a second bake.
+
+| # | Item | In tree? |
+|---|------|----------|
+| 1 | mmproj family match | yes |
+| 2 | Chat image size budget | yes |
+| 3 | A0 vision follows mmproj | yes |
+| 4 | A0 phone photo attach hook | yes |
+| 5 | Apps desk Terminal icon | yes |
+| 6 | Terminal → StickLLM bar | yes |
+| 7 | XFCE Desktop Terminal.desktop | yes |
+| 8 | Experimental scare copy removed | yes |
+| 9 | SSH password Copy button | yes (was live-only; now in tree) |
+| 10 | SSH password → Terminal paste | yes |
+| 11 | Empty-clipboard paste + Terminal z-order | yes |
+| 12 | About → stickllm.com | yes |
+| 13 | Vault setup USB HDD / other drive | yes |
+| 14 | A0 first-start progress / python +x | yes |
+| 15 | CUDA sonames (no Vulkan fallback) | **BAKE REGRESSION** — script in hotfix only; see below / NEXT-0.8.4 |
+
 ## Must bake (in tree / lab-hotfixed)
 
 | Item | Status | Notes |
@@ -23,7 +47,7 @@ Post-**v0.8.2** punch list. Do not cut/flash until bake confirms these. Shipping
 | **Setup vault: pick USB HDD / other drive** | In tree; lab hotfix `out/_hotfix_setup_usb_storage.py` | First-boot Storage used `storage_targets`, which skipped any disk with `RM=1` / `HOTPLUG=1` — so USB HDDs (lab Seagate / `STICKLLM-EXT`) never appeared. Now offers USB + internal unmounted ordinary FS (not the boot stick), clearer labels, Refresh, Mount stays on Storage step, Vault step **Choose a different drive**. Unit: `tests/test_v083_setup_usb_storage.py`. Never formats. |
 | **LAN browser desk open (A0 / Minesweeper)** | In tree; lab hotfix `out/_hotfix_browser_open_apps.py` | Pair gate + single-click wall open on the **requesting** LAN browser (`needsLanPair` / `ensurePaired` / `primeAppsSession`; cache `?v=v083browser`). Unpaired → toast pair, not blank 401 iframe. After flash: hard-refresh + pair. HOTFIX checklist **17b**. |
 | **Agent Zero first-start delay / “hang”** | In tree; lab hotfix `out/_hotfix_a0_startup.py` | Not a permanent hang: ~2 min crash-loop on `/usr/bin/python3: Permission denied` (overlay/+x settle; bash was already +x so seed check skipped chmod), then ~1 min first-run deps (framework pins + spaCy `en-core-web-sm` via egress) before uvicorn. Entrypoint prefers `/opt/venv-a0/bin/python` + short wait/chmod; seed exec check includes python; health step surfaces `a0-init.log` lines. Unit: `tests/test_a0_startup_python.py`. Second open is fast. |
-| **CUDA `.so.1` + `libggml-cuda.so.0` sonames (no Vulkan on NVIDIA)** | In tree; **must re-hotfix on clean v0.8.2** | Shipping v0.8.2 ISO can miss SONAME symlinks → CUDA binary fails → pick-gpus **Vulkan** on RTX (health `backend=vulkan`, process `llama-server-vulkan`). Fix: `stickllm-hotfix` `ensure_cuda_sonames` (always) + `docker-build-llama.sh` also links `libggml-cuda.so.0`. Push: `out/_hotfix_cuda_sonames_v082.py`. Verify: health `backend=cuda`. |
+| **CUDA `.so.1` + `libggml-cuda.so.0` sonames (no Vulkan on NVIDIA)** | **BAKE REGRESSION in shipping v0.8.3** (`26ceba9f…`) | Checklist said “yes” (`stickllm-hotfix ensure_cuda_sonames` + `docker-build-llama.sh link_soname`) but: (1) bake skipped llama rebuild so overlay libs never got `.so.1`/`.so.0`; (2) hotfix never runs at first boot; (3) ISO `stickllm-pick-gpus` had no ensure. Fresh flash → Vulkan on RTX. Live: `_hotfix_cuda_sonames_v082.py` + push pick-gpus. **v0.8.4:** ensure in `stickllm-pick-gpus` + `build-llama-server.sh` always links even on skip — see [NEXT-0.8.4.md](NEXT-0.8.4.md). Do not overwrite `StickLLM-v0.8.3.iso`. |
 
 ## Already in v0.8.2 — confirm on next clean flash
 

@@ -1,0 +1,132 @@
+#!/opt/stickllm/methodc-venv/bin/python
+"""First-boot StickLink identity: generate Ed25519 auth key + register with link.stickllm.com.
+
+Writes /var/lib/sticklink/{device-auth-seed,device-auth-pub,device.ids.json}.
+Requires STICKLINK_LAB_PROVISION_TOKEN (env or /etc/stickllm/sticklink-factory.env).
+No-ops when a cloud-registered identity already exists.
+Never prints the seed or factory token.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(os.environ.get("STICKLINK_ROOT", "/var/lib/sticklink"))
+FACTORY_ENV = Path("/etc/stickllm/sticklink-factory.env")
+PROVISION_URL = os.environ.get(
+    "STICKLINK_LAB_PROVISION_URL",
+    "https://link.stickllm.com/v1/lab/device-provision",
+).rstrip("/")
+
+
+def _load_factory_env() -> None:
+    if not FACTORY_ENV.is_file():
+        return
+    for line in FACTORY_ENV.read_text(encoding="utf-8", errors="ignore").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if k and k not in os.environ:
+            os.environ[k] = v
+
+
+def _b64u(raw: bytes) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _already_provisioned() -> bool:
+    ids = ROOT / "device.ids.json"
+    seed = ROOT / "device-auth-seed"
+    if not ids.is_file() or not seed.is_file():
+        return False
+    try:
+        doc = json.loads(ids.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return bool(doc.get("dev") and doc.get("home") and doc.get("ak"))
+
+
+def main() -> int:
+    _load_factory_env()
+    ROOT.mkdir(parents=True, exist_ok=True)
+    os.chmod(ROOT, 0o700)
+
+    if _already_provisioned():
+        print("sticklink-ensure-identity: already provisioned", flush=True)
+        return 0
+
+    token = (os.environ.get("STICKLINK_LAB_PROVISION_TOKEN") or "").strip()
+    if len(token) < 16:
+        print(
+            "sticklink-ensure-identity: missing STICKLINK_LAB_PROVISION_TOKEN "
+            f"(set in {FACTORY_ENV} at bake time)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    seed = Ed25519PrivateKey.generate().private_bytes_raw()
+    ak = _b64u(Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes_raw())
+
+    body = json.dumps({"ak": ak, "cls": "stick", "days": 365, "by": "stick-firstboot"}).encode()
+    req = urllib.request.Request(
+        PROVISION_URL,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "StickLink-ensure-identity",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            doc = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        err = e.read()[:200].decode("utf-8", "replace")
+        print(
+            f"sticklink-ensure-identity: provision HTTP {e.code}: {err}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+    except Exception as e:
+        print(f"sticklink-ensure-identity: provision failed: {type(e).__name__}", file=sys.stderr, flush=True)
+        return 1
+
+    dev = str(doc.get("dev") or "").strip()
+    home = str(doc.get("home") or "").strip()
+    if not dev or not home:
+        print("sticklink-ensure-identity: bad provision response", file=sys.stderr, flush=True)
+        return 1
+
+    ids_doc = {"dev": dev, "home": home, "ak": ak}
+    ids_path = ROOT / "device.ids.json"
+    seed_path = ROOT / "device-auth-seed"
+    pub_path = ROOT / "device-auth-pub"
+    ids_path.write_text(json.dumps(ids_doc) + "\n", encoding="utf-8")
+    seed_path.write_text(_b64u(seed) + "\n", encoding="utf-8")
+    pub_path.write_text(ak + "\n", encoding="utf-8")
+    os.chmod(ids_path, 0o644)
+    os.chmod(pub_path, 0o644)
+    os.chmod(seed_path, 0o600)
+    # Named copy for operators / hotfix tools that glob *.ids.json
+    (ROOT / f"{dev}.ids.json").write_text(json.dumps(ids_doc) + "\n", encoding="utf-8")
+    print(f"sticklink-ensure-identity: registered dev={dev}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
