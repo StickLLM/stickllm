@@ -7,29 +7,29 @@ Be honest about what a stranger can download vs what only maintainers have local
 
 | Slot | Tag | What strangers can get | Checksum |
 |------|-----|------------------------|----------|
-| **N** (current) | `v0.8.1` | Google Drive `StickLLM-v0.8.1.iso` (Experimental engines wired + model/load fixes on Debian 13) / `out/v0.8.1/` | `checksums/v0.8.1.sha256` → `c16b44c5…` |
-| **N-1** | `v0.8.0` | Google Drive `StickLLM-v0.8.0.iso` | `checksums/v0.8.0.sha256` → `ed106281…` |
-| Older public | `v0.7.8` / `v0.7.7` / `v0.7.6` / `v0.4.2` / `v0.3.8` / … | Drive ISOs under their original names (optional retention) | matching `checksums/v0.*.sha256` |
+| **N** (current) | `v0.8.2` | Google Drive `StickLLM-v0.8.2.iso` (Experimental Set default + VL-7B vision pin on Debian 13) / `out/v0.8.2/` | `checksums/v0.8.2.sha256` → `c678993c…` |
+| **N-1** | `v0.8.1` | Google Drive `StickLLM-v0.8.1.iso` | `checksums/v0.8.1.sha256` → `c16b44c5…` |
+| Older public | `v0.8.0` / `v0.7.8` / `v0.7.7` / `v0.7.6` / `v0.4.2` / `v0.3.8` / … | Drive ISOs under their original names (optional retention) | matching `checksums/v0.*.sha256` |
 | Golden | `v0.2.0` | [GitHub Release v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) (split `.7z` and/or Drive link in release notes) | `checksums/v0.2.sha256` → `4914087d…` |
 
 Drive folder (ISOs over GitHub’s 2 GB limit):  
 https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing  
 
-**Public current ship on that folder: `StickLLM-v0.8.1.iso`.** Older filenames may still be listed — leave golden **v0.2** alone. `v0.7.8` is outside the rolling window and may be removed from Drive/local `out/`.
+**Public current ship on that folder: `StickLLM-v0.8.2.iso`.** Older filenames may still be listed — leave golden **v0.2** alone. `v0.8.0` is outside the rolling window and may be removed from Drive/local `out/`.
 
-**Do not flash `v0.3.5`** — truncated/broken. Prefer **v0.8.1** (or **v0.8.0** as restore).
+**Do not flash `v0.3.5`** — truncated/broken. Prefer **v0.8.2** (or **v0.8.1** as restore).
 
-**Hash of record is on GitHub** (`checksums/v0.8.1.sha256`). After Drive upload, verify the ISO against that digest — do not treat a hash only on Drive as authoritative.
+**Hash of record is on GitHub** (`checksums/v0.8.2.sha256`). After Drive upload, verify the ISO against that digest — do not treat a hash only on Drive as authoritative.
 
 ## Maintainer / local-only
 
 | Slot | Tag | Typical local path | Checksum in git |
 |------|-----|--------------------|-----------------|
-| N local | `v0.8.1` | `out/v0.8.1/StickLLM-v0.8.1.iso` / `E:\stickllm-isos\` | `checksums/v0.8.1.sha256` |
-| N-1 local | `v0.8.0` | `out/v0.8.0/` / `E:\stickllm-isos\StickLLM-v0.8.0.iso` | `checksums/v0.8.0.sha256` |
-| Older local | `v0.7.8` | `out/v0.7.8/` / `E:\stickllm-isos\StickLLM-v0.7.8.iso` | `checksums/v0.7.8.sha256` → `10ddd00f…` |
+| N local | `v0.8.2` | `out/v0.8.2/StickLLM-v0.8.2.iso` / `E:\stickllm-isos\` | `checksums/v0.8.2.sha256` |
+| N-1 local | `v0.8.1` | `out/v0.8.1/` / `E:\stickllm-isos\StickLLM-v0.8.1.iso` | `checksums/v0.8.1.sha256` |
+| Older local | `v0.8.0` | `out/v0.8.0/` / `E:\stickllm-isos\StickLLM-v0.8.0.iso` | `checksums/v0.8.0.sha256` → `ed106281…` |
 
-Older tags and `out/` dirs remain recoverable locally when kept; they are outside the rolling N/N-1 window. Never delete golden **v0.2.0** when cutting the next ship. Local `out/v0.7.8/` cleanup is allowed after N advances.
+Older tags and `out/` dirs remain recoverable locally when kept; they are outside the rolling N/N-1 window. Never delete golden **v0.2.0** when cutting the next ship. Local `out/v0.8.0/` cleanup is allowed after N advances.
 
 ## ISO naming (future N)
 
@@ -40,33 +40,32 @@ Older tags and `out/` dirs remain recoverable locally when kept; they are outsid
 
 - When cutting the next ship: keep **N** and **N-1** tags and local `out/` ISO dirs; do not delete or overwrite them.
 - Drive / Release **v0.2.0** is outside the rolling window — never retag, rewrite checksum, or replace under the same name.
-- Current **v0.8.1** / prior **v0.8.0** on Drive — never overwrite under the same name with a different digest.
-- Prior **v0.7.8** / **v0.7.7** / **v0.7.6** / **v0.4.2** / **v0.3.8** on Drive — do not overwrite under the same name with a different digest if still published.
-- **v0.7.8** is out of the rolling window — removable from Drive/local; do not reuse the name for different contents.
+- Current **v0.8.2** / prior **v0.8.1** on Drive — never overwrite under the same name with a different digest.
+- Prior **v0.8.0** / **v0.7.8** / **v0.7.7** / **v0.7.6** / **v0.4.2** / **v0.3.8** on Drive — do not overwrite under the same name with a different digest if still published.
+- **v0.8.0** is out of the rolling window — removable from Drive/local; do not reuse the name for different contents.
 - New ships get new tag names, new `out/<version>/` dirs, new `StickLLM-vX.Y.Z.iso` filenames, and new `checksums/<version>.sha256` files.
 
-## Restore N (v0.8.1) — public
+## Restore N (v0.8.2) — public
 
 ```text
-ISO:      Google Drive / local out/v0.8.1/StickLLM-v0.8.1.iso
-Checksum: checksums/v0.8.1.sha256 → c16b44c5…
+ISO:      Google Drive / local out/v0.8.2/StickLLM-v0.8.2.iso
+Checksum: checksums/v0.8.2.sha256 → c678993c…
 ```
 
 Flash with Rufus DD or `dd`, then **full readback** — [FLASH.md](FLASH.md).
 
-## Restore N-1 (v0.8.0) — public
+## Restore N-1 (v0.8.1) — public
 
 ```text
-ISO:      Google Drive StickLLM-v0.8.0.iso / E:\stickllm-isos\StickLLM-v0.8.0.iso
-Checksum: checksums/v0.8.0.sha256 → ed106281…
+ISO:      Google Drive StickLLM-v0.8.1.iso / E:\stickllm-isos\StickLLM-v0.8.1.iso
+Checksum: checksums/v0.8.1.sha256 → c16b44c5…
 ```
 
-## Restore older public (v0.7.8)
+## Restore older public (v0.8.0)
 
 ```text
-ISO:      out/v0.7.8/StickLLM-v0.7.8.iso (or Drive if published)
-Checksum: checksums/v0.7.8.sha256
-Expect:   10DDD00F44867220E10EE706EA1E3B2EB18C6702DB371A2BCCCD53572179F840
+ISO:      out/v0.8.0/StickLLM-v0.8.0.iso (or Drive if published)
+Checksum: checksums/v0.8.0.sha256 → ed106281…
 ```
 
 ## Restore golden v0.2.0
