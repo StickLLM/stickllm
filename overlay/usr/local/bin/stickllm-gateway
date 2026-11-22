@@ -3571,7 +3571,7 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(200, out)
 
     def _agent_handoff_mint(self) -> None:
-        """Paired StickLLM tab -> one-time link that signs this browser in to :5443."""
+        """Optional :5443 sign-in link. Default Open uses /agent-zero/ (no handoff)."""
         length = int(self.headers.get("Content-Length") or 0)
         if length > 2048:
             self.close_connection = True
@@ -3583,7 +3583,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(403, {"ok": False, "error": "ui_only"})
             return
         if self._is_loopback():
-            # The kiosk opens the loopback Agent UI; no cookie is needed there.
+            # The kiosk opens same-origin /agent-zero/; no cookie is needed there.
             self._json(200, {"ok": True, "url": self._agent_public_url()})
             return
         doc, ok = self._auth()
@@ -3591,7 +3591,11 @@ class Handler(SimpleHTTPRequestHandler):
         if not ticket:
             self._json(401, {"ok": False, "error": "pair_required"})
             return
-        url = self._agent_public_url() + "__stickllm/handoff?t=" + urllib.parse.quote(ticket)
+        # Handoff cookie is set only by the :5443 Agent TLS listener.
+        base = self._agent_popout_tls_url()
+        if not base.endswith("/"):
+            base += "/"
+        url = base + "__stickllm/handoff?t=" + urllib.parse.quote(ticket)
         self._json(200, {"ok": True, "url": url})
 
     def _is_agent_server(self) -> bool:
@@ -4603,9 +4607,13 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _ui_screen_key(self) -> str:
         """"kiosk" for the stick's own screen, else the browser's device id
-        cookie ("d-<hex>"), else its IP."""
-        if self._is_loopback():
+        cookie ("d-<hex>"), else its IP. StickLink Method C peers connect from
+        loopback but represent a remote client — never treat them as kiosk."""
+        if self._is_loopback() and not self._is_sticklink_proxy():
             return "kiosk"
+        if self._is_sticklink_proxy():
+            # Prefer device cookie forwarded by the peer; else a stable sticklink key.
+            return device_key(self._cookie(DEVICE_COOKIE)) or "sticklink"
         return device_key(self._cookie(DEVICE_COOKIE)) or (self._ui_client_ip() or "-")
 
     def _stream_ui_events(self) -> None:
@@ -4808,19 +4816,21 @@ class Handler(SimpleHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
-        # Same open_app routing as :5443: a LAN chat via /agent-zero/ must
-        # mark this browser as the screen that just prompted (else apps open
-        # on the kiosk).
-        if not self._is_loopback():
+        # Same open_app routing as :5443: a LAN / StickLink chat via
+        # /agent-zero/ must mark this browser as the screen that just prompted
+        # (else apps open on the kiosk). Method C peers are loopback TCP but
+        # remote clients — still record them.
+        if (not self._is_loopback()) or self._is_sticklink_proxy():
             AGENT_CLIENTS.note(self._ui_client_ip())
             if method == "POST" and upstream in AGENT_PROMPT_PATHS:
                 screen = self._ui_screen_key()
                 AGENT_CLIENTS.prompt(screen)
                 safe_ip = self._ui_client_ip()
                 safe_ip = safe_ip if re.fullmatch(r"[0-9A-Fa-f:.]+", safe_ip or "") else "-"
+                via = "sticklink" if self._is_sticklink_proxy() else "embed"
                 try:
                     UI_OPEN._write_log(
-                        f"STICKLLM_AGENT_PROMPT ip={safe_ip}{_target_log(screen).replace(' target=', ' screen=')} path={upstream} via=embed\n"
+                        f"STICKLLM_AGENT_PROMPT ip={safe_ip}{_target_log(screen).replace(' target=', ' screen=')} path={upstream} via={via}\n"
                     )
                 except Exception:
                     pass
@@ -5545,6 +5555,16 @@ class Handler(SimpleHTTPRequestHandler):
     def _is_loopback(self) -> bool:
         host = (self.client_address[0] if self.client_address else "") or ""
         return host in ("127.0.0.1", "::1", "localhost")
+
+    def _is_sticklink_proxy(self) -> bool:
+        """Method C peer talks to the gateway on loopback, but the real client
+        is a remote StickLink phone/desktop. Treat those as remote for open_app
+        targeting and never as the kiosk screen."""
+        via = (self.headers.get("X-StickLLM-Via") or "").strip().lower()
+        if via in ("sticklink", "methodc"):
+            return True
+        ua = (self.headers.get("User-Agent") or "").lower()
+        return "sticklink-methodc-peer" in ua or "sticklink-lab-ws-mux" in ua
 
     def _https_public_location(self) -> str | None:
         """https://<lan-host><path> when TLS is up; None for loopback / no TLS."""

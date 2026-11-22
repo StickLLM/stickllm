@@ -300,6 +300,8 @@ async function startup() {
     // add a listener for mouse clicks on the canvas
     canvas.addEventListener("mousedown", (event) => mouseDownEvent(event));
     canvas.addEventListener("mouseup", (event) => mouseUpEvent(event));
+    // Without this, right-click opens the browser menu and flagging feels broken.
+    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
     canvas.addEventListener('mousemove', (event) => followCursor(event));
     canvas.addEventListener('wheel', (event) => followCursor(event));
     canvas.addEventListener('wheel', (event) => on_mouseWheel(event));

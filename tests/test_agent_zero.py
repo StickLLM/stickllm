@@ -507,7 +507,10 @@ def test_unpaired_agent_port_is_refused(tmp_path):
         assert doc["vault_unlocked"] is False
         assert doc["message"] == "Unlock vault to use Agent"
         assert doc["gateway_port"] == 5443
-        assert doc["agent_url"].endswith(":5443/")
+        # Default open path is same-origin /agent-zero/ (StickLink + LAN).
+        assert doc["agent_url"] == "/agent-zero/"
+        assert doc["agent_embed"] == "/agent-zero/"
+        assert doc["agent_popout_url"].endswith(":5443/")
 
         page_req = urllib.request.Request(
             f"http://127.0.0.1:{agent_port}/ui/asset-bundle",
@@ -786,8 +789,10 @@ def test_loopback_agent_url_stays_on_the_stick(tmp_path):
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{local.server_address[1]}/api/agent/status", timeout=5) as resp:
             doc = json.loads(resp.read().decode())
-        assert doc["agent_url"] == "http://127.0.0.1:5099/"
+        assert doc["agent_url"] == "/agent-zero/"
+        assert doc["agent_embed"] == "/agent-zero/"
         assert ":5443" not in doc["agent_url"]
+        assert "5099" not in doc["agent_url"]
         unpaired = urllib.request.Request(
             f"http://127.0.0.1:{lan.server_address[1]}/api/agent/status",
             headers={"Host": "192.168.72.70"},
@@ -804,7 +809,8 @@ def test_loopback_agent_url_stays_on_the_stick(tmp_path):
         )
         with urllib.request.urlopen(paired, timeout=5) as resp:
             lan_doc = json.loads(resp.read().decode())
-        assert lan_doc["agent_url"] == "https://192.168.72.70:5443/"
+        assert lan_doc["agent_url"] == "/agent-zero/"
+        assert lan_doc["agent_popout_url"] == "https://192.168.72.70:5443/"
     finally:
         lan.shutdown()
         local.shutdown()
