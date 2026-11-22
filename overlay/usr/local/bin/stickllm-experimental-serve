@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Run the StickLLM Experimental default engine on 127.0.0.1:8080.
+
+Replaces llama.cpp when active-engine.json selects ninfer-all or strata.
+OpenAI-compatible chat / health stay on the same loopback port the gateway
+and Agent Zero already use.
+
+  stickllm-experimental-serve          # exec engine (systemd)
+  stickllm-experimental-serve --print  # show resolved plan as JSON
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+LIB = Path(os.environ.get("STICKLLM_EXPERIMENTAL_LIB", "/usr/local/lib/stickllm_experimental.py"))
+
+
+def _load():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("stickllm_experimental", LIB)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"missing experimental lib: {LIB}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _plan(mod) -> dict:
+    doc = mod.read_active_engine()
+    eng = mod.normalize_engine_id(str(doc.get("engine") or "llama.cpp"))
+    root = Path(str(doc.get("root") or ""))
+    dest = Path(str(doc.get("dest") or ""))
+    if eng == "llama.cpp":
+        return {"ok": False, "error": "active engine is llama.cpp — use stickllm-llama.service"}
+    if not root.is_dir() and dest.is_dir():
+        ready = mod.ensure_engine_ready(eng, dest)
+        if not ready.get("ok"):
+            return ready
+        root = Path(str(ready.get("root") or ""))
+        doc["root"] = str(root)
+        mod.write_active_engine(doc)
+    if not root.is_dir():
+        return {"ok": False, "error": f"engine root missing for {eng}", "dest": str(dest)}
+    host = os.environ.get("NINFER_HOST") or os.environ.get("STICKLLM_LLAMA_HOST") or "127.0.0.1"
+    port = os.environ.get("NINFER_PORT") or os.environ.get("STICKLLM_LLAMA_PORT") or "8080"
+    if eng == "ninfer-all":
+        model_dir = Path(
+            doc.get("model_dir")
+            or os.environ.get("NINFER_MODEL_DIR")
+            or str(mod.NINFER_MODELS_DIR)
+        )
+        model_dir.mkdir(parents=True, exist_ok=True)
+        run_sh = root / "run.sh"
+        serve = root / "ninfer-serve"
+        model_key = os.environ.get("STICKLLM_NINFER_MODEL", "qwen38-27b")
+        return {
+            "ok": True,
+            "engine": eng,
+            "cwd": str(root),
+            "host": host,
+            "port": port,
+            "model_dir": str(model_dir),
+            "model_key": model_key,
+            "argv": [str(run_sh if run_sh.is_file() else serve), model_key]
+            if run_sh.is_file()
+            else [str(serve), "--help"],
+            "env": {
+                "NINFER_HOST": host,
+                "NINFER_PORT": str(port),
+                "NINFER_MODEL_DIR": str(model_dir),
+                "NINFER_SERVER": str(serve),
+            },
+            "note": (
+                "NInfer run.sh downloads its .ninfer artifact into NINFER_MODEL_DIR on first "
+                "start (~19 GiB for qwen38-27b), then serves OpenAI APIs on :8080."
+            ),
+        }
+    if eng == "strata":
+        data = Path(doc.get("model_dir") or os.environ.get("STRATA_DATA_DIR") or str(mod.STRATA_DATA_DIR))
+        data.mkdir(parents=True, exist_ok=True)
+        squash = root / "squashfs-root"
+        # Prefer AppImage-extracted AppRun / strata CLI.
+        candidates = [
+            squash / "AppRun",
+            squash / "usr" / "bin" / "strata",
+            squash / "strata",
+            root / "AppRun",
+        ]
+        bin_path = next((p for p in candidates if p.is_file()), None)
+        gguf = mod.find_gguf_for_strata()
+        argv: list[str]
+        if bin_path is None:
+            return {"ok": False, "error": "Strata binary not found after AppImage extract", "root": str(root)}
+        # strata launch when available; else AppRun.
+        if bin_path.name == "strata" or (squash / "usr" / "bin" / "strata").is_file():
+            strata_bin = str(squash / "usr" / "bin" / "strata") if (squash / "usr" / "bin" / "strata").is_file() else str(bin_path)
+            argv = [
+                strata_bin,
+                "launch",
+                "--access",
+                "local",
+                "--port",
+                str(port),
+                "--no-api-key",
+                "--yes",
+                "--no-tui",
+                "--restart",
+            ]
+            if gguf:
+                argv.extend(["--model-path", gguf])
+            else:
+                argv.extend(["--family", "qwen", "--model", "q2_0"])
+        else:
+            argv = [str(bin_path)]
+        return {
+            "ok": True,
+            "engine": eng,
+            "cwd": str(squash if squash.is_dir() else root),
+            "host": host,
+            "port": port,
+            "model_path": gguf,
+            "argv": argv,
+            "env": {
+                "STRATA_DATA_DIR": str(data),
+                "APPIMAGE_EXTRACT_AND_RUN": "1",
+            },
+            "note": (
+                "Strata serves OpenAI APIs on :8080. Driver <580 uses CUDA 12 engine pack. "
+                "May download a Strata model on first start if no --model-path GGUF works."
+            ),
+        }
+    return {"ok": False, "error": f"unsupported engine {eng}"}
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(argv if argv is not None else sys.argv[1:])
+    print_only = "--print" in args
+    mod = _load()
+    plan = _plan(mod)
+    if print_only:
+        print(json.dumps(plan, indent=2))
+        return 0 if plan.get("ok") else 2
+    if not plan.get("ok"):
+        print(plan.get("error") or "engine plan failed", file=sys.stderr)
+        return 1
+    env = os.environ.copy()
+    for k, v in (plan.get("env") or {}).items():
+        env[str(k)] = str(v)
+    cwd = plan.get("cwd") or None
+    cmd = [str(x) for x in (plan.get("argv") or [])]
+    if not cmd or not Path(cmd[0]).exists():
+        print(f"engine binary missing: {cmd[:1]}", file=sys.stderr)
+        return 1
+    os.chdir(cwd or ".")
+    os.execvpe(cmd[0], cmd, env)
+    return 1  # pragma: no cover
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -270,15 +270,133 @@ def restore_nvidia_modules(backup_dir: str) -> dict:
     return {"ok": True, "restored": restored, "dir": str(target_dir)}
 
 
-def clone_or_update(url: str, dest: Path) -> None:
-    if (dest / ".git").is_dir():
-        _run(["git", "-C", str(dest), "fetch", "--depth", "1", "origin"], check=False)
-        _run(["git", "-C", str(dest), "reset", "--hard", "origin/HEAD"], check=False)
-        return
+class FetchError(RuntimeError):
+    """Upstream fetch failed; message is safe to show in the Experimental UI."""
+
+
+def _cmd_available(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+def _download_file(url: str, dest: Path, *, timeout: int = 300) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if _cmd_available("curl"):
+        proc = _run(
+            ["curl", "-fsSL", "--max-time", str(timeout), "-o", str(dest), url],
+            check=False,
+            timeout=timeout + 30,
+        )
+        if proc.returncode == 0 and dest.is_file() and dest.stat().st_size > 0:
+            return
+        detail = ((proc.stderr or proc.stdout or "").strip() or f"curl rc={proc.returncode}")[:400]
+        raise FetchError(f"download failed ({url}): {detail}")
+    if _cmd_available("wget"):
+        proc = _run(
+            ["wget", "-q", "-O", str(dest), f"--timeout={timeout}", url],
+            check=False,
+            timeout=timeout + 30,
+        )
+        if proc.returncode == 0 and dest.is_file() and dest.stat().st_size > 0:
+            return
+        detail = ((proc.stderr or proc.stdout or "").strip() or f"wget rc={proc.returncode}")[:400]
+        raise FetchError(f"download failed ({url}): {detail}")
+    raise FetchError("neither curl nor wget is available to fetch upstream sources")
+
+
+def _extract_github_tarball(tarball: Path, dest: Path) -> None:
+    """Extract owner-repo-{main,master}/… archive into dest (flat repo root)."""
+    if not _cmd_available("tar"):
+        raise FetchError("tar is required to unpack GitHub archive tarballs")
+    staging = dest.parent / (dest.name + ".extract")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
+    proc = _run(["tar", "-xzf", str(tarball), "-C", str(staging)], check=False, timeout=120)
+    if proc.returncode != 0:
+        detail = ((proc.stderr or proc.stdout or "").strip() or f"tar rc={proc.returncode}")[:400]
+        shutil.rmtree(staging, ignore_errors=True)
+        raise FetchError(f"unpack failed: {detail}")
+    kids = [p for p in staging.iterdir() if p.is_dir()]
+    if len(kids) != 1:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise FetchError("unexpected GitHub archive layout (expected one top-level directory)")
     if dest.exists():
         shutil.rmtree(dest)
-    _run(["git", "clone", "--depth", "1", url, str(dest)], check=True, timeout=300)
+    kids[0].rename(dest)
+    shutil.rmtree(staging, ignore_errors=True)
+
+
+def _fetch_via_tarball(url: str, dest: Path) -> None:
+    mod = _load_mod()
+    archives = list(getattr(mod, "github_archive_urls", lambda _u: [])(url) or [])
+    if not archives:
+        raise FetchError(
+            f"git missing and no GitHub archive fallback for {url!r}; "
+            "install git or use a github.com HTTPS URL"
+        )
+    errors: list[str] = []
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for arch_url in archives:
+        tarball = dest.parent / (dest.name + ".tgz")
+        try:
+            if tarball.exists():
+                tarball.unlink()
+            _download_file(arch_url, tarball)
+            _extract_github_tarball(tarball, dest)
+            tarball.unlink(missing_ok=True)
+            marker = dest / ".stickllm-fetched-from"
+            marker.write_text(arch_url + "\n", encoding="utf-8")
+            return
+        except FetchError as exc:
+            errors.append(str(exc))
+            if tarball.exists():
+                tarball.unlink(missing_ok=True)
+            continue
+    raise FetchError(
+        "could not fetch upstream sources (git not installed; archive fallback failed): "
+        + "; ".join(errors[:3])
+    )
+
+
+def clone_or_update(url: str, dest: Path) -> None:
+    """Fetch upstream into dest via git when available, else GitHub tarball + tar.
+
+    Live StickLLM images include curl/tar but often omit git. Raising FetchError
+    (not CalledProcessError) so control/UI can show a short reason.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    git_bin = shutil.which("git")
+    if git_bin and (dest / ".git").is_dir():
+        _run([git_bin, "-C", str(dest), "fetch", "--depth", "1", "origin"], check=False)
+        _run([git_bin, "-C", str(dest), "reset", "--hard", "origin/HEAD"], check=False)
+        return
+    if git_bin:
+        if dest.exists():
+            shutil.rmtree(dest)
+        env_hint = {"GIT_TERMINAL_PROMPT": "0"}
+        proc = subprocess.run(
+            [git_bin, "clone", "--depth", "1", url, str(dest)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env={**os.environ, **env_hint},
+            check=False,
+        )
+        if proc.returncode == 0 and dest.is_dir():
+            return
+        detail = ((proc.stderr or proc.stdout or "").strip() or f"git clone rc={proc.returncode}")[:500]
+        # Fall through to tarball if the network/repo rejects git protocol-ish failures.
+        try:
+            _fetch_via_tarball(url, dest)
+            return
+        except FetchError as tar_exc:
+            raise FetchError(
+                f"git clone failed ({detail}); archive fallback also failed: {tar_exc}"
+            ) from tar_exc
+    # No git on PATH (common on StickLLM live images).
+    if dest.exists():
+        shutil.rmtree(dest)
+    _fetch_via_tarball(url, dest)
 
 
 def apply_cmp(*, bus: str, dry_run: bool) -> dict:
@@ -582,16 +700,46 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     _write_progress({"state": "starting", "action": args.action, "path": args.path, "bus": args.bus})
-    if args.path == "cmpunlocker":
-        result = apply_cmp(bus=args.bus, dry_run=args.dry_run) if args.action == "apply" else disable_cmp(
-            bus=args.bus, dry_run=args.dry_run
-        )
-    else:
-        result = (
-            apply_gpu_unlock(bus=args.bus, dry_run=args.dry_run)
-            if args.action == "apply"
-            else disable_gpu_unlock(bus=args.bus, dry_run=args.dry_run)
-        )
+    try:
+        if args.path == "cmpunlocker":
+            result = (
+                apply_cmp(bus=args.bus, dry_run=args.dry_run)
+                if args.action == "apply"
+                else disable_cmp(bus=args.bus, dry_run=args.dry_run)
+            )
+        else:
+            result = (
+                apply_gpu_unlock(bus=args.bus, dry_run=args.dry_run)
+                if args.action == "apply"
+                else disable_gpu_unlock(bus=args.bus, dry_run=args.dry_run)
+            )
+    except FetchError as exc:
+        result = {
+            "ok": False,
+            "applied": False,
+            "status": "failed",
+            "error": str(exc),
+            "reason": str(exc),
+            "report": f"Unlock: failed ({exc})",
+        }
+        _write_progress({"state": "failed", **result})
+        print(json.dumps(result, indent=2))
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        msg = f"{type(exc).__name__}: {exc}"
+        result = {
+            "ok": False,
+            "applied": False,
+            "status": "failed",
+            "error": msg,
+            "reason": msg,
+            "report": f"Unlock: failed ({msg})",
+        }
+        _write_progress({"state": "failed", **result})
+        print(json.dumps(result, indent=2))
+        print(msg, file=sys.stderr)
+        return 1
     _write_progress({"state": "done", **result})
     print(json.dumps(result, indent=2))
     return 0 if result.get("ok") else 1

@@ -277,6 +277,7 @@ details.reasoning>:not(summary){border-left:2px solid var(--line,rgba(127,127,12
 .group{border:1px solid var(--line);border-radius:var(--r);background:var(--bg2)}
 .group:empty{display:none}
 .row{display:flex;align-items:center;gap:16px;justify-content:space-between;padding:12px 14px;border-top:1px solid var(--line2)}
+.rowActions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;flex:none}
 .group>.row:first-child{border-top:0}
 .row>div:first-child{min-width:0}
 .row b{display:block;font-weight:580;font-size:14px}

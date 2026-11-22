@@ -66,12 +66,24 @@ def test_rewrite_html_css_not_js():
     assert "url(/agent-zero/vendor/google/google-icons.woff2)" in out
     assert "importmap" in out
     assert "data-stickllm-a0-embed" in out
+    assert 'data-stickllm-a0-embed="layout"' in out
+    assert "body>.loading" in out
+    assert ".container{position:absolute" in out
 
     splash = b'<head><link rel="icon" href="/public/favicon.svg"><script>const APP_DOCUMENT_PATH = "/ui/index"; fetch("/ui/asset-bundle"</script></head>'
     splash_out = mod.rewrite_agent_embed_payload(splash, "text/html").decode()
     assert 'APP_DOCUMENT_PATH = "/agent-zero/ui/index"' in splash_out
     assert 'fetch("/agent-zero/ui/asset-bundle"' in splash_out
     assert "importmap" not in splash_out
+    assert 'data-stickllm-a0-embed="layout"' in splash_out
+
+    # Plugin page-head fragments: path-prefix CSS/attrs only — never prepend shim
+    # (shim-in-fragment duplicated scripts into every x-component under page-head).
+    frag = b'<div class="loading"></div><link rel="stylesheet" href="/plugins/_behavior_adjustment/webui/css/behavior.css">'
+    frag_out = mod.rewrite_agent_embed_payload(frag, "text/html").decode()
+    assert 'href="/agent-zero/plugins/_behavior_adjustment/webui/css/behavior.css"' in frag_out
+    assert "data-stickllm-a0-embed" not in frag_out
+    assert frag_out.startswith('<div class="loading"></div>')
 
     css = b"body{background:url(/public/a.svg)} i{background:url(./rel.woff2)}"
     css_out = mod.rewrite_agent_embed_payload(css, "text/css").decode()

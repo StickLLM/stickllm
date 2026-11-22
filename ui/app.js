@@ -6584,8 +6584,84 @@ function refreshSecLive(sec) {
 }
 
 // Experimental tab: detect + offer; download/unlock after Cancel/Continue. No auto-install.
-let expState = { cards: [], offers: [], reports: [], prefs: {} };
+let expState = { cards: [], offers: [], reports: [], prefs: {}, download: null };
 let expAckResolve = null;
+let expDlPollTimer = null;
+function stopExpDlPoll() {
+  if (expDlPollTimer) {
+    clearInterval(expDlPollTimer);
+    expDlPollTimer = null;
+  }
+}
+/** Generic Experimental engine-download bar (Strata / NInfer / future engines). */
+function renderExpDownload(d) {
+  const box = $("#expDlBox");
+  if (!box) return;
+  const state_ = (d && d.state) || "idle";
+  const active = ["downloading", "verifying", "starting", "failed", "done"].includes(state_);
+  if (!active) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const label = state_ === "done" ? "Downloaded "
+    : state_ === "failed" ? "Failed "
+    : state_ === "verifying" ? "Verifying "
+    : "Downloading ";
+  const name = (d && (d.name || d.engine || d.id)) || "engine";
+  if ($("#expDlName")) $("#expDlName").textContent = label + name;
+  let pct = d && d.percent != null ? Number(d.percent) : (state_ === "done" ? 100 : active ? 2 : 0);
+  if (!Number.isFinite(pct)) pct = state_ === "done" ? 100 : 2;
+  if ($("#expDlFill")) $("#expDlFill").style.width = Math.max(active ? 2 : 0, Math.min(100, pct)) + "%";
+  if ($("#expDlPct")) $("#expDlPct").textContent = active ? Math.round(pct) + "%" : "";
+  let meta = "";
+  if (state_ === "failed") {
+    meta = (d && (d.error || d.note)) || "Download failed";
+  } else if (d && d.note) {
+    meta = d.note;
+  } else if (d && (d.bytes_done || d.bytes_total)) {
+    meta = `${fmtBytes(d.bytes_done || 0)} / ${fmtBytes(d.bytes_total || 0)}`;
+  }
+  if (d && d.file_index && d.files_total && state_ !== "done") {
+    meta = (meta ? meta + " · " : "") + `file ${d.file_index}/${d.files_total}`;
+  }
+  if ($("#expDlMeta")) $("#expDlMeta").textContent = meta;
+}
+function expDownloadActive(d) {
+  const s = d && d.state;
+  return s === "downloading" || s === "starting" || s === "verifying" || !!(d && d.running);
+}
+function startExpDlPoll() {
+  if (expDlPollTimer) return;
+  let lastState = "";
+  expDlPollTimer = setInterval(async () => {
+    try {
+      const j = await control("experimental_status");
+      const d = (j && j.download) || {};
+      if (j) {
+        expState = j;
+        // Keep download slice current without rebuilding the whole tab every tick.
+        expState.download = d;
+      }
+      renderExpDownload(d);
+      const st = String(d.state || "");
+      if (st === "done" && lastState && lastState !== "done") {
+        toast((d.note || ("Downloaded " + (d.name || d.engine || "engine"))) + " — not set as default");
+        stopExpDlPoll();
+        refreshExperimental().catch(() => {});
+        return;
+      }
+      if (st === "failed" && lastState && lastState !== "failed") {
+        toast(plainError(d.error || d.note || "Engine download failed"));
+        stopExpDlPoll();
+        refreshExperimental().catch(() => {});
+        return;
+      }
+      lastState = st;
+      if (!expDownloadActive(d) && (st === "idle" || !st)) stopExpDlPoll();
+    } catch (_) { /* transient */ }
+  }, 900);
+}
 function expConfirm(title, body) {
   return new Promise((resolve) => {
     expAckResolve = resolve;
@@ -6665,13 +6741,16 @@ function paintExperimental(j) {
               unlock_enabled: on,
               confirmed: true,
             });
+            if (r && r.ok === false) {
+              throw new Error(r.error || r.reason || r.hint || "Unlock failed");
+            }
             await refreshExperimental();
-            const msg = (r && (r.note || r.hint)) || (on ? "Unlock apply started" : "Unlock disabled");
+            const msg = (r && (r.note || r.hint || r.reason)) || (on ? "Unlock apply finished" : "Unlock disabled");
             toast(msg);
             if (r && r.needs_reboot) toast(isCmp ? "Cold reboot required (shutdown -h now)" : "Reboot required to finish unlock change");
           } catch (ex) {
             inp.checked = !on;
-            toast(ex.message || String(ex));
+            toast(plainError(ex.message || String(ex)) || (ex.message || String(ex)));
           }
         };
       });
@@ -6680,19 +6759,45 @@ function paintExperimental(j) {
   const eng = $("#expEngines");
   if (eng) {
     const offers = (j && j.offers) || [];
+    const dlBusy = expDownloadActive((j && j.download) || {});
+    const setDefaultWired = !!(j && j.wired && j.wired.set_default);
     if (!offers.length) {
       eng.innerHTML = `<div class="row"><small>No engine offers for the detected cards.</small></div>`;
     } else {
       eng.innerHTML = offers.map((o) => {
-        const blocked = o.blocked ? `Blocked: ${esc(o.blocked)}` : esc(o.note || "Confirm before download");
-        const dis = o.blocked ? " disabled" : "";
-        return `<div class="row"><div><b>${esc(o.engine)}</b><small>${esc(o.card_label || "")} — ${blocked}</small></div><button class="btn sm" type="button" data-exp-engine="${esc(o.engine)}" data-exp-bus="${esc(o.card_bus || "")}"${dis}>Download…</button></div>`;
+        const installed = !!o.installed;
+        const blocked = o.blocked
+          ? `Blocked: ${esc(o.blocked)}`
+          : esc(o.note || (installed ? "Installed on disk" : "Confirm before download"));
+        const title = installed
+          ? `<b>${esc(o.engine)}</b> <span class="pill ok">Installed</span>`
+          : `<b>${esc(o.engine)}</b>`;
+        const where = installed && o.tag
+          ? ` · tag ${esc(o.tag)}${o.bytes ? " · " + esc(fmtBytes(o.bytes)) : ""}`
+          : "";
+        let actions = "";
+        if (o.blocked) {
+          actions = `<button class="btn sm" type="button" disabled>Download…</button>`;
+        } else if (installed) {
+          const setTitle = setDefaultWired
+            ? "Set as StickLLM default engine (chat / health / Agent Zero on :8080)"
+            : "Set default unavailable";
+          const isDef = !!(o.default || o.active);
+          actions = `<button class="btn sm" type="button" data-exp-engine="${esc(o.engine)}" data-exp-bus="${esc(o.card_bus || "")}" data-exp-redownload="1"${dlBusy ? " disabled" : ""}>Re-download…</button>`
+            + (isDef
+              ? `<button class="btn sm" type="button" disabled>Default</button>`
+              : `<button class="btn sm primary" type="button" data-exp-set-default="${esc(o.engine)}" title="${esc(setTitle)}"${setDefaultWired ? "" : " disabled"}>Set default</button>`);
+        } else {
+          actions = `<button class="btn sm" type="button" data-exp-engine="${esc(o.engine)}" data-exp-bus="${esc(o.card_bus || "")}"${dlBusy ? " disabled" : ""}>Download…</button>`;
+        }
+        return `<div class="row"><div>${title}<small>${esc(o.card_label || "")}${where} — ${blocked}</small></div><div class="rowActions">${actions}</div></div>`;
       }).join("");
       eng.querySelectorAll("[data-exp-engine]").forEach((b) => {
         b.onclick = async () => {
+          const re = b.dataset.expRedownload === "1";
           const ok = await expConfirm(
-            "Download " + (b.dataset.expEngine || "engine"),
-            "Continue downloads the matching third-party build from GitHub (Strata AppImage+CUDA engine, or NInfer-all Debian 13 / Windows archive). SHA-256 is verified. The engine is not set as StickLLM default. Cancel leaves the stick unchanged."
+            (re ? "Re-download " : "Download ") + (b.dataset.expEngine || "engine"),
+            "Continue downloads the matching third-party build from GitHub (Strata AppImage+CUDA engine, or NInfer-all Debian 13 / Windows archive). SHA-256 is verified. The engine is not set as StickLLM default — chat keeps using llama.cpp. Cancel leaves the stick unchanged."
           );
           if (!ok) return;
           try {
@@ -6701,23 +6806,99 @@ function paintExperimental(j) {
               bus: b.dataset.expBus,
               confirmed: true,
             });
-            toast((r && r.error) || (r && (r.note || r.hint)) || "Download started");
-          } catch (e) { toast(e.message || String(e)); }
+            if (r && r.ok === false) {
+              throw new Error(r.error || r.hint || "Download failed");
+            }
+            renderExpDownload((r && r.download) || { state: "starting", name: b.dataset.expEngine, percent: 0 });
+            startExpDlPoll();
+            toast((r && (r.note || r.hint)) || "Download started — see progress below");
+          } catch (e) { toast(plainError(e.message || String(e)) || (e.message || String(e))); }
+        };
+      });
+      eng.querySelectorAll("[data-exp-set-default]").forEach((b) => {
+        b.onclick = async () => {
+          const engId = b.dataset.expSetDefault || "";
+          const ok = await expConfirm(
+            "Set default — " + engId,
+            "Continue switches StickLLM chat, health, and Agent Zero off llama.cpp onto this Experimental engine on :8080. NInfer may download its own ~19 GiB model into DATA on first start. You can switch back to llama.cpp anytime. Cancel leaves the stick unchanged."
+          );
+          if (!ok) return;
+          try {
+            const r = await control("experimental_engine_set_default", {
+              engine: engId,
+              confirmed: true,
+            });
+            if (r && r.ok === false) {
+              throw new Error(r.error || r.hint || "Set default failed");
+            }
+            toast((r && (r.note || r.hint)) || ("Default engine: " + engId));
+            await refreshExperimental();
+          } catch (e) {
+            toast(plainError(e.message || String(e)) || (e.message || String(e)));
+          }
         };
       });
     }
+    const activeEng = (j && j.active_engine) || "llama.cpp";
+    const restoreRow = $("#expRestoreLlama");
+    if (restoreRow) {
+      if (activeEng && activeEng !== "llama.cpp") {
+        restoreRow.hidden = false;
+        restoreRow.innerHTML = `<div class="row"><div>Active engine: <strong class="mono">${esc(activeEng)}</strong><small>Chat / health / Agent Zero use this on :8080</small></div><div class="rowActions"><button class="btn sm" type="button" id="expUseLlama">Use llama.cpp</button></div></div>`;
+        const b = $("#expUseLlama");
+        if (b) {
+          b.onclick = async () => {
+            const ok = await expConfirm(
+              "Use llama.cpp",
+              "Continue stops the Experimental engine and restores StickLLM llama-server on :8080. Cancel leaves the current engine running."
+            );
+            if (!ok) return;
+            try {
+              const r = await control("experimental_engine_set_default", {
+                engine: "llama.cpp",
+                confirmed: true,
+              });
+              if (r && r.ok === false) throw new Error(r.error || r.hint || "Restore failed");
+              toast((r && r.note) || "llama.cpp restored");
+              await refreshExperimental();
+            } catch (e) {
+              toast(plainError(e.message || String(e)) || (e.message || String(e)));
+            }
+          };
+        }
+      } else {
+        restoreRow.hidden = true;
+        restoreRow.innerHTML = "";
+      }
+    }
   }
+  // Hide stale "Downloaded" bar once disk install is detected (keep in-flight bars).
+  const dl = (j && j.download) || {};
+  const anyInstalled = ((j && j.offers) || []).some((o) => o && o.installed);
+  if (String(dl.state || "") === "done" && anyInstalled && !expDownloadActive(dl)) {
+    const box = $("#expDlBox");
+    if (box) box.hidden = true;
+  } else {
+    renderExpDownload(dl);
+  }
+  if (expDownloadActive(dl) && !expDlPollTimer) startExpDlPoll();
   const rep = $("#expReports");
   if (rep) {
     const lines = (j && j.reports) || [];
-    rep.innerHTML = lines.length
-      ? lines.map((l) => `<div class="row"><small class="mono">${esc(l)}</small></div>`).join("")
+    const engLines = Object.values((j && j.engines) || {}).map((e) => {
+      if (!e || !e.engine) return "";
+      const def = e.default || e.active ? "DEFAULT" : "installed";
+      return `engine ${e.engine}: ${def} tag=${e.tag || "?"} dest=${e.dest || "?"}`;
+    }).filter(Boolean);
+    const all = lines.concat(engLines);
+    rep.innerHTML = all.length
+      ? all.map((l) => `<div class="row"><small class="mono">${esc(l)}</small></div>`).join("")
       : `<div class="row"><small class="mono">—</small></div>`;
   }
   if ($("#expMsg")) {
     const wired = j && j.wired;
     $("#expMsg").textContent = wired
-      ? "Per-card Continue downloads engines or applies unlocks (cmpunlocker / gpu-unlock). No NVIDIA blobs in git; no master unlock toggle."
+      ? "Per-card Continue downloads engines or applies unlocks. Installed engines stay on disk until Set default is wired — chat uses llama.cpp. No NVIDIA blobs in git; no master unlock toggle."
       : "";
   }
 }
@@ -10733,10 +10914,16 @@ window.stickApp = Object.freeze({
     creds.hidden = !on;
     if (!on) clearCredUi();
   };
+  const emailAuth = (extra) => {
+    try {
+      if (typeof authHeaders === "function") return authHeaders(extra || {});
+    } catch (_) {}
+    return Object.assign({ "X-StickLLM-Client": "ui" }, extra || {});
+  };
   const loadCreds = () => {
     if (!box.checked) { setCredVisible(false); return; }
     setCredVisible(true);
-    fetch("/api/agent/email-credentials", { cache: "no-store", headers: authHeaders() })
+    fetch("/api/agent/email-credentials", { cache: "no-store", headers: emailAuth() })
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (!j || !j.ok) {
@@ -10753,7 +10940,7 @@ window.stickApp = Object.freeze({
       })
       .catch(() => {});
   };
-  const load = () => fetch("/api/agent/email-outbound", { cache: "no-store", headers: authHeaders() })
+  const load = () => fetch("/api/agent/email-outbound", { cache: "no-store", headers: emailAuth() })
     .then((r) => (r.ok ? r.json() : null))
     .then((j) => {
       if (j && typeof j.email_outbound === "boolean") box.checked = j.email_outbound;
@@ -10761,18 +10948,23 @@ window.stickApp = Object.freeze({
       if (box.checked) loadCreds();
       else clearCredUi();
     })
-    .catch(() => {});
+    .catch(() => { /* still allow local toggle UI */ });
   box.addEventListener("change", async () => {
     const want = box.checked;
+    // Show fields immediately when enabling so the form is never "missing".
+    setCredVisible(want);
+    if (!want) clearCredUi();
     try {
       const r = await fetch("/api/agent/email-outbound", {
         method: "POST",
-        headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+        headers: emailAuth({ "Content-Type": "application/json" }),
         body: JSON.stringify({ email_outbound: want }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) {
         box.checked = !want;
+        setCredVisible(box.checked);
+        if (!box.checked) clearCredUi();
         toast((j && j.message) || "Could not save the email setting");
         return;
       }
@@ -10783,6 +10975,8 @@ window.stickApp = Object.freeze({
       else clearCredUi();
     } catch (e) {
       box.checked = !want;
+      setCredVisible(box.checked);
+      if (!box.checked) clearCredUi();
       toast("Could not save the email setting");
     }
   });
@@ -10792,7 +10986,7 @@ window.stickApp = Object.freeze({
     try {
       const r = await fetch("/api/agent/email-credentials", {
         method: "POST",
-        headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+        headers: emailAuth({ "Content-Type": "application/json" }),
         body: JSON.stringify({ email, password }),
       });
       const j = await r.json().catch(() => ({}));

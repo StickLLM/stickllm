@@ -671,8 +671,14 @@
   <h3>Detected GPUs</h3>
   <div class="group" id="expCards"><div class="row"><small>Open this page on the stick to detect GPUs…</small></div></div>
   <h3>Engine downloads</h3>
-  <p class="muted small">Offers only engines that match the detected card. First engines: Strata and NInfer-all. NInfer Linux needs Debian 13. Cancel/Continue before any download.</p>
+  <p class="muted small">Offers only engines that match the detected card. First engines: Strata and NInfer-all. NInfer Linux needs Debian 13. After download the row shows Installed; Set default / Use is not wired yet — chat still runs llama.cpp. Cancel/Continue before any download.</p>
   <div class="group" id="expEngines"><div class="row"><small>No offers yet.</small></div></div>
+  <div class="group" id="expRestoreLlama" hidden></div>
+  <div class="dl" id="expDlBox" hidden>
+    <div class="dlTop"><span id="expDlName">Engine download</span><span id="expDlPct">0%</span></div>
+    <div class="bar"><i id="expDlFill"></i></div>
+    <small id="expDlMeta" class="muted"></small>
+  </div>
   <h3>Status</h3>
   <div class="group" id="expReports"><div class="row"><small class="mono">—</small></div></div>
   <div class="actions"><button class="btn sm" id="expRefresh" type="button">Refresh detection</button><span class="muted small" id="expMsg"></span></div>

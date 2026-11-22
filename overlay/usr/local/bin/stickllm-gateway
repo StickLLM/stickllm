@@ -246,6 +246,27 @@ def _rewrite_embed_html(html: str, pref: str) -> str:
     return "".join(out)
 
 
+# Desk/iframe: A0 page-head uses display:contents, so plugin skeletons
+# (e.g. .loading with margin:2rem + min-height:50px ≈ 114px) become body
+# siblings and push .container (height:100%) below the iframe — clipping
+# #input-section / #chat-input. Also #left-panel uses 100vh. Pin the shell.
+# Hide page-head .loading skeletons; pin .container to the iframe.
+_EMBED_LAYOUT_CSS = (
+    '<style data-stickllm-a0-embed="layout">'
+    "html,body{height:100%!important;max-height:100%!important;overflow:hidden!important}"
+    "body{min-height:0!important}"
+    "x-extension#page-head .loading,body>.loading{"
+    "display:none!important;margin:0!important;height:0!important;min-height:0!important;"
+    "padding:0!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important}"
+    ".container{position:absolute!important;inset:0!important;height:100%!important;"
+    "max-height:100%!important;width:100%!important;margin:0!important}"
+    "#left-panel{height:100%!important;max-height:100%!important}"
+    "#right-panel{min-height:0!important;max-height:100%!important;overflow:hidden!important}"
+    "#chat-history{min-height:0!important}"
+    "#input-section{flex-shrink:0!important}"
+    "</style>"
+)
+
 _EMBED_SHIM = """<script data-stickllm-a0-embed="1">(function(){
 var P=__PREFIX__;
 /* Swallow native alerts of raw auth status (Cursor Simple Browser spam). */
@@ -433,16 +454,25 @@ def _inject_embed_runtime(html: str, pref: str) -> str:
     The splash fetches "/ui/index" from a script string, then document.write
     replaces that document. Module pages need the map because import specifiers
     ignore both <base> and a fetch wrapper.
+
+    Full documents only (<html>/<head>). Component fragments under page-head
+    must not get the shim prepended — that duplicated scripts into every
+    plugin styles.html and is unnecessary for path rewriting (attrs/CSS still
+    go through _rewrite_embed_html / _prefix_css_urls).
     """
     html = _prefix_splash_boot_paths(html, pref)
     if "data-stickllm-a0-embed" in html:
         return html
-    block = _EMBED_SHIM.replace("__PREFIX__", repr(pref))
+    # Fragments (plugin page-head, chat-input.html, …): path-prefix only.
+    if not re.search(r"(?i)<(?:html|head)\b", html):
+        return html
+    block = _EMBED_LAYOUT_CSS + _EMBED_SHIM.replace("__PREFIX__", repr(pref))
     if re.search(r"""(?i)\btype\s*=\s*["']module["']""", html):
         block = _embed_import_map(pref) + block
     if re.search(r"(?i)<head\b", html):
         return re.sub(r"(?i)<head([^>]*)>", lambda match: match.group(0) + block, html, count=1)
-    return block + html
+    # Rare: <html> without <head>
+    return re.sub(r"(?i)<html([^>]*)>", lambda match: match.group(0) + block, html, count=1)
 
 
 def rewrite_agent_embed_payload(data: bytes, ctype: str, prefix: str = AGENT_EMBED_PREFIX) -> bytes:

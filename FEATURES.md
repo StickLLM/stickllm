@@ -75,7 +75,8 @@ Parked with security (do not build yet):
   - TODO: decide where the approved/pinned list lives (`catalog.toml` today), how it updates, and how non-list downloads warn + verify (see MODELS.md)
 - [ ] P2 Optional large MoE recipe (Strata-style) for high-RAM machines
 - [x] P1 **v0.8.0** Debian 13 fresh image + Experimental tab scaffolding (Strata / NInfer-all offers; CMP 170HX + RTX 3090 unlock UI stubs) — [docs/DEBIAN13-EXPERIMENTAL.md](docs/DEBIAN13-EXPERIMENTAL.md); artifact `StickLLM-v0.8.0.iso`; no auto-install; no NVIDIA blobs in git
-- [x] P1 **v0.8.1** Experimental engines + unlocks wired (Cancel/Continue; no master toggle); vault delete / novault probe; llama b12617 + mmproj; VL-3B catalog; MoE/32K refuse-if-unfit; HF typo search; download→Installed refresh; firmware-mediatek; A0 MiniLM skip — artifact `StickLLM-v0.8.1.iso`
+- [x] P1 **v0.8.2** Experimental Set default (NInfer/Strata on :8080); VL-3B dropped → VL-7B (≥12 GB); prior 0.8.1 hotfixes — artifact `StickLLM-v0.8.2.iso`
+- [x] P1 **v0.8.1** Experimental engines + unlocks wired (Cancel/Continue; no master toggle); vault delete / novault probe; llama b12617 + mmproj; MoE/32K refuse-if-unfit; HF typo search; download→Installed refresh; firmware-mediatek; A0 MiniLM skip — artifact `StickLLM-v0.8.1.iso`
 
 ## Settings (persist on writable partition)
 - [ ] P0 Last boot mode is default on menu timeout (GRUB grubenv / savedefault)

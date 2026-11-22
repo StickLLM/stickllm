@@ -1,3 +1,13 @@
+## 0.8.2 - Experimental engines wired (NInfer / Strata Set default)
+- **Set default / Use wired.** Confirm switches StickLLM chat, `/health`, and Agent Zero off llama.cpp onto downloaded **NInfer-all** or **Strata** on `127.0.0.1:8080` (`stickllm-exp-engine.service` + `stickllm-experimental-serve`). Extract multipart NInfer / AppImage Strata on switch. **Use llama.cpp** restores llama-server. Active engine persisted under `/var/lib/stickllm/experimental/active-engine.json`.
+- **Installed engine detection.** Experimental status scans `/var/lib/stickllm/experimental/engines/<engine>/<tag>/` and marks offers Installed; UI shows Installed + Re-download + Set default.
+- **Generic Experimental engine progress.** Strata / NInfer / future engines share one download progress path: background helper, `/run/stickllm/experimental-download.json`, shared progress bar.
+- **Strata CUDA pack by driver.** Driver &lt; 580.65 → CUDA 12 engine; ≥ 580.65 → CUDA 13.
+- **NInfer SHA family match.** Checksums bind to the selected archive family (sm70…), not the dual `12.9-13.4` SHA256SUMS file.
+- **GPU unlock without git.** `clone_or_update` falls back to GitHub tarball via curl/tar; clear JSON errors. Bake adds `git`.
+- **Vision catalog: drop weak VL-3B.** Removed `qwen25-vl-3b-q4km` (poor quality). Pin `qwen25-vl-7b-q4km` (Qwen2.5-VL-7B Instruct Q4_K_M + mmproj Q8_0) for ≥12 GB; 8 GB has no quality vision recommend @ 32K.
+- **Prior hotfixes in bake.** CUDA soname/.so.1 links, experimental snapshot (no master_unlocks crash), email Network fields, Minesweeper board-tile + skin, A0 `/agent-zero/` + `setupBlocksAgent` + embed CSS, unlock UI errors, HF typo search, 32K floor refuse-if-unfit, download override policy, llama b12617/mmproj, firmware-mediatek.
+
 ## 0.8.1 - Experimental engines + model/load fixes
 - **Agent Zero open on LAN / StickLink.** Paired desktop and StickLink clients open same-origin `/agent-zero/` (gateway → loopback `:5099`). Stop minting a `:5443` handoff on every Agent click — that port is not StickLink-muxed and needs a second cert trust on LAN. Desk “Open in new tab” stays on `/agent-zero/` too. Kiosk start path unchanged (seed/`docker-cli`/`+x`, MiniLM scipy skip, auto-start after vault unlock).
 - **Paired desktop Open Agent Zero.** `afterPairSuccess` refreshes setup state; `setupBlocksAgent` allows A0 when vault is already open even if this browser never ran the wizard locally.

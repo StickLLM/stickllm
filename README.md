@@ -68,13 +68,17 @@ Full flash notes: [docs/FLASH.md](docs/FLASH.md). Then boot: [docs/BOOT.md](docs
 
 ---
 
-## What's in v0.8.1
+## What's in v0.8.2
 
-About and `stickllm.json` say **v0.8.1**. Base OS is **Debian 13 (trixie)**. StickLink Method C phone join / Always-On peer remains in the shipping ISO (built from **private** StickLink sources). StickLink rendezvous/signalling remains **closed source / commercial** — see [docs/sticklink/README.md](docs/sticklink/README.md).
+About and `stickllm.json` say **v0.8.2**. Base OS is **Debian 13 (trixie)**. StickLink Method C phone join / Always-On peer remains in the shipping ISO (built from **private** StickLink sources). StickLink rendezvous/signalling remains **closed source / commercial** — see [docs/sticklink/README.md](docs/sticklink/README.md).
 
-Also in this line: Experimental engines wired (Strata / NInfer-all download + CMP/3090 unlock helpers, Cancel/Continue only, no master toggle, no NVIDIA blobs in git); vault delete no longer leaves a stale unlock screen; llama.cpp b12617 + mmproj/vision path; VL-3B catalog option; MoE/32K floor refuse-if-unfit; HF typo fuzzy search; download→Installed refresh; firmware-mediatek; A0 MiniLM preload skip on broken scipy ABI. Baked default model remains **Qwen2.5-7B Instruct Q4_K_M**.
+Also in this line: Experimental **Set default** wires NInfer-all / Strata onto `:8080` (Confirm; switch back to llama.cpp); weak **VL-3B** catalog pin dropped for quality — pin **Qwen2.5-VL-7B** (≥12 GB) instead; llama.cpp b12617 + mmproj; MoE/32K refuse-if-unfit; HF typo fuzzy search; firmware-mediatek. Baked default model remains **Qwen2.5-7B Instruct Q4_K_M**.
 
 **Not in the ISO:** StickDroid keep-pins APK; StickLink Worker cloud. Full CMP unlock still needs nvidia-open (this bake keeps proprietary `nvidia-kernel-dkms`).
+
+## What's in v0.8.1 (N-1)
+
+About **v0.8.1**. Experimental download/unlock helpers; VL-3B was briefly catalogued (replaced in 0.8.2). Artifact `StickLLM-v0.8.1.iso` — do not overwrite.
 ## What’s in v0.4.2 (older)
 
 Voice chat, USB settings partition, and load-meter fixes. ISO `StickLLM-v0.4.2.iso` + [`checksums/v0.4.2.sha256`](checksums/v0.4.2.sha256) (`3a50eb56…`) stays published — do not overwrite.

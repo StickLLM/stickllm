@@ -123,6 +123,8 @@ systemctl disable sshd.service 2>/dev/null || true
 systemctl enable stickllm-console-setup.service || true
 systemctl enable stickllm-nvidia.service || true
 systemctl enable stickllm-llama.service || true
+# Experimental NInfer/Strata — starts only when exp-engine.enabled exists (Set default).
+systemctl enable stickllm-exp-engine.service || true
 systemctl enable stickllm-ui.service || true
 systemctl enable stickllm-control.service || true
 systemctl enable stickllm-usb.service || true

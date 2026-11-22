@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Download Strata / NInfer-all after Cancel/Continue. Verify SHA-256. No auto-install.
+"""Download Experimental engines after Cancel/Continue. Verify SHA-256. No auto-install.
 
 Usage:
   stickllm-experimental-engine --i-understand --engine strata [--platform linux] [--cuda cuda13]
   stickllm-experimental-engine --i-understand --engine ninfer-all [--platform linux] [--cuda cuda12.9]
   stickllm-experimental-engine --plan-only --engine strata   # resolve assets, no download
+
+Progress (generic for Strata / NInfer / future engines) is written to
+/run/stickllm/experimental-download.json with state/phase/percent/bytes/error.
 
 Never vendors NVIDIA blobs. Engines land under /var/lib/stickllm/experimental/engines/.
 """
@@ -28,6 +31,9 @@ DEST_ROOT = Path(
 )
 PROGRESS = RUN / "experimental-download.json"
 
+# Known engines today; progress schema stays engine-agnostic for future IDs.
+KNOWN_ENGINES = ("strata", "ninfer-all")
+
 
 def _load_mod():
     import importlib.util
@@ -41,12 +47,38 @@ def _load_mod():
 
 
 def _write_progress(data: dict) -> None:
-    RUN.mkdir(parents=True, exist_ok=True)
-    data = dict(data)
-    data["updated"] = int(time.time())
-    tmp = PROGRESS.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(PROGRESS)
+    """Atomic write of generic engine-download progress (any engine id).
+
+    Best-effort: plan-only / non-root callers must not crash if /run/stickllm
+    is root-owned.
+    """
+    try:
+        RUN.mkdir(parents=True, exist_ok=True)
+        data = dict(data)
+        data["updated"] = int(time.time())
+        # Normalize aliases so UI/status can read one shape.
+        if "bytes_done" not in data and "bytes" in data:
+            data["bytes_done"] = data["bytes"]
+        if "bytes_total" not in data and "total" in data:
+            data["bytes_total"] = data["total"]
+        if "percent" in data and data["percent"] is not None:
+            try:
+                data["percent"] = round(float(data["percent"]), 1)
+            except (TypeError, ValueError):
+                data["percent"] = None
+        tmp = PROGRESS.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(PROGRESS)
+    except OSError:
+        return
+
+
+def _engine_label(engine: str) -> str:
+    labels = {
+        "strata": "Strata",
+        "ninfer-all": "NInfer-all",
+    }
+    return labels.get(engine, engine)
 
 
 def _debian_major() -> int | None:
@@ -58,62 +90,150 @@ def _debian_major() -> int | None:
     return mod.debian_major(text)
 
 
-def _download(url: str, dest: Path, *, expected: int = 0) -> None:
+def _digest_hex(asset: dict) -> str:
+    dig = str(asset.get("digest") or "").strip().lower()
+    if dig.startswith("sha256:"):
+        return dig.split(":", 1)[1]
+    return ""
+
+
+def _download(
+    url: str,
+    dest: Path,
+    *,
+    expected: int = 0,
+    base: dict | None = None,
+    overall_done: int = 0,
+    overall_total: int = 0,
+) -> int:
+    """Download one file; return bytes written. Updates generic progress."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "StickLLM-Experimental/0.8.1"},
+        headers={"User-Agent": "StickLLM-Experimental/0.8.2"},
     )
     downloaded = 0
+    file_total = expected
+    base = dict(base or {})
     with urllib.request.urlopen(req, timeout=120) as resp, open(part, "wb") as out:
+        cl = int(resp.headers.get("Content-Length") or 0)
+        if not file_total and cl:
+            file_total = cl
         while True:
             chunk = resp.read(1024 * 1024)
             if not chunk:
                 break
             out.write(chunk)
             downloaded += len(chunk)
+            overall = overall_done + downloaded
+            pct = None
+            if overall_total > 0:
+                pct = max(0.0, min(99.9, 100.0 * overall / overall_total))
+            elif file_total > 0:
+                pct = max(0.0, min(99.9, 100.0 * downloaded / file_total))
             _write_progress(
                 {
+                    **base,
                     "state": "downloading",
+                    "phase": "download",
                     "file": dest.name,
                     "bytes": downloaded,
-                    "total": expected or int(resp.headers.get("Content-Length") or 0),
+                    "total": file_total,
+                    "bytes_done": overall,
+                    "bytes_total": overall_total or file_total,
+                    "percent": pct,
                     "url": url,
+                    "note": f"Downloading {dest.name}",
                 }
             )
     part.replace(dest)
+    return downloaded
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--i-understand", action="store_true", help="required to download")
     ap.add_argument("--plan-only", action="store_true", help="resolve assets only")
-    ap.add_argument("--engine", required=True, choices=("strata", "ninfer-all"))
+    # Accept known engines; unknown IDs still flow through plan_engine_download for future hooks.
+    ap.add_argument("--engine", required=True, help="strata | ninfer-all | future engine id")
     ap.add_argument("--platform", default="linux", choices=("linux", "windows"))
     ap.add_argument("--cuda", default="", help="cuda13 / cuda12 / cuda12.9 / cuda13.4")
     ap.add_argument("--dest", default="", help="override destination directory")
     ap.add_argument("--release-json", default="", help="offline release JSON path (tests)")
     args = ap.parse_args(argv)
 
+    engine = str(args.engine or "").strip().lower()
+    if engine in ("ninfer", "ninfer_all"):
+        engine = "ninfer-all"
+    label = _engine_label(engine)
+    base_prog = {
+        "id": engine,
+        "engine": engine,
+        "name": label,
+        "kind": "experimental_engine",
+    }
+
     mod = _load_mod()
     if args.release_json:
         release = json.loads(Path(args.release_json).read_text(encoding="utf-8"))
     else:
         try:
-            release = mod.fetch_github_latest(mod.engine_api_for(args.engine))
+            api = mod.engine_api_for(engine)
         except Exception as exc:
-            _write_progress({"state": "failed", "error": f"release fetch failed: {exc}"})
+            if not args.plan_only:
+                _write_progress({**base_prog, "state": "failed", "phase": "plan", "error": str(exc), "percent": 0})
+            print(str(exc), file=sys.stderr)
+            return 1
+        try:
+            if not args.plan_only:
+                _write_progress(
+                    {
+                        **base_prog,
+                        "state": "starting",
+                        "phase": "release",
+                        "percent": 0,
+                        "note": f"Fetching {label} release metadata…",
+                    }
+                )
+            release = mod.fetch_github_latest(api)
+        except Exception as exc:
+            if not args.plan_only:
+                _write_progress(
+                    {
+                        **base_prog,
+                        "state": "failed",
+                        "phase": "release",
+                        "error": f"release fetch failed: {exc}",
+                        "percent": 0,
+                    }
+                )
             print(f"release fetch failed: {exc}", file=sys.stderr)
             return 1
 
     maj = _debian_major()
+    driver = ""
+    try:
+        import subprocess as _sp
+
+        p = _sp.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        if p.returncode == 0 and (p.stdout or "").strip():
+            driver = (p.stdout or "").strip().splitlines()[0].strip()
+    except Exception:
+        driver = ""
     plan = mod.plan_engine_download(
-        args.engine,
+        engine,
         release,
         platform=args.platform,
         cuda=args.cuda,
         debian_major_version=maj,
+        driver_version=driver,
     )
     if args.plan_only:
         print(json.dumps(plan, indent=2))
@@ -123,55 +243,156 @@ def main(argv: list[str] | None = None) -> int:
         print("Refusing without --i-understand (Cancel/Continue required).", file=sys.stderr)
         return 1
     if plan.get("blocked"):
-        _write_progress({"state": "failed", "error": plan["blocked"], "plan": plan})
+        _write_progress(
+            {
+                **base_prog,
+                "state": "failed",
+                "phase": "plan",
+                "error": plan["blocked"],
+                "plan": plan,
+                "percent": 0,
+            }
+        )
         print(plan["blocked"], file=sys.stderr)
         return 2
     assets = [a for a in (plan.get("assets") or []) if a.get("url")]
     if not assets:
-        print("no assets to download", file=sys.stderr)
+        msg = "no assets to download"
+        _write_progress({**base_prog, "state": "failed", "phase": "plan", "error": msg, "percent": 0})
+        print(msg, file=sys.stderr)
         return 2
 
-    dest_root = Path(args.dest) if args.dest else DEST_ROOT / args.engine / str(plan.get("tag") or "latest")
+    dest_root = Path(args.dest) if args.dest else DEST_ROOT / engine / str(plan.get("tag") or "latest")
     dest_root.mkdir(parents=True, exist_ok=True)
-    _write_progress({"state": "starting", "engine": args.engine, "dest": str(dest_root), "plan": plan})
+
+    payloads = [a for a in assets if a.get("role") != "checksums"]
+    sha_asset = next((a for a in assets if a.get("role") == "checksums"), None)
+    overall_total = sum(int(a.get("size") or 0) for a in payloads)
+    if sha_asset:
+        overall_total += int(sha_asset.get("size") or 0)
+
+    _write_progress(
+        {
+            **base_prog,
+            "state": "starting",
+            "phase": "download",
+            "dest": str(dest_root),
+            "tag": plan.get("tag"),
+            "files_total": len(payloads),
+            "file_index": 0,
+            "bytes_done": 0,
+            "bytes_total": overall_total,
+            "percent": 0,
+            "note": f"Starting {label} download…",
+            "plan": {
+                "tag": plan.get("tag"),
+                "platform": plan.get("platform"),
+                "cuda": plan.get("cuda"),
+                "asset_count": len(assets),
+            },
+        }
+    )
 
     checksums: dict[str, str] = {}
-    sha_asset = next((a for a in assets if a.get("role") == "checksums"), None)
+    overall_done = 0
     if sha_asset:
         sha_path = dest_root / sha_asset["name"]
-        _download(sha_asset["url"], sha_path, expected=int(sha_asset.get("size") or 0))
+        n = _download(
+            sha_asset["url"],
+            sha_path,
+            expected=int(sha_asset.get("size") or 0),
+            base={
+                **base_prog,
+                "tag": plan.get("tag"),
+                "dest": str(dest_root),
+                "files_total": len(payloads),
+                "file_index": 0,
+                "phase": "checksums",
+            },
+            overall_done=overall_done,
+            overall_total=overall_total,
+        )
+        overall_done += n
         checksums = mod.parse_sha256sums(sha_path.read_text(encoding="utf-8", errors="replace"))
 
     saved = []
-    for asset in assets:
-        if asset.get("role") == "checksums":
-            continue
+    for idx, asset in enumerate(payloads, start=1):
         name = asset["name"]
         path = dest_root / name
-        _download(asset["url"], path, expected=int(asset.get("size") or 0))
-        expect = checksums.get(name, "")
+        n = _download(
+            asset["url"],
+            path,
+            expected=int(asset.get("size") or 0),
+            base={
+                **base_prog,
+                "tag": plan.get("tag"),
+                "dest": str(dest_root),
+                "files_total": len(payloads),
+                "file_index": idx,
+                "phase": "download",
+            },
+            overall_done=overall_done,
+            overall_total=overall_total,
+        )
+        overall_done += n
+
+        expect = checksums.get(name, "") or _digest_hex(asset)
+        sha_ok = False
         if expect:
+            _write_progress(
+                {
+                    **base_prog,
+                    "state": "verifying",
+                    "phase": "verify",
+                    "file": name,
+                    "file_index": idx,
+                    "files_total": len(payloads),
+                    "bytes_done": overall_done,
+                    "bytes_total": overall_total,
+                    "percent": (
+                        max(0.0, min(99.9, 100.0 * overall_done / overall_total)) if overall_total else None
+                    ),
+                    "note": f"Verifying {name}",
+                    "tag": plan.get("tag"),
+                    "dest": str(dest_root),
+                }
+            )
             got = mod.file_sha256(str(path))
             if got != expect:
+                err = f"sha256 mismatch for {name}"
                 _write_progress(
                     {
+                        **base_prog,
                         "state": "failed",
-                        "error": f"sha256 mismatch for {name}",
+                        "phase": "verify",
+                        "error": err,
                         "expected": expect,
                         "got": got,
+                        "file": name,
+                        "percent": None,
+                        "bytes_done": overall_done,
+                        "bytes_total": overall_total,
                     }
                 )
-                print(f"sha256 mismatch for {name}: got {got} want {expect}", file=sys.stderr)
+                print(f"{err}: got {got} want {expect}", file=sys.stderr)
                 return 3
-        saved.append({"name": name, "path": str(path), "sha256_ok": bool(expect)})
+            sha_ok = True
+        saved.append({"name": name, "path": str(path), "sha256_ok": sha_ok})
 
     result = {
+        **base_prog,
         "state": "done",
+        "phase": "done",
         "ok": True,
-        "engine": args.engine,
+        "engine": engine,
         "tag": plan.get("tag"),
         "dest": str(dest_root),
         "files": saved,
+        "files_total": len(saved),
+        "file_index": len(saved),
+        "bytes_done": overall_done,
+        "bytes_total": overall_total or overall_done,
+        "percent": 100.0,
         "note": "Downloaded only — not set as default engine; launch/install needs a further confirm.",
     }
     _write_progress(result)

@@ -3124,17 +3124,183 @@ def _experimental_gpu_rows() -> list[dict]:
 
 
 def _experimental_prefs() -> dict:
-    """Master unlock toggle + per-card intent (never auto-applies)."""
+    """Per-card unlock intent only (no master kill-switch). Never auto-applies."""
     path = RUN / "experimental.json"
     data = read_json(path) if path.is_file() else {}
     if not isinstance(data, dict):
         data = {}
     return {
-        "master_unlocks_enabled": bool(data.get("master_unlocks_enabled")),
         "card_unlock_intent": data.get("card_unlock_intent")
         if isinstance(data.get("card_unlock_intent"), dict)
         else {},
     }
+
+
+def _experimental_driver_meta() -> dict:
+    """Best-effort driver / Secure Boot / nvidia-open flags for unlock gates."""
+    out: dict = {
+        "driver_version": "",
+        "secure_boot": None,
+        "nvidia_open": None,
+    }
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        if proc.returncode == 0:
+            line = (proc.stdout or "").strip().splitlines()
+            if line:
+                out["driver_version"] = line[0].strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    # nvidia-open: module version string often contains "open"
+    try:
+        ver = Path("/sys/module/nvidia/version")
+        if ver.is_file():
+            text = ver.read_text(encoding="utf-8", errors="replace").lower()
+            if "open" in text:
+                out["nvidia_open"] = True
+            elif text.strip():
+                # Proprietary stack typically has no "open" in version; confirm via modinfo.
+                out["nvidia_open"] = False
+        if shutil.which("modinfo"):
+            proc = subprocess.run(
+                ["modinfo", "-F", "version", "nvidia"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if proc.returncode == 0:
+                mv = (proc.stdout or "").lower()
+                if "open" in mv:
+                    out["nvidia_open"] = True
+                elif mv.strip() and out["nvidia_open"] is None:
+                    out["nvidia_open"] = False
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    for path in (
+        Path("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"),
+    ):
+        try:
+            raw = path.read_bytes()
+            if len(raw) >= 5:
+                out["secure_boot"] = raw[4] == 1
+                break
+        except OSError:
+            continue
+    return out
+
+
+def _experimental_applied_unlocks() -> dict:
+    state_path = Path("/var/lib/stickllm/experimental/unlock-state.json")
+    if not state_path.is_file():
+        return {}
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    cards = data.get("cards") if isinstance(data, dict) else None
+    if not isinstance(cards, dict):
+        return {}
+    return {str(k): bool(v.get("applied")) for k, v in cards.items() if isinstance(v, dict)}
+
+
+def experimental_engine_running() -> bool:
+    """True if stickllm-experimental-engine is still downloading any engine."""
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-f", "/usr/local/bin/stickllm-experimental-engine"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError:
+        return False
+    if proc.returncode != 0:
+        return False
+    for line in (proc.stdout or "").splitlines():
+        pid = (line or "").strip()
+        if not pid.isdigit():
+            continue
+        try:
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "/usr/local/bin/stickllm-experimental-engine" in cmd and "--plan-only" not in cmd:
+            return True
+    return False
+
+
+def experimental_download_progress() -> dict:
+    """Generic Experimental engine-download progress (Strata / NInfer / future).
+
+    Shape mirrors model download_progress enough for one shared UI bar:
+    state, phase, id/engine/name, percent, bytes_done/bytes_total, note/error.
+    """
+    prog = read_json(RUN / "experimental-download.json")
+    if not isinstance(prog, dict) or not prog:
+        return {"state": "idle", "kind": "experimental_engine"}
+    state = str(prog.get("state") or "idle")
+    running = experimental_engine_running()
+    # Stale in-flight states after helper crash/exit → failed (UI can show error).
+    # "starting" without a live helper after a few seconds is always stale.
+    if state in ("downloading", "starting", "verifying") and not running:
+        updated = int(prog.get("updated") or 0)
+        age = (time.time() - updated) if updated else 999
+        stale_after = 3 if state == "starting" else 15
+        if age > stale_after:
+            return {
+                "state": "failed",
+                "phase": prog.get("phase") or "download",
+                "kind": "experimental_engine",
+                "id": prog.get("id") or prog.get("engine") or "",
+                "engine": prog.get("engine") or prog.get("id") or "",
+                "name": prog.get("name") or prog.get("engine") or "engine",
+                "percent": prog.get("percent"),
+                "bytes_done": prog.get("bytes_done") or prog.get("bytes") or 0,
+                "bytes_total": prog.get("bytes_total") or prog.get("total") or 0,
+                "file": prog.get("file") or "",
+                "file_index": prog.get("file_index"),
+                "files_total": prog.get("files_total"),
+                "error": prog.get("error") or "engine download stopped unexpectedly",
+                "note": prog.get("note") or "",
+                "updated": prog.get("updated"),
+                "running": False,
+            }
+    out = {
+        "state": state if state else "idle",
+        "phase": prog.get("phase") or state or "",
+        "kind": "experimental_engine",
+        "id": prog.get("id") or prog.get("engine") or "",
+        "engine": prog.get("engine") or prog.get("id") or "",
+        "name": prog.get("name") or prog.get("engine") or "engine",
+        "percent": prog.get("percent"),
+        "bytes_done": prog.get("bytes_done") or prog.get("bytes") or 0,
+        "bytes_total": prog.get("bytes_total") or prog.get("total") or 0,
+        "file": prog.get("file") or "",
+        "file_index": prog.get("file_index"),
+        "files_total": prog.get("files_total"),
+        "error": prog.get("error") or "",
+        "note": prog.get("note") or "",
+        "tag": prog.get("tag") or "",
+        "dest": prog.get("dest") or "",
+        "updated": prog.get("updated"),
+        "running": running,
+    }
+    if out["percent"] is None:
+        done = float(out["bytes_done"] or 0)
+        total = float(out["bytes_total"] or 0)
+        if total > 0 and state in ("downloading", "starting", "verifying"):
+            out["percent"] = round(max(0.0, min(99.9, 100.0 * done / total)), 1)
+        elif state == "done":
+            out["percent"] = 100.0
+    return out
 
 
 def experimental_status() -> dict:
@@ -3148,21 +3314,26 @@ def experimental_status() -> dict:
         os_release = Path("/etc/os-release").read_text(encoding="utf-8")
     except Exception:
         pass
+    meta = _experimental_driver_meta()
     snap = mod.experimental_snapshot(
         _experimental_gpu_rows(),
         os_release=os_release,
-        master_unlocks_enabled=prefs["master_unlocks_enabled"],
+        card_unlock_intent=prefs.get("card_unlock_intent") or {},
         platform="linux",
+        driver_version=meta.get("driver_version") or "",
+        secure_boot=meta.get("secure_boot"),
+        nvidia_open=meta.get("nvidia_open"),
+        applied_unlocks=_experimental_applied_unlocks(),
     )
     snap["prefs"] = prefs
+    # Generic engine-download progress for Strata / NInfer / future engines.
+    snap["download"] = experimental_download_progress()
     return snap
 
 
 def experimental_prefs_set(params: dict) -> dict:
-    """Persist master toggle / intents only. Never applies unlocks."""
+    """Persist per-card intents only. Never applies unlocks. No master toggle."""
     prefs = _experimental_prefs()
-    if "master_unlocks_enabled" in params:
-        prefs["master_unlocks_enabled"] = bool(params.get("master_unlocks_enabled"))
     intent = params.get("card_unlock_intent")
     if isinstance(intent, dict):
         prefs["card_unlock_intent"] = {str(k): bool(v) for k, v in intent.items()}
@@ -3172,15 +3343,389 @@ def experimental_prefs_set(params: dict) -> dict:
     return {"ok": True, **prefs, "note": "prefs saved; unlocks still require Continue (not auto-applied)"}
 
 
+def experimental_engine_download(params: dict | None = None) -> dict:
+    """Start stickllm-experimental-engine in the background after Continue.
+
+    Returns immediately so kiosk/desktop can poll experimental_status.download
+    (generic progress for Strata / NInfer / future engines). Pass wait=true to
+    block (lab/hotfix only).
+    """
+    params = params or {}
+    if not params.get("confirmed"):
+        return {
+            "ok": False,
+            "error": "confirmation required",
+            "need_confirm": True,
+            "hint": "Cancel/Continue required; no auto-install",
+        }
+    engine = str(params.get("engine") or "").strip().lower()
+    if engine in ("ninfer", "ninfer_all"):
+        engine = "ninfer-all"
+    # Allow future engine ids through to the helper; known ones are validated there.
+    if not engine:
+        return {"ok": False, "error": "engine required"}
+    if engine not in ("strata", "ninfer-all"):
+        return {
+            "ok": False,
+            "error": f"unknown engine {engine!r}",
+            "hint": "Supported now: strata, ninfer-all. Progress UI is shared for future engines.",
+        }
+    bin_path = Path("/usr/local/bin/stickllm-experimental-engine")
+    if not bin_path.is_file():
+        return {"ok": False, "error": "experimental engine helper missing"}
+    if experimental_engine_running():
+        prog = experimental_download_progress()
+        return {
+            "ok": True,
+            "started": True,
+            "already_running": True,
+            "note": f"Engine download already in progress ({prog.get('name') or prog.get('engine') or 'engine'})",
+            "download": prog,
+        }
+    cmd = [
+        str(bin_path),
+        "--i-understand",
+        "--engine",
+        engine,
+        "--platform",
+        "linux",
+    ]
+    cuda = str(params.get("cuda") or "").strip()
+    if not cuda and engine == "strata":
+        # Driver <580 needs Strata CUDA 12 engine pack.
+        meta = _experimental_driver_meta()
+        drv = str(meta.get("driver_version") or "")
+        mod = _experimental_mod()
+        if mod is not None and hasattr(mod, "strata_cuda_for_driver"):
+            cuda = mod.strata_cuda_for_driver(drv)
+        else:
+            cuda = "cuda12"
+    if cuda:
+        cmd.extend(["--cuda", cuda])
+
+    # Synchronous path for lab verify / dry tooling.
+    if params.get("wait"):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, check=False)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "engine download timed out", "download": experimental_download_progress()}
+        except OSError as exc:
+            return {"ok": False, "error": f"engine download failed: {exc}"}
+        body = (proc.stdout or "").strip()
+        parsed = None
+        if body and "{" in body:
+            try:
+                parsed = json.loads(body[body.find("{") :])
+            except ValueError:
+                parsed = None
+        if proc.returncode != 0:
+            err = (proc.stderr or "").strip() or (parsed or {}).get("error") or body or "download failed"
+            return {
+                "ok": False,
+                "error": err[:500],
+                "rc": proc.returncode,
+                "result": parsed,
+                "download": experimental_download_progress(),
+            }
+        out = {"ok": True, "rc": 0, "note": "Downloaded only — not set as default engine"}
+        if isinstance(parsed, dict):
+            out.update({k: parsed.get(k) for k in ("engine", "tag", "dest", "files", "note", "state") if k in parsed})
+        out["download"] = experimental_download_progress()
+        return out
+
+    RUN.mkdir(parents=True, exist_ok=True)
+    label = "Strata" if engine == "strata" else ("NInfer-all" if engine == "ninfer-all" else engine)
+    now = int(time.time())
+    (RUN / "experimental-download.json").write_text(
+        json.dumps(
+            {
+                "state": "starting",
+                "phase": "starting",
+                "kind": "experimental_engine",
+                "id": engine,
+                "engine": engine,
+                "name": label,
+                "percent": 0,
+                "bytes_done": 0,
+                "bytes_total": 0,
+                "note": f"Starting {label} download…",
+                "updated": now,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    logf = open(RUN / "experimental-engine.log", "a", encoding="utf-8")
+    try:
+        subprocess.Popen(
+            cmd,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return {"ok": False, "error": f"engine download failed: {exc}"}
+    return {
+        "ok": True,
+        "started": True,
+        "engine": engine,
+        "note": f"Downloading {label} — progress on Experimental tab",
+        "download": experimental_download_progress(),
+    }
+
+
+def experimental_unlock_action(kind: str, params: dict | None = None) -> dict:
+    """Apply/disable CMP or RTX 3090 unlock after UI Cancel/Continue."""
+    params = params or {}
+    if not params.get("confirmed"):
+        return {
+            "ok": False,
+            "error": "confirmation required",
+            "need_confirm": True,
+            "hint": "Cancel/Continue required; no auto-install",
+        }
+    if kind not in ("unlock_apply", "unlock_disable"):
+        return {"ok": False, "error": f"bad unlock kind {kind!r}"}
+    path = str(params.get("unlock_path") or "").strip()
+    bus = str(params.get("bus") or "").strip()
+    if path not in ("cmpunlocker", "gpu_unlock"):
+        return {"ok": False, "error": f"unknown unlock path {path!r}"}
+    if not bus:
+        return {"ok": False, "error": "bus (PCI BDF) required"}
+    bin_path = Path("/usr/local/bin/stickllm-experimental-unlock")
+    if not bin_path.is_file():
+        return {"ok": False, "error": "experimental unlock helper missing"}
+    action = "apply" if kind == "unlock_apply" else "disable"
+    cmd = [str(bin_path), "--i-understand", action, "--path", path, "--bus", bus]
+    # Lab/hotfix verify may pass dry_run; never mutate modules/GRUB in that mode.
+    if params.get("dry_run"):
+        cmd.insert(1, "--dry-run")
+        # dry-run does not require --i-understand, but keeping both is fine.
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, check=False)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "unlock action timed out"}
+    except OSError as exc:
+        return {"ok": False, "error": f"unlock failed: {exc}"}
+    body = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    parsed = None
+    if proc.stdout:
+        try:
+            parsed = json.loads(proc.stdout[proc.stdout.find("{") :])
+        except ValueError:
+            parsed = None
+    helper_ok = proc.returncode == 0 and (not isinstance(parsed, dict) or parsed.get("ok", True))
+    if not helper_ok:
+        # Prefer structured helper fields over raw traceback tails.
+        err = None
+        if isinstance(parsed, dict):
+            err = parsed.get("error") or parsed.get("reason") or parsed.get("report")
+        if not err:
+            err = (proc.stderr or "").strip() or body or "unlock failed"
+        # Strip long Python tracebacks to the last useful line for the UI.
+        if "Traceback (most recent call last)" in str(err):
+            lines = [ln.strip() for ln in str(err).splitlines() if ln.strip()]
+            err = lines[-1] if lines else str(err)
+        return {
+            "ok": False,
+            "error": str(err)[:500],
+            "rc": proc.returncode,
+            "result": parsed,
+            "hint": "Fix the unlock helper error, then Continue again. Reboot is only needed after a successful apply.",
+        }
+    # Persist intent only after a successful apply/disable (not on helper failure).
+    if not params.get("dry_run"):
+        prefs = _experimental_prefs()
+        intent = dict(prefs.get("card_unlock_intent") or {})
+        intent[bus] = kind == "unlock_apply"
+        prefs["card_unlock_intent"] = intent
+        pref_path = RUN / "experimental.json"
+        pref_path.parent.mkdir(parents=True, exist_ok=True)
+        pref_path.write_text(json.dumps(prefs, indent=2) + "\n", encoding="utf-8")
+    out = {
+        "ok": True,
+        "rc": 0,
+        "kind": kind,
+        "bus": bus,
+        "unlock_path": path,
+        "needs_reboot": not bool(params.get("dry_run")),
+        "note": (
+            "Dry-run ready — no modules or GRUB changed"
+            if params.get("dry_run")
+            else "Unlock helper finished — reboot required"
+        ),
+    }
+    if isinstance(parsed, dict):
+        out.update(
+            {
+                k: parsed.get(k)
+                for k in ("needs_reboot", "note", "state", "reason", "status", "dry_run")
+                if k in parsed
+            }
+        )
+        if parsed.get("dry_run"):
+            out["needs_reboot"] = False
+            out["note"] = parsed.get("reason") or out["note"]
+    return out
+
+
+def experimental_engine_set_default(params: dict | None = None) -> dict:
+    """Switch StickLLM chat / health / A0 off llama.cpp onto NInfer or Strata.
+
+    Confirm required. Stops stickllm-llama, extracts the downloaded engine if
+    needed, persists active-engine.json, starts stickllm-exp-engine.service on
+    127.0.0.1:8080 (same OpenAI-compatible path). Pass engine=llama.cpp to
+    switch back.
+    """
+    params = params or {}
+    if not params.get("confirmed"):
+        return {
+            "ok": False,
+            "error": "confirmation required",
+            "need_confirm": True,
+            "hint": "Cancel/Continue required; Set default switches the active inference engine",
+        }
+    mod = _experimental_mod()
+    if mod is None:
+        return {"ok": False, "error": "experimental lib missing"}
+    engine = mod.normalize_engine_id(str(params.get("engine") or ""))
+    if engine not in ("llama.cpp", "ninfer-all", "strata"):
+        return {
+            "ok": False,
+            "error": f"unknown engine {engine!r}",
+            "hint": "Supported: ninfer-all, strata, llama.cpp",
+        }
+
+    # --- restore llama.cpp ---
+    if engine == "llama.cpp":
+        doc = mod.write_active_engine(
+            {
+                "engine": "llama.cpp",
+                "tag": "",
+                "dest": "",
+                "root": "",
+                "note": "StickLLM default restored",
+            }
+        )
+        sh(["systemctl", "stop", "stickllm-exp-engine.service"], timeout=60)
+        sh(["systemctl", "reset-failed", "stickllm-exp-engine.service"], timeout=30)
+        # Resume llama only when a model is already selected.
+        if Path("/run/stickllm/model.env").is_file():
+            sh(["systemctl", "reset-failed", "stickllm-llama.service"], timeout=30)
+            sh(["systemctl", "start", "stickllm-llama.service"], timeout=60)
+        return {
+            "ok": True,
+            "engine": "llama.cpp",
+            "active_engine": "llama.cpp",
+            "wired": True,
+            "note": "Restored llama.cpp as StickLLM default. Chat / health / Agent Zero use :8080 llama-server again.",
+            "detail": doc,
+        }
+
+    installed = {}
+    try:
+        installed = mod.scan_installed_engines() or {}
+    except Exception:
+        installed = {}
+    info = installed.get(engine) if isinstance(installed, dict) else None
+    if not info:
+        return {
+            "ok": False,
+            "error": "engine not installed",
+            "engine": engine,
+            "hint": "Download the engine first (Experimental → Download…), then Set default.",
+        }
+    dest = Path(str(info.get("dest") or ""))
+    if not dest.is_dir():
+        return {"ok": False, "error": f"install dest missing: {dest}", "engine": engine}
+
+    try:
+        ready = mod.ensure_engine_ready(engine, dest)
+    except Exception as exc:
+        return {"ok": False, "error": f"extract failed: {exc}", "engine": engine}
+    if not ready.get("ok"):
+        return {
+            "ok": False,
+            "error": ready.get("error") or "engine extract failed",
+            "engine": engine,
+            "detail": ready,
+        }
+
+    model_dir = ""
+    note = ""
+    if engine == "ninfer-all":
+        model_dir = str(getattr(mod, "NINFER_MODELS_DIR", Path("/mnt/stickllm-data/experimental/ninfer-models")))
+        Path(model_dir).mkdir(parents=True, exist_ok=True)
+        note = (
+            "NInfer is now StickLLM default on :8080. First start may download "
+            "~19 GiB qwen38-27b into DATA (ninfer-models). StickLLM GGUF Activate "
+            "does not apply while NInfer is default — use Set default → llama.cpp to restore."
+        )
+    else:
+        model_dir = str(getattr(mod, "STRATA_DATA_DIR", Path("/mnt/stickllm-data/experimental/strata")))
+        Path(model_dir).mkdir(parents=True, exist_ok=True)
+        note = (
+            "Strata is now StickLLM default on :8080. May use a local GGUF or download "
+            "a Strata model on first start. Driver <580 uses the CUDA 12 engine pack. "
+            "Set default → llama.cpp restores llama-server."
+        )
+
+    doc = mod.write_active_engine(
+        {
+            "engine": engine,
+            "tag": info.get("tag") or "",
+            "dest": str(dest),
+            "root": ready.get("root") or "",
+            "model_dir": model_dir,
+            "note": note,
+        }
+    )
+
+    # Free GPU from llama.cpp, then start Experimental engine on the same port.
+    sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
+    sh(["systemctl", "reset-failed", "stickllm-llama.service"], timeout=30)
+    sh(["systemctl", "daemon-reload"], timeout=60)
+    sh(["systemctl", "reset-failed", "stickllm-exp-engine.service"], timeout=30)
+    r = sh(["systemctl", "restart", "stickllm-exp-engine.service"], timeout=120)
+    started = bool(isinstance(r, dict) and r.get("ok"))
+    if not started:
+        # Non-zero still may be activating (long model download); check unit state.
+        st = sh(["systemctl", "is-active", "stickllm-exp-engine.service"], timeout=15)
+        active = ((st.get("stdout") or "") if isinstance(st, dict) else "").strip()
+        started = active in ("active", "activating")
+    return {
+        "ok": True,
+        "engine": engine,
+        "active_engine": engine,
+        "wired": True,
+        "installed": True,
+        "dest": str(dest),
+        "tag": info.get("tag") or "",
+        "root": ready.get("root") or "",
+        "model_dir": model_dir,
+        "service": "stickllm-exp-engine.service",
+        "started": started,
+        "note": note,
+        "detail": doc,
+        "extract": ready,
+    }
+
+
 def experimental_action_stub(kind: str, params: dict | None = None) -> dict:
-    """Refuse apply/download until Confirm wiring is complete — never side-effects."""
+    """Back-compat name — routes to wired helpers."""
+    if kind == "engine_download":
+        return experimental_engine_download(params)
+    if kind == "engine_set_default":
+        return experimental_engine_set_default(params)
+    if kind in ("unlock_apply", "unlock_disable"):
+        return experimental_unlock_action(kind, params)
     return {
         "ok": False,
-        "error": "not implemented — scaffolding only",
+        "error": f"unknown experimental action {kind!r}",
         "need_confirm": True,
         "kind": kind,
         "params": params or {},
-        "hint": "Cancel/Continue required; no NVIDIA blobs in-tree; no auto-install",
     }
 
 
@@ -5052,6 +5597,22 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
         return {"ok": False, "error": _missing_model_error(model_id), "stale": True}
     if not m.get("installed"):
         return {"ok": False, "error": "model not downloaded yet"}
+    # Experimental Set default owns :8080 — GGUF Activate is llama.cpp-only.
+    try:
+        _emod = _experimental_mod()
+        if _emod is not None and hasattr(_emod, "read_active_engine"):
+            _ae = str((_emod.read_active_engine() or {}).get("engine") or "llama.cpp")
+            if _ae in ("ninfer-all", "strata"):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"active engine is {_ae}; StickLLM GGUF Activate applies to llama.cpp only. "
+                        "Settings → Experimental → Use llama.cpp, then Activate."
+                    ),
+                    "active_engine": _ae,
+                }
+    except Exception:
+        pass
     if not m.get("fits") and m.get("source") != "host_ssd":
         if m.get("backend") == "cpu":
             return {
@@ -6266,6 +6827,8 @@ def handle(action: str, params: dict) -> dict:
         return experimental_prefs_set(params)
     if action == "experimental_engine_download":
         return experimental_action_stub("engine_download", params)
+    if action == "experimental_engine_set_default":
+        return experimental_action_stub("engine_set_default", params)
     if action == "experimental_unlock_apply":
         return experimental_action_stub("unlock_apply", params)
     if action == "experimental_unlock_disable":

@@ -111,16 +111,18 @@ def test_catalog_vram_tier_recommends():
         "qwen25-32b-q4km",
         "qwen25-72b-q3km",
         "qwen35-4b-q4km",
-        "qwen25-vl-3b-q4km",
+        "qwen25-vl-7b-q4km",
     ):
         assert f'id = "{mid}"' in text
+    assert 'id = "qwen25-vl-3b-q4km"' not in text
     assert 'base_model_id = "qwen25-7b-q4km"' in text
     four = text.split('id = "qwen35-4b-q4km"', 1)[1].split("[[model]]")[0]
     assert "probe_recommend = false" in four
-    vl = text.split('id = "qwen25-vl-3b-q4km"', 1)[1].split("[[model]]")[0]
+    vl = text.split('id = "qwen25-vl-7b-q4km"', 1)[1].split("[[model]]")[0]
     assert "vision = true" in vl
-    assert "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf" in vl
+    assert "mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf" in vl
     assert "probe_recommend = false" in vl
+    assert "min_vram_gb = 12" in vl
     assert 'id = "vram_dual_24gb"' in text
 
 

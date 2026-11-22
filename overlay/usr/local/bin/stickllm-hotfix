@@ -249,6 +249,26 @@ if [[ -d "$SRC/opt/stickllm/bin" ]] || [[ -d "$SRC/opt/stickllm/lib" ]]; then
         fi
       done
     fi
+    # b12617 ships lib*.so.1.0.0 without SONAME symlinks; without .so.1 the CUDA
+    # llama-server fails to load and pick-gpus falls back to Vulkan.
+    link_soname() {
+      local ver="$1" link="$2"
+      if [[ -f "/opt/stickllm/lib/$ver" ]]; then
+        ln -sfn "$ver" "/opt/stickllm/lib/$link"
+        echo "linked /opt/stickllm/lib/$link -> $ver"
+        installed=1
+      fi
+    }
+    link_soname libllama.so.1.0.0 libllama.so.1
+    link_soname libllama-common.so.1.0.0 libllama-common.so.1
+    link_soname libggml.so.1.0.0 libggml.so.1
+    link_soname libggml-base.so.1.0.0 libggml-base.so.1
+    link_soname libmtmd.so.1.0.0 libmtmd.so.1
+    link_soname libllama.so.1.0.0 libllama.so
+    link_soname libllama-common.so.1.0.0 libllama-common.so
+    link_soname libggml.so.1.0.0 libggml.so
+    link_soname libggml-base.so.1.0.0 libggml-base.so
+    link_soname libmtmd.so.1.0.0 libmtmd.so
   fi
 fi
 

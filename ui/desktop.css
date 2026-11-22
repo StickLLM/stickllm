@@ -59,11 +59,12 @@ body.deskMode [data-app="chat"] .deskGlyph svg{stroke:var(--accent-ink)}
    transform layer: #app inside Chat has position:fixed children.) */
 body.deskMode .winbox{background:var(--line);border-radius:10px 10px 8px 8px;overflow:hidden;box-shadow:0 8px 22px rgba(0,0,0,.30)}
 body.deskMode .winbox.focus{background:var(--accent);box-shadow:0 12px 32px rgba(0,0,0,.45)}
-body.deskMode .winbox.max{border-radius:0}
+/* Maximised: flush to deskLayer top — no dark strip above the titlebar. */
+body.deskMode .winbox.max{border-radius:0;top:0!important;left:0!important}
 body.deskMode .winbox .wb-title{font:600 13px/35px var(--font);color:var(--muted);padding-left:2px}
 body.deskMode .winbox.focus .wb-title{color:var(--accent-ink)}
-body.deskMode .winbox .wb-body{background:var(--bg);margin:0 1px 1px;border-radius:0 0 7px 7px}
-body.deskMode .winbox.max .wb-body{border-radius:0}
+body.deskMode .winbox .wb-body{background:var(--bg);margin:0 1px 1px;border-radius:0 0 7px 7px;overflow:hidden}
+body.deskMode .winbox.max .wb-body{border-radius:0;margin:0}
 /* Inactive windows: mute chrome only. Never filter .wb-body — CSS filter on
    a WinBox that holds the Agent Zero iframe forces a full-layer recomposite
    on every A0 DOM paint and flickers the kiosk compositor. */

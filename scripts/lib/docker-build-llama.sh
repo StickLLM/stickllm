@@ -73,6 +73,33 @@ cp -aL /usr/local/cuda/lib64/libnccl.so* "$OUT_LIB/" 2>/dev/null || true
 # Drop broken absolute symlinks that point outside the stick
 find "$OUT_LIB" -type l ! -exec test -e {} \; -delete 2>/dev/null || true
 
+# b12617 may ship lib*.so.1.0.0 without SONAME symlinks; without .so.1 the CUDA
+# llama-server fails to load and pick-gpus falls back to Vulkan.
+link_soname() {
+  local ver="$1" link="$2"
+  if [[ -f "$OUT_LIB/$ver" ]]; then
+    ln -sfn "$ver" "$OUT_LIB/$link"
+  fi
+}
+link_soname libllama.so.1.0.0 libllama.so.1
+link_soname libllama-common.so.1.0.0 libllama-common.so.1
+link_soname libggml.so.1.0.0 libggml.so.1
+link_soname libggml-base.so.1.0.0 libggml-base.so.1
+link_soname libmtmd.so.1.0.0 libmtmd.so.1
+link_soname libllama.so.1.0.0 libllama.so
+link_soname libllama-common.so.1.0.0 libllama-common.so
+link_soname libggml.so.1.0.0 libggml.so
+link_soname libggml-base.so.1.0.0 libggml-base.so
+link_soname libmtmd.so.1.0.0 libmtmd.so
+if [[ ! -e "$OUT_LIB/libggml-cpu.so" ]]; then
+  for cand in libggml-cpu-x64.so libggml-cpu-haswell.so libggml-cpu-zen4.so libggml-cpu-sse42.so; do
+    if [[ -f "$OUT_LIB/$cand" ]]; then
+      ln -sfn "$cand" "$OUT_LIB/libggml-cpu.so"
+      break
+    fi
+  done
+fi
+
 # Preload shim: register ggml_backend_cuda_reg when libggml does not NEEDED cuda
 # (shared-backend builds export ggml_backend_cuda_reg, not ggml_backend_init).
 REGISTER_SRC="/work/overlay/opt/stickllm/lib/stickllm-cuda-register.c"

@@ -1,0 +1,31 @@
+[Unit]
+Description=StickLLM Experimental inference engine (NInfer / Strata on :8080)
+Documentation=file:///usr/local/share/stickllm/docs/DEBIAN13-EXPERIMENTAL.md
+After=network.target stickllm-nvidia-prep.service
+Wants=network.target
+# Only when Experimental Set default selected NInfer/Strata (not llama.cpp).
+ConditionPathExists=/var/lib/stickllm/experimental/exp-engine.enabled
+Conflicts=stickllm-llama.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/stickllm/runtime.env
+EnvironmentFile=-/run/stickllm/cuda.env
+EnvironmentFile=-/var/lib/stickllm/experimental/active-engine.env
+Environment=STICKLLM_LLAMA_HOST=127.0.0.1
+Environment=STICKLLM_LLAMA_PORT=8080
+Environment=NINFER_HOST=127.0.0.1
+Environment=NINFER_PORT=8080
+# Root: third-party engines ship private CUDA backends under their extract dir.
+ExecStartPre=+/bin/bash -c '/usr/local/bin/stickllm-nvidia-prep || true'
+ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /mnt/stickllm-data/experimental/ninfer-models /mnt/stickllm-data/experimental/strata; chmod 755 /var/lib/stickllm/experimental 2>/dev/null || true'
+ExecStart=/usr/local/bin/stickllm-experimental-serve
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=600
+StartLimitBurst=5
+# First NInfer model download can take a long time.
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -710,24 +710,37 @@ def ensure_seeded(root: Path | None = None) -> dict:
     if not seed_matches_pin():
         out["error"] = "seed_pin_mismatch"
         return out
-    # If a working graph is already on the data-root (e.g. rematerialize + chmod
-    # after a broken squashfs seed), do not bind the seed's 644 layers over it.
-    if (root / "image").is_dir() and (root / "overlay2").is_dir() and not seed_layers_executable():
-        if not seed_layers_executable(root):
-            out["chmod_fixed"] = chmod_overlay_exec(root / "overlay2")
-        out["ok"] = seed_layers_executable(root) or (root / "image").is_dir()
+    # Seed has no +x: RO binds would make every container exit 126. Prefer chmod
+    # on the seed (writable overlays); if still broken, materialize onto the
+    # data-root. Never keep a half-seeded graph that references missing layers.
+    if not seed_layers_executable():
+        try:
+            out["seed_chmod_fixed"] = chmod_overlay_exec(SEED_DIR / "overlay2")
+        except OSError:
+            out["seed_chmod_fixed"] = 0
+        if seed_layers_executable():
+            # Seed is executable now — fall through to bind-mount path below.
+            pass
+        else:
+            mat = materialize_seed(root)
+            out.update({k: mat.get(k) for k in ("copied", "chmod_fixed") if k in mat})
+            out["ok"] = bool(mat.get("ok")) and seed_layers_executable(root)
+            out["mounted"] = False
+            out["seed_exec_broken"] = True
+            if not out["ok"]:
+                out["error"] = mat.get("error") or "seed_layers_not_executable"
+            return out
+    # If a working materialized graph is already on the data-root with +x, do
+    # not bind the seed's layers over it.
+    if (
+        (root / "image").is_dir()
+        and (root / "overlay2").is_dir()
+        and seed_layers_executable(root)
+        and not seed_layers_executable()
+    ):
+        out["ok"] = True
         out["skipped"] = True
         out["seed_exec_broken"] = True
-        return out
-    # Seed has no +x: RO binds would make every container exit 126. Copy once
-    # onto the writable data-root and restore execute bits.
-    if not seed_layers_executable():
-        mat = materialize_seed(root)
-        out.update({k: mat.get(k) for k in ("copied", "chmod_fixed") if k in mat})
-        out["ok"] = bool(mat.get("ok")) and seed_layers_executable(root)
-        out["mounted"] = False
-        if not out["ok"]:
-            out["error"] = mat.get("error") or "seed_layers_not_executable"
         return out
     root.mkdir(parents=True, exist_ok=True)
     seed = SEED_DIR

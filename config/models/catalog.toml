@@ -10,7 +10,8 @@ base_model_id = "qwen25-7b-q4km"
 base_model_target_id = "qwen25-7b-q4km"
 optional_fat_default_id = "qwen38-27b-q4km"
 family_policy = "qwen_only"
-vision_requires_min_vram_gb = 6
+# Quality vision (Qwen2.5-VL-7B + mmproj @ 32K) needs ~12 GB; do not market 8 GB as a vision tier.
+vision_requires_min_vram_gb = 12
 
 [probe]
 enabled = true
@@ -35,29 +36,30 @@ id = "vram_8gb"
 label = "8 GB VRAM (installed default)"
 min_vram_gb = 8
 series = "qwen2.5"
-# One recommend: baked 7B Q4. Q5 and VL-3B are optional alternate downloads.
-entries = ["qwen25-7b-q4km", "qwen25-7b-q5km", "qwen25-vl-3b-q4km"]
+# Text only on 8 GB — no quality vision pin fits 8 GB @ 32K + mmproj.
+entries = ["qwen25-7b-q4km", "qwen25-7b-q5km"]
 
 [[tier]]
 id = "vram_12gb"
 label = "12 GB VRAM"
 min_vram_gb = 12
 series = "qwen2.5"
-entries = ["qwen25-14b-q4km"]
+# Text 14B + optional VL-7B vision (not probe default; Activate after download).
+entries = ["qwen25-14b-q4km", "qwen25-vl-7b-q4km"]
 
 [[tier]]
 id = "vram_16gb"
 label = "16 GB VRAM"
 min_vram_gb = 16
 series = "qwen2.5"
-entries = ["qwen25-32b-q3km"]
+entries = ["qwen25-32b-q3km", "qwen25-vl-7b-q4km"]
 
 [[tier]]
 id = "vram_24gb"
 label = "24 GB VRAM (RTX 3090 class)"
 min_vram_gb = 24
 series = "qwen3.8"
-entries = ["qwen38-27b-q4km"]
+entries = ["qwen38-27b-q4km", "qwen25-vl-7b-q4km"]
 
 [[tier]]
 id = "vram_32gb"
@@ -181,20 +183,20 @@ probe_recommend = false
 notes = "Optional download. Slightly higher quality than Q4, but tight on 8 GB at 32K (prefer Q4 for Minimum context)."
 
 [[model]]
-id = "qwen25-vl-3b-q4km"
-name = "Qwen2.5-VL-3B Instruct Q4_K_M"
-tier = "vram_8gb"
-quality_rank = 38
-approx_size_gb = 1.9
-min_vram_gb = 8
-hf_repo = "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF"
-hf_files = ["Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"]
-sha256 = ["d02fe9b69ad8cadbbd228e387667af66612c44bed29ffc8eb1e7caf9ac486c12"]
+id = "qwen25-vl-7b-q4km"
+name = "Qwen2.5-VL-7B Instruct Q4_K_M"
+tier = "vram_12gb"
+quality_rank = 48
+approx_size_gb = 4.7
+min_vram_gb = 12
+hf_repo = "ggml-org/Qwen2.5-VL-7B-Instruct-GGUF"
+hf_files = ["Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"]
+sha256 = ["9258bf05b12686d097ff3b6b18d968ab393649780aa2b3cd67fec43d50554392"]
 vision = true
-mmproj_file = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"
-mmproj_bytes = 844757728
+mmproj_file = "mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf"
+mmproj_bytes = 853119712
 probe_recommend = false
-notes = "8 GB vision pick @ 32K. Download the GGUF, then tap vision for mmproj (Q8_0, ~0.85 GB). Not the Open/probe default (that stays 7B text)."
+notes = "Pinned vision for ≥12 GB (3090-class comfortable). Download GGUF, tap vision for mmproj (~0.85 GB), then Load. Replaces weak VL-3B. Not Open/probe default (stays 7B text). 8 GB hosts: no quality vision pin @ 32K."
 
 [[model]]
 id = "qwen25-3b-q4km"

@@ -10,6 +10,8 @@ sudo
 curl
 wget
 ca-certificates
+# Experimental unlock helpers prefer git clone; curl+tar archive fallback still works.
+git
 pciutils
 usbutils
 network-manager

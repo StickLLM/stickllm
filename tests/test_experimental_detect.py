@@ -116,6 +116,9 @@ def test_snapshot_per_card_intent_no_master_toggle():
     assert snap["auto_install"] is False
     assert "master_unlocks_enabled" not in snap
     assert snap["wired"]["download"] is True
+    assert snap["wired"]["set_default"] is True
+    assert snap["wired"]["use"] is True
+    assert snap["active_engine"] == "llama.cpp"
     assert any("off by default" in r for r in snap["reports"])
     on = m.experimental_snapshot(
         rows,
@@ -124,6 +127,75 @@ def test_snapshot_per_card_intent_no_master_toggle():
     )
     assert any("intent on" in r for r in on["reports"])
     assert "3 November" in snap["nov3_context"]
+
+
+def test_strata_cuda_for_driver():
+    m = _load()
+    assert m.strata_cuda_for_driver("550.163.01") == "cuda12"
+    assert m.strata_cuda_for_driver("580.65.00") == "cuda13"
+    assert m.strata_cuda_for_driver("580.64.00") == "cuda12"
+    assert m.strata_cuda_for_driver("") == "cuda12"
+
+
+def test_ensure_ninfer_extracted(tmp_path):
+    m = _load()
+    dest = tmp_path / "ninfer-all" / "tag1"
+    dest.mkdir(parents=True)
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="ninfer-serve")
+        payload = b"#!/bin/sh\n"
+        info.size = len(payload)
+        info.mode = 0o755
+        tf.addfile(info, io.BytesIO(payload))
+        info2 = tarfile.TarInfo(name="run.sh")
+        payload2 = b"#!/bin/sh\n"
+        info2.size = len(payload2)
+        info2.mode = 0o755
+        tf.addfile(info2, io.BytesIO(payload2))
+    raw = buf.getvalue()
+    part1 = dest / "ninfer-linux-x64-cuda12.9-sm70.tar.gz.001"
+    part2 = dest / "ninfer-linux-x64-cuda12.9-sm70.tar.gz.002"
+    mid = max(1, len(raw) // 2)
+    part1.write_bytes(raw[:mid])
+    part2.write_bytes(raw[mid:])
+    ready = m.ensure_ninfer_extracted(dest)
+    assert ready.get("ok") is True, ready
+    root = Path(ready["root"])
+    assert (root / "ninfer-serve").is_file()
+    assert (root / ".ok").is_file()
+    again = m.ensure_ninfer_extracted(dest)
+    assert again.get("already") is True
+
+
+def test_scan_installed_engines_from_marker(tmp_path):
+    m = _load()
+    dest = tmp_path / "ninfer-all" / "2026-11-22.1"
+    dest.mkdir(parents=True)
+    part = dest / "ninfer-linux-x64-cuda12.9-sm70.tar.gz.001"
+    part.write_bytes(b"x" * (2 * 1024 * 1024))
+    marker = {
+        "ok": True,
+        "state": "done",
+        "engine": "ninfer-all",
+        "tag": "2026-11-22.1",
+        "dest": dest.as_posix(),
+        "bytes_done": 2 * 1024 * 1024,
+    }
+    (dest / "stickllm-download.json").write_text(json.dumps(marker) + "\n", encoding="utf-8")
+    found = m.scan_installed_engines(tmp_path)
+    assert "ninfer-all" in found
+    assert found["ninfer-all"]["installed"] is True
+    assert found["ninfer-all"]["tag"] == "2026-11-22.1"
+    rows = [{"vendor": "nvidia", "pci_id": "10de:2204", "bus": "0000:21:00.0", "memory_total_mib": 24576}]
+    snap = m.experimental_snapshot(rows, os_release='VERSION_ID="13"\n', engines_root=tmp_path)
+    ninfer = [o for o in snap["offers"] if o["engine"] == "ninfer-all"][0]
+    assert ninfer["installed"] is True
+    assert "Installed" in ninfer["note"]
+    assert snap["engines"]["ninfer-all"]["dest"]
 
 
 def test_name_fallback_3090():
@@ -229,3 +301,48 @@ def test_parse_sha256sums():
     text = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899  foo.bin\n"
     got = m.parse_sha256sums(text)
     assert got["foo.bin"] == "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+
+
+def test_github_archive_urls_and_family_stem():
+    m = _load()
+    urls = m.github_archive_urls("https://github.com/Zagitta/gpu-unlock.git")
+    assert urls[0].endswith("/main.tar.gz")
+    assert urls[1].endswith("/master.tar.gz")
+    assert m.archive_family_stem("ninfer-linux-x64-cuda12.9-sm70.tar.gz.001").endswith("sm70")
+    assert "tar.gz" not in m.archive_family_stem("pkg.tar.gz.002")
+
+
+def test_ninfer_sha_matches_payload_family_not_dual_pack():
+    m = _load()
+    release = {
+        "tag_name": "2026-11-22.1",
+        "assets": [
+            {
+                "name": "ninfer-linux-x64-cuda12.9-sm70-75-80-86-89-c14e46605b97.tar.gz.001",
+                "browser_download_url": "https://example.test/1",
+                "size": 10,
+            },
+            {
+                "name": "ninfer-linux-x64-cuda12.9-sm70-75-80-86-89-c14e46605b97.tar.gz.002",
+                "browser_download_url": "https://example.test/2",
+                "size": 10,
+            },
+            {
+                "name": "SHA256SUMS-ninfer-linux-x64-cuda12.9-13.4-c14e46605b97.txt",
+                "browser_download_url": "https://example.test/dual-sha",
+                "size": 5,
+            },
+            {
+                "name": "SHA256SUMS-ninfer-linux-x64-cuda12.9-sm70-75-80-86-89-c14e46605b97.txt",
+                "browser_download_url": "https://example.test/sm-sha",
+                "size": 5,
+            },
+        ],
+    }
+    plan = m.plan_engine_download(
+        "ninfer-all", release, platform="linux", cuda="cuda12.9", debian_major_version=13
+    )
+    assert not plan["blocked"]
+    sha = [a for a in plan["assets"] if a.get("role") == "checksums"]
+    assert sha and "sm70" in sha[0]["name"]
+    assert "12.9-13.4" not in sha[0]["name"]
