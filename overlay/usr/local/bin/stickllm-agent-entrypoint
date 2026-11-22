@@ -11,11 +11,44 @@ if [ -f /exe/self_update_manager.py ]; then
     /exe/self_update_manager.py
 fi
 
+# Prefer the image venv interpreter. Fresh sticks have hit a multi-minute
+# crash loop on bare `python3` → `/usr/bin/python3` ("Permission denied")
+# while overlay/+x on the USB docker graph was still settling; the wait/restart
+# loop looked like Agent Zero hung on startup. Venv python was already +x.
+a0_python() {
+  local p
+  for p in /opt/venv-a0/bin/python /opt/venv-a0/bin/python3 /usr/bin/python3; do
+    if [[ -x "$p" ]]; then
+      printf '%s\n' "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+A0_PY=""
+for _try in $(seq 1 45); do
+  if A0_PY="$(a0_python)"; then
+    break
+  fi
+  # Best-effort: restore +x if the binary exists but lost execute (squashfs/USB).
+  for p in /usr/bin/python3.13 /usr/bin/python3.12 /usr/bin/python3 \
+    /opt/pyenv/versions/3.12.4/bin/python /opt/pyenv/versions/3.12.4/bin/python3.12; do
+    if [[ -e "$p" && ! -x "$p" ]]; then
+      chmod a+x "$p" 2>/dev/null || true
+    fi
+  done
+  sleep 1
+done
+if [[ -z "${A0_PY}" ]]; then
+  echo "a0-entrypoint: no usable python after wait; tried venv and /usr/bin/python3" >&2
+  A0_PY=/opt/venv-a0/bin/python
+fi
+
 # Mute sshd and the tunnel API in supervisord. Upstream initialize.sh runs
 # "cp -r /per/* /" before supervisord starts, so /per's copy of the config
 # overwrote the /etc patch and run_tunnel_api still started and went FATAL.
 # Patch both copies. (v0.5.3)
-python3 - <<'PY'
+"$A0_PY" - <<'PY'
 from pathlib import Path
 
 
@@ -129,7 +162,7 @@ mkdir -p /a0/usr/workdir /a0/usr/memory /a0/usr/logs /a0/usr/.cache
 
 # Prove the bridge control port from this container. Do not print the token.
 # A real open (no dry_run) is the open_app tool, so this check does not pop a tab.
-python3 - <<'PY' || true
+"$A0_PY" - <<'PY' || true
 import json
 import urllib.error
 import urllib.request

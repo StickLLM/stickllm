@@ -36,6 +36,8 @@ def test_console_setup_locks_user_and_removes_blanket_sudoers():
     assert "passwd -l user" in text
     assert "gpasswd -d user sudo" in text
     assert "rm -f /etc/sudoers.d/live /etc/sudoers.d/stickllm-user" in text
+    # Drop Terminal/Test password-sudo when this boot is not stickllm.ssh.
+    assert "stickllm-ssh" in text and "stickllm.ssh" in text
     # Runs after live-config, which re-adds sudo and writes sudoers.d/live every boot.
     unit = _read(UNIT)
     after = [l for l in unit.splitlines() if l.startswith("After=")]
@@ -55,6 +57,15 @@ def test_sudoers_has_no_all_rule_for_anyone():
         assert "(ALL)" not in line, line
     user = [l for l in rules if l.startswith("user ")]
     assert user == ["user ALL=(root) NOPASSWD: /usr/local/bin/stickllm-wifi-apply, /usr/local/bin/stickllm-wifi-setup"]
+
+
+def test_ssh_sudoers_is_password_all_not_nopasswd():
+    ssh = ROOT / "overlay" / "etc" / "sudoers.d" / "stickllm-ssh"
+    text = _read(ssh)
+    assert "stickllm ALL=(ALL:ALL) ALL" in text
+    rules = [l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    assert rules == ["stickllm ALL=(ALL:ALL) ALL"]
+    assert not any("NOPASSWD" in l for l in rules)
 
 
 def test_no_shipped_text_advertises_the_old_password():

@@ -111,6 +111,23 @@ if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
   fi
 fi
 
+# Terminal/Test password-sudo (not NOPASSWD). Only apply on stickllm.ssh boots.
+if [[ -f "$SRC/etc/sudoers.d/stickllm-ssh" ]]; then
+  if grep -qw stickllm.ssh /proc/cmdline 2>/dev/null; then
+    sed -i 's/\r$//' "$SRC/etc/sudoers.d/stickllm-ssh" 2>/dev/null || true
+    install -m 440 "$SRC/etc/sudoers.d/stickllm-ssh" /etc/sudoers.d/stickllm-ssh
+    if visudo -cf /etc/sudoers.d/stickllm-ssh >/dev/null 2>&1; then
+      echo "installed /etc/sudoers.d/stickllm-ssh"
+      installed=1
+    else
+      rm -f /etc/sudoers.d/stickllm-ssh
+      echo "WARNING: sudoers.d/stickllm-ssh failed visudo -cf; removed" >&2
+    fi
+  else
+    echo "skipping stickllm-ssh sudoers (no stickllm.ssh on cmdline)"
+  fi
+fi
+
 # NetworkManager profiles / drop-ins (ethernet DHCP retries, etc.).
 if [[ -d "$SRC/etc/NetworkManager/system-connections" ]]; then
   install -d -m 755 /etc/NetworkManager/system-connections
@@ -237,39 +254,63 @@ if [[ -d "$SRC/opt/stickllm/bin" ]] || [[ -d "$SRC/opt/stickllm/lib" ]]; then
       esac
     done
     shopt -u nullglob
-    # Upstream CUDA builds ship arch-specific libggml-cpu-*.so but no default
-    # libggml-cpu.so; without it llama-server fails: "no CPU backend found".
-    if [[ ! -e /opt/stickllm/lib/libggml-cpu.so ]]; then
-      for cand in libggml-cpu-x64.so libggml-cpu-haswell.so libggml-cpu-zen4.so libggml-cpu-sse42.so; do
-        if [[ -f "/opt/stickllm/lib/$cand" ]]; then
-          ln -sfn "$cand" /opt/stickllm/lib/libggml-cpu.so
-          echo "linked /opt/stickllm/lib/libggml-cpu.so -> $cand"
-          installed=1
-          break
-        fi
-      done
-    fi
-    # b12617 ships lib*.so.1.0.0 without SONAME symlinks; without .so.1 the CUDA
-    # llama-server fails to load and pick-gpus falls back to Vulkan.
-    link_soname() {
-      local ver="$1" link="$2"
-      if [[ -f "/opt/stickllm/lib/$ver" ]]; then
-        ln -sfn "$ver" "/opt/stickllm/lib/$link"
-        echo "linked /opt/stickllm/lib/$link -> $ver"
-        installed=1
-      fi
-    }
-    link_soname libllama.so.1.0.0 libllama.so.1
-    link_soname libllama-common.so.1.0.0 libllama-common.so.1
-    link_soname libggml.so.1.0.0 libggml.so.1
-    link_soname libggml-base.so.1.0.0 libggml-base.so.1
-    link_soname libmtmd.so.1.0.0 libmtmd.so.1
-    link_soname libllama.so.1.0.0 libllama.so
-    link_soname libllama-common.so.1.0.0 libllama-common.so
-    link_soname libggml.so.1.0.0 libggml.so
-    link_soname libggml-base.so.1.0.0 libggml-base.so
-    link_soname libmtmd.so.1.0.0 libmtmd.so
+    # Sonames / cpu / cuda.0 links: see ensure_cuda_sonames below (also runs
+    # on every hotfix so a clean v0.8.2 flash without staged libs still recovers).
   fi
+fi
+
+# b12617 may ship lib*.so.1.0.0 without SONAME symlinks; without .so.1 the CUDA
+# llama-server fails to load and pick-gpus falls back to Vulkan (NVIDIA shows
+# "Vulkan" in health). Always ensure links — even when no new lib tree staged.
+ensure_cuda_sonames() {
+  local lib=/opt/stickllm/lib
+  [[ -d "$lib" ]] || return 0
+  local linked=0
+  _link_soname() {
+    local ver="$1" link="$2"
+    if [[ -f "$lib/$ver" ]]; then
+      if [[ ! -e "$lib/$link" ]] || [[ "$(readlink -f "$lib/$link" 2>/dev/null || true)" != "$(readlink -f "$lib/$ver")" ]]; then
+        ln -sfn "$ver" "$lib/$link"
+        echo "linked $lib/$link -> $ver"
+        linked=1
+      fi
+    fi
+  }
+  _link_soname libllama.so.1.0.0 libllama.so.1
+  _link_soname libllama-common.so.1.0.0 libllama-common.so.1
+  _link_soname libggml.so.1.0.0 libggml.so.1
+  _link_soname libggml-base.so.1.0.0 libggml-base.so.1
+  _link_soname libmtmd.so.1.0.0 libmtmd.so.1
+  _link_soname libllama.so.1.0.0 libllama.so
+  _link_soname libllama-common.so.1.0.0 libllama-common.so
+  _link_soname libggml.so.1.0.0 libggml.so
+  _link_soname libggml-base.so.1.0.0 libggml-base.so
+  _link_soname libmtmd.so.1.0.0 libmtmd.so
+  if [[ -f "$lib/libggml-cuda.so" && ! -e "$lib/libggml-cuda.so.0" ]]; then
+    ln -sfn libggml-cuda.so "$lib/libggml-cuda.so.0"
+    echo "linked $lib/libggml-cuda.so.0 -> libggml-cuda.so"
+    linked=1
+  fi
+  if [[ ! -e "$lib/libggml-cpu.so" ]]; then
+    local cand
+    for cand in libggml-cpu-x64.so libggml-cpu-haswell.so libggml-cpu-zen4.so libggml-cpu-sse42.so; do
+      if [[ -f "$lib/$cand" ]]; then
+        ln -sfn "$cand" "$lib/libggml-cpu.so"
+        echo "linked $lib/libggml-cpu.so -> $cand"
+        linked=1
+        break
+      fi
+    done
+  fi
+  if [[ "$linked" -eq 1 ]]; then
+    installed=1
+  fi
+}
+ensure_cuda_sonames
+# Lab marker: force "something installed" so units can restart even if links OK.
+if [[ -f "$SRC/ensure-cuda-sonames" ]]; then
+  echo "ensure-cuda-sonames marker present"
+  installed=1
 fi
 
 if [[ -d "$SRC/opt/stickllm/ui" ]]; then
@@ -338,6 +379,20 @@ if [[ -f "$SRC/etc/sudoers.d/stickllm" ]]; then
   fi
   echo "installed /etc/sudoers.d/stickllm"
   installed=1
+fi
+
+if [[ -f "$SRC/etc/sudoers.d/stickllm-ssh" ]]; then
+  if grep -qw stickllm.ssh /proc/cmdline 2>/dev/null; then
+    sed -i 's/\r$//' "$SRC/etc/sudoers.d/stickllm-ssh" 2>/dev/null || true
+    install -m 440 "$SRC/etc/sudoers.d/stickllm-ssh" /etc/sudoers.d/stickllm-ssh
+    if ! visudo -cf /etc/sudoers.d/stickllm-ssh >/dev/null 2>&1; then
+      rm -f /etc/sudoers.d/stickllm-ssh
+      echo "ERROR: invalid stickllm-ssh sudoers after install" >&2
+      exit 1
+    fi
+    echo "installed /etc/sudoers.d/stickllm-ssh"
+    installed=1
+  fi
 fi
 
 # Method C peer env (join base / build stamp). No secrets.
@@ -423,6 +478,23 @@ if [[ -d "$SRC/usr/local/share/stickllm/agent-zero-skills" ]]; then
     echo "installed $dest"
     installed=1
   done < <(find "$SRC/usr/local/share/stickllm/agent-zero-skills" -type f -print0)
+fi
+
+# Optional apt package names (lab hotfix). One package per line; letters/digits
+# / + . - only. Runs as root under stickllm-hotfix (no interactive sudo).
+if [[ -f "$SRC/apt-packages.list" ]]; then
+  mapfile -t _hf_pkgs < <(grep -E '^[a-zA-Z0-9][a-zA-Z0-9+.-]*$' "$SRC/apt-packages.list" || true)
+  if ((${#_hf_pkgs[@]} > 0)); then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq >/tmp/stickllm-hotfix-apt-update.log 2>&1 || true
+    if apt-get install -y "${_hf_pkgs[@]}" >/tmp/stickllm-hotfix-apt-install.log 2>&1; then
+      echo "installed apt packages: ${_hf_pkgs[*]}"
+      installed=1
+    else
+      echo "WARNING: apt-get install failed for: ${_hf_pkgs[*]} (see /tmp/stickllm-hotfix-apt-install.log)" >&2
+    fi
+  fi
+  unset _hf_pkgs
 fi
 
 # Optional .deb drops (lab hotfix). Used to restore docker-cli on sticks built

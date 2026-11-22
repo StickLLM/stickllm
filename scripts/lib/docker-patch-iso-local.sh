@@ -107,6 +107,9 @@ if [[ -f "$STICKLLM/overlay/etc/modprobe.d/stickllm-nvidia-drm.conf" ]]; then
 fi
 rsync -a "$STICKLLM/overlay/etc/modules-load.d/stickllm-nvidia.conf" "$work/sq/etc/modules-load.d/"
 rsync -a "$STICKLLM/overlay/etc/sudoers.d/stickllm" "$work/sq/etc/sudoers.d/stickllm"
+if [[ -f "$STICKLLM/overlay/etc/sudoers.d/stickllm-ssh" ]]; then
+  rsync -a "$STICKLLM/overlay/etc/sudoers.d/stickllm-ssh" "$work/sq/etc/sudoers.d/stickllm-ssh"
+fi
 rsync -a "$STICKLLM/config/models/catalog.toml" "$work/sq/etc/stickllm/models/catalog.toml"
 mkdir -p "$work/sq/etc/stickllm"
 if [[ -f "$STICKLLM/overlay/etc/stickllm/default-model.env" ]]; then
@@ -145,6 +148,7 @@ sed -i 's/\r$//' \
   "$work/sq/etc/modprobe.d/stickllm-nvidia-alias.conf" \
   "$work/sq/etc/modules-load.d/stickllm-nvidia.conf" \
   "$work/sq/etc/sudoers.d/stickllm" \
+  "$work/sq/etc/sudoers.d/stickllm-ssh" \
   "$work/sq/etc/stickllm/models/catalog.toml" \
   "$work/sq/etc/stickllm/default-model.env" \
   "$work/sq/etc/stickllm/methodc-peer.env" \
@@ -164,6 +168,7 @@ chmod 644 "$work/sq/etc/stickllm/models/catalog.toml"
 chmod 644 "$work/sq/etc/stickllm/methodc-peer.env" 2>/dev/null || true
 chmod 644 "$work/sq/etc/stickllm/methodc-build.env" 2>/dev/null || true
 chmod 440 "$work/sq/etc/sudoers.d/stickllm"
+chmod 440 "$work/sq/etc/sudoers.d/stickllm-ssh" 2>/dev/null || true
 
 mkdir -p "$work/sq/etc/systemd/system/multi-user.target.wants"
 for u in stickllm-console-setup stickllm-usb stickllm-control stickllm-nvidia stickllm-bootstatus stickllm-local stickllm-ssh stickllm-ui stickllm-llama stickllm-methodc-peer; do

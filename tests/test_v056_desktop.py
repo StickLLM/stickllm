@@ -77,6 +77,10 @@ def test_control_browser_actions_local_ui_only():
     assert not GW.control_action_allowed("browser_status", True, False)
     assert GW.control_action_allowed("terminal_open", True, True)
     assert not GW.control_action_allowed("terminal_open", False, True)
+    assert GW.control_action_allowed("terminal_ssh_password_clipboard", True, True)
+    assert not GW.control_action_allowed("terminal_ssh_password_clipboard", False, True)
+    assert GW.control_action_allowed("terminal_ssh_password_paste", True, True)
+    assert not GW.control_action_allowed("terminal_ssh_password_paste", False, True)
     assert GW.control_action_allowed("status", False, False)
     src = _text(BIN / "stickllm-gateway")
     assert 'control_action_allowed(action, self._is_loopback(), stickllm_ui_client(self.headers))' in src
@@ -101,11 +105,19 @@ def test_terminal_open_spawns_fixed_argv(monkeypatch):
     monkeypatch.setattr(CTL.Path, "is_socket", lambda self: str(self) == "/tmp/.X11-unix/X0")
     monkeypatch.setattr(CTL.subprocess, "Popen", popen)
     monkeypatch.setattr(CTL.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(CTL, "_TERMINALS", {})
+    monkeypatch.setattr(CTL, "_wm_place_later", lambda *a, **k: None)
     r = CTL.handle("terminal_open", {})
-    assert r["ok"] is True
-    assert seen["cmd"] == ["/usr/bin/xfce4-terminal", "--disable-server", "--title=StickLLM Terminal"]
+    assert r["ok"] is True and r.get("id")
+    assert seen["cmd"][0] == "/usr/bin/xfce4-terminal"
+    assert "--disable-server" in seen["cmd"]
+    assert f"--class=stickllm-terminal-{r['id']}" in seen["cmd"]
+    assert "--title=StickLLM Terminal" in seen["cmd"]
     assert seen["kw"]["env"]["DISPLAY"] == ":0"
     assert seen["kw"]["start_new_session"] is True
+    st = CTL.handle("terminal_status", {})
+    assert [w["title"] for w in st["windows"]] == ["Terminal"]
+    assert st["windows"][0]["id"] == r["id"]
 
 
 def test_terminal_open_needs_binary(monkeypatch):
@@ -114,6 +126,102 @@ def test_terminal_open_needs_binary(monkeypatch):
     monkeypatch.setattr(CTL.subprocess, "Popen", lambda *a, **k: called.append(a))
     r = CTL.handle("terminal_open", {})
     assert r["ok"] is False and r["error"] == "no_terminal" and not called
+
+
+def test_terminal_window_needs_tracked_id(monkeypatch):
+    monkeypatch.setattr(CTL, "_TERMINALS", {})
+    r = CTL.handle("terminal_window", {"id": "deadbeefcafe", "op": "minimise"})
+    assert r["ok"] is False and r["error"] == "not_found"
+
+
+def test_terminal_ssh_password_clipboard_bridges_x11(monkeypatch, tmp_path):
+    put = []
+
+    def fake_put(sel, data):
+        put.append((sel, data))
+        return True
+
+    def fake_eq(sel, expected):
+        return expected == "lab-secret-not-logged" and any(s == sel for s, _ in put)
+
+    pw_file = tmp_path / "ssh-password.txt"
+    pw_file.write_text("lab-secret-not-logged\n", encoding="utf-8")
+    monkeypatch.setattr(CTL, "RUN", tmp_path)
+    monkeypatch.setattr(CTL.Path, "is_socket", lambda self: str(self) == "/tmp/.X11-unix/X0")
+    monkeypatch.setattr(CTL, "_x11_clipboard_put", fake_put)
+    monkeypatch.setattr(CTL, "_clipboard_selection_equals", fake_eq)
+    r = CTL.handle("terminal_ssh_password_clipboard", {})
+    assert r["ok"] is True and r.get("hint") == "ctrl_shift_v"
+    assert "lab-secret" not in str(r)
+    assert ("clipboard", b"lab-secret-not-logged") in put
+    assert ("primary", b"lab-secret-not-logged") in put
+
+
+def test_terminal_ssh_password_paste_focuses_and_pastes(monkeypatch, tmp_path):
+    keys = []
+
+    def fake_run(argv, *, input_bytes=None, timeout=5.0):
+        keys.append(list(argv))
+        if argv[:1] == ["xdotool"] and "getactivewindow" in argv:
+            return CTL.subprocess.CompletedProcess(argv, 0, b"424242\n", b"")
+        return CTL.subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    class P:
+        pid = 9911
+
+        def poll(self):
+            return None
+
+    pw_file = tmp_path / "ssh-password.txt"
+    pw_file.write_text("lab-secret-not-logged\n", encoding="utf-8")
+    monkeypatch.setattr(CTL, "RUN", tmp_path)
+    monkeypatch.setattr(CTL, "_TERMINALS", {"aabbccddeeff": {"proc": P(), "title": "Terminal", "bin": "/usr/bin/xfce4-terminal", "started": 0}})
+    monkeypatch.setattr(CTL, "clipboard_set_x11", lambda text: {"ok": True, "clipboard": True, "primary": True})
+    monkeypatch.setattr(CTL, "terminal_window", lambda params: {"ok": True, "id": params["id"], "op": params["op"]})
+    monkeypatch.setattr(CTL, "_terminal_x11_window_id", lambda tid: 424242)
+    monkeypatch.setattr(CTL, "_list_x11_terminals", lambda: [{"id": "aabbccddeeff", "wid": 424242, "minimised": False, "focused": True, "orphan": False}])
+    monkeypatch.setattr(CTL, "_x11_run", fake_run)
+    r = CTL.handle("terminal_ssh_password_paste", {})
+    assert r["ok"] is True and r.get("method") == "ctrl_shift_v"
+    assert r.get("id") == "aabbccddeeff"
+    assert r.get("window") == 424242
+    assert "lab-secret" not in str(r)
+    assert "Enter" in (r.get("message") or "")
+    assert any(a[:2] == ["xdotool", "windowactivate"] for a in keys)
+    assert any(a[:2] == ["xdotool", "windowfocus"] for a in keys)
+    assert any(a == ["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"] for a in keys)
+    assert any(a == ["xdotool", "key", "--clearmodifiers", "Return"] for a in keys)
+    assert not any(a[:2] == ["xdotool", "type"] for a in keys)
+
+
+def test_terminal_ssh_password_paste_prefers_orphan_x11_window(monkeypatch, tmp_path):
+    """After control restart, _TERMINALS is empty but the sudo Terminal still exists."""
+    keys = []
+
+    def fake_run(argv, *, input_bytes=None, timeout=5.0):
+        keys.append(list(argv))
+        if argv[:1] == ["xdotool"] and "getactivewindow" in argv:
+            return CTL.subprocess.CompletedProcess(argv, 0, b"999001\n", b"")
+        return CTL.subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    opened = []
+    pw_file = tmp_path / "ssh-password.txt"
+    pw_file.write_text("lab-secret-not-logged\n", encoding="utf-8")
+    monkeypatch.setattr(CTL, "RUN", tmp_path)
+    monkeypatch.setattr(CTL, "_TERMINALS", {})
+    monkeypatch.setattr(CTL, "clipboard_set_x11", lambda text: {"ok": True, "clipboard": True, "primary": True})
+    monkeypatch.setattr(CTL, "terminal_open", lambda params=None: opened.append(1) or {"ok": False, "error": "should_not_open"})
+    monkeypatch.setattr(CTL, "terminal_window", lambda params: {"ok": True, "id": params["id"], "op": params["op"]})
+    monkeypatch.setattr(CTL, "_terminal_x11_window_id", lambda tid: 999001)
+    monkeypatch.setattr(
+        CTL,
+        "_list_x11_terminals",
+        lambda: [{"id": "71e4ccb48dc3", "wid": 999001, "minimised": False, "focused": True, "orphan": True}],
+    )
+    monkeypatch.setattr(CTL, "_x11_run", fake_run)
+    r = CTL.handle("terminal_ssh_password_paste", {})
+    assert r["ok"] is True and r.get("id") == "71e4ccb48dc3" and not opened
+    assert any(a == ["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"] for a in keys)
 
 
 # --- control: browser windows --------------------------------------------
@@ -197,15 +305,26 @@ def test_desktop_browser_and_apps_wiring():
     assert '"browser_window"' in js and '["close", "Close"]' in js and '"browser_status"' in js
     assert "openBrowser(u, appTitle(id), true)" in js
     assert 'api.control("terminal_open"' in js
+    assert '"terminal_status"' in js and '"terminal_window"' in js
+    assert "pollTerminal" in js and "terminalOp(" in js
     assert 'FRONT = ["agent", "browser", "terminal", "store"]' in js
     assert "openTerminal:" in js
+    assert "wm.focus = (id) =>" in js and "yieldNative()" in js
+    assert "nativeCovers()" in js
     app = _text(UI / "app.js")
     assert "deskCatalog" in app and "frame: a.frame !== false" in app
     assert 'id === "terminal"' in app
+    assert "bridgeSshPasswordClipboard" in app
+    assert 'control("terminal_ssh_password_clipboard"' in app
+    assert 'control("terminal_ssh_password_paste"' in app
+    assert "Ctrl+Shift+V" in app
     html = _text(UI / "index.html")
     assert 'data-starter="terminal"' in html and ">Terminal</span>" in html
+    assert 'id="sshPastePass"' in html and "Paste into Terminal" in html
+    assert 'id="sshPasteHint"' in html
     pkgs = _text(ROOT / "live-build" / "package-lists" / "stickllm.list.chroot")
     assert "xfce4-terminal" in pkgs and "\nxterm\n" in pkgs
+    assert "\nxclip\n" in pkgs
     desk = _text(ROOT / "overlay/usr/local/share/stickllm/desktop/Terminal.desktop")
     assert "Type=Application" in desk and "Name=Terminal" in desk
     assert "xfce4-terminal" in desk and "StickLLM Terminal" in desk

@@ -177,12 +177,14 @@
     wall.id = "deskWall";
     wall.setAttribute("role", "list");
     wall.setAttribute("aria-label", "Desktop");
-    // Single click: if that app's window is already open, raise it (and restore
-    // when minimised) — same path as the taskbar's focus/restore half. Double-
-    // click / Enter still open when nothing is open yet.
+    // Single click: raise if already open, otherwise open. Double-click also
+    // opens (Windows habit). Phone / coarse-pointer LAN clients cannot dblclick
+    // reliably — the old raise-only click left Agent Zero / Minesweeper dead.
     wall.addEventListener("click", (e) => {
       const b = e.target.closest(".wallIcon");
-      if (b) raiseApp(b.dataset.app);
+      if (!b) return;
+      if (raiseApp(b.dataset.app)) return;
+      openApp(b.dataset.app);
     });
     wall.addEventListener("dblclick", (e) => {
       const b = e.target.closest(".wallIcon");
@@ -315,7 +317,7 @@
       b.dataset.app = id;
       if (catalogApp(id)) b.dataset.catalog = "1";
       b.setAttribute("role", "listitem");
-      b.title = "Open " + title + " (double-click; click brings an open window to the front)";
+      b.title = "Open " + title + " (click; click again brings an open window to the front)";
       b.appendChild(iconFor(id));
       b.appendChild(el("span", "wallLabel")).textContent = title;
       ui.wall.appendChild(b);
@@ -976,14 +978,53 @@
     if (nativeCovers()) yieldNative();
     return wm.focus(wid);
   }
+  function needsLanPair(id) {
+    if (isLocal()) return false;
+    if (id === CHAT || id === "agent") return true;
+    if (has(APPS, id)) return true;
+    if (catalogApp(id)) return true;
+    return false;
+  }
   function openApp(id) {
     if (!on || !wm) return null;
     // Opening/raising a WinBox app must bring it above Browser / Terminal.
     if (nativeCovers()) yieldNative();
     const api = appApi();
+    // LAN / StickLink: /apps/* and /agent-zero/ need pair cookies. Without a
+    // gate, WinBox opens a 401 JSON iframe and Agent Zero is a silent no-op.
+    if (needsLanPair(id) && api.ensurePaired) {
+      if (openApp._pairing) return openApp._pairing;
+      openApp._pairing = Promise.resolve(api.ensurePaired())
+        .then(async (ok) => {
+          if (!ok) {
+            if (api.toast) api.toast("Pair this browser with the code on the stick screen (F9), then open the app again.");
+            return null;
+          }
+          try { if (api.startAppStatus) api.startAppStatus(); } catch (_) {}
+          try { if (api.primeAppsSession) await api.primeAppsSession(true); } catch (_) {}
+          try { if (api.refreshStatus) await api.refreshStatus(); } catch (_) {}
+          return openAppNow(id);
+        })
+        .catch(() => null)
+        .finally(() => { openApp._pairing = null; });
+      return openApp._pairing;
+    }
+    return openAppNow(id);
+  }
+  function openAppNow(id) {
+    if (!on || !wm) return null;
+    if (nativeCovers()) yieldNative();
+    const api = appApi();
     if (id === CHAT) {
       // Wizard / mid vault-create owns the screen — do not open A0 yet.
-      if (setupBlocksA0()) return null;
+      if (setupBlocksA0()) {
+        if (api.toast) {
+          api.toast(isLocal()
+            ? "Finish setup or unlock the vault before opening Agent Zero."
+            : "Pair this browser (stick screen F9), wait for the desktop to sync, then open Agent Zero.");
+        }
+        return null;
+      }
       // Vault locked / mid-lock: show Unlock panel only — never start A0 or
       // focus a leftover embed that would paint 127.0.0.1 refused.
       const vaultOpen = !!(api.vaultOpen && api.vaultOpen());
@@ -1354,7 +1395,7 @@
     }).catch((e) => { if (api.toast) api.toast("Browser: " + e.message); });
   }
   // 0.8.3: Linux terminal on the stick screen (stickllm-control terminal_open).
-  // Works in deskMode and classic Apps view; remote clients get a toast only.
+  // Tracked on the StickLLM taskbar like Browser. Remote clients get a toast only.
   function openTerminal() {
     const api = appApi();
     if (!isLocal() || !api.control) {
@@ -1366,11 +1407,12 @@
         if (api.toast) api.toast(res.message || res.error || "The terminal could not start");
         return;
       }
-      if (api.toast) api.toast("Terminal opened on the stick.");
+      if (api.toast) api.toast("Terminal opened. The taskbar minimises and restores it.");
+      pollTerminal();
     }).catch((e) => { if (api.toast) api.toast("Terminal: " + e.message); });
   }
-  // Window ops go to the compositor (stickllm-control browser_window, which
-  // talks to the X11 window manager via wmctrl). The desktop taskbar height is reserved when maximising.
+  // Window ops go to the compositor (stickllm-control browser_window / terminal_window,
+  // which talk to the X11 window manager via wmctrl). Taskbar height reserved when maximising.
   function browserOp(id, op) {
     const api = appApi();
     if (!api.control || !id) return Promise.resolve(null);
@@ -1385,25 +1427,48 @@
       return res;
     }).catch(() => { pollBrowser(); return null; });
   }
-  // 0.6.2: Chrome windows are real X windows above the desktop page.
+  function terminalOp(id, op) {
+    const api = appApi();
+    if (!api.control || !id) return Promise.resolve(null);
+    const taskbar = Math.round(48 * (window.devicePixelRatio || 1));
+    return api.control("terminal_window", { id: id, op: op, taskbar: taskbar }).then((res) => {
+      if (res && res.ok === false && res.error === "not_found") { pollTerminal(); return res; }
+      if (res && res.ok === false && api.toast) api.toast(res.message || "That window could not be changed");
+      const tw = terminalWins.find((x) => x.id === id);
+      if (tw && res && res.window) Object.assign(tw, { minimised: res.window.minimised, focused: res.window.focused, maximised: res.window.maximised });
+      renderTasks();
+      setTimeout(pollTerminal, 600);
+      return res;
+    }).catch(() => { pollTerminal(); return null; });
+  }
+  // Native X11 windows sit above the desktop page.
   function browserCovers() { return browserWins.some((x) => x && !x.minimised); }
+  function terminalCovers() { return terminalWins.some((x) => x && !x.minimised); }
+  function nativeCovers() { return browserCovers() || terminalCovers(); }
   function yieldBrowser() {
     browserWins.filter((x) => x && !x.minimised).forEach((x) => { x.minimised = true; browserOp(x.id, "minimise"); });
   }
-  let browserMenu = null;
-  function hideBrowserMenu() {
-    if (browserMenu) { browserMenu.remove(); browserMenu = null; }
-    document.removeEventListener("mousedown", hideBrowserMenu, true);
+  function yieldTerminal() {
+    terminalWins.filter((x) => x && !x.minimised).forEach((x) => { x.minimised = true; terminalOp(x.id, "minimise"); });
   }
-  function showBrowserMenu(btn) {
-    hideBrowserMenu();
+  function yieldNative() { yieldBrowser(); yieldTerminal(); }
+  let extMenu = null;
+  function hideExtMenu() {
+    if (extMenu) { extMenu.remove(); extMenu = null; }
+    document.removeEventListener("mousedown", hideExtMenu, true);
+  }
+  function showExtMenu(btn) {
+    hideExtMenu();
     const id = btn.dataset.ext;
-    const bw = browserWins.find((x) => x.id === id) || {};
+    const kind = btn.dataset.kind || "browser";
+    const list = kind === "terminal" ? terminalWins : browserWins;
+    const opFn = kind === "terminal" ? terminalOp : browserOp;
+    const win = list.find((x) => x.id === id) || {};
     const m = el("div", "taskMenu");
     m.setAttribute("role", "menu");
     const items = [
-      bw.minimised ? ["restore", "Restore"] : ["minimise", "Minimise"],
-      ["maximise", bw.maximised ? "Restore size" : "Maximise"],
+      win.minimised ? ["restore", "Restore"] : ["minimise", "Minimise"],
+      ["maximise", win.maximised ? "Restore size" : "Maximise"],
       ["close", "Close"],
     ];
     items.forEach(([op, label]) => {
@@ -1415,8 +1480,8 @@
       it.addEventListener("mousedown", (e) => e.stopPropagation());
       it.addEventListener("click", (e) => {
         e.stopPropagation();
-        hideBrowserMenu();
-        browserOp(id, op);
+        hideExtMenu();
+        opFn(id, op);
       });
       m.appendChild(it);
     });
@@ -1424,12 +1489,14 @@
     const r = btn.getBoundingClientRect();
     m.style.left = Math.max(4, Math.min(r.left, window.innerWidth - m.offsetWidth - 4)) + "px";
     m.style.bottom = (window.innerHeight - r.top + 6) + "px";
-    browserMenu = m;
-    setTimeout(() => document.addEventListener("mousedown", hideBrowserMenu, true), 0);
+    extMenu = m;
+    setTimeout(() => document.addEventListener("mousedown", hideExtMenu, true), 0);
   }
-  // Chrome windows show on the taskbar while they run.
+  // Chrome + Terminal windows show on the taskbar while they run.
   let browserT = 0;
   let browserWins = [];
+  let terminalT = 0;
+  let terminalWins = [];
   window.addEventListener("stickllm-browser-changed", () => pollBrowser());
   function pollBrowser() {
     clearTimeout(browserT);
@@ -1440,6 +1507,17 @@
       browserWins = res && Array.isArray(res.windows) ? res.windows : [];
       renderTasks();
       if (browserWins.length) browserT = setTimeout(pollBrowser, res && res.wm ? 1500 : 4000);
+    }).catch(() => {});
+  }
+  function pollTerminal() {
+    clearTimeout(terminalT);
+    const api = appApi();
+    if (!on || !api.control || !isLocal()) return;
+    api.control("terminal_status").then((res) => {
+      if (!on) return;
+      terminalWins = res && Array.isArray(res.windows) ? res.windows : [];
+      renderTasks();
+      if (terminalWins.length) terminalT = setTimeout(pollTerminal, res && res.wm ? 1500 : 4000);
     }).catch(() => {});
   }
   // Desktop-only panels built around the existing Settings sections.
@@ -1599,6 +1677,14 @@
         area: () => ({ w: window.innerWidth, h: window.innerHeight - core.TASKBAR_H }),
         onchange: renderTasks,
       });
+      // Desk Chromium is _NET_WM_STATE_BELOW, so native Terminal/Browser always
+      // paint above WinBox apps. Any WinBox focus must yield those X11 windows
+      // (minimise) — titlebar/body clicks only called wm.focus before.
+      const _wmFocus = wm.focus.bind(wm);
+      wm.focus = (id) => {
+        if (nativeCovers()) yieldNative();
+        return _wmFocus(id);
+      };
       syncCatalog();
       ui.catObs = new MutationObserver(scheduleCatalog);
       const di = $("#deskIcons"), al = $("#agentLink");
@@ -1616,6 +1702,7 @@
       // Never auto-open Agent Zero on desktop start — first-boot A0 open breaks it.
       // User opens Chat from the dock/icon when ready.
       pollBrowser();
+      pollTerminal();
       window.addEventListener("resize", onResize);
       renderTasks();
       syncLayoutSeg();
@@ -1643,6 +1730,7 @@
       clearInterval(ui.clockT);
       clearInterval(ui.catT);
       clearTimeout(browserT);
+      clearTimeout(terminalT);
       ui.layer.remove(); ui.bar.remove(); ui.launcher.remove(); ui.hold.remove();
       if (ui.vaultPop) ui.vaultPop.remove();
       if (ui.webPop) ui.webPop.remove();
@@ -1652,6 +1740,7 @@
     catalog = [];
     iconSig = "";
     browserWins = [];
+    terminalWins = [];
     window.removeEventListener("resize", onResize);
     document.body.classList.remove("deskMode", "deskHasActive");
     syncLayoutSeg();

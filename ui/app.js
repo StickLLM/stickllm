@@ -6451,6 +6451,38 @@ async function issuePairHotkey() {
     await refreshStatus();
   } catch (e) { showError(e); }
 }
+async function copyTextToClipboard(text) {
+  const t = String(text == null ? "" : text);
+  if (!t) return false;
+  try {
+    await navigator.clipboard.writeText(t);
+    return true;
+  } catch (_) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = t;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;left:-9999px;top:0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return !!ok;
+    } catch (_e) {
+      return false;
+    }
+  }
+}
+/** Bridge SSH password onto stick X11 CLIPBOARD/PRIMARY (loopback control). */
+async function bridgeSshPasswordClipboard() {
+  try {
+    const r = await control("terminal_ssh_password_clipboard", {});
+    return !!(r && r.ok);
+  } catch (_) {
+    return false;
+  }
+}
 function paintSshDetails(connect) {
   const box = $("#sshDetails");
   const line = $("#sshLine");
@@ -6459,20 +6491,70 @@ function paintSshDetails(connect) {
   const enabled = !!c.ssh_enabled;
   const pass = String(c.ssh_password || "").trim();
   const local = detectLocalHost();
+  const passRow = $("#sshPassRow");
+  const passShow = $("#sshPassShow");
+  const copyBtn = $("#sshCopyPass");
+  const pasteBtn = $("#sshPastePass");
+  const hint = $("#sshPasteHint");
   // Password only exists on loopback health; LAN never gets it.
-  // No one-click Copy — select/highlight manually if needed (0.6.7).
   if (!local || !enabled) {
     box.hidden = true;
+    if (passRow) passRow.hidden = true;
+    if (hint) hint.hidden = true;
     return;
   }
   const user = c.ssh_user || "stickllm";
   const host = c.ssh_host || c.ip || "(LAN IP not up yet)";
   box.hidden = false;
   if (pass) {
-    line.textContent = `${user}@${host}  password: ${pass}`;
+    line.textContent = `${user}@${host}`;
+    if (passRow) passRow.hidden = false;
+    if (hint) hint.hidden = false;
+    if (passShow) passShow.textContent = pass;
+    if (copyBtn) copyBtn.disabled = false;
+    if (pasteBtn) pasteBtn.disabled = false;
   } else {
     line.textContent = `SSH is on (${user}@${host}) — password not ready yet; press F10 or wait a moment.`;
+    if (passRow) passRow.hidden = true;
+    if (hint) hint.hidden = true;
+    if (passShow) passShow.textContent = "";
+    if (copyBtn) copyBtn.disabled = true;
+    if (pasteBtn) pasteBtn.disabled = true;
   }
+}
+if ($("#sshCopyPass")) {
+  $("#sshCopyPass").onclick = async () => {
+    const pass = String(($("#sshPassShow") && $("#sshPassShow").textContent) || "").trim();
+    if (!pass) { toast("Password not ready yet"); return; }
+    const bridged = await bridgeSshPasswordClipboard();
+    const ok = bridged || await copyTextToClipboard(pass);
+    const btn = $("#sshCopyPass");
+    if (ok) {
+      toast("Password copied — Ctrl+Shift+V in Terminal, or use Paste into Terminal");
+      if (btn) {
+        btn.textContent = "Copied";
+        setTimeout(() => { if (btn) btn.textContent = "Copy"; }, 1800);
+      }
+    } else {
+      toast("Could not copy — select the password, or use Paste into Terminal");
+    }
+  };
+}
+if ($("#sshPastePass")) {
+  $("#sshPastePass").onclick = async () => {
+    const pass = String(($("#sshPassShow") && $("#sshPassShow").textContent) || "").trim();
+    if (!pass) { toast("Password not ready yet"); return; }
+    const btn = $("#sshPastePass");
+    if (btn) btn.disabled = true;
+    try {
+      const r = await control("terminal_ssh_password_paste", {});
+      toast((r && r.message) || "Password pasted into Terminal");
+    } catch (e) {
+      showError(e);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  };
 }
 async function issueSshHotkey() {
   // F10 from any StickLLM screen. The server only returns the password to this UI.
@@ -7443,7 +7525,7 @@ async function probeBootVault() {
     out.drives = (targets && targets.drives) || out.drives;
     out.unmounted = (targets && targets.unmounted) || [];
     const order = [...out.drives].sort((a, b) => {
-      const rank = (d) => (d.kind === "ssd" ? 0 : d.kind === "stick" ? 1 : 2);
+      const rank = (d) => (d.kind === "ssd" ? 0 : d.kind === "usb" ? 1 : d.kind === "stick" ? 2 : 3);
       return rank(a) - rank(b);
     });
     for (const d of order) {
@@ -7678,15 +7760,28 @@ async function openSetupWizard(opts) {
   const body = $("#setupBody");
   const err = $("#setupErr");
   const showErr = (m) => { if (!m) { err.hidden = true; err.textContent = ""; return; } err.hidden = false; err.textContent = m; };
-  const targets = await control("storage_targets").catch(() => ({ drives: [], unmounted: [] }));
-  const drives = (targets && targets.drives) || [];
-  const unmounted = (targets && targets.unmounted) || [];
-  wiz.drive = drives.find((d) => d.kind === "ssd") || drives.find((d) => d.kind === "stick") || drives[0] || null;
-  if (wiz.drive) {
-    wiz.vaultPath = wiz.drive.suggested_vault || (wiz.drive.path + "/vault");
-    wiz.modelsPath = wiz.drive.suggested_models || (wiz.drive.path + "/models");
-    wiz.dockerPath = wiz.drive.suggested_docker || (wiz.drive.path + "/stickllm-docker");
+  let drives = [];
+  let unmounted = [];
+  async function refreshWizardStorage(selectPath) {
+    const targets = await control("storage_targets").catch(() => ({ drives: [], unmounted: [] }));
+    drives = (targets && targets.drives) || [];
+    unmounted = (targets && targets.unmounted) || [];
+    const pick =
+      (selectPath && drives.find((d) => d.path === selectPath || (d.path && selectPath && String(selectPath).startsWith(d.path))))
+      || drives.find((d) => d.kind === "ssd")
+      || drives.find((d) => d.kind === "usb")
+      || drives.find((d) => d.kind === "stick")
+      || drives[0]
+      || null;
+    wiz.drive = pick;
+    if (wiz.drive) {
+      wiz.vaultPath = wiz.drive.suggested_vault || (wiz.drive.path + "/vault");
+      wiz.modelsPath = wiz.drive.suggested_models || (wiz.drive.path + "/models");
+      wiz.dockerPath = wiz.drive.suggested_docker || (wiz.drive.path + "/stickllm-docker");
+    }
+    return { drives, unmounted };
   }
+  await refreshWizardStorage();
 
   async function joinWifi(ssid, password) {
     if (!ssid) return { ok: true, skipped: true };
@@ -7862,6 +7957,12 @@ async function openSetupWizard(opts) {
       })();
     } else if (step === STEP_STOR) {
       $("#setupTitle").textContent = "Storage";
+      const kindTag = (d) => {
+        if (d.kind === "stick") return "Stick";
+        if (d.kind === "usb" || d.kind === "usb_unmounted") return "USB";
+        if (d.kind === "ssd" || d.kind === "ssd_unmounted") return "SSD";
+        return d.kind || "Disk";
+      };
       const rows = drives.map((d) => {
         const sel = wiz.drive && wiz.drive.id === d.id;
         let space = "";
@@ -7871,17 +7972,18 @@ async function openSetupWizard(opts) {
         } else if (d.free_gb != null) {
           space = d.free_gb + " GB free";
         }
-        return `<button type="button" class="drive-pick${sel ? " selected" : ""}" data-id="${d.id}">
-<strong>${d.label}</strong> · ${space}
-<div class="muted small">${d.path}</div></button>`;
-      }).join("") || `<p class="muted">No mounted data drives found yet.</p>`;
+        return `<button type="button" class="drive-pick${sel ? " selected" : ""}" data-id="${esc(d.id)}">
+<strong>${esc(d.label)}</strong> · ${esc(kindTag(d))}${space ? " · " + esc(space) : ""}
+<div class="muted small">${esc(d.path)}</div></button>`;
+      }).join("") || `<p class="muted">No mounted data drives yet — Mount a drive below, or use the stick.</p>`;
       const um = unmounted.map((u) =>
-        `<button type="button" class="drive-pick" data-mount="${u.device}" data-mp="${u.suggested_mount}">
-Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (never formats)</div></button>`
+        `<button type="button" class="drive-pick" data-mount="${esc(u.device)}" data-mp="${esc(u.suggested_mount)}">
+Mount ${esc(u.label)}<div class="muted small">${esc(u.device)} → ${esc(u.suggested_mount)} (never formats)</div></button>`
       ).join("");
       body.innerHTML = `
-<p>Choose where to keep the vault, models, and Agent Zero. Prefers an internal SSD when one is available; the stick works fine alone.</p>
-<div class="drive-list">${rows}${um}</div>
+<p>Choose where to keep the vault, models, and Agent Zero. Pick any mounted drive, or <b>Mount</b> an internal SSD / USB hard drive first (never formats). Prefers an internal SSD when available; USB disks and the stick work too.</p>
+<div class="drive-list">${rows}${um || (drives.length ? "" : '<p class="muted small">No unmounted disks found. Plug in a USB drive and tap Refresh.</p>')}</div>
+<div class="actions" style="margin:8px 0"><button type="button" class="btn ghost" id="wizRefreshDrives">Refresh drives</button></div>
 <label class="field"><span>Vault folder</span><input id="wizVault"></label>
 <label class="field"><span>Models / downloads folder</span><input id="wizModels"></label>
 <label class="field"><span>Agent Zero / Docker folder</span><input id="wizDocker"></label>
@@ -7898,6 +8000,14 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
       const wizStick = $("#wizRunStick");
       if (wizMove) wizMove.onclick = () => moveAgentDrive("ssd");
       if (wizStick) wizStick.onclick = () => moveAgentDrive("usb");
+      const wizRef = $("#wizRefreshDrives");
+      if (wizRef) wizRef.onclick = async () => {
+        try {
+          showErr("");
+          await refreshWizardStorage(wiz.drive && wiz.drive.path);
+          render();
+        } catch (e) { showErr(String(e.message || e)); }
+      };
       fetch("/api/agent/status", { headers: token ? { Authorization: "Bearer " + token } : {} })
         .then((r) => r.json()).then((st) => {
           const d = st.drive || {};
@@ -7920,11 +8030,13 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
       body.querySelectorAll(".drive-pick[data-mount]").forEach((b) => {
         b.onclick = async () => {
           try {
+            showErr("");
             const r = await control("mount_host_partition", { device: b.dataset.mount, path: b.dataset.mp });
-            if (!r.ok) throw new Error(r.error || "mount failed");
-            toast("Mounted " + b.dataset.mount);
-            overlay.classList.remove("show");
-            openSetupWizard({ force: true });
+            if (!r || r.ok === false) throw new Error((r && r.error) || "mount failed");
+            toast("Mounted " + (r.path || b.dataset.mount));
+            // Stay on Storage — refresh list and select the new mount (do not restart wizard).
+            await refreshWizardStorage(r.path || b.dataset.mp);
+            render();
           } catch (e) { showErr(String(e.message || e)); }
         };
       });
@@ -7945,7 +8057,8 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
   : "Encrypt chats and settings. Models can live beside the vault on the same drive."}</p>
 <label class="field"><span>Passcode (8+ characters)</span><input id="wizP1" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
 <label class="field" ${wiz.vaultMode === "unlock" ? "hidden" : ""}><span>Confirm passcode</span><input id="wizP2" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
-<p class="muted small">Vault path: <code id="wizVaultShow"></code></p>
+<p class="muted small">Vault path: <code id="wizVaultShow"></code>
+  <button type="button" class="btn ghost sm" id="wizChangeDrive">Choose a different drive</button></p>
 <p class="muted small" id="wizVaultHint" hidden></p>
 </form>`;
       $("#wizVaultShow").textContent = wiz.vaultPath || "(choose storage first)";
@@ -7953,6 +8066,12 @@ Mount ${u.label}<div class="muted small">${u.device} → ${u.suggested_mount} (n
       if ($("#wizP2")) $("#wizP2").value = wiz.pass2;
       hardenVaultPassFields($("#wizP1"), $("#wizP2"));
       wireVaultPassEnterToSetupNext(body);
+      const changeDrive = $("#wizChangeDrive");
+      if (changeDrive) changeDrive.onclick = async () => {
+        try { await refreshWizardStorage(wiz.drive && wiz.drive.path); } catch (_) {}
+        step = STEP_STOR;
+        render();
+      };
       if (wiz.vaultMode === "unlock") {
         const h = $("#wizVaultHint");
         if (h) { h.hidden = false; h.textContent = "Existing stickllm-vault.img found — unlock instead of create."; }
@@ -10756,6 +10875,7 @@ window.stickApp = Object.freeze({
   setSessionMode, setWebMode, refreshWebMode, focusVaultUnlock, refreshApps, refreshAgentLink, refreshModels, installAgent,
   ensureAgentZeroStarted, moveAgentDrive, renderA0Drive, agentHttpReady,
   deskAppUrl, deskCatalog, deskAgent, control, agentFastPoll, authHeaders,
+  ensurePaired, primeAppsSession, refreshStatus, startAppStatus, afterPairSuccess,
   sessionMode: () => state.mode, webMode: () => webMode, vaultOpen: () => !!state.vaultOpen,
   setupDone: () => setupDone(), setupBlocksAgent: () => setupBlocksAgent(),
 });
@@ -11121,6 +11241,9 @@ if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices(
       body.deskMode .wallIcon[data-app="chat"] { display: none !important; }
       .sshDetails{margin-top:10px;padding-top:10px;border-top:1px solid var(--line,rgba(255,255,255,.12))}
       .sshDetails .mono{font-size:13px;word-break:break-all;margin:6px 0}
+      .sshPassRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 0}
+      .sshPassRow .mono{margin:0;font-size:13px;word-break:break-all}
+      .sshPassRow b{font-weight:600}
       .wifiList button.selected{background:rgba(58,160,255,.18)}
     `;
     document.head.appendChild(style);

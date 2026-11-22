@@ -1,18 +1,21 @@
-# Hotfix after stick swap (kiosk recovery)
+# Hotfix after stick swap — COMPLETE checklist
 
-The lab kiosk often stays on an **older flashed image** while we fix bugs live via
-`sudo -n stickllm-hotfix` / `out/_hotfix_*.py`. When you put in a **new stick**
-(ship **v0.8.2** or later, then **v0.8.3** once cut), use this checklist so every
-live-only fix is either **already in the ISO** or **re-pushed** before trusting
-the desk.
+**This file is the durable list.** After every new stick flash, walk **§1 Master
+table** top-to-bottom. Do not improvise from memory. One row = one lab fix that
+was already proven on a previous stick.
 
-**Companion bake list:** [NEXT-0.8.3.md](NEXT-0.8.3.md)  
-**How to push:** stage under `/tmp/stickllm-hotfix/<overlay path>` then
-`sudo -n stickllm-hotfix [units…]` — see [DEV-WORKFLOW.md](DEV-WORKFLOW.md) /
-[CURSOR-HISTORY-agentzero.md](CURSOR-HISTORY-agentzero.md). Lab drivers live in
-gitignored `out/_hotfix_*.py` (recreate from this table if missing).
+Companion bake list: [NEXT-0.8.3.md](NEXT-0.8.3.md)  
+How to push: stage under `/tmp/stickllm-hotfix/<overlay path>` then
+`sudo -n stickllm-hotfix [units…]` — [DEV-WORKFLOW.md](DEV-WORKFLOW.md).  
+Lab drivers: gitignored `out/_hotfix_*.py` (recreate from this table if missing).
 
-Do **not** print SSH passwords. Do **not** flash/overwrite a shipping ISO name.
+**Rules**
+
+- Do **not** print SSH passwords (boot splash / F10 / health `connect.ssh_password`).
+- Do **not** flash/overwrite a shipping ISO name ([RESTORE.md](RESTORE.md)).
+- Prefer one authoritative edit of **this** file (merge sibling work; do not fork).
+- Lab host for this desk: `192.168.72.50`. Password from **this stick’s** boot
+  photo / F10 — never a stale `s60pw` from another stick.
 
 ---
 
@@ -20,118 +23,168 @@ Do **not** print SSH passwords. Do **not** flash/overwrite a shipping ISO name.
 
 ```text
 Flash StickLLM-v0.8.2.iso (hash c678993c…) + full readback
-  ├─ VERIFY ONLY (baked in 0.8.2): CUDA .so.1, Experimental Set default /
-  │     progress / installed, unlock curl+git, email fields, Minesweeper
-  │     board-tile, A0 /agent-zero/ + setupBlocksAgent + embed CSS, VL-7B
-  │     catalog, 32K floor, download override, HF fuzzy, firmware-mediatek
-  ├─ MUST HOTFIX until v0.8.3 ISO exists (live-only today):
-  │     mmproj family match, vision attach budget, A0 vision+phone attach,
-  │     Terminal desk + XFCE Desktop launcher, Experimental UI copy cleanup
-  └─ DATA PLANE (not ISO code): Mount Seagate/host → models + vault attach;
-        Claim / keep STICKLLM-DATA; optional STICKLLM-EXT external models volume
+  ├─ VERIFY ONLY (baked in 0.8.2): Experimental Set default / progress /
+  │     installed, unlock curl+git, email fields, Minesweeper board-tile,
+  │     A0 /agent-zero/ + setupBlocksAgent + embed CSS, VL-7B catalog,
+  │     32K floor, download override, HF fuzzy, firmware-mediatek,
+  │     open_app → requesting client (device cookie / agent_lan)
+  ├─ MUST HOTFIX until v0.8.3 ISO exists (live-only today) — §1 rows marked MUST:
+  │     CUDA sonames, mmproj family, vision budget, A0 vision+attach,
+  │     A0 first-start, Terminal icon/taskbar/Desktop, paste+z-order,
+  │     SSH Copy, About stickllm.com, Experimental copy, vault USB storage,
+  │     sudoers-ssh (+ helpers NOPASSWD), re-push A0 open/Minesweeper if verify fails,
+  │     LAN browser desk open (pair gate + single-click wall icons)
+  └─ DATA PLANE (§3): Mount Seagate/host → models + vault; Claim STICKLLM-DATA;
+        optional STICKLLM-EXT
 ```
 
-If the new stick is already a **v0.8.3** bake that includes the “Must bake”
-rows in [NEXT-0.8.3.md](NEXT-0.8.3.md), skip those hotfixes — still run the
-**verify** column once.
+If the stick is already a **v0.8.3** bake that includes NEXT-0.8.3 “Must bake”
+rows, skip those pushes — still run every **Verify** command once.
 
 ---
 
-## Must re-apply on a clean v0.8.2 stick (live-only / Unreleased)
+## §1 Master table — apply / verify every row
 
-| Item | Why | Push (`stickllm-hotfix` / `out/_hotfix_*.py`) | Verify |
-|------|-----|-----------------------------------------------|--------|
-| **`find_mmproj` family match** | Crowded models dir picked wrong mmproj (e.g. VL-3B projector for Qwen3-VL-8B) | `out/_hotfix_mmproj_match.py` → `usr/local/bin/stickllm-control` | Load Qwen3-VL-8B; `STICKLLM_MMPROJ` / health shows matching family; unit `tests/test_v053.py::test_c_find_mmproj_prefers_matching_family` |
-| **Chat vision attach budget** | Real JPEGs tokenized as text (~37k) → dropped under 60% budget → “no image” | `out/_hotfix_vision_budget.py` → `stickllm-convert`, `opt/stickllm/ui/app.js` | `grep IMAGE_TOKEN_ESTIMATE=1024`; ~50 KB photo `/api/chat` describes image; `tests/test_attachments.py` |
-| **A0 vision follows mmproj** | A0 hardcoded `vision: false` while chat multimodal worked | `out/_hotfix_a0_vision.py` / `_hotfix_a0_vision_flag.py` → `usr/local/lib/stickllm_agent.py` | After VL load: `stickllm-agent sync-model`; preset/plugin `vision: true` |
-| **A0 phone/image attach hook** | StickDroid uploads stayed filename-only; agent said it can’t see images | Same agent push (hook `_20_stickllm_attach_images` written on sync) | Upload photo in A0 → model describes it (lab: `39.jpg` → screwdriver); `tests/test_agent_zero.py` attach asserts |
-| **Apps desk Terminal icon** | No desk Terminal next to Files/Browser | `out/_hotfix_terminal_icon.py` → `stickllm-control` (`terminal_open`), `ui/index.html`, `app.js`, `desktop.js`, `style.css`, `stickllm-hotfix` | Desk Terminal opens terminal (loopback UI); packages `xfce4-terminal`/`xterm` present or install |
-| **XFCE Desktop Terminal launcher** | No trusted `~/Desktop/Terminal.desktop` | Same script → `usr/local/share/stickllm/desktop/Terminal.desktop`, `stickllm-kiosk`, `stickllm-xfce-session` | `~/Desktop/Terminal.desktop` trusted; opens `xfce4-terminal` |
-| **Experimental UI copy cleanup** | Stale “Nov 3 2026” / Debian-13 scare copy on Experimental tab | `out/_hotfix_exp_copy.py` → `stickllm_experimental.py`, `stickllm-control`, `ui/index.html`, `ui/app.js` | No “3 November” / “require Debian 13” in UI or `nov3_context`; OS line says “Detected OS major …” |
+**Status column**
+
+| Tag | Meaning |
+|-----|---------|
+| **MUST** | Live-only on clean **v0.8.2** until v0.8.3 ships — always push if verify fails |
+| **BAKED-0.8.2** | In shipping ISO — verify; hotfix only if verify fails |
+| **DATA** | Not ISO code — remount / claim / attach after swap |
+| **STICKLINK** | Method C / Always-On lab — separate track; do not block desk recovery |
+| **SUPERSEDED** | Older script; prefer the newer row listed in Notes |
+
+### A. MUST — re-apply on clean v0.8.2
+
+| # | Item | Script (`out/…`) | Verify (must pass) |
+|---|------|------------------|--------------------|
+| 1 | **CUDA `.so.1` + `libggml-cuda.so.0` sonames** (else Vulkan on NVIDIA) | `_hotfix_cuda_sonames_v082.py` | `/api/health` → `backend=cuda`; `cat /run/stickllm/cuda.env` has `STICKLLM_BACKEND=cuda`; process `/opt/stickllm/bin/llama-server` (not `-vulkan`); `ls /opt/stickllm/lib/libllama-common.so.1 /opt/stickllm/lib/libggml-cuda.so.0`; `grep -c ensure_cuda_sonames /usr/local/bin/stickllm-hotfix` ≥ 1 |
+| 2 | **`find_mmproj` family match** | `_hotfix_mmproj_match.py` | `grep -n _mmproj_family_key /usr/local/bin/stickllm-control`; load Qwen3-VL-8B → matching mmproj (not VL-3B leftover); unit `tests/test_v053.py::test_c_find_mmproj_prefers_matching_family` |
+| 3 | **Chat vision attach budget** | `_hotfix_vision_budget.py` | `grep IMAGE_TOKEN_ESTIMATE=1024 /usr/local/bin/stickllm-convert`; ~50 KB photo `/api/chat` describes image (not “no image”); `tests/test_attachments.py` |
+| 4 | **A0 vision follows mmproj** | `_hotfix_a0_vision.py` then `_hotfix_a0_vision_flag.py` | `grep -n _model_vision /usr/local/lib/stickllm_agent.py`; after VL load: `stickllm-agent sync-model`; preset/plugin `vision: true` |
+| 5 | **A0 phone/image attach hook** | same as #4 (writes `_20_stickllm_attach_images`) | `grep -n stickllm_attach_images /usr/local/lib/stickllm_agent.py`; upload photo in A0 → model describes it; `tests/test_agent_zero.py` |
+| 6 | **A0 first-start crash-loop / health progress** | `_hotfix_a0_startup.py` | `grep -n a0_python /usr/local/bin/stickllm-agent-entrypoint`; Open Agent → Waiting shows real init lines; no multi-minute `python3: Permission denied` loop in docker logs |
+| 7 | **Apps desk Terminal icon** | `_hotfix_terminal_icon.py` | Desk Terminal next to Files/Browser; `grep -n terminal_open /usr/local/bin/stickllm-control`; packages `xfce4-terminal`/`xterm` installed |
+| 8 | **Terminal → StickLLM taskbar** | `_hotfix_terminal_taskbar.py` | Open Terminal → taskbar button; minimise/restore; `grep -n terminal_status /usr/local/bin/stickllm-control` |
+| 9 | **XFCE Desktop Terminal launcher** | `_hotfix_terminal_icon.py` (same push) | `test -f /usr/local/share/stickllm/desktop/Terminal.desktop` and `~/Desktop/Terminal.desktop` |
+| 10 | **SSH password Copy button** | `_hotfix_ssh_copy.py` | Devices / F10: **Copy** next to password; toast “Password copied” (do not print password) |
+| 11 | **SSH password → Terminal paste** (`xclip` + Ctrl+Shift+V + Enter) | `_hotfix_terminal_paste.py` | **Paste into Terminal** works; `grep -n 'ctrl+shift+v' /usr/local/bin/stickllm-control`; `which xclip` |
+| 12 | **Paste empty-clipboard fix + Terminal z-order** | `_hotfix_terminal_paste.py` (same) | At sudo prompt: paste succeeds (no “Sorry, try again”); click Settings/Agent → Terminal minimises; `grep -n _x11_clipboard_put /usr/local/bin/stickllm-control`; `grep -n 'wm.focus = (id)' /opt/stickllm/ui/desktop.js` + `yieldNative` |
+| 13 | **`/etc/sudoers.d/stickllm-ssh`** (Test/Terminal boots password `ALL`) | `_hotfix_terminal_paste.py` / overlay `etc/sudoers.d/stickllm-ssh` | `test -f /etc/sudoers.d/stickllm-ssh`; `visudo -cf` OK |
+| 14 | **Helpers NOPASSWD** (`stickllm-hotfix` / control / systemctl) | `_finish_stick_hotfixes.py` stages `zz-stickllm-helpers` | `sudo -n stickllm-hotfix -h` works; `test -f /etc/sudoers.d/zz-stickllm-helpers` (or equivalent helpers drop-in) |
+| 15 | **About website → stickllm.com** | `_hotfix_about_domain.py` | About → Website `stickllm.com`; `grep stickllm.com /opt/stickllm/ui/index.html`; **no** `stickllm.org` in that row |
+| 16 | **Experimental UI copy cleanup** | `_hotfix_exp_copy.py` | No “3 November 2026” / “require Debian 13” scare text; OS line “Detected OS major …”; `NOV3_CONTEXT` is opt-in-only wording |
+| 17 | **Setup vault: USB HDD / other drive** | `_hotfix_setup_usb_storage.py` | `grep -n usb_unmounted /usr/local/bin/stickllm-control`; Setup → Storage lists USB Mount; Vault → **Choose a different drive**; `grep refreshWizardStorage /opt/stickllm/ui/app.js`; unit `tests/test_v083_setup_usb_storage.py` |
+| 17b | **LAN browser desk open (A0 / Minesweeper / apps)** | `_hotfix_browser_open_apps.py` | Pair on `https://<stick>/` (F9); **single-click** wall Agent Zero + Minesweeper open in WinBox on **that** browser; `grep -n needsLanPair /opt/stickllm/ui/desktop.js`; unpaired click toasts pair (not blank 401 iframe); `index.html` cache `?v=v083browser` |
+
+### B. BAKED-0.8.2 — verify; hotfix only if verify fails
+
+| # | Item | Script if verify fails | Verify |
+|---|------|------------------------|--------|
+| 18 | **Experimental progress bar** | `_hotfix_exp_progress_v082.py` / `_hotfix_exp_progress_v082b.py` | Experimental download shows shared progress JSON/UI |
+| 19 | **Experimental installed detection** | `_hotfix_exp_installed_v082c.py` | Status marks downloaded engines **Installed** |
+| 20 | **Experimental Set default / Use** | `_hotfix_exp_set_default_v082.py` | Set default → NInfer/Strata on `:8080`; Use llama.cpp restores |
+| 21 | **Unlock curl/tar fallback (no git)** | `_hotfix_exp_progress_v082.py` / unlock path | Unlock Cancel/Continue; clear JSON error if fetch fails |
+| 22 | **Network email + vault Email/Password** | `_hotfix_email_vault_creds.py` (+ `_hotfix_email_outbound.py`, `_hotfix_email_a0_inode.py`) | Settings → Network: toggle shows fields; save to vault |
+| 23 | **Minesweeper board-tile + skin + adapter** | `_hotfix_a0_minesweeper3.py` (prefer) / `_hotfix_a0_minesweeper*.py` | `test -f …/minesweeper/Minesweeper/client/board-tile.bundle.js`; `stickllm-adapter.js` has `window.stickllmApp` `describe`/`state`/`act`; A0 `app_state` / reveal-flag |
+| 24 | **A0 `/agent-zero/` same-origin + `setupBlocksAgent`** | `_hotfix_a0_open.py` | Agent URL is `/agent-zero/`; `grep -n setupBlocksAgent /opt/stickllm/ui/app.js`; `curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1/agent-zero/` → 200 |
+| 25 | **A0 embed input CSS** | gateway via `_hotfix_a0_open.py` / bake | `grep -n _EMBED_LAYOUT_CSS /usr/local/bin/stickllm-gateway`; Chat input visible in embed |
+| 26 | **open_app → requesting browser client** (not kiosk) | `_hotfix_a0_open.py` / `_hotfix_a0_minesweeper3.py` (gateway + UI) | `grep -n stickllm_device /usr/local/bin/stickllm-gateway /opt/stickllm/ui/app.js`; `grep -n agent_lan /usr/local/bin/stickllm-gateway`; `app_not_open` 409 (no kiosk fallback); LAN A0 open_app opens Minesweeper on **that** browser |
+| 27 | **VL-7B catalog (drop weak VL-3B)** | `_hotfix_vl7b_catalog.py` | Catalog / control has `qwen25-vl-7b-q4km`; no preferred `qwen25-vl-3b-q4km` |
+| 28 | **32K floor** | `_hotfix_ctx32_floor.py` → `_hotfix_ctx32_activate.py` / `_hotfix_ctx32_finish.py` / `_hotfix_ctx32_planfix.py` | Active model `ctx_size` ≥ 32768 when policy allows; no false free-VRAM refuse |
+| 29 | **Download override (mmproj soft gates)** | `_hotfix_download_override.py` | Soft-gate download path works when mmproj/gates blocked |
+| 30 | **HF fuzzy search** | `_hotfix_hf_fuzzy_search.py` | Models search: typo `lnkling` → Inkling |
+| 31 | **firmware-mediatek** | `_hotfix_firmware_mediatek.py` | Package/firmware present for lab Wi-Fi sticks that need it |
+| 32 | **Load / download UI stuck “Loading”** | `_hotfix_load_download_ui.py` | Installed-after-download updates live; Loading clears |
+| 33 | **mmproj unverified override + vision UX** | `_hotfix_mmproj_unverified.py` | Unverified mmproj can still attach when user overrides |
+| 34 | **CUDA detect / register `.so`** | `_hotfix_cuda_detect.py` / `_hotfix_register_so.py` | CUDA backend selected on NVIDIA after detect; register preload OK |
+| 35 | **Ethernet prefer / skip Wi-Fi** | `_hotfix_ethernet_prefer.py` / `_hotfix_ethernet_skip_wifi.py` | Network wizard prefers ethernet when cable present |
+| 36 | **Delete-vault passcode focus** | `_hotfix_delete_vault_pass.py` | Delete-vault passcode field focusable |
+| 37 | **No-vault re-probe after delete** | `_hotfix_novault_probe.py` | After vault delete, UI re-probes (no stale unlock) |
+| 38 | **Experimental no-master / per-card Continue** | `_hotfix_exp_no_master.py` / `_hotfix_exp_v081.py` / `_hotfix_exp_and_prior.py` | Per-card Continue without master unlock gate |
+| 39 | **MoE / TTFT ctx** | `_hotfix_ttft_moe.py` | MoE load path / TTFT sane on Inkling-class models |
+| 40 | **Remove lab-only ctx32 force** | `_hotfix_remove_lab_ctx32.py` | Lab force path gone; product 32K refuse policy remains |
+
+### C. DATA plane (every stick swap — not bake)
+
+| # | Item | How | Verify |
+|---|------|-----|--------|
+| 41 | **Claim / keep `STICKLLM-DATA`** | Settings → Claim USB free space | `lsblk` shows label; `/mnt/stickllm-data` or stick data mount |
+| 42 | **Mount host / Seagate / `STICKLLM-EXT`** | Storage → Mount (never format host disks) | `/mnt/stickllm-host/…` present; Find models sees GGUFs |
+| 43 | **Vault attach / unlock** | `stickllm-vault attach …` or wizard; Unlock | `/api/health` vault `unlocked`; never Create over existing `stickllm-vault.img` |
+
+### D. STICKLINK / Method C (optional lab — separate track)
+
+| # | Item | Script | Verify |
+|---|------|--------|--------|
+| 44 | Method C peer keepalive | `_hotfix_keepalive_peer.py` / `_hotfix_keepalive_v2.py` | Peer stays connected without false idle expiry |
+| 45 | Method C remint peer | `_hotfix_remint_peer.py` | Remint path works via hotfix + vmtest oneshot |
+| 46 | Zombie WSS / false-connected | `_hotfix_zombie_keepalive.py` | No zombie “connected” after WSS death |
+| 47 | QR state machine | `_hotfix_qr_state_machine.py` | QR UI states match peer |
+| 48 | Rate-limit UI / NL | `_hotfix_rate_limit_ui.py` / `_hotfix_ratelimit_nl.py` | Countdown + newline OK |
+| 49 | StickLink server e2e helpers | `sticklink-server/lab-browser-e2e/_hotfix_*.py` | Lab e2e only — not desk kiosk |
+
+### E. Orchestrators (run these, don’t skip the rows)
+
+| Script | Role |
+|--------|------|
+| `out/_run_stick_swap_hotfixes.py` | Ordered MUST push (#4–17 subset + A0 open); refreshes `s60pw` from boot-photo candidates |
+| `out/_finish_stick_hotfixes.py` | Bulk stage overlay UI/control/convert/gateway + sudoers-ssh/helpers via `sudo -S` |
+| `out/_audit_hotfix_checklist.py` | Read-only marker dump on stick (redact passwords from any saved log) |
 
 ---
 
-## Already in v0.8.2 ISO — verify; hotfix only if verify fails
+## §2 Suggested push order (v0.8.2 → match live kiosk)
 
-| Item | Why it was hotfixed live | Baked via | Verify (skip push if OK) |
-|------|--------------------------|-----------|--------------------------|
-| **CUDA / llama `.so.1` sonames** | Missing SONAME links → CUDA llama-server fail | `scripts/lib/docker-build-llama.sh` `link_soname`; CHANGELOG 0.8.2 “Prior hotfixes” | `systemctl is-active stickllm-llama`; journal has no missing `.so.1`; lab fallbacks `_hotfix_register_so.py` / `_hotfix_cuda_detect.py` |
-| **Experimental progress bar** | Shared download JSON / UI bar for Strata+NInfer | 0.8.2 bake; lab `_hotfix_exp_progress_v082.py` / `…_v082b.py` | Experimental download shows shared progress |
-| **Experimental installed detection** | Disk scan → Installed + Re-download | 0.8.2; lab `_hotfix_exp_installed_v082c.py` | Status marks downloaded engines Installed |
-| **Experimental Set default / Use** | Switch chat+A0 onto NInfer/Strata on `:8080` | 0.8.2; lab `_hotfix_exp_set_default_v082.py` | Confirm Set default; `/health` / active-engine JSON; Use llama.cpp restores |
-| **Unlock curl/tar fallback (no git)** | Live image may lack `git`; clone must not hard-fail | 0.8.2 (`clone_or_update` + bake `git`); lab via exp progress/unlock push | Unlock Cancel/Continue; clear JSON error if fetch fails |
-| **Network email + vault Email/Password** | Toggle + vault fields for A0 mail | 0.8.2 prior bake; `_hotfix_email_vault_creds.py` (+ outbound/inode) | Settings → Network: toggle shows fields; save to vault |
-| **Minesweeper board-tile + skin** | Board bundle + A0 `app_act` adapter | 0.8.2 prior; `_hotfix_a0_minesweeper*.py` / `_hotfix_a0_open.py` | `board-tile.bundle.js` loads; A0 minesweeper `app_state` / `new_game` |
-| **A0 embed input CSS** | Plugin skeleton pushed `#chat-input` off iframe | 0.8.2 prior; `stickllm-gateway` `_EMBED_LAYOUT_CSS` | Kiosk/LAN Chat: input visible; `tests/test_v064_agent_embed.py` |
-| **`setupBlocksAgent`** | Open A0 was silent no-op on LAN until local wizard | 0.8.1+; `_hotfix_a0_open.py` | Vault open + pair: Open Agent Zero works without local wizard markers |
-| **`/agent-zero/` LAN same-origin** | Stop minting `:5443` / raw `:5099` for iframe | 0.8.1+; same A0 open hotfixes | Agent URL is `/agent-zero/`; CSRF probe before embed |
-| **VL-7B catalog (drop weak VL-3B)** | Pin quality vision @ ≥12 GB | 0.8.2; `_hotfix_vl7b_catalog.py` | Catalog has `qwen25-vl-7b-q4km`; no `qwen25-vl-3b-q4km` |
-| **32K floor / download override / HF fuzzy / mediatek firmware** | Load/policy/Wi‑Fi polish | 0.8.1–0.8.2 prior | Spot-check if stick behaves oddly; scripts under `out/_hotfix_ctx32_*`, `_hotfix_download_override.py`, `_hotfix_hf_fuzzy_search.py`, `_hotfix_firmware_mediatek.py` |
+1. **CUDA sonames** (#1) if health `backend=vulkan` on NVIDIA — before vision/A0 load tests.  
+2. Helpers/sudoers (#13–14) so later `sudo -n stickllm-hotfix` works.  
+3. Experimental copy (#16).  
+4. mmproj family (#2) → vision budget (#3) → A0 vision/attach (#4–5) → A0 startup (#6).  
+5. Terminal icon (#7) → taskbar (#8–9) → SSH Copy (#10) → paste/z-order (#11–12).  
+6. About (#15) → vault USB storage (#17).  
+7. Verify BAKED rows (#18–40); re-push `_hotfix_a0_open.py` / `_hotfix_a0_minesweeper3.py` if open_app/Minesweeper client targeting fails (#23–26).  
+8. Data plane (#41–43).  
+9. Smoke: VL photo Chat + A0; Terminal icon + bar; Devices Copy → Paste into Terminal; `/agent-zero/` 200; LAN open_app Minesweeper on **requesting** browser; `/api/health` `backend=cuda`.
 
 ---
 
-## Data plane after swap (not baked into ISO code)
+## §3 Data plane notes
 
-These survive or fail independently of which ISO you flash. Record them so the
-new stick sees the same models/vault.
+### STICKLLM-DATA
 
-### STICKLLM-DATA (boot stick free space)
+- Claim USB free space → label **`STICKLLM-DATA`** + ~256 MB settings — [MODELS.md](MODELS.md).  
+- Survives ISO reflash only if that partition is kept.
 
-- First-boot / Settings: **Claim USB free space** → label **`STICKLLM-DATA`**
-  (ext4) + ~256 MB settings slot — [MODELS.md](MODELS.md).
-- Holds `models/`, optional vault pointer `stickllm-vault-location.json`, apps.
-- **Survives ISO reflash** only if you keep that partition (do not wipe the whole
-  stick layout when reclaiming). Product never formats host disks.
+### STICKLLM-EXT (lab convention — no product string today)
 
-### STICKLLM-EXT (lab external models volume)
+1. Label external USB/HDD **outside** StickLLM.  
+2. StickLLM **Mount** only under `/mnt/stickllm-host/<name>` — never format host disks.  
+3. Point Models / Find models at `<mount>/models`.
 
-There is **no `STICKLLM-EXT` string in product code** today. Lab convention:
+### Seagate / host restore
 
-1. Format/label an **external** USB/HDD **outside** StickLLM (Windows Disk
-   Management / Linux tools) if you want a durable models disk — e.g. volume
-   name **`STICKLLM-EXT`** so it is obvious next to `STICKLLM-DATA`.
-2. On the stick: Storage → **Mount** only (read-write under
-   `/mnt/stickllm-host/<name>`). StickLLM **never partitions or formats** that
-   disk (`stickllm-vault` / control Mount path).
-3. Point Models / Find models at `<mount>/models` (or your usual layout).
-4. After stick swap: plug in → Mount again → Find models / Activate. Do not
-   expect the new ISO to auto-format EXT.
-
-### Models on Seagate (lab host) restore path
-
-- Lab **Seagate Backup** (`NA8TPCBG` / similar) is a **host** disk — flash
-  wrappers refuse to write it ([CURSOR-HISTORY-agentzero.md](CURSOR-HISTORY-agentzero.md)).
-- After new stick boots: Settings → Storage → ensure Seagate appears (list-disks
-  surfaces disks even when not yet mountable) → **Mount** →
-  `/mnt/stickllm-host/…`.
-- **Find models** / Load from that mount. Vault blob on SSD/Seagate:
-  `sudo stickllm-vault attach /mnt/stickllm-host/<mount>/…` (never Create over
-  an existing `stickllm-vault.img`) — [VAULT.md](VAULT.md).
-- If Claim kept `STICKLLM-DATA`, prefer restoring via
-  `stickllm-vault-location.json` pointer then Unlock.
+- After boot: Storage → Mount Seagate → Find models / Activate.  
+- Vault: `sudo stickllm-vault attach /mnt/stickllm-host/<mount>/…` — [VAULT.md](VAULT.md).
 
 ---
 
-## Suggested push order (v0.8.2 → match live kiosk)
+## §4 Out of scope
 
-1. Experimental copy (`_hotfix_exp_copy.py`) if UI still shows Nov-3 / Debian scare text.  
-2. `stickllm-control` mmproj family (`_hotfix_mmproj_match.py`).  
-3. Vision budget (`_hotfix_vision_budget.py`) + UI restart.  
-4. `stickllm_agent.py` vision + attach (`_hotfix_a0_vision*.py`) + `stickllm-agent sync-model`.  
-5. Terminal desk + Desktop launcher (`_hotfix_terminal_icon.py`); install
-   `xfce4-terminal`/`xterm` if packages missing on old image.  
-6. Mount Seagate/EXT → Find models → vault attach/unlock.  
-7. Smoke: VL photo in Chat + A0; Experimental tab; Terminal icon; `/agent-zero/`
-   on LAN.
-
-If the outgoing kiosk was **older than 0.8.2**, also run the “Already in
-v0.8.2” verify column — or re-push the matching `_hotfix_exp_*` /
-`_hotfix_a0_open` / email / minesweeper scripts from the table above.
+- StickLink Method C product ship (rows 44–49 are lab-only reminders).  
+- Cutting/flashing `v0.8.3` — only when explicitly requested; new name only.  
+- Do **not** resume unrelated Multitask agents (e.g. Wire A0 phone images).
 
 ---
 
-## Out of scope here
+## §5 After you finish a stick
 
-- StickLink Method C / Always-On WIP (separate track).  
-- Cutting/flashing `v0.8.3` — only when explicitly requested; new name only
-  ([RESTORE.md](RESTORE.md) N-2 rules).
+Update a lab note (chat / store) with a copy of this results shape — keep secrets out:
+
+```markdown
+| Item | Applied | Verified working | Notes |
+|------|---------|------------------|-------|
+| CUDA sonames | yes/no | yes/no | … |
+```
+
+Next stick swap: start again at **§1 #1**. The list above is the whole list.

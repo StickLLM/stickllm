@@ -15,6 +15,10 @@ def test_bootstrap_mints_password_always():
     assert "passwd -d stickllm" not in text
     assert "PermitEmptyPasswords" not in text
     assert "99-stickllm-test-empty.conf" in text  # cleanup of stale drop-in only
+    # Terminal/Test: password-required sudo (not NOPASSWD:ALL).
+    assert "/etc/sudoers.d/stickllm-ssh" in text
+    assert "stickllm ALL=(ALL:ALL) ALL" in text
+    assert "NOPASSWD: ALL" not in text
 
 
 def test_bootstatus_prints_password_not_empty_label():

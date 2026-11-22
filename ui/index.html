@@ -544,6 +544,12 @@
     <div class="sshDetails" id="sshDetails" hidden>
       <small>SSH (GRUB Test / Terminal boots only — stick screen)</small>
       <p class="mono" id="sshLine"></p>
+      <div class="sshPassRow" id="sshPassRow" hidden>
+        <span class="mono">password: <b id="sshPassShow"></b></span>
+        <button type="button" class="btn sm" id="sshCopyPass" title="Copy password to the stick clipboard (Terminal: Ctrl+Shift+V)">Copy</button>
+        <button type="button" class="btn sm" id="sshPastePass" title="Copy password, paste into StickLLM Terminal (Ctrl+Shift+V), and press Enter">Paste into Terminal</button>
+      </div>
+      <p class="muted small" id="sshPasteHint" hidden>One click: puts the password on the stick clipboard, focuses Terminal, pastes with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd>, and presses Enter (works at a <b>sudo</b> prompt). Or use <b>Copy</b> then paste yourself.</p>
     </div>
   </div>
   <div class="secTools"><h3>Enter a code</h3></div>
@@ -695,7 +701,7 @@
       <div class="row"><span>Version</span><span class="mono" id="aboutVer">StickLLM v0.7.0</span></div>
       <div class="row"><span>llama.cpp</span><span class="mono" id="aboutLlama">—</span></div>
       <div class="row"><span>License</span><span>PolyForm-Noncommercial-1.0.0</span></div>
-      <div class="row"><span>Website</span><a href="http://stickllm.org" target="_blank" rel="noopener noreferrer">stickllm.org</a></div>
+      <div class="row"><span>Website</span><a href="http://stickllm.com" target="_blank" rel="noopener noreferrer">stickllm.com</a></div>
     </div>
     <h3 style="margin-top:16px">Keyboard (stick screen)</h3>
     <div class="group kbd">
@@ -832,8 +838,8 @@
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
 <script src="vendor/qrcode/qrcode.min.js"></script>
-<script src="app.js?v=v083term"></script>
+<script src="app.js?v=v083browser"></script>
 <script src="desktop-core.js?v=v081a0lan"></script>
-<script src="desktop.js?v=v083term"></script>
+<script src="desktop.js?v=v083browser"></script>
 </body>
 </html>

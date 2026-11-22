@@ -92,6 +92,11 @@ A new USB boot creates a raw ~256 MB settings partition and does not format it. 
 
 **Create a new vault file** on the Storage & Vault screen, or `stickllm-vault setup` under Commands, makes a new `stickllm-vault.img` in a folder you choose. Setup refuses if that file is already there and never overwrites it. The SSD is not formatted.
 
+**First-boot Storage step:** pick any mounted drive, or **Mount** an internal SSD
+or external USB hard drive (e.g. lab `STICKLLM-EXT`) under `/mnt/stickllm-host/` —
+never formats. On the vault passcode step, **Choose a different drive** returns
+to Storage. Settings → Storage uses the same Mount path if you skipped the wizard.
+
 ## Commands (SSH)
 
 ```bash

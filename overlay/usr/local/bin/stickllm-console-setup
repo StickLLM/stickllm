@@ -19,6 +19,10 @@ fi
 
 # Blanket passwordless root rules from live-config (live) and pre-0.5.1 images (stickllm-user).
 rm -f /etc/sudoers.d/live /etc/sudoers.d/stickllm-user
+# Password-sudo for Terminal/Test is re-created by stickllm-ssh-bootstrap when stickllm.ssh is set.
+if ! grep -qw stickllm.ssh /proc/cmdline 2>/dev/null; then
+  rm -f /etc/sudoers.d/stickllm-ssh
+fi
 
 # Strip CRLF from overlay scripts (Windows checkout → exec 127 on Linux).
 # Live root is writable overlay; ignore failures on pure squashfs.

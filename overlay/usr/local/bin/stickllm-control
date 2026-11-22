@@ -6385,6 +6385,99 @@ def _terminal_owns(tid: str):
     return owns
 
 
+_TERM_CLASS_RE = re.compile(r"stickllm-terminal-([0-9a-f]{12})", re.I)
+
+
+def _terminal_tid_from_window(w: dict) -> str | None:
+    """12-hex StickLLM Terminal id from WM_CLASS, or synthesised orphan id."""
+    cls = str(w.get("cls") or "")
+    m = _TERM_CLASS_RE.search(cls)
+    if m:
+        return m.group(1).lower()
+    title = str(w.get("title") or "")
+    if "stickllm terminal" in title.lower():
+        return f"{int(w['id']):012x}"[-12:]
+    return None
+
+
+def _list_x11_terminals() -> list[dict]:
+    """Live StickLLM Terminal windows (tracked or orphan after control restart)."""
+    ipc = _wm_ipc()
+    if ipc is None:
+        return []
+    wm = _wm()
+    if wm is None:
+        ipc.close()
+        return []
+    out: list[dict] = []
+    with _TERMINAL_LOCK:
+        tracked_ids = set(_TERMINALS.keys())
+    try:
+        act = wm.active(ipc)
+        for w in wm.windows(ipc):
+            tid = _terminal_tid_from_window(w)
+            if not tid:
+                continue
+            st = wm.net_state(ipc, w["id"])
+            out.append({
+                "id": tid,
+                "wid": int(w["id"]),
+                "title": "Terminal",
+                "page_title": re.sub(r"[\x00-\x1f\x7f]", "", str(w.get("title") or ""))[:80],
+                "minimised": "_NET_WM_STATE_HIDDEN" in st,
+                "focused": (act == w["id"]) and "_NET_WM_STATE_HIDDEN" not in st,
+                "orphan": tid not in tracked_ids,
+            })
+    except (OSError, wm.WMError):
+        pass
+    finally:
+        ipc.close()
+    return out
+
+
+def _find_terminal_x_window(tid: str):
+    """Return wm window dict for tid (tracked class or orphan title), or None."""
+    ipc = _wm_ipc()
+    if ipc is None:
+        return None
+    wm = _wm()
+    if wm is None:
+        ipc.close()
+        return None
+    try:
+        owns = _terminal_owns(tid)
+        w = wm.wait_for(ipc, tid, owns, timeout=0.4)
+        if w:
+            return w
+        for cand in wm.windows(ipc):
+            if _terminal_tid_from_window(cand) == tid:
+                return cand
+        return None
+    except (OSError, wm.WMError):
+        return None
+    finally:
+        ipc.close()
+
+
+def _pick_terminal_for_paste() -> tuple[str | None, bool]:
+    """Choose a Terminal for paste: focused → visible → tracked → None (caller may open)."""
+    live = _list_x11_terminals()
+    for row in live:
+        if row.get("focused") and not row.get("minimised"):
+            return str(row["id"]), False
+    for row in live:
+        if not row.get("minimised"):
+            return str(row["id"]), False
+    if live:
+        return str(live[-1]["id"]), False
+    with _TERMINAL_LOCK:
+        _terminal_reap()
+        tids = list(_TERMINALS.keys())
+    if tids:
+        return tids[-1], False
+    return None, False
+
+
 def terminal_open(params: dict | None = None) -> dict:
     """Spawn one terminal window on the stick's X display as the kiosk user."""
     params = params or {}
@@ -6442,11 +6535,33 @@ def terminal_open(params: dict | None = None) -> dict:
 
 
 def terminal_status() -> dict:
+    """Tracked + orphan StickLLM Terminals (orphans appear after control restart)."""
     with _TERMINAL_LOCK:
         _terminal_reap()
-        wins = [{"id": tid, "title": rec["title"]} for tid, rec in _TERMINALS.items()]
-    wm_on = False
-    if wins:
+        tracked = {tid: {"id": tid, "title": rec["title"]} for tid, rec in _TERMINALS.items()}
+    live_rows = _list_x11_terminals()
+    wm_on = bool(live_rows) or bool(tracked)
+    wins: list[dict] = []
+    seen: set[str] = set()
+    for row in live_rows:
+        tid = str(row["id"])
+        seen.add(tid)
+        wins.append({
+            "id": tid,
+            "title": "Terminal",
+            "page_title": row.get("page_title") or "Terminal",
+            "minimised": bool(row.get("minimised")),
+            "focused": bool(row.get("focused")),
+            "mapped": True,
+            "orphan": bool(row.get("orphan")),
+        })
+    for tid, base in tracked.items():
+        if tid in seen:
+            continue
+        item = dict(base)
+        item["mapped"] = False
+        wins.append(item)
+    if not live_rows and tracked:
         ipc = _wm_ipc()
         if ipc is not None:
             wm = _wm()
@@ -6469,8 +6584,6 @@ def terminal_status() -> dict:
                         "rect": st["rect"],
                         "mapped": True,
                     })
-                else:
-                    w["mapped"] = False
     return {"ok": True, "windows": wins, "max": TERMINAL_MAX, "wm": wm_on}
 
 
@@ -6478,13 +6591,33 @@ def terminal_close(params: dict) -> dict:
     tid = str(params.get("id") or "")
     with _TERMINAL_LOCK:
         rec = _TERMINALS.get(tid)
-        if not rec:
+        if rec:
+            try:
+                os.killpg(rec["proc"].pid, signal.SIGTERM)
+            except OSError:
+                pass
+            _TERMINALS.pop(tid, None)
+            return {"ok": True}
+    ipc = _wm_ipc()
+    if ipc is None:
+        return {"ok": False, "code": 404, "error": "not_found"}
+    wm = _wm()
+    if wm is None:
+        ipc.close()
+        return {"ok": False, "code": 404, "error": "not_found"}
+    try:
+        w = None
+        for cand in wm.windows(ipc):
+            if _terminal_tid_from_window(cand) == tid:
+                w = cand
+                break
+        if not w:
             return {"ok": False, "code": 404, "error": "not_found"}
-        try:
-            os.killpg(rec["proc"].pid, signal.SIGTERM)
-        except OSError:
-            pass
-        _TERMINALS.pop(tid, None)
+        wm.apply(ipc, "close", con_id=w["id"], taskbar_px=48)
+    except (wm.WMError, OSError) as e:
+        return {"ok": False, "code": 409, "error": "wm", "message": str(e)}
+    finally:
+        ipc.close()
     return {"ok": True}
 
 
@@ -6500,8 +6633,6 @@ def terminal_window(params: dict) -> dict:
     with _TERMINAL_LOCK:
         _terminal_reap()
         rec = _TERMINALS.get(tid)
-    if not rec:
-        return {"ok": False, "code": 404, "error": "not_found"}
     if op == "close":
         return terminal_close({"id": tid})
     geo = _clamp_geometry(params.get("geometry")) if op == "place" else None
@@ -6517,8 +6648,17 @@ def terminal_window(params: dict) -> dict:
         return {"ok": False, "code": 200, "error": "wm_unavailable",
                 "message": "The window helper is not installed on this image."}
     try:
-        w = wm.wait_for(ipc, tid, _terminal_owns(tid), timeout=0.5)
+        w = None
+        if rec:
+            w = wm.wait_for(ipc, tid, _terminal_owns(tid), timeout=0.5)
         if not w:
+            for cand in wm.windows(ipc):
+                if _terminal_tid_from_window(cand) == tid:
+                    w = cand
+                    break
+        if not w:
+            if not rec:
+                return {"ok": False, "code": 404, "error": "not_found"}
             raise wm.WMError("window not found")
         res = wm.apply(ipc, op, con_id=w["id"], geo=geo, taskbar_px=_taskbar_px(params))
     except wm.WMError as e:
@@ -6528,6 +6668,328 @@ def terminal_window(params: dict) -> dict:
     finally:
         ipc.close()
     return {"ok": bool(res.get("ok")), "id": tid, "op": op, "window": res.get("window")}
+
+
+def _ssh_password_local() -> str:
+    """Per-boot SSH password from ssh-bootstrap. Never log or return this."""
+    try:
+        return (RUN / "ssh-password.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _terminal_x11_window_id(tid: str) -> int | None:
+    """Numeric X window id for a StickLLM Terminal (tracked or orphan)."""
+    for row in _list_x11_terminals():
+        if str(row.get("id")) == tid:
+            try:
+                return int(row["wid"])
+            except (TypeError, ValueError, KeyError):
+                pass
+    w = _find_terminal_x_window(tid)
+    if w:
+        try:
+            return int(w["id"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _x11_env(user: str | None = None) -> dict:
+    user = user or _kiosk_user()
+    home = f"/home/{user}"
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": home,
+        "USER": user,
+        "LOGNAME": user,
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "DISPLAY": ":0",
+        "XDG_RUNTIME_DIR": f"/run/user/{_kiosk_uid(user)}",
+    }
+    # Explicit XAUTHORITY: without it xclip can hang or fail under runuser.
+    for cand in (f"{home}/.Xauthority", "/run/user/%d/gdm/Xauthority" % _kiosk_uid(user)):
+        if Path(cand).is_file():
+            env["XAUTHORITY"] = cand
+            break
+    return env
+
+
+def _x11_run(argv: list[str], *, input_bytes: bytes | None = None, timeout: float = 5.0):
+    """Run an X11 helper on DISPLAY=:0 as the kiosk user. No secrets in argv."""
+    user = _kiosk_user()
+    cmd = list(argv)
+    if os.geteuid() == 0 and user != "root":
+        try:
+            cmd = _drop_to_user(user) + cmd
+        except OSError as e:
+            return subprocess.CompletedProcess(cmd, 127, b"", str(e).encode())
+    try:
+        return subprocess.run(
+            cmd,
+            input=input_bytes,
+            env=_x11_env(user),
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        # xclip often stays alive as CLIPBOARD owner; caller may treat as ok.
+        return subprocess.CompletedProcess(cmd, 1, getattr(e, "stdout", None) or b"", b"timeout")
+    except OSError as e:
+        return subprocess.CompletedProcess(cmd, 1, b"", str(e).encode())
+
+
+def _x11_clipboard_put(selection: str, data: bytes) -> bool:
+    """Feed CLIPBOARD/PRIMARY. Never kill xclip on timeout (it owns the selection)."""
+    user = _kiosk_user()
+    candidates = (
+        ["xclip", "-selection", selection, "-i", "-quiet"],
+        ["xsel", f"--{selection}", "--input"]
+        if selection == "clipboard"
+        else ["xsel", "--primary", "--input"],
+    )
+    for argv in candidates:
+        if not shutil.which(argv[0]):
+            continue
+        cmd = list(argv)
+        if os.geteuid() == 0 and user != "root":
+            try:
+                cmd = _drop_to_user(user) + cmd
+            except OSError:
+                continue
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                env=_x11_env(user),
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError:
+            continue
+        try:
+            proc.communicate(data, timeout=1.5)
+        except subprocess.TimeoutExpired:
+            # Selection owner process must stay alive — do not kill.
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except OSError:
+                pass
+            return True
+        if proc.returncode == 0:
+            return True
+    return False
+
+
+def _clipboard_selection_equals(selection: str, expected: str) -> bool:
+    """Compare clipboard to expected without logging either value."""
+    if selection == "clipboard":
+        argv = ["xclip", "-selection", "clipboard", "-o"]
+        alt = ["xsel", "--clipboard", "--output"]
+    else:
+        argv = ["xclip", "-selection", "primary", "-o"]
+        alt = ["xsel", "--primary", "--output"]
+    for cmd in (argv, alt):
+        if not shutil.which(cmd[0]):
+            continue
+        r = _x11_run(cmd, timeout=2.0)
+        if r.returncode != 0:
+            continue
+        got = (r.stdout or b"").decode("utf-8", "replace")
+        return got == expected
+    return False
+
+
+def clipboard_set_x11(text: str) -> dict:
+    """Put text on X11 CLIPBOARD and PRIMARY so xfce4-terminal can paste.
+
+    Desk Chromium uses ozone x11, but browser clipboard hand-off is flaky for
+    native terminals; Ctrl+V also does not paste in VTE (need Ctrl+Shift+V).
+    xclip (preferred) or xsel keep ownership until replaced.
+
+    Important: never treat a killed/timed-out xclip as success without verifying
+    the selection — empty CLIPBOARD + Enter at sudo prints "Sorry, try again."
+    """
+    data = str(text or "").encode("utf-8")
+    expected = str(text or "")
+    if not data:
+        return {"ok": False, "code": 400, "error": "empty"}
+    if not Path("/tmp/.X11-unix/X0").is_socket():
+        return {"ok": False, "code": 503, "error": "no_display", "message": "The stick's screen is not running."}
+    selections = []
+    for sel in ("clipboard", "primary"):
+        ok = _x11_clipboard_put(sel, data)
+        if ok:
+            # Brief settle then verify (xclip owner may still be starting).
+            time.sleep(0.05)
+            ok = _clipboard_selection_equals(sel, expected)
+        selections.append(sel if ok else None)
+    if "clipboard" not in selections and "primary" not in selections:
+        return {
+            "ok": False,
+            "code": 503,
+            "error": "no_clipboard",
+            "message": "Could not put text on the stick clipboard (xclip/xsel). Try Copy, then Ctrl+Shift+V in Terminal.",
+        }
+    return {"ok": True, "clipboard": "clipboard" in selections, "primary": "primary" in selections}
+
+
+def terminal_ssh_password_clipboard(params: dict | None = None) -> dict:
+    """Loopback-only: copy the SSH password onto the stick X11 clipboard (no echo)."""
+    del params  # unused; gateway already gated terminal_* to loopback UI
+    pw = _ssh_password_local()
+    if not pw:
+        return {
+            "ok": False,
+            "code": 404,
+            "error": "no_password",
+            "message": "SSH password not ready yet (GRUB Test/Terminal boot, then F10).",
+        }
+    r = clipboard_set_x11(pw)
+    if not r.get("ok"):
+        return r
+    return {
+        "ok": True,
+        "clipboard": bool(r.get("clipboard")),
+        "primary": bool(r.get("primary")),
+        "hint": "ctrl_shift_v",
+        "message": "Password on clipboard — in Terminal press Ctrl+Shift+V (not Ctrl+V).",
+    }
+
+
+def terminal_ssh_password_paste(params: dict | None = None) -> dict:
+    """Loopback-only: copy SSH password to X11, focus Terminal, Ctrl+Shift+V, Enter.
+
+    Same path as a successful manual paste: CLIPBOARD/PRIMARY + Ctrl+Shift+V.
+    Browser click steals focus — re-activate Terminal (XTEST keys, not type
+    --window / XSendEvent) before paste. Does not return or log the password.
+
+    Prefer an existing StickLLM Terminal (including orphans after control
+    restart) so we do not paste into a brand-new shell while sudo waits elsewhere.
+    """
+    params = params or {}
+    pw = _ssh_password_local()
+    if not pw:
+        return {
+            "ok": False,
+            "code": 404,
+            "error": "no_password",
+            "message": "SSH password not ready yet (GRUB Test/Terminal boot, then F10).",
+        }
+    clip = clipboard_set_x11(pw)
+    if not clip.get("ok"):
+        return {
+            "ok": False,
+            "code": int(clip.get("code") or 503),
+            "error": clip.get("error") or "no_clipboard",
+            "message": str(clip.get("message") or "Could not put password on the stick clipboard."),
+        }
+    if not clip.get("clipboard") and not clip.get("primary"):
+        return {
+            "ok": False,
+            "code": 503,
+            "error": "no_clipboard",
+            "message": "Clipboard bridge did not verify. Try Copy, then Ctrl+Shift+V in Terminal.",
+        }
+    tid, opened = _pick_terminal_for_paste()
+    if not tid:
+        opened_res = terminal_open(params)
+        if not opened_res.get("ok"):
+            return opened_res
+        tid = str(opened_res["id"])
+        opened = True
+        time.sleep(0.7)
+    focus = terminal_window({"id": tid, "op": "focus", "taskbar": params.get("taskbar")})
+    # Restore if yield/minimise left it hidden.
+    if focus.get("ok") is False or (isinstance(focus.get("window"), dict) and focus["window"].get("minimised")):
+        terminal_window({"id": tid, "op": "restore", "taskbar": params.get("taskbar")})
+        focus = terminal_window({"id": tid, "op": "focus", "taskbar": params.get("taskbar")})
+    wid = _terminal_x11_window_id(tid)
+    # Re-focus after the desk UI click; do not use type --window (XSendEvent —
+    # VTE ignores it). Activate, settle, then XTEST Ctrl+Shift+V and Enter.
+    focused_ok = False
+    if wid is not None:
+        for _ in range(2):
+            _x11_run(["xdotool", "windowactivate", "--sync", str(wid)], timeout=3.0)
+            _x11_run(["xdotool", "windowfocus", "--sync", str(wid)], timeout=3.0)
+            time.sleep(0.25)
+            act = _x11_run(["xdotool", "getactivewindow"], timeout=2.0)
+            active = (act.stdout or b"").decode("utf-8", "replace").strip()
+            if active == str(wid):
+                focused_ok = True
+                break
+    else:
+        time.sleep(0.35)
+    if wid is not None and not focused_ok:
+        return {
+            "ok": False,
+            "code": 503,
+            "error": "focus_failed",
+            "message": (
+                "Could not focus Terminal. Click the Terminal window (at the sudo "
+                "prompt), then try Paste into Terminal again."
+            ),
+            "id": tid,
+            "opened": opened,
+            "clipboard": True,
+            "window": wid,
+            "focused": False,
+        }
+    time.sleep(0.15)
+    pasted = _x11_run(
+        ["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"],
+        timeout=3.0,
+    )
+    if pasted.returncode != 0:
+        return {
+            "ok": False,
+            "code": 503,
+            "error": "paste_failed",
+            "message": (
+                "Could not paste into Terminal. Click the Terminal window, then try "
+                "Paste into Terminal again."
+            ),
+            "id": tid,
+            "opened": opened,
+            "clipboard": True,
+            "window": wid,
+            "focused": focused_ok or bool(focus.get("ok")),
+        }
+    time.sleep(0.12)
+    entered = _x11_run(
+        ["xdotool", "key", "--clearmodifiers", "Return"],
+        timeout=3.0,
+    )
+    if entered.returncode != 0:
+        return {
+            "ok": False,
+            "code": 503,
+            "error": "enter_failed",
+            "message": (
+                "Password pasted — press Enter in Terminal to confirm "
+                "(auto-Enter failed)."
+            ),
+            "id": tid,
+            "opened": opened,
+            "clipboard": True,
+            "window": wid,
+            "focused": focused_ok or bool(focus.get("ok")),
+            "method": "ctrl_shift_v",
+        }
+    return {
+        "ok": True,
+        "id": tid,
+        "opened": opened,
+        "method": "ctrl_shift_v",
+        "clipboard": True,
+        "focused": focused_ok or bool(focus.get("ok")),
+        "window": wid,
+        "message": "Password pasted into Terminal and Enter sent.",
+    }
 
 
 def _kiosk_uid(user: str) -> int:
@@ -6827,8 +7289,68 @@ def delete_partial_download(path: str) -> dict:
 
 
 
+def _lsblk_field(dev: str, field: str) -> str:
+    """Read one lsblk column for a block device (best-effort)."""
+    try:
+        p = subprocess.run(
+            ["lsblk", "-no", field, str(dev)],
+            capture_output=True, text=True, timeout=4, check=False,
+        )
+        for line in (p.stdout or "").splitlines():
+            return line.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _boot_live_disk_name() -> str:
+    """Kernel name of the live USB disk (e.g. sdb), or empty."""
+    for tgt in ("/run/live/medium", "/lib/live/mount/medium"):
+        try:
+            p = subprocess.run(
+                ["findmnt", "-n", "-o", "SOURCE", "--target", tgt],
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+        except Exception:
+            continue
+        src = (p.stdout or "").strip().splitlines()
+        src = src[0].strip() if src else ""
+        if not src:
+            continue
+        pk = _lsblk_field(src, "PKNAME") or _lsblk_field(src, "NAME")
+        if pk:
+            return pk.split()[0]
+    return ""
+
+
+def _mount_source_kind(mount_path: str) -> str:
+    """Classify a mounted host path as ssd or usb (never the boot stick)."""
+    try:
+        p = subprocess.run(
+            ["findmnt", "-n", "-o", "SOURCE", "--target", str(mount_path)],
+            capture_output=True, text=True, timeout=4, check=False,
+        )
+        src = (p.stdout or "").strip().splitlines()
+        src = src[0].strip() if src else ""
+    except Exception:
+        src = ""
+    if not src:
+        return "ssd"
+    rm = _lsblk_field(src, "RM") in ("1", "true", "True")
+    tran = (_lsblk_field(src, "TRAN") or "").lower()
+    if rm or tran == "usb":
+        return "usb"
+    return "ssd"
+
+
 def list_storage_targets() -> dict:
-    """0.6.3: drives for the setup wizard (mounted + unmounted internal disks)."""
+    """Drives for the setup wizard: stick DATA, mounted host volumes, and
+    unmounted ordinary filesystems (internal SSD *and* external USB HDD).
+
+    Never formats. Excludes the live boot stick's partitions from Mount.
+    USB/HOTPLUG disks are offered (lab STICKLLM-EXT / Seagate) — older code
+    skipped anything with RM=1 or HOTPLUG=1, so USB HDDs never appeared.
+    """
     drives = []
     seen = set()
     # Stick DATA first-class
@@ -6846,7 +7368,7 @@ def list_storage_targets() -> dict:
             "suggested_docker": str(MNT / "stickllm-docker"),
         })
         seen.add(str(MNT))
-    # Mounted host paths
+    # Mounted host paths (SSD or USB HDD under /mnt/stickllm-host)
     host = Path("/mnt/stickllm-host")
     if _path_is_dir(host):
         try:
@@ -6857,11 +7379,13 @@ def list_storage_targets() -> dict:
                 if p in seen:
                     continue
                 seen.add(p)
+                kind = _mount_source_kind(p)
+                kind_label = "USB drive" if kind == "usb" else "Host SSD"
                 drives.append({
                     "id": f"host:{ent.name}",
-                    "label": ent.name,
+                    "label": f"{kind_label} — {ent.name}",
                     "path": p,
-                    "kind": "ssd",
+                    "kind": kind,
                     "mounted": True,
                     "free_gb": round(_free_bytes(ent) / (1024**3), 1),
                     "writable": os.access(p, os.W_OK),
@@ -6871,38 +7395,89 @@ def list_storage_targets() -> dict:
                 })
         except OSError:
             pass
-    # Unmounted internal block devices (never format) — offer mount point
+    # Unmounted ordinary FS — host SSD and external USB (never format, never boot stick)
     unmounted = []
+    boot_disk = _boot_live_disk_name()
     try:
         p = subprocess.run(
-            ["lsblk", "-J", "-o", "NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT,RM,HOTPLUG,MODEL,SERIAL,PKNAME"],
+            ["lsblk", "-J", "-b", "-o",
+             "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,RM,HOTPLUG,MODEL,SERIAL,PKNAME,TRAN,LABEL,PARTLABEL"],
             capture_output=True, text=True, timeout=8, check=False,
         )
         doc = json.loads(p.stdout or "{}")
     except Exception:
         doc = {}
-    def walk(nodes, parent_rm=False):
+    ordinary_fs = ("ext4", "ext3", "ext2", "xfs", "btrfs", "ntfs", "ntfs3", "exfat", "vfat", "f2fs")
+
+    def walk(nodes, *, disk_name: str, disk_model: str, disk_tran: str, parent_usb: bool):
         for n in nodes or []:
-            rm = bool(n.get("rm")) or bool(n.get("hotplug")) or parent_rm
             kids = n.get("children") or []
-            if n.get("type") == "part" and not n.get("mountpoint") and n.get("fstype") in ("ext4", "xfs", "btrfs", "ntfs", "exfat", "vfat"):
-                if not rm and n.get("fstype") not in ("crypto_LUKS",):
+            rm = bool(n.get("rm")) or bool(n.get("hotplug"))
+            tran = str(n.get("tran") or disk_tran or "").strip().lower()
+            is_usb = parent_usb or rm or tran == "usb"
+            if n.get("type") == "part" and not n.get("mountpoint"):
+                ft = str(n.get("fstype") or "").strip()
+                if ft in ordinary_fs and ft not in ("crypto_LUKS", "BitLocker"):
                     name = str(n.get("name") or "")
+                    pk = str(n.get("pkname") or disk_name or "").strip()
+                    # Never Mount partitions on the live boot USB.
+                    if boot_disk and (pk == boot_disk or name.startswith(boot_disk)):
+                        walk(kids, disk_name=disk_name, disk_model=disk_model,
+                             disk_tran=disk_tran, parent_usb=is_usb)
+                        continue
+                    # Tiny EFI/system vfat — don't offer
+                    try:
+                        size_b = int(n.get("size") or 0)
+                    except (TypeError, ValueError):
+                        size_b = 0
+                    plab = str(n.get("partlabel") or "").upper()
+                    if ft == "vfat" and (size_b < 2 * 1024**3 or "EFI" in plab or "ESP" in plab):
+                        walk(kids, disk_name=disk_name, disk_model=disk_model,
+                             disk_tran=disk_tran, parent_usb=is_usb)
+                        continue
+                    model = str(n.get("model") or disk_model or name).strip()
+                    vol = str(n.get("label") or n.get("partlabel") or "").strip()
+                    size_gb = round(size_b / (1024**3), 1) if size_b else None
+                    size_s = f"{size_gb} GB" if size_gb is not None else (str(n.get("size") or "?") + " B")
+                    kind = "usb_unmounted" if is_usb else "ssd_unmounted"
+                    kind_label = "USB" if is_usb else "Host SSD"
+                    bits = [kind_label, model]
+                    if vol:
+                        bits.append(vol)
+                    bits.append(f"{ft}, {size_s}, unmounted")
+                    # Prefer label in mount leaf so STICKLLM-EXT is obvious
+                    leaf = vol or model or name
+                    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", leaf).strip("-_")[:40] or name
                     unmounted.append({
                         "id": f"blk:{name}",
-                        "label": f"{n.get('model') or parent_model or name} ({n.get('size') or '?'})",
-                        "device": f"/dev/{name}",
-                        "fstype": n.get("fstype"),
-                        "kind": "ssd_unmounted",
+                        "label": " — ".join(bits[:2]) + f" ({', '.join(bits[2:])})",
+                        "device": n.get("path") or f"/dev/{name}",
+                        "fstype": ft,
+                        "kind": kind,
                         "mounted": False,
                         "free_gb": None,
-                        "suggested_mount": f"/mnt/stickllm-host/{name}",
+                        "size_gb": size_gb,
+                        "model": model,
+                        "part_label": vol,
+                        "suggested_mount": f"/mnt/stickllm-host/{safe}-{name}"[:72],
                     })
-            walk(kids, rm)
-    parent_model = ""
+            walk(kids, disk_name=disk_name, disk_model=disk_model,
+                 disk_tran=disk_tran, parent_usb=is_usb)
+
     for disk in doc.get("blockdevices") or []:
-        parent_model = str(disk.get("model") or disk.get("name") or "")
-        walk([disk], bool(disk.get("rm")) or bool(disk.get("hotplug")))
+        if str(disk.get("type") or "") != "disk":
+            continue
+        dname = str(disk.get("name") or "")
+        if boot_disk and dname == boot_disk:
+            continue  # boot stick: DATA already listed via MNT
+        dmodel = str(disk.get("model") or dname or "").strip()
+        dtran = str(disk.get("tran") or "").strip().lower()
+        dusb = bool(disk.get("rm")) or bool(disk.get("hotplug")) or dtran == "usb"
+        walk([disk], disk_name=dname, disk_model=dmodel, disk_tran=dtran, parent_usb=dusb)
+    # Prefer internal SSD mounts first in UI order
+    kind_rank = {"ssd": 0, "usb": 1, "stick": 2}
+    drives.sort(key=lambda d: (kind_rank.get(str(d.get("kind") or ""), 5), str(d.get("label") or "")))
+    unmounted.sort(key=lambda u: (0 if u.get("kind") == "ssd_unmounted" else 1, str(u.get("label") or "")))
     return {"ok": True, "drives": drives, "unmounted": unmounted,
             "active_vault": read_json(RUN / "vault.json"),
             "preferred_models": str(get_preferred_models_dir() or ""),
@@ -7035,6 +7610,10 @@ def handle(action: str, params: dict) -> dict:
         return terminal_window(params)
     if action == "terminal_close":
         return terminal_close(params)
+    if action == "terminal_ssh_password_clipboard":
+        return terminal_ssh_password_clipboard(params)
+    if action == "terminal_ssh_password_paste":
+        return terminal_ssh_password_paste(params)
     if action == "web_mode" or action == "web_mode_status":
         return web_mode_status()
     if action == "web_mode_set" or action == "set_web_mode":

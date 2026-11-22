@@ -56,19 +56,23 @@ linked against Xfce or Xorg. Licence texts ship as
 
 | Package (Debian bookworm) | Upstream | Licence |
 |---|---|---|
-| xfwm4, xfce4-panel, xfce4-session, xfce4-settings, xfdesktop4, xfconf (and their libxfce4ui/libxfce4util/garcon/exo libraries) | https://xfce.org | GPL-2+ (programs), LGPL-2+ (libraries) |
+| xfwm4, xfce4-panel, xfce4-session, xfce4-settings, xfdesktop4, xfconf, xfce4-terminal (and their libxfce4ui/libxfce4util/garcon/exo/vte libraries) | https://xfce.org | GPL-2+ (programs), LGPL-2+ (libraries) |
+| xterm | https://invisible-island.net/xterm/ | MIT-style |
 | xserver-xorg-core, xserver-xorg-input-libinput, x11-xserver-utils, x11-utils | https://x.org | MIT/X11 and similar permissive licences |
 | wmctrl | https://sites.google.com/site/tstyblo/wmctrl | GPL-2+ |
 | xdotool | https://github.com/jordansissel/xdotool | BSD-3-Clause |
+| xclip | https://github.com/astrand/xclip | GPL-2+ |
 | dbus-x11 | https://www.freedesktop.org/wiki/Software/dbus/ | AFL-2.1 or GPL-2+ |
 | adwaita-icon-theme | https://gitlab.gnome.org/GNOME/adwaita-icon-theme | LGPL-3 or CC-BY-SA-3.0 |
 
 These are used as unmodified Debian binaries, with their source available from
-the Debian archive (`apt-get source <package>`). Xfce's recommended packages
-(xfce4-terminal, thunar, xfce4-appfinder, ...) are **not** installed. 0.5.7
-removed sway, swaybg, cage, weston and wlroots from the image. 0.5.8 adds
-back `cage` (MIT, https://github.com/cage-kiosk/cage) with `wlroots` (MIT) and
-`xwayland` (MIT) for the fallback browser kiosk only, and `kbd` (GPL-2+) and
+the Debian archive (`apt-get source <package>`). Xfce's other recommended packages
+(thunar, xfce4-appfinder, ...) are **not** installed. 0.8.3 adds `xfce4-terminal`
+and `xterm` for the Apps desk Terminal icon, plus `xclip` so Devices Copy can
+bridge the SSH password onto X11 CLIPBOARD/PRIMARY for Terminal paste. 0.5.7 removed sway, swaybg, cage,
+weston and wlroots from the image. 0.5.8 adds back `cage` (MIT,
+https://github.com/cage-kiosk/cage) with `wlroots` (MIT) and `xwayland` (MIT)
+for the fallback browser kiosk only, and `kbd` (GPL-2+) and
 `console-setup-linux` (GPL-2+; Terminus font, OFL-1.1) for the console font.
 sway stays removed.
 

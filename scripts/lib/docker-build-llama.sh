@@ -91,6 +91,10 @@ link_soname libllama-common.so.1.0.0 libllama-common.so
 link_soname libggml.so.1.0.0 libggml.so
 link_soname libggml-base.so.1.0.0 libggml-base.so
 link_soname libmtmd.so.1.0.0 libmtmd.so
+# register.so / dynamic loader often want libggml-cuda.so.0; tree may ship only .so
+if [[ -f "$OUT_LIB/libggml-cuda.so" && ! -e "$OUT_LIB/libggml-cuda.so.0" ]]; then
+  ln -sfn libggml-cuda.so "$OUT_LIB/libggml-cuda.so.0"
+fi
 if [[ ! -e "$OUT_LIB/libggml-cpu.so" ]]; then
   for cand in libggml-cpu-x64.so libggml-cpu-haswell.so libggml-cpu-zen4.so libggml-cpu-sse42.so; do
     if [[ -f "$OUT_LIB/$cand" ]]; then

@@ -695,8 +695,13 @@ cmd_run_container() {
   start_step starting 5 "starting the container"
   stop_container
   # The status turns "running" when 127.0.0.1:5099 answers (gateway health
-  # check); until then the Agent window shows step 6 with a retry.
-  ( sleep 4; start_step health 6 "waiting for Agent Zero to answer" ) 9>&- &
+  # check); until then the Agent window shows step 6 with a retry. First boot
+  # can spend minutes on overlay/+x settle, scipy repair, and one-shot package
+  # downloads (framework deps / spaCy) before uvicorn answers — surface that.
+  (
+    sleep 4
+    start_step health 6 "waiting for Agent Zero to answer (first start can take a few minutes)"
+  ) 9>&- &
   local DNS_ARGS=()
   mapfile -t DNS_ARGS < <(dns_args)
   # Own bridge: llama relay and the internet only. UI is published on loopback.
@@ -802,13 +807,32 @@ cmd_run_container() {
   fi
   # Keep unit alive; restart container in-place if it exits (do not tear down dockerd).
   (
-    for _i in $(seq 1 90); do
+    for _i in $(seq 1 120); do
       if curl -sf --max-time 2 http://127.0.0.1:5099/api/health >/dev/null \
         || curl -sf --max-time 2 http://127.0.0.1:5099/ >/dev/null; then
         "$PYBIN" "$LIB" write-status --state running --image_present true --low_space false \
           --message "Agent" >/dev/null || true
         break
       fi
+      # Prefer a real init line over a blank "waiting…" so first-boot feels alive.
+      detail=""
+      if [[ -f /run/stickllm/a0-init.log ]]; then
+        detail="$(
+          grep -E 'Permission denied|repairing scipy|Updating framework|Local TTS|Preparing web|Initializing Agent|Starting UI|Uvicorn running|Agent Zero is running|a0-entrypoint .* starting' \
+            /run/stickllm/a0-init.log 2>/dev/null \
+            | tail -n 1 \
+            | sed 's/\x1b\[[0-9;]*m//g' \
+            | tr -d '\r' \
+            | cut -c1-140
+        )"
+      fi
+      if [[ -z "$detail" ]]; then
+        detail="waiting for Agent Zero to answer (first start can take a few minutes)"
+      fi
+      "$PYBIN" "$LIB" write-status --state starting --phase health \
+        --progress "$("$PYBIN" "$LIB" install-progress health 0)" --step 6 --steps 6 \
+        --image_present true --low_space false \
+        --message "Starting Agent Zero… step 6 of 6: ${detail}" >/dev/null || true
       sleep 2
     done
   ) 9>&- &

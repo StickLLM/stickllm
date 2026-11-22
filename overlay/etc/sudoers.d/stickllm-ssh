@@ -1,0 +1,3 @@
+# Installed on stickllm.ssh boots (Terminal / Test). Password required — not NOPASSWD.
+# stickllm-ssh-bootstrap also writes this; stickllm-console-setup removes it when SSH is off.
+stickllm ALL=(ALL:ALL) ALL

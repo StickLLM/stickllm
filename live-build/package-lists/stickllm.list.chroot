@@ -71,6 +71,9 @@ x11-xserver-utils
 x11-utils
 wmctrl
 xdotool
+# 0.8.3: bridge desk UI Copy → X11 CLIPBOARD/PRIMARY for xfce4-terminal paste
+# (Ctrl+Shift+V). Browser clipboard alone is unreliable across desk ↔ VTE.
+xclip
 dbus-x11
 xfwm4
 xfce4-panel

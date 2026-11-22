@@ -1,12 +1,15 @@
-## Unreleased — pending for v0.8.3
+## 0.8.3 - Stick-swap punch list baked
 
 See [docs/NEXT-0.8.3.md](docs/NEXT-0.8.3.md).  
 **Stick-swap hotfix punch list:** [docs/HOTFIX-AFTER-STICK-SWAP.md](docs/HOTFIX-AFTER-STICK-SWAP.md)
-(re-apply live-only fixes after flashing a new stick; notes what is already in v0.8.2).
+(re-apply live-only fixes after flashing a clean v0.8.2 stick; these rows are in the v0.8.3 ISO).
 
 - **Apps desk Terminal icon.** Desk/Apps icon next to Files opens a real Linux
   terminal on the stick (`stickllm-control terminal_open`: xfce4-terminal →
   kitty → xterm). Bake packages `xfce4-terminal` + `xterm`. Loopback UI only.
+- **Terminal minimises to StickLLM bar.** Desk Terminal windows are tracked like
+  Browser (`terminal_status` / `terminal_window`, WM_CLASS `stickllm-terminal-<id>`)
+  so the StickLLM taskbar can minimise, restore, maximise, and close them.
 - **XFCE Desktop Terminal launcher.** Trusted `~/Desktop/Terminal.desktop` for
   the kiosk user (planted by `stickllm-kiosk` / `stickllm-xfce-session` from
   `usr/local/share/stickllm/desktop/`). StickLLM web desk remains the on-screen
@@ -17,6 +20,9 @@ See [docs/NEXT-0.8.3.md](docs/NEXT-0.8.3.md).
 - **Agent Zero auto-embeds phone/image attachments.** A0 kept uploads (e.g. StickDroid `39.jpg`) as filename-only attachments and answered “can’t analyze images” even with chat `vision: true`. `stickllm_apps` monologue_start hook `_20_stickllm_attach_images` injects `image_url` parts into history before the first LLM call so the VL llama endpoint sees the pixels.
 - **Chat vision attach budget.** Fixed `IMAGE_TOKEN_ESTIMATE` so real photos are not dropped as oversized text tokens. Lab-hotfixed; needs bake confirmation.
 - **Experimental UI copy cleanup.** Remove “3 November 2026” / Debian-13 scare wording from Experimental tab and offer notes; keep OS-major gating without scare copy. Lab: `out/_hotfix_exp_copy.py`.
+- **SSH password paste into Terminal.** Devices / F10 **Copy** bridges the per-boot password onto stick X11 CLIPBOARD + PRIMARY (`xclip`). **Paste into Terminal** is one-click: same clipboard bridge, re-focus Terminal (browser click steals focus), **Ctrl+Shift+V**, then **Enter** — not `xdotool type --window` (VTE ignores XSendEvent). Clipboard path verifies the selection (do not treat a killed/timed-out `xclip` as success — that caused sudo **Sorry, try again.**). Paste prefers an existing/orphan Terminal after control restart. Desk WinBox focus yields native Terminal (`yieldNative`) because the kiosk window is `_NET_WM_STATE_BELOW`. Test/Terminal boots also get password-required `stickllm ALL=(ALL:ALL) ALL` (`/etc/sudoers.d/stickllm-ssh` from bootstrap; helpers stay NOPASSWD). Bake `xclip`. Lab: `out/_hotfix_terminal_paste.py`.
+- **Setup Storage: USB HDD / Choose a different drive.** First-boot `storage_targets` no longer skips `RM`/`HOTPLUG` disks, so external USB hard drives (lab Seagate / `STICKLLM-EXT`) appear as Mount targets alongside internal SSDs. Clearer labels, Refresh, Mount stays on the Storage step, vault step has **Choose a different drive**. Never formats. Lab: `out/_hotfix_setup_usb_storage.py`.
+- **Agent Zero first-start looked hung.** Fresh stick spent ~3 minutes before the Agent UI answered: entrypoint crash-looped on `/usr/bin/python3: Permission denied` while overlay/+x settled (bash was already executable so seed chmod was skipped), then first-run framework + spaCy downloads via egress before uvicorn. Entrypoint prefers `/opt/venv-a0/bin/python` with a short wait; seed exec check includes python; health step shows `a0-init.log` progress. Second open is fast. Lab: `out/_hotfix_a0_startup.py`.
 
 ## 0.8.2 - Experimental engines wired (NInfer / Strata Set default)
 - **Set default / Use wired.** Confirm switches StickLLM chat, `/health`, and Agent Zero off llama.cpp onto downloaded **NInfer-all** or **Strata** on `127.0.0.1:8080` (`stickllm-exp-engine.service` + `stickllm-experimental-serve`). Extract multipart NInfer / AppImage Strata on switch. **Use llama.cpp** restores llama-server. Active engine persisted under `/var/lib/stickllm/experimental/active-engine.json`.

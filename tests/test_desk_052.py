@@ -24,8 +24,8 @@ def test_app_tab_link_fallback_uses_catalog():
 
 
 def test_starter_icons_stay_static():
-    html = (UI / "index.html").read_text()
-    for sid in ("files", "notepad", "calculator", "monitor"):
+    html = (UI / "index.html").read_text(encoding="utf-8")
+    for sid in ("files", "terminal", "notepad", "calculator", "monitor"):
         assert f'data-starter="{sid}"' in html
 
 

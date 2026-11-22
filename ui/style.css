@@ -390,6 +390,11 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:2
 .pairCard .big{font-size:17px;color:var(--accent)}
 .code{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding-left:20px;border-left:1px solid var(--line)}
 .code b{font-size:30px;letter-spacing:.08em;font-weight:600}
+.sshDetails{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);width:100%}
+.sshDetails .mono{font-size:13px;word-break:break-all;margin:6px 0}
+.sshPassRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 0}
+.sshPassRow .mono{margin:0;font-size:13px;word-break:break-all}
+.sshPassRow b{font-weight:600;letter-spacing:0;font-size:13px}
 .sticklinkPairCard{align-items:flex-start}
 .pairQrBlock{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:200px}
 .pairQr{display:inline-block;padding:10px;background:#fff;border-radius:8px;line-height:0;min-height:200px;min-width:200px;box-sizing:border-box}

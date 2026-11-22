@@ -18,4 +18,16 @@ chmod 600 "$RUN/ssh-password.txt"
 rm -f /etc/stickllm/ssh-password.txt 2>/dev/null || true
 # Never leave a lab empty-password sshd drop-in from older WIP trees.
 rm -f /etc/ssh/sshd_config.d/99-stickllm-test-empty.conf 2>/dev/null || true
+# Terminal/Test: allow password sudo for real shell work (helpers stay NOPASSWD).
+# Not NOPASSWD:ALL — uses the per-boot password shown on READY / F10.
+umask 022
+cat >/etc/sudoers.d/stickllm-ssh <<'EOF'
+# Installed by stickllm-ssh-bootstrap (stickllm.ssh boots only). Password required.
+stickllm ALL=(ALL:ALL) ALL
+EOF
+chmod 440 /etc/sudoers.d/stickllm-ssh
+if ! visudo -cf /etc/sudoers.d/stickllm-ssh >/dev/null 2>&1; then
+  rm -f /etc/sudoers.d/stickllm-ssh
+  echo "stickllm-ssh-bootstrap: WARNING stickllm-ssh sudoers rejected" >&2
+fi
 echo "stickllm-ssh-bootstrap: password written to $RUN/ssh-password.txt" >&2

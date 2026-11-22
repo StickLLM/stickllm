@@ -641,12 +641,27 @@ def repair_reference_store(seed_image: Path, root_image: Path) -> list[str]:
     return healed
 
 
+def _layer_file_executable(path: Path) -> bool:
+    """True when any owner/group/other execute bit is set (Linux seed chmod)."""
+    try:
+        return bool(path.stat().st_mode & 0o111)
+    except OSError:
+        return False
+
+
 def seed_layers_executable(seed: Path | None = None) -> bool:
-    """False when squashfs/NTFS bake stripped +x from layer binaries (bash 644)."""
+    """False when squashfs/NTFS bake stripped +x from layer binaries (bash 644).
+
+    Also require a usable python interpreter when present. Checking bash alone
+    let first-boot Agent Zero crash-loop on ``/usr/bin/python3: Permission
+    denied`` while bash was already +x — the desk looked hung for minutes.
+    """
     seed = seed or SEED_DIR
     overlay = seed / "overlay2"
     if not overlay.is_dir():
         return False
+    bash_ok: bool | None = None
+    python_ok: bool | None = None
     try:
         for ent in overlay.iterdir():
             if ent.name == "l" or not ent.is_dir():
@@ -654,10 +669,35 @@ def seed_layers_executable(seed: Path | None = None) -> bool:
             for rel in ("diff/usr/bin/bash", "diff/bin/bash"):
                 bash = ent / rel
                 if bash.is_file():
-                    return os.access(bash, os.X_OK)
+                    bash_ok = _layer_file_executable(bash) or bool(bash_ok)
+            for rel in (
+                "diff/usr/bin/python3.13",
+                "diff/usr/bin/python3.12",
+                "diff/usr/bin/python3",
+                "diff/opt/venv-a0/bin/python",
+            ):
+                py = ent / rel
+                if py.is_file() or py.is_symlink():
+                    # Follow symlink to the real binary when it exists in-tree.
+                    target = py
+                    try:
+                        if py.is_symlink():
+                            target = (py.parent / os.readlink(py)).resolve()
+                    except OSError:
+                        target = py
+                    python_ok = _layer_file_executable(target if target.is_file() else py) or bool(
+                        python_ok
+                    )
     except OSError:
         return False
     # No bash found — treat as OK so we do not force a useless materialize.
+    if bash_ok is None:
+        return True
+    if not bash_ok:
+        return False
+    # Python missing from layers is fine; python present but not executable is not.
+    if python_ok is False:
+        return False
     return True
 
 
