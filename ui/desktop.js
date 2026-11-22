@@ -34,7 +34,8 @@
     // 0.6.5: one Agent Zero window (legacy StickLLM Chat chrome + icon retired).
     chat: { title: "Agent Zero", w: 1180, h: 800 },
     browser: { title: "Browser", w: 1180, h: 780 },
-    // 0.8.3: real Linux terminal on the stick screen (xfce4-terminal / kitty / xterm).
+    // 0.8.3: real Linux terminal on the stick screen; tracked on the StickLLM
+    // taskbar like Browser (minimise / restore via stickllm-control).
     terminal: { title: "Terminal", w: 900, h: 560 },
     agent: { title: "Agent Zero", w: 1180, h: 800 },
     store: { title: "App Store", w: 1000, h: 700 },
@@ -211,23 +212,25 @@
       const b = e.target.closest(".taskBtn");
       if (b && b.classList.contains("taskExt")) {
         // Like any taskbar: minimised -> restore, front -> minimise, else bring to front.
-        browserOp(b.dataset.ext, "toggle");
+        const kind = b.dataset.kind || "browser";
+        if (kind === "terminal") terminalOp(b.dataset.ext, "toggle");
+        else browserOp(b.dataset.ext, "toggle");
         return;
       }
       if (b && wm) {
-        // 0.6.2: a Chrome window sits above the whole desktop page, so a
-        // "focused" app window behind it is not really in front. Raise it
-        // (minimise the browser windows) instead of minimising it.
-        if (browserCovers()) { yieldBrowser(); wm.focus(b.dataset.app); }
+        // Native X11 windows (Browser / Terminal) sit above the desktop page,
+        // so a "focused" WinBox behind them is not really in front. Raise it
+        // (minimise the native windows) instead of minimising it.
+        if (nativeCovers()) { yieldNative(); wm.focus(b.dataset.app); }
         else wm.taskbarClick(b.dataset.app);
       }
     });
-    // Right-click a browser button: Restore / Minimise / Maximise / Close.
+    // Right-click a Browser/Terminal button: Restore / Minimise / Maximise / Close.
     tasks.addEventListener("contextmenu", (e) => {
       const b = e.target.closest(".taskBtn.taskExt");
       if (!b) return;
       e.preventDefault();
-      showBrowserMenu(b);
+      showExtMenu(b);
     });
     const tray = el("div", "tray");
     tray.id = "deskTray";
@@ -772,6 +775,7 @@
           b.type = "button";
           b.dataset.app = key;
           b.dataset.ext = String(bw.id || "");
+          b.dataset.kind = "browser";
           b.appendChild(iconFor("browser"));
           b.appendChild(el("span", "taskLabel"));
           ui.tasks.appendChild(b);
@@ -783,6 +787,27 @@
         b.classList.toggle("min", !!bw.minimised);
         b.setAttribute("aria-pressed", String(!!bw.focused && !bw.minimised));
         b.title = label + (bw.minimised ? " (minimised) \u2014 click to restore" : bw.focused ? " \u2014 click to minimise" : " \u2014 click to bring to front") + " \u00b7 right-click for more";
+      });
+      terminalWins.forEach((tw, j) => {
+        const key = "term:" + (tw.id || j);
+        let b = have.get(key);
+        if (!b) {
+          b = el("button", "taskBtn taskExt");
+          b.type = "button";
+          b.dataset.app = key;
+          b.dataset.ext = String(tw.id || "");
+          b.dataset.kind = "terminal";
+          b.appendChild(iconFor("terminal"));
+          b.appendChild(el("span", "taskLabel"));
+          ui.tasks.appendChild(b);
+        }
+        have.delete(key);
+        const label = tw.page_title || tw.title || "Terminal";
+        b.querySelector(".taskLabel").textContent = label;
+        b.classList.toggle("active", !!tw.focused && !tw.minimised);
+        b.classList.toggle("min", !!tw.minimised);
+        b.setAttribute("aria-pressed", String(!!tw.focused && !tw.minimised));
+        b.title = label + (tw.minimised ? " (minimised) \u2014 click to restore" : tw.focused ? " \u2014 click to minimise" : " \u2014 click to bring to front") + " \u00b7 right-click for more";
       });
       have.forEach((b) => b.remove());
       document.body.classList.toggle("deskHasActive", !!wm.activeId());
@@ -948,13 +973,13 @@
     if (!on || !wm) return false;
     const wid = winIdFor(id);
     if (!wm.has(wid)) return false;
-    if (browserCovers()) yieldBrowser();
+    if (nativeCovers()) yieldNative();
     return wm.focus(wid);
   }
   function openApp(id) {
     if (!on || !wm) return null;
-    // 0.6.2: opening/raising an app must bring it above any Chrome window.
-    if (browserCovers()) yieldBrowser();
+    // Opening/raising a WinBox app must bring it above Browser / Terminal.
+    if (nativeCovers()) yieldNative();
     const api = appApi();
     if (id === CHAT) {
       // Wizard / mid vault-create owns the screen — do not open A0 yet.
