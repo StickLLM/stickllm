@@ -65,7 +65,7 @@ rows, skip those pushes — still run every **Verify** command once.
 | 4 | **A0 vision follows mmproj** | `_hotfix_a0_vision.py` then `_hotfix_a0_vision_flag.py` | `grep -n _model_vision /usr/local/lib/stickllm_agent.py`; after VL load: `stickllm-agent sync-model`; preset/plugin `vision: true` |
 | 5 | **A0 phone/image attach hook** | same as #4 (writes `_20_stickllm_attach_images`) | `grep -n stickllm_attach_images /usr/local/lib/stickllm_agent.py`; upload photo in A0 → model describes it; `tests/test_agent_zero.py` |
 | 6 | **A0 first-start crash-loop / health progress** | `_hotfix_a0_startup.py` | `grep -n a0_python /usr/local/bin/stickllm-agent-entrypoint`; Open Agent → Waiting shows real init lines; no multi-minute `python3: Permission denied` loop in docker logs |
-| 7 | **Apps desk Terminal icon** | `_hotfix_terminal_icon.py` | Desk Terminal next to Files/Browser; `grep -n terminal_open /usr/local/bin/stickllm-control`; packages `xfce4-terminal`/`xterm` installed |
+| 7 | **Apps desk Terminal icon** | `_hotfix_terminal_icon.py` | Desk Terminal next to Files/Browser; `grep -n terminal_open /usr/local/bin/stickllm-control`; packages `xfce4-terminal`/`xterm` installed (**v0.8.2 live often lacks them — `apt-get install -y xfce4-terminal xterm` or Terminal icon returns `no_terminal`**) |
 | 8 | **Terminal → StickLLM taskbar** | `_hotfix_terminal_taskbar.py` | Open Terminal → taskbar button; minimise/restore; `grep -n terminal_status /usr/local/bin/stickllm-control` |
 | 9 | **XFCE Desktop Terminal launcher** | `_hotfix_terminal_icon.py` (same push) | `test -f /usr/local/share/stickllm/desktop/Terminal.desktop` and `~/Desktop/Terminal.desktop` |
 | 10 | **SSH password Copy button** | `_hotfix_ssh_copy.py` | Devices / F10: **Copy** next to password; toast “Password copied” (do not print password) |
@@ -113,6 +113,7 @@ rows, skip those pushes — still run every **Verify** command once.
 | 41 | **Claim / keep `STICKLLM-DATA`** | Settings → Claim USB free space | `lsblk` shows label; `/mnt/stickllm-data` or stick data mount |
 | 42 | **Mount host / Seagate / `STICKLLM-EXT`** | Storage → Mount (never format host disks) | `/mnt/stickllm-host/…` present; Find models sees GGUFs |
 | 43 | **Vault attach / unlock** | `stickllm-vault attach …` or wizard; Unlock | `/api/health` vault `unlocked`; never Create over existing `stickllm-vault.img` |
+| 43b | **Load a VL model** (else chat/A0 `vision: false`) | Models → Activate Qwen3-VL-8B (or VL-7B) from EXT/DATA + matching mmproj | `/api/health` `connect.vision=true`; llama cmdline has `--mmproj` family match; then `stickllm-agent sync-model` |
 
 ### D. STICKLINK / Method C (optional lab — separate track)
 
@@ -129,9 +130,11 @@ rows, skip those pushes — still run every **Verify** command once.
 
 | Script | Role |
 |--------|------|
-| `out/_run_stick_swap_hotfixes.py` | Ordered MUST push (#4–17 subset + A0 open); refreshes `s60pw` from boot-photo candidates |
+| `out/_run_stick_swap_hotfixes.py` | Ordered MUST push (#1 CUDA + #4–17 + A0 open/startup); refreshes `s60pw` from boot-photo candidates |
 | `out/_finish_stick_hotfixes.py` | Bulk stage overlay UI/control/convert/gateway + sudoers-ssh/helpers via `sudo -S` |
+| `out/_fix_helpers_sudoers.py` | Repair `/etc/sudoers.d/zz-stickllm-helpers` so `sudo -n stickllm-hotfix` works |
 | `out/_audit_hotfix_checklist.py` | Read-only marker dump on stick (redact passwords from any saved log) |
+| `out/_verify_stick_swap_table.py` | Emit results markdown table for §5 |
 
 ---
 
