@@ -160,7 +160,10 @@ AA_GGUF_1="qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
 AA_GGUF_2="qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"
 AA_SHA_1="dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db"
 AA_SHA_2="539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a"
-mkdir -p config/includes.chroot/opt/stickllm/models/appagent
+# Per-part mkdir: lb clean / Windows bind mounts can drop the dest dir between
+# the two split GGUF copies (part1 OK then part2 "No such file or directory").
+AA_DEST_DIR="config/includes.chroot/opt/stickllm/models/appagent"
+mkdir -p "$AA_DEST_DIR"
 for pair in "${AA_GGUF_1}|${AA_SHA_1}" "${AA_GGUF_2}|${AA_SHA_2}"; do
   f="${pair%%|*}"
   sha="${pair##*|}"
@@ -169,14 +172,14 @@ for pair in "${AA_GGUF_1}|${AA_SHA_1}" "${AA_GGUF_2}|${AA_SHA_2}"; do
     exit 1
   fi
   echo "[stickllm] bake base model ${f}…"
-  # install -m 644: never inherit umask/source mode (stickllm-llama is not root).
-  install -m 644 "/stickllm/models/appagent/${f}" \
-    "config/includes.chroot/opt/stickllm/models/appagent/${f}"
-  echo "${sha}  config/includes.chroot/opt/stickllm/models/appagent/${f}" | sha256sum -c -
+  mkdir -p "$AA_DEST_DIR"
+  # -D creates leading dest dirs; -m 644 so stickllm-llama can read (not root).
+  install -D -m 644 "/stickllm/models/appagent/${f}" "${AA_DEST_DIR}/${f}"
+  echo "${sha}  ${AA_DEST_DIR}/${f}" | sha256sum -c -
 done
 chmod 755 config/includes.chroot/opt/stickllm \
   config/includes.chroot/opt/stickllm/models \
-  config/includes.chroot/opt/stickllm/models/appagent
+  "$AA_DEST_DIR"
 # Do not also bake the old 4B / 3B next to the 7B.
 rm -f config/includes.chroot/opt/stickllm/models/appagent/Qwen3.5-4B-Q4_K_M.gguf
 if compgen -G "config/includes.chroot/opt/stickllm/models/*3b*" >/dev/null; then
