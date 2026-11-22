@@ -526,6 +526,19 @@ prepare_kiosk_user() {
   esac
   mkdir -p "$KIOSK_HOME"
   chown "${KIOSK_USER}:${KIOSK_USER}" "$KIOSK_HOME" 2>/dev/null || true
+  # 0.8.3: plant trusted Terminal.desktop on the kiosk Desktop folder.
+  if [[ -f /usr/local/share/stickllm/desktop/Terminal.desktop ]]; then
+    mkdir -p "${KIOSK_HOME}/Desktop"
+    cp -f /usr/local/share/stickllm/desktop/Terminal.desktop \
+      "${KIOSK_HOME}/Desktop/Terminal.desktop"
+    chmod 0755 "${KIOSK_HOME}/Desktop/Terminal.desktop"
+    chown -R "${KIOSK_USER}:${KIOSK_USER}" "${KIOSK_HOME}/Desktop" 2>/dev/null || true
+    if command -v sudo >/dev/null 2>&1; then
+      sudo -u "$KIOSK_USER" gio set \
+        "${KIOSK_HOME}/Desktop/Terminal.desktop" metadata::trusted true \
+        2>/dev/null || true
+    fi
+  fi
   KIOSK_UID="$(id -u "$KIOSK_USER")"
   export XDG_RUNTIME_DIR="/run/user/${KIOSK_UID}"
   mkdir -p "$XDG_RUNTIME_DIR" "$PROFILE" "$PROFILE/cache"

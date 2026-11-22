@@ -155,6 +155,11 @@ the built-in whisper.cpp and KittenTTS answer, so speech always works.
 `stickllm-agent sync-model` rewrites Agent Zero's `presets.yaml`,
 `model-config/config.json` and `settings.json` once llama-server reports the
 new model id. It runs after every model activation and at agent start.
+When StickLLM loaded an mmproj, sync sets chat `vision: true`. The
+`stickllm_apps` `monologue_start` hook then embeds image attachments
+(`usr/uploads/*.jpg`, including StickDroid) as `image_url` history parts so
+the VL llama endpoint sees pixels without requiring a `vision_load` tool call
+(important for the Phone-app “plain text” prompt).
 
 ### A5: status line
 

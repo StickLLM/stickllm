@@ -112,9 +112,8 @@ def github_archive_urls(git_url: str) -> list[str]:
     return [f"{base}/main.tar.gz", f"{base}/master.tar.gz"]
 
 NOV3_CONTEXT = (
-    "On 3 November 2026 these unlocks and alternative engines were left as "
-    "community add-ons. That decision is reversed: StickLLM ships detection and "
-    "opt-in installers only. Nothing runs until you press Continue."
+    "StickLLM detects cards and offers opt-in downloads/unlocks only. "
+    "Nothing installs until you press Continue."
 )
 
 CMP_WARNING = (
@@ -288,7 +287,8 @@ def engine_offers(
 
     Rules (handoff §4): offer Strata / NInfer-all for RTX 3090; for CMP only
     when likely unlocked (or UI shows separate unlock-first warning).
-    NInfer Linux requires Debian 13. Windows builds are catalogued for host use.
+    NInfer Linux is gated on debian_major_version == 13 (not shown as scare copy).
+    Windows builds are catalogued for host use.
     """
     offers: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -340,13 +340,13 @@ def engine_offers(
                     add(
                         "ninfer-all",
                         card,
-                        blocked="NInfer-all Linux builds require Debian 13",
+                        blocked="NInfer-all not available on this OS version",
                     )
                 else:
                     add(
                         "ninfer-all",
                         card,
-                        note="Debian 13 x64 community build (Confirm before download)",
+                        note="Linux x64 community build (Confirm before download)",
                         assets_hint="linux-x64 cuda archive + SHA256SUMS",
                     )
             continue
@@ -385,7 +385,11 @@ def engine_offers(
                     assets_hint="linux AppImage + linux cuda engine",
                 )
                 if debian_major_version != 13:
-                    add("ninfer-all", card, blocked="NInfer-all Linux builds require Debian 13")
+                    add(
+                        "ninfer-all",
+                        card,
+                        blocked="NInfer-all not available on this OS version",
+                    )
                 else:
                     add(
                         "ninfer-all",
@@ -589,7 +593,7 @@ def select_ninfer_assets(
             "platform": plat,
             "cuda": cuda,
             "assets": [],
-            "blocked": "NInfer-all Linux builds require Debian 13",
+            "blocked": "NInfer-all not available on this OS version",
             "repo": NINFER_REPO,
             "release_url": release.get("html_url") or "",
         }

@@ -2366,7 +2366,7 @@ def active_mmproj() -> str:
     return path if path and Path(path).is_file() else ""
 
 
-LOCAL_ONLY_CONTROL_PREFIXES = ("browser_",)
+LOCAL_ONLY_CONTROL_PREFIXES = ("browser_", "terminal_")
 
 
 def control_action_allowed(action: str, loopback: bool, ui_client: bool) -> bool:

@@ -1,9 +1,22 @@
 ## Unreleased — pending for v0.8.3
 
-See [docs/NEXT-0.8.3.md](docs/NEXT-0.8.3.md).
+See [docs/NEXT-0.8.3.md](docs/NEXT-0.8.3.md).  
+**Stick-swap hotfix punch list:** [docs/HOTFIX-AFTER-STICK-SWAP.md](docs/HOTFIX-AFTER-STICK-SWAP.md)
+(re-apply live-only fixes after flashing a new stick; notes what is already in v0.8.2).
+
+- **Apps desk Terminal icon.** Desk/Apps icon next to Files opens a real Linux
+  terminal on the stick (`stickllm-control terminal_open`: xfce4-terminal →
+  kitty → xterm). Bake packages `xfce4-terminal` + `xterm`. Loopback UI only.
+- **XFCE Desktop Terminal launcher.** Trusted `~/Desktop/Terminal.desktop` for
+  the kiosk user (planted by `stickllm-kiosk` / `stickllm-xfce-session` from
+  `usr/local/share/stickllm/desktop/`). StickLLM web desk remains the on-screen
+  desktop (no xfdesktop); the launcher is for Files / Desktop folder use.
 
 - **`find_mmproj` family-name match.** Prefer mmproj whose family matches the model weights (Qwen3VL-8B ↔ matching projector). Stop picking the largest leftover VL-3B mmproj in the same folder. Qwen3-VL mmproj download fallback repos. Lab-hotfixed; needs bake confirmation.
 - **Agent Zero `vision` follows active mmproj.** `stickllm_agent` was hardcoding `chat_model_vision: false` / preset `vision: false`, so A0 never sent images even when StickLLM chat + llama-server multimodal worked. Sync now reads `STICKLLM_MMPROJ` / `model.env` via `_model_vision()` / `_mmproj_path()` into `model_settings`, `preset_text`, and plugin `config.json`. Lab-hotfixed; needs bake confirmation.
+- **Agent Zero auto-embeds phone/image attachments.** A0 kept uploads (e.g. StickDroid `39.jpg`) as filename-only attachments and answered “can’t analyze images” even with chat `vision: true`. `stickllm_apps` monologue_start hook `_20_stickllm_attach_images` injects `image_url` parts into history before the first LLM call so the VL llama endpoint sees the pixels.
+- **Chat vision attach budget.** Fixed `IMAGE_TOKEN_ESTIMATE` so real photos are not dropped as oversized text tokens. Lab-hotfixed; needs bake confirmation.
+- **Experimental UI copy cleanup.** Remove “3 November 2026” / Debian-13 scare wording from Experimental tab and offer notes; keep OS-major gating without scare copy. Lab: `out/_hotfix_exp_copy.py`.
 
 ## 0.8.2 - Experimental engines wired (NInfer / Strata Set default)
 - **Set default / Use wired.** Confirm switches StickLLM chat, `/health`, and Agent Zero off llama.cpp onto downloaded **NInfer-all** or **Strata** on `127.0.0.1:8080` (`stickllm-exp-engine.service` + `stickllm-experimental-serve`). Extract multipart NInfer / AppImage Strata on switch. **Use llama.cpp** restores llama-server. Active engine persisted under `/var/lib/stickllm/experimental/active-engine.json`.

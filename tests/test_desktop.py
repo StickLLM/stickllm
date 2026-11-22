@@ -20,6 +20,7 @@ UNIT = ROOT / "overlay" / "etc" / "systemd" / "system" / "stickllm-files.service
 
 STARTERS = (
     "files",
+    "terminal",
     "notepad",
     "minesweeper",
     "solitaire",
@@ -28,6 +29,8 @@ STARTERS = (
     "media",
     "monitor",
 )
+# Native stick window (not /apps/<id>/); opens via stickllm-control terminal_open.
+NATIVE_STARTERS = ("terminal",)
 OURS = ("files", "calculator", "media", "monitor")
 VENDORED = ("minesweeper", "solitaire", "notepad", "tetris")
 
@@ -55,8 +58,12 @@ def test_desktop_icons_are_the_starters_only():
     assert "comfyui" not in desk
     assert 'target="_blank"' not in desk
     for starter in STARTERS:
-        assert f'href="/apps/{starter}/"' in desk
         assert f'target="stickllm-{starter}"' in desk
+        if starter in NATIVE_STARTERS:
+            assert f'data-starter="{starter}"' in desk
+            assert f'href="/apps/{starter}/"' not in desk
+        else:
+            assert f'href="/apps/{starter}/"' in desk
     assert "data-starter" not in menu
     assert "Agent Zero" in menu
     assert 'id="agentCatalogInstall"' in menu
@@ -69,7 +76,7 @@ def test_desktop_icons_are_the_starters_only():
     assert "grid-template-columns:repeat(auto-fill,64px)" in css
     assert ".deskIcons{flex:1;min-height:0;display:grid;grid-template-columns:repeat(auto-fill,64px);gap:24px;" in css
     assert ".deskGlyph{width:64px;height:64px;" in css
-    for label in ("Files", "Notepad", "minesweep", "Solitaire", "Tetris", "Calculator", "Media", "Monitor"):
+    for label in ("Files", "Terminal", "Notepad", "minesweep", "Solitaire", "Tetris", "Calculator", "Media", "Monitor"):
         assert f">{label}</span>" in desk
     assert ">Minesweeper</span>" not in desk
     assert ">minespweeper</span>" not in desk
@@ -84,6 +91,7 @@ def test_desktop_icons_are_the_starters_only():
     assert "text-align:center" in icon_css
     colours = {
         "files": "#2563eb",
+        "terminal": "#0f766e",
         "notepad": "#eab308",
         "minesweeper": "#6b7280",
         "solitaire": "#15803d",

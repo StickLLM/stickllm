@@ -466,6 +466,30 @@ def test_rough_tokens_within_3x_and_budget_refuses():
     assert meta["truncated"] is True
     assert "scan note" in json.dumps(fitted)
 
+    # A realistic photo data-URL must not be budgeted as text tokens. A fake
+    # llama /tokenize that returns one token per char would otherwise drop it.
+    photo = "data:image/jpeg;base64," + ("B" * 70000)
+    photo_msgs = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What is in this image?"},
+            {"type": "image_url", "image_url": {"url": photo}},
+        ],
+    }]
+
+    def huge_text_tokens(text: str) -> int:
+        return max(1, len(text))
+
+    kept, photo_meta = CV.budget_messages(photo_msgs, 32768, huge_text_tokens)
+    kept_imgs = [
+        p for p in kept[0]["content"]
+        if isinstance(p, dict) and p.get("type") == "image_url"
+    ]
+    assert len(kept_imgs) == 1
+    assert photo_meta["truncated"] is False
+    assert photo_meta["included_tokens"] == CV.IMAGE_TOKEN_ESTIMATE
+    assert "left out" not in json.dumps(kept).lower()
+
 
 def test_gateway_budget_failure_drops_attachment():
     gateway = ROOT / "overlay" / "usr" / "local" / "bin" / "stickllm-gateway"

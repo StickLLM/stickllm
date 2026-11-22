@@ -3,11 +3,15 @@
 # stickllm-kiosk as the kiosk user on the X server it started.
 # Xfce is the stock Debian packages, unmodified. StickLLM only writes Xfce
 # settings (xfconf XML, panel launchers, kioskrc) and starts the session.
-# Locked down: no terminal (not installed), no application menu, no panel,
-# no desktop icons, no log-out button, session is never saved. When the session ends, stickllm-kiosk starts it again.
+# Locked down: no application menu, no panel, no xfdesktop, no log-out
+# button, session is never saved. Terminal opens from StickLLM's Apps/desk
+# icon (stickllm-control terminal_open) and from ~/Desktop/Terminal.desktop
+# (planted for Files / future desk use). When the session ends,
+# stickllm-kiosk starts it again.
 set -u
 RCFILE="${XDG_RUNTIME_DIR:-/tmp}/stickllm-xfce-session.rc"
 SHARE=/usr/local/share/stickllm/xfce
+DESK_SRC=/usr/local/share/stickllm/desktop
 XDGDIR=/etc/stickllm/xfce/xdg
 UIROOT="${STICKLLM_UI_ROOT:-/opt/stickllm/ui}"
 rm -f "$RCFILE"
@@ -17,11 +21,26 @@ export XDG_CURRENT_DESKTOP=XFCE XDG_SESSION_DESKTOP=xfce XDG_SESSION_TYPE=x11
 export XDG_CONFIG_HOME="$HOME/.config"
 unset WAYLAND_DISPLAY
 
+# 0.8.3: trusted Terminal launcher on the kiosk user's Desktop folder.
+install_desktop_launchers() {
+  local desk="${HOME}/Desktop" src="$DESK_SRC/Terminal.desktop"
+  [[ -f "$src" ]] || return 0
+  mkdir -p "$desk"
+  cp -f "$src" "$desk/Terminal.desktop"
+  chmod 0755 "$desk/Terminal.desktop"
+  # Executable + metadata::trusted so Thunar/xfdesktop do not prompt.
+  if command -v gio >/dev/null 2>&1; then
+    gio set "$desk/Terminal.desktop" metadata::trusted true 2>/dev/null || true
+  fi
+  chown -R "$(id -u):$(id -g)" "$desk" 2>/dev/null || true
+}
+
 cfg="$XDG_CONFIG_HOME/xfce4"
 xml="$cfg/xfconf/xfce-perchannel-xml"
 rm -rf "$cfg/panel" "$xml" "$HOME/.cache/sessions" "${XDG_RUNTIME_DIR:-/tmp}/stickllm-web"
 mkdir -p "$xml"
 cp -f "$XDGDIR"/xfce4/xfconf/xfce-perchannel-xml/*.xml "$xml/" 2>/dev/null || true
+install_desktop_launchers
 
 # 0.5.7: no xfce4-panel and no xfdesktop (default Xfce clutter). The
 # StickLLM desktop window (stickllm-xfce-open home, autostart) is full screen

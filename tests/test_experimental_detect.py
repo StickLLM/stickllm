@@ -126,7 +126,9 @@ def test_snapshot_per_card_intent_no_master_toggle():
         card_unlock_intent={"0000:21:00.0": True},
     )
     assert any("intent on" in r for r in on["reports"])
-    assert "3 November" in snap["nov3_context"]
+    assert "3 November" not in snap["nov3_context"]
+    assert "Continue" in snap["nov3_context"]
+    assert "Debian 13" not in snap["nov3_context"]
 
 
 def test_strata_cuda_for_driver():

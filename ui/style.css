@@ -78,6 +78,7 @@ html[data-theme="light"] .appsView{background:
 .deskIcon{width:64px;min-width:64px;max-width:64px;min-height:64px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:6px;overflow:visible;color:var(--ink);text-decoration:none;text-align:center;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 .deskGlyph{width:64px;height:64px;border-radius:16px;display:grid;place-items:center;color:#fff;transition:transform .08s ease,filter .08s ease,box-shadow .08s ease}
 .deskIcon[data-starter="files"] .deskGlyph{background:#2563eb}
+.deskIcon[data-starter="terminal"] .deskGlyph{background:#0f766e}
 .deskIcon[data-starter="notepad"] .deskGlyph{background:#eab308}
 .deskIcon[data-starter="minesweeper"] .deskGlyph{background:#6b7280}
 .deskIcon[data-starter="solitaire"] .deskGlyph{background:#15803d}

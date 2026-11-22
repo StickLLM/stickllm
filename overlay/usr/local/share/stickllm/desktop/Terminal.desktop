@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Terminal
+Comment=Open a Linux terminal on this stick
+Exec=xfce4-terminal --disable-server --title=StickLLM Terminal
+TryExec=xfce4-terminal
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupNotify=true
+Keywords=shell;prompt;command;commandline;cmd;run;

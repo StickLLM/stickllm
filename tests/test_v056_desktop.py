@@ -75,9 +75,45 @@ def test_control_browser_actions_local_ui_only():
     assert GW.control_action_allowed("browser_open", True, True)
     assert not GW.control_action_allowed("browser_open", False, True)
     assert not GW.control_action_allowed("browser_status", True, False)
+    assert GW.control_action_allowed("terminal_open", True, True)
+    assert not GW.control_action_allowed("terminal_open", False, True)
     assert GW.control_action_allowed("status", False, False)
     src = _text(BIN / "stickllm-gateway")
     assert 'control_action_allowed(action, self._is_loopback(), stickllm_ui_client(self.headers))' in src
+    assert '"terminal_"' in src or "'terminal_'" in src
+
+
+def test_terminal_open_spawns_fixed_argv(monkeypatch):
+    seen = {}
+
+    class P:
+        pid = 4243
+
+        def poll(self):
+            return None
+
+    def popen(cmd, **kw):
+        seen["cmd"], seen["kw"] = cmd, kw
+        return P()
+
+    monkeypatch.setattr(CTL, "_terminal_bin", lambda: "/usr/bin/xfce4-terminal")
+    monkeypatch.setattr(CTL, "_kiosk_user", lambda: "stickllm")
+    monkeypatch.setattr(CTL.Path, "is_socket", lambda self: str(self) == "/tmp/.X11-unix/X0")
+    monkeypatch.setattr(CTL.subprocess, "Popen", popen)
+    monkeypatch.setattr(CTL.os, "geteuid", lambda: 1000)
+    r = CTL.handle("terminal_open", {})
+    assert r["ok"] is True
+    assert seen["cmd"] == ["/usr/bin/xfce4-terminal", "--disable-server", "--title=StickLLM Terminal"]
+    assert seen["kw"]["env"]["DISPLAY"] == ":0"
+    assert seen["kw"]["start_new_session"] is True
+
+
+def test_terminal_open_needs_binary(monkeypatch):
+    called = []
+    monkeypatch.setattr(CTL, "_terminal_bin", lambda: "")
+    monkeypatch.setattr(CTL.subprocess, "Popen", lambda *a, **k: called.append(a))
+    r = CTL.handle("terminal_open", {})
+    assert r["ok"] is False and r["error"] == "no_terminal" and not called
 
 
 # --- control: browser windows --------------------------------------------
@@ -160,8 +196,23 @@ def test_desktop_browser_and_apps_wiring():
     assert 'api.control("browser_open"' in js and "app: !!app" in js
     assert '"browser_window"' in js and '["close", "Close"]' in js and '"browser_status"' in js
     assert "openBrowser(u, appTitle(id), true)" in js
+    assert 'api.control("terminal_open"' in js
+    assert 'FRONT = ["agent", "browser", "terminal", "store"]' in js
+    assert "openTerminal:" in js
     app = _text(UI / "app.js")
     assert "deskCatalog" in app and "frame: a.frame !== false" in app
+    assert 'id === "terminal"' in app
+    html = _text(UI / "index.html")
+    assert 'data-starter="terminal"' in html and ">Terminal</span>" in html
+    pkgs = _text(ROOT / "live-build" / "package-lists" / "stickllm.list.chroot")
+    assert "xfce4-terminal" in pkgs and "\nxterm\n" in pkgs
+    desk = _text(ROOT / "overlay/usr/local/share/stickllm/desktop/Terminal.desktop")
+    assert "Type=Application" in desk and "Name=Terminal" in desk
+    assert "xfce4-terminal" in desk and "StickLLM Terminal" in desk
+    sess = _text(ROOT / "overlay/usr/local/bin/stickllm-xfce-session")
+    assert "install_desktop_launchers" in sess and "metadata::trusted" in sess
+    kiosk = _text(ROOT / "overlay/usr/local/bin/stickllm-kiosk")
+    assert "Desktop/Terminal.desktop" in kiosk
 
 
 def test_api_apps_rows_carry_frame_flag():

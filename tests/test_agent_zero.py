@@ -294,6 +294,15 @@ def test_agent_page_is_not_rewritten_under_agent():
     assert "vision: true" in agent.preset_text("qwen-vl.gguf", vision=True)
     assert agent.model_settings("qwen-vl.gguf", vision=True)["chat_model_vision"] is True
     assert agent.model_settings("qwen.gguf", vision=False)["chat_model_vision"] is False
+    attach_src = agent.stickllm_attach_images_extension_source()
+    assert "StickllmAttachImages" in attach_src
+    assert "image_url" in attach_src
+    assert "/a0/usr/uploads/" in attach_src
+    # Plugin assembly must ship the monologue_start auto-embed hook.
+    agent_src = AGENT.read_text(encoding="utf-8")
+    assert "_20_stickllm_attach_images.py" in agent_src
+    assert "monologue_start" in agent_src
+    assert "stickllm_attach_images_extension_source" in agent_src
     script = _script()
     assert "HF_HUB_OFFLINE" in script
     assert "embedding-cached" in script

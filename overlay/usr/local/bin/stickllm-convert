@@ -1665,6 +1665,15 @@ def _image_url(part: dict) -> str:
     return str(url or "")
 
 
+# Multimodal projectors turn a photo into a few hundred–~2k vision tokens.
+# Never tokenize the base64 data-URL as text: a 50 KB JPEG is ~17k–37k *text*
+# tokens and would be dropped from a 32K chat even though the VL model can see it.
+# 1024 fits four scan pages under an 8K ctx attachment budget (60% ≈ 4915).
+IMAGE_TOKEN_ESTIMATE = 1024
+# Match stickllm-gateway sanitize_chat_messages data-URL cap.
+IMAGE_URL_MAX_CHARS = 180_000
+
+
 _ATTACH = re.compile(r"<attachment\b([^>]*)>(.*?)</attachment>", re.S)
 
 
@@ -1684,8 +1693,21 @@ def _message_has_image(messages) -> bool:
     return False
 
 
+def _image_budget_cost(part: dict) -> int | None:
+    """Fixed vision-token cost, or None when the data-URL must be dropped."""
+    url = _image_url(part)
+    if not url.startswith("data:image/") or len(url) > IMAGE_URL_MAX_CHARS:
+        return None
+    return IMAGE_TOKEN_ESTIMATE
+
+
 def _drop_oversize_images(messages, budget: int, included: int, counter) -> tuple[list, int, bool]:
-    """Drop whole images that do not fit. Never send a sliced data URL."""
+    """Drop whole images that do not fit. Never send a sliced data URL.
+
+    ``counter`` is unused for images (kept for call-site compatibility): costing
+    the base64 payload as text falsely exhausts the attachment budget.
+    """
+    del counter  # image cost is not text-tokenized
     room = max(0, budget - included)
     dropped = False
     out = []
@@ -1698,8 +1720,8 @@ def _drop_oversize_images(messages, budget: int, included: int, counter) -> tupl
             if not (isinstance(part, dict) and part.get("type") == "image_url"):
                 parts.append(part)
                 continue
-            cost = _count_tokens(counter, _image_url(part))
-            if cost <= room:
+            cost = _image_budget_cost(part)
+            if cost is not None and cost <= room:
                 parts.append(part)
                 room -= cost
                 included += cost

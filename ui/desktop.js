@@ -34,6 +34,8 @@
     // 0.6.5: one Agent Zero window (legacy StickLLM Chat chrome + icon retired).
     chat: { title: "Agent Zero", w: 1180, h: 800 },
     browser: { title: "Browser", w: 1180, h: 780 },
+    // 0.8.3: real Linux terminal on the stick screen (xfce4-terminal / kitty / xterm).
+    terminal: { title: "Terminal", w: 900, h: 560 },
     agent: { title: "Agent Zero", w: 1180, h: 800 },
     store: { title: "App Store", w: 1000, h: 700 },
     models: { title: "Models", w: 1060, h: 740 },
@@ -42,13 +44,14 @@
   const GLYPH = {
     // agent: use agent-zero.png via iconFor() — not this SVG robot.
     browser: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>',
+    terminal: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg>',
     store: '<svg viewBox="0 0 24 24"><path d="M5 8h14l-1 12H6z"/><path d="M9 8V6a3 3 0 016 0v2"/></svg>',
     models: '<svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>',
     settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 01-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 010-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 014 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 010 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>',
   };
   // Desktop order: Agent Zero once (no separate Chat icon), then Browser /
-  // Store; starter + catalog apps; Models/Settings at the end.
-  const FRONT = ["agent", "browser", "store"];
+  // Terminal / Store; starter + catalog apps; Models/Settings at the end.
+  const FRONT = ["agent", "browser", "terminal", "store"];
   const BACK = ["models", "settings"];
   let catalog = [];         // [{id,title,label,color,svg,frame,running,state}] from app.js
   const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -1026,6 +1029,7 @@
       return openApp(CHAT);
     }
     if (id === "browser") { openBrowser("", "Browser"); return true; }
+    if (id === "terminal") { openTerminal(); return true; }
     if (has(APPS, id)) {
       const a = APPS[id];
       return wm.open({ id: id, title: a.title, w: a.w, h: a.h, url: appHref(id) });
@@ -1307,7 +1311,8 @@
       window.open(url || "/browser-home.html", "_blank", "noopener");
       return;
     }
-    const r = ui.layer.getBoundingClientRect();
+    const r = (ui && ui.layer) ? ui.layer.getBoundingClientRect()
+      : { width: window.innerWidth || 1280, height: window.innerHeight || 800 };
     const k = window.devicePixelRatio || 1;
     const bx = window.screenX || 0, by = window.screenY || 0;
     const w = Math.min(1180, Math.round(r.width - 80)), h = Math.min(780, Math.round(r.height - 60));
@@ -1322,6 +1327,22 @@
       if (api.toast) api.toast((res && res.downloads === "vault" ? "Downloads go to the vault." : "Downloads are off while the vault is locked.") + " Drag the title bar to move it; the taskbar minimises and restores it.");
       pollBrowser();
     }).catch((e) => { if (api.toast) api.toast("Browser: " + e.message); });
+  }
+  // 0.8.3: Linux terminal on the stick screen (stickllm-control terminal_open).
+  // Works in deskMode and classic Apps view; remote clients get a toast only.
+  function openTerminal() {
+    const api = appApi();
+    if (!isLocal() || !api.control) {
+      if (api.toast) api.toast("Terminal opens only on the stick screen.");
+      return;
+    }
+    api.control("terminal_open", {}).then((res) => {
+      if (res && res.ok === false) {
+        if (api.toast) api.toast(res.message || res.error || "The terminal could not start");
+        return;
+      }
+      if (api.toast) api.toast("Terminal opened on the stick.");
+    }).catch((e) => { if (api.toast) api.toast("Terminal: " + e.message); });
   }
   // Window ops go to the compositor (stickllm-control browser_window, which
   // talks to the X11 window manager via wmctrl). The desktop taskbar height is reserved when maximising.
@@ -1733,6 +1754,7 @@
     refreshCatalog: scheduleCatalog,
     openApp: (id) => openApp(id),
     openBrowser: (url, title) => openBrowser(url, title),
+    openTerminal: () => openTerminal(),
     onPaired: () => onPaired(),
     closeAll: () => { if (wm) wm.closeAll(false); toggleLauncher(false); },
     prepareForVaultLock: () => prepareForVaultLock(),

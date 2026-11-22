@@ -856,6 +856,15 @@ function appRowMessage(id, text) {
 function openAppPaired(a) {
   const box = a.closest("[data-actions-for]");
   const id = box ? box.dataset.actionsFor : (a.dataset.appId || a.dataset.catalogApp || a.dataset.starter || "");
+  // 0.8.3: Terminal is a native stick window (not /apps/terminal/).
+  if (id === "terminal") {
+    if (window.stickDesk && window.stickDesk.openTerminal) {
+      window.stickDesk.openTerminal();
+      return true;
+    }
+    toast("Terminal opens only on the stick screen.");
+    return true;
+  }
   // Desktop layout (desktop.js): starter and installed catalog apps open in
   // a window on the desktop (0.5.6), never a browser tab.
   if (window.stickDesk && window.stickDesk.handles(id)) return !!window.stickDesk.openApp(id);
@@ -2527,6 +2536,7 @@ const OPEN_FAST_ALIAS = {
   "file manager": "files", "files app": "files", "text editor": "notepad", editor: "notepad",
   calc: "calculator", "system monitor": "monitor", music: "media", video: "media",
   "web browser": "browser", chromium: "browser", internet: "browser", web: "browser",
+  terminal: "terminal", "linux terminal": "terminal", console: "terminal", xterm: "terminal",
   "agent zero": "agent", agent0: "agent", a0: "agent", "node red": "node-red", nodered: "node-red",
   tasks: "tasks-md", "tasks.md": "tasks-md", notes: "trilium", budget: "paisa", comfy: "comfyui",
 };
@@ -2543,6 +2553,10 @@ function openFastPath(raw) {
   const desk = window.stickDesk;
   if (id === "browser") {
     if (desk && desk.openBrowser) { desk.openBrowser("", "Browser"); return true; }
+    return false;
+  }
+  if (id === "terminal") {
+    if (desk && desk.openTerminal) { desk.openTerminal(); return true; }
     return false;
   }
   if (desk && desk.handles && desk.handles(id)) return !!desk.openApp(id);
@@ -2801,7 +2815,7 @@ async function runSend(gen, abort, prev) {
     pend = { r: "ai", pending: true }; c.msgs.push(pend);
     const apiText = [docBlock, text].filter(Boolean).join("\n\n") || "What is in this image?";
     const allImgs = (modelVision ? [...photoUrls, ...pageImgs] : [])
-      .filter((url) => typeof url === "string" && url.startsWith("data:image/") && url.length <= 90000)
+      .filter((url) => typeof url === "string" && url.startsWith("data:image/") && url.length <= IMAGE_URL_SEND_MAX)
       .slice(0, PHOTO_MAX + PAGE_IMAGE_MAX);
     const content = allImgs.length
       ? [
@@ -6683,13 +6697,12 @@ function paintExperimental(j) {
   if ($("#expNov3") && j && j.nov3_context) $("#expNov3").textContent = j.nov3_context;
   if ($("#expOsNote")) {
     const maj = j && j.debian_major;
-    const ninfer = j && j.ninfer_linux_ok;
     const drv = j && j.driver_version ? ` Driver ${j.driver_version}.` : "";
     const openN = j && j.nvidia_open === true ? " nvidia-open detected."
       : (j && j.nvidia_open === false ? " Proprietary NVIDIA driver (CMP unlock needs nvidia-open)." : "");
     $("#expOsNote").textContent = maj != null
-      ? (`Detected Debian major ${maj}. NInfer-all Linux packages require Debian 13` + (ninfer ? " — OK." : " — not available until a fresh Debian 13 image.") + drv + openN)
-      : "OS version unknown (open this page on the stick). NInfer-all Linux needs Debian 13.";
+      ? (`Detected OS major ${maj}.` + drv + openN)
+      : ("OS version unknown (open this page on the stick)." + drv + openN);
   }
   const intent = ((j && j.prefs) || {}).card_unlock_intent || {};
   const cmpWarn = (j && j.cmp_warning) || "CMP 170HX has no video outputs; unlock restores compute only via patched drivers.";
@@ -6797,7 +6810,7 @@ function paintExperimental(j) {
           const re = b.dataset.expRedownload === "1";
           const ok = await expConfirm(
             (re ? "Re-download " : "Download ") + (b.dataset.expEngine || "engine"),
-            "Continue downloads the matching third-party build from GitHub (Strata AppImage+CUDA engine, or NInfer-all Debian 13 / Windows archive). SHA-256 is verified. The engine is not set as StickLLM default — chat keeps using llama.cpp. Cancel leaves the stick unchanged."
+            "Continue downloads the matching third-party build from GitHub (Strata AppImage+CUDA engine, or NInfer-all Linux / Windows archive). SHA-256 is verified. The engine is not set as StickLLM default — chat keeps using llama.cpp. Cancel leaves the stick unchanged."
           );
           if (!ok) return;
           try {
@@ -8645,7 +8658,10 @@ function renderAttach() {
     renderAttach();
   }));
 }
+// Browser UI only: shrink pastes/attaches before send. StickDroid shrinks on-device.
+// Gateway sanitize keeps data-URLs ≤ 180000; send filter matches that hard cap.
 const IMAGE_URL_MAX = 70000;
+const IMAGE_URL_SEND_MAX = 180000;
 const PHOTO_MAX = 3;
 const PAGE_IMAGE_MAX = 8;
 function jpegUnder(canvas, limit) {
@@ -8676,7 +8692,7 @@ function shrinkImage(file) {
   return createImageBitmap(file).then((bitmap) => {
     const url = drawFitted(bitmap, bitmap.width, bitmap.height, 1024);
     bitmap.close?.();
-    if (!url || url.length > 90000) throw new Error("Could not read that image");
+    if (!url || url.length > IMAGE_URL_SEND_MAX) throw new Error("Could not read that image");
     return { name: file.name || "image", dataUrl: url };
   }).catch(() => {
     throw new Error("Could not read that image");
@@ -8688,7 +8704,7 @@ function shrinkDataUrl(dataUrl) {
     img.onload = () => {
       try {
         const url = drawFitted(img, img.naturalWidth || img.width, img.naturalHeight || img.height, 1024);
-        if (!url || !url.startsWith("data:image/") || url.length > 90000) reject(new Error("Page image is too large"));
+        if (!url || !url.startsWith("data:image/") || url.length > IMAGE_URL_SEND_MAX) reject(new Error("Page image is too large"));
         else resolve(url);
       } catch (e) {
         reject(e);
@@ -8753,7 +8769,7 @@ async function convertDocFile(chip, file) {
     for (const im of incoming) {
       const direct = pageDataUrl(im);
       if (!direct) continue;
-      if (direct.length <= 90000) {
+      if (direct.length <= IMAGE_URL_SEND_MAX) {
         images.push({ dataUrl: direct });
         continue;
       }
@@ -10247,6 +10263,7 @@ const APP_LABELS = {
   calculator: "Calculator",
   tetris: "Tetris",
   files: "Files",
+  terminal: "Terminal",
   media: "Media",
   monitor: "Monitor",
 };
@@ -10330,6 +10347,13 @@ function docsOpenHref(doc) {
   return "/apps/docs/?open=" + encodeURIComponent(String(doc || ""));
 }
 function openAppTab(id, doc) {
+  if (id === "terminal") {
+    if (window.stickDesk && window.stickDesk.openTerminal) {
+      window.stickDesk.openTerminal();
+      return true;
+    }
+    return false;
+  }
   // Desktop layout: starter apps (and Agent Zero's open_app for them) open in
   // a window on this page, so no pop-up permission is needed.
   if (window.stickDesk && window.stickDesk.handles(id)) return window.stickDesk.openApp(id);

@@ -2857,6 +2857,99 @@ class OpenApp(Tool):
 '''
 
 
+def stickllm_attach_images_extension_source() -> str:
+    """Auto-embed image attachments into A0 history when chat vision is on.
+
+    Agent Zero only lists attachment filenames in the user-message template.
+    Phone / StickDroid uploads (e.g. 39.jpg) therefore never reach the VL
+    llama endpoint unless the agent calls vision_load. This monologue_start
+    hook mirrors vision_load's after_execution path: inject image_url parts
+    before the first LLM call so Qwen-VL can see the pixels.
+    """
+    return '''from __future__ import annotations
+
+from mimetypes import guess_type
+from typing import Any
+
+from helpers.extension import Extension
+from helpers import history
+from plugins._model_config.helpers.model_config import get_chat_model_config
+
+_FLAG = "stickllm_attached_images_for"
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+_TOKENS_ESTIMATE = 1500
+
+
+def _attachment_paths(content: Any) -> list[str]:
+    paths: list[str] = []
+    if isinstance(content, dict):
+        att = content.get("attachments")
+        if isinstance(att, list):
+            for item in att:
+                if isinstance(item, str) and item.strip():
+                    paths.append(item.strip())
+                elif isinstance(item, dict):
+                    for key in ("path", "url", "filename", "name"):
+                        val = item.get(key)
+                        if isinstance(val, str) and val.strip():
+                            paths.append(val.strip())
+                            break
+    return paths
+
+
+def _is_image_path(path: str) -> bool:
+    lowered = path.lower()
+    if lowered.startswith("data:image/") and ";base64," in lowered:
+        return True
+    mime, _ = guess_type(path)
+    if mime and mime.startswith("image/"):
+        return True
+    return lowered.endswith(_IMAGE_EXTS)
+
+
+class StickllmAttachImages(Extension):
+    async def execute(self, loop_data=None, **kwargs):  # noqa: ANN001
+        agent = self.agent
+        if not agent:
+            return
+        chat_cfg = get_chat_model_config(agent)
+        if not isinstance(chat_cfg, dict) or not chat_cfg.get("vision", False):
+            return
+        msg = getattr(agent, "last_user_message", None)
+        if msg is None:
+            return
+        msg_id = str(getattr(msg, "id", "") or "").strip()
+        if msg_id and agent.get_data(_FLAG) == msg_id:
+            return
+        paths = _attachment_paths(getattr(msg, "content", None))
+        image_urls: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for path in paths:
+            # message_queue / UI sometimes store basename only
+            if path and not path.startswith(("/", "data:", "file:", ".", "~")):
+                path = f"/a0/usr/uploads/{path.lstrip('/')}"
+            if path in seen or not _is_image_path(path):
+                continue
+            seen.add(path)
+            # Local /a0 paths and data URLs: litellm prepare_content converts
+            # file paths to data:image before the llama call.
+            image_urls.append({"type": "image_url", "image_url": {"url": path}})
+        if not image_urls:
+            return
+        raw = history.RawMessage(
+            raw_content=image_urls,
+            preview=f"<StickLLM attached {len(image_urls)} image(s) for vision>",
+        )
+        agent.hist_add_message(
+            False,
+            content=raw,
+            tokens=_TOKENS_ESTIMATE * len(image_urls),
+        )
+        if msg_id:
+            agent.set_data(_FLAG, msg_id)
+'''
+
+
 def ensure_open_app_plugin(root: Path | None = None) -> None:
     """Write the v2.14+ plugin into the assembled plugin dir. No token is stored here.
 
@@ -2893,6 +2986,11 @@ def ensure_open_app_plugin(root: Path | None = None) -> None:
         root / "tools" / "open_file.py": open_file_tool_source(),
         root / "prompts" / "agent.system.tool.open_url.md": open_url_tool_prompt(),
         root / "skills" / "stickllm-apps" / "SKILL.md": apps_skill_text(),
+        root
+        / "extensions"
+        / "python"
+        / "monologue_start"
+        / "_20_stickllm_attach_images.py": stickllm_attach_images_extension_source(),
     }
     if egress_scan:
         files[root / "helpers" / "egress_scan.py"] = egress_scan

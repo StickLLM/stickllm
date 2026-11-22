@@ -6325,6 +6325,219 @@ def _drop_to_user(user: str) -> list:
     raise OSError(2, "no runuser/setpriv to drop privileges")
 
 
+# --- 0.8.3: desktop Terminal = real xfce4-terminal / kitty / xterm on the stick ---
+# Opens beside Browser from the Apps desk icon. Tracked like Browser so the
+# StickLLM taskbar can minimise / restore / close them (WM_CLASS
+# stickllm-terminal-<id>). Loopback UI only (gateway terminal_* prefix).
+# Prefers xfce4-terminal, then kitty, then xterm.
+TERMINAL_BINS = (
+    "/usr/bin/xfce4-terminal",
+    "/usr/bin/kitty",
+    "/usr/bin/xterm",
+    "/bin/xterm",
+)
+TERMINAL_MAX = 6
+_TERMINALS: dict[str, dict] = {}
+_TERMINAL_LOCK = threading.Lock()
+
+
+def _terminal_bin() -> str:
+    import shutil
+    for path in TERMINAL_BINS:
+        if os.access(path, os.X_OK):
+            return path
+    for name in ("xfce4-terminal", "kitty", "xterm"):
+        found = shutil.which(name)
+        if found and os.access(found, os.X_OK):
+            return found
+    return ""
+
+
+def terminal_command(bin_path: str, tid: str) -> list[str]:
+    """Fixed argv only — never passes user strings into a shell."""
+    base = os.path.basename(bin_path)
+    cls = f"stickllm-terminal-{tid}"
+    if base == "xfce4-terminal":
+        return [bin_path, "--disable-server", f"--class={cls}", "--title=StickLLM Terminal"]
+    if base == "kitty":
+        return [bin_path, "--class", cls, "--title", "StickLLM Terminal"]
+    # xterm and unknowns
+    return [bin_path, "-class", cls, "-T", "StickLLM Terminal"]
+
+
+def _terminal_reap() -> None:
+    for tid, rec in list(_TERMINALS.items()):
+        if rec["proc"].poll() is not None:
+            _TERMINALS.pop(tid, None)
+
+
+def _terminal_owns(tid: str):
+    """pid -> True when that process belongs to terminal `tid` (session = launch pid)."""
+    def owns(pid: int) -> bool:
+        with _TERMINAL_LOCK:
+            rec = _TERMINALS.get(tid)
+        if not rec:
+            return False
+        try:
+            return os.getsid(pid) == rec["proc"].pid
+        except OSError:
+            return False
+    return owns
+
+
+def terminal_open(params: dict | None = None) -> dict:
+    """Spawn one terminal window on the stick's X display as the kiosk user."""
+    params = params or {}
+    bin_path = _terminal_bin()
+    if not bin_path:
+        return {
+            "ok": False,
+            "code": 503,
+            "error": "no_terminal",
+            "message": "No terminal is installed on this stick (xfce4-terminal / kitty / xterm).",
+        }
+    user = _kiosk_user()
+    if not Path("/tmp/.X11-unix/X0").is_socket():
+        return {"ok": False, "code": 503, "error": "no_display", "message": "The stick's screen is not running."}
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": f"/home/{user}",
+        "USER": user,
+        "LOGNAME": user,
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "DISPLAY": ":0",
+        "XDG_RUNTIME_DIR": f"/run/user/{_kiosk_uid(user)}",
+    }
+    with _TERMINAL_LOCK:
+        _terminal_reap()
+        if len(_TERMINALS) >= TERMINAL_MAX:
+            return {
+                "ok": False,
+                "code": 429,
+                "error": "too_many",
+                "message": f"Close a terminal first (at most {TERMINAL_MAX}).",
+            }
+        tid = os.urandom(6).hex()
+        cmd = terminal_command(bin_path, tid)
+        if os.geteuid() == 0 and user != "root":
+            try:
+                cmd = _drop_to_user(user) + cmd
+            except OSError as e:
+                return {"ok": False, "code": 500, "error": "spawn", "message": str(e)}
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError as e:
+            return {"ok": False, "code": 500, "error": "spawn", "message": str(e)}
+        _TERMINALS[tid] = {"proc": proc, "title": "Terminal", "bin": bin_path, "started": time.time()}
+    _wm_place_later(tid, None, _taskbar_px(params), owns_fn=_terminal_owns)
+    return {"ok": True, "id": tid, "bin": bin_path, "title": "Terminal"}
+
+
+def terminal_status() -> dict:
+    with _TERMINAL_LOCK:
+        _terminal_reap()
+        wins = [{"id": tid, "title": rec["title"]} for tid, rec in _TERMINALS.items()]
+    wm_on = False
+    if wins:
+        ipc = _wm_ipc()
+        if ipc is not None:
+            wm = _wm()
+            try:
+                live = wm.states(ipc)
+                wm_on = True
+            except (wm.WMError, OSError):
+                live = {}
+            finally:
+                ipc.close()
+            for w in wins:
+                st = live.get(w["id"])
+                if st:
+                    page = re.sub(r"[\x00-\x1f\x7f]", "", str(st.get("title") or ""))[:80]
+                    w.update({
+                        "page_title": page or w["title"],
+                        "minimised": st["minimised"],
+                        "focused": st["focused"],
+                        "maximised": st["maximised"],
+                        "rect": st["rect"],
+                        "mapped": True,
+                    })
+                else:
+                    w["mapped"] = False
+    return {"ok": True, "windows": wins, "max": TERMINAL_MAX, "wm": wm_on}
+
+
+def terminal_close(params: dict) -> dict:
+    tid = str(params.get("id") or "")
+    with _TERMINAL_LOCK:
+        rec = _TERMINALS.get(tid)
+        if not rec:
+            return {"ok": False, "code": 404, "error": "not_found"}
+        try:
+            os.killpg(rec["proc"].pid, signal.SIGTERM)
+        except OSError:
+            pass
+        _TERMINALS.pop(tid, None)
+    return {"ok": True}
+
+
+TERMINAL_WINDOW_OPS = ("place", "minimise", "restore", "maximise", "focus", "toggle", "close", "state")
+
+
+def terminal_window(params: dict) -> dict:
+    """Window op on one of our terminal windows through the X11 window helper."""
+    tid = str(params.get("id") or "")
+    op = str(params.get("op") or "")
+    if op not in TERMINAL_WINDOW_OPS:
+        return {"ok": False, "code": 400, "error": "bad_op"}
+    with _TERMINAL_LOCK:
+        _terminal_reap()
+        rec = _TERMINALS.get(tid)
+    if not rec:
+        return {"ok": False, "code": 404, "error": "not_found"}
+    if op == "close":
+        return terminal_close({"id": tid})
+    geo = _clamp_geometry(params.get("geometry")) if op == "place" else None
+    if op == "place" and not geo:
+        return {"ok": False, "code": 400, "error": "bad_geometry"}
+    ipc = _wm_ipc()
+    if ipc is None:
+        return {"ok": False, "code": 200, "error": "wm_unavailable",
+                "message": "The desktop is not running, so terminal windows cannot be moved or minimised."}
+    wm = _wm()
+    if wm is None:
+        ipc.close()
+        return {"ok": False, "code": 200, "error": "wm_unavailable",
+                "message": "The window helper is not installed on this image."}
+    try:
+        w = wm.wait_for(ipc, tid, _terminal_owns(tid), timeout=0.5)
+        if not w:
+            raise wm.WMError("window not found")
+        res = wm.apply(ipc, op, con_id=w["id"], geo=geo, taskbar_px=_taskbar_px(params))
+    except wm.WMError as e:
+        return {"ok": False, "code": 409, "error": "wm", "message": str(e)}
+    except OSError as e:
+        return {"ok": False, "code": 503, "error": "wm", "message": str(e)}
+    finally:
+        ipc.close()
+    return {"ok": bool(res.get("ok")), "id": tid, "op": op, "window": res.get("window")}
+
+
+def _kiosk_uid(user: str) -> int:
+    try:
+        import pwd
+        return int(pwd.getpwnam(user).pw_uid)
+    except (KeyError, ImportError, OSError):
+        return 1000
+
+
 def browser_open(params: dict) -> dict:
     url = str(params.get("url") or "").strip() or BROWSER_START_URL
     if not browser_url_ok(url):
@@ -6813,6 +7026,8 @@ def handle(action: str, params: dict) -> dict:
         return browser_close(params)
     if action == "browser_window":
         return browser_window(params)
+    if action == "terminal_open":
+        return terminal_open(params)
     if action == "web_mode" or action == "web_mode_status":
         return web_mode_status()
     if action == "web_mode_set" or action == "set_web_mode":
@@ -6881,7 +7096,7 @@ def handle(action: str, params: dict) -> dict:
         return set_gpu_prefs(params)
     if action == "gpu_power_set":
         return gpu_power_set(params)
-    # Experimental tab (Debian 13 engines + per-card unlocks): detect/prefs only.
+    # Experimental tab (opt-in engines + per-card unlocks): detect/prefs only.
     if action == "experimental_status":
         return experimental_status()
     if action == "experimental_prefs_set":
