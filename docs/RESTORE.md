@@ -7,7 +7,7 @@ Be honest about what a stranger can download vs what only maintainers have local
 
 | Slot | Tag | What strangers can get | Checksum |
 |------|-----|------------------------|----------|
-| **N** (current) | `v0.8.6` | Google Drive `StickLLM-v0.8.6.iso` / `out/v0.8.6/` | `checksums/v0.8.6.sha256` (fill after bake) |
+| **N** (current) | `v0.8.6` | Google Drive `StickLLM-v0.8.6.iso` / `out/v0.8.6/` | `checksums/v0.8.6.sha256` → `17d096c0…` |
 | **N-1** | `v0.8.5` | Google Drive `StickLLM-v0.8.5.iso` / `out/v0.8.5/` | `checksums/v0.8.5.sha256` → `a7555511…` |
 | Older public | `v0.8.4` / `v0.8.3` / `v0.8.2` / `v0.8.1` / … | Drive ISOs under their original names (optional retention) | matching `checksums/v0.*.sha256` |
 | Golden | `v0.2.0` | [GitHub Release v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) (split `.7z` and/or Drive link in release notes) | `checksums/v0.2.sha256` → `4914087d…` |
@@ -49,7 +49,7 @@ Older tags and `out/` dirs remain recoverable locally when kept; they are outsid
 
 ```text
 ISO:      Google Drive / local out/v0.8.6/StickLLM-v0.8.6.iso
-Checksum: checksums/v0.8.6.sha256 (fill after bake)
+Checksum: checksums/v0.8.6.sha256 → 17d096c0…
 ```
 
 Flash with Rufus DD or `dd`, then **full readback** — [FLASH.md](FLASH.md).

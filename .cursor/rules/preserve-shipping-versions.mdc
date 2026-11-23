@@ -15,7 +15,7 @@ Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship)
 
 - **Golden (forever):** `v0.2.0` / Drive ISO / `checksums/v0.2.sha256` (`4914087d…`)
 - **N-1:** `v0.8.5` / Drive + `out/v0.8.5/` / `checksums/v0.8.5.sha256` (`a7555511…`)
-- **N:** `v0.8.6` / Drive + `out/v0.8.6/` / `checksums/v0.8.6.sha256` (fill after bake)
+- **N:** `v0.8.6` / Drive + `out/v0.8.6/` / `checksums/v0.8.6.sha256` (`17d096c0…`)
 
 Older public/local ships (`v0.8.4`, `v0.8.3`, `v0.8.2`, `v0.8.1`, …) are **outside** the rolling window. Tags/checksums may remain; local `out/` / Drive ISOs for those may be removed after N advances again. **Never** delete or overwrite Drive golden **v0.2.0**.
 

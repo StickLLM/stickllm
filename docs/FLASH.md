@@ -7,7 +7,7 @@ node / disk number before writing.
 
 | Image | Where | Checksum |
 |---|---|---|
-| **Current** v0.8.6 | Google Drive `StickLLM-v0.8.6.iso` | [`checksums/v0.8.6.sha256`](../checksums/v0.8.6.sha256) (fill after bake) |
+| **Current** v0.8.6 | Google Drive `StickLLM-v0.8.6.iso` | [`checksums/v0.8.6.sha256`](../checksums/v0.8.6.sha256) → `17d096c0…` |
 | **N-1** v0.8.5 | Google Drive `StickLLM-v0.8.5.iso` | [`checksums/v0.8.5.sha256`](../checksums/v0.8.5.sha256) → `a7555511…` |
 
 **Hash of record is in this repo** (`checksums/v0.8.6.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous published ships stay under their own names — never overwrite those files with different contents. Never touch Drive golden **v0.2**.
