@@ -155,7 +155,7 @@ if [[ -d "$SRC/etc/systemd/system/NetworkManager.service.d" ]]; then
   done
   shopt -u nullglob
 fi
-# NTP: systemd-timesyncd drop-ins (network-online wait after Wi-Fi).
+# NTP: systemd-timesyncd drop-ins (do not wait on masked wait-online).
 if [[ -d "$SRC/etc/systemd/system/systemd-timesyncd.service.d" ]]; then
   install -d -m 755 /etc/systemd/system/systemd-timesyncd.service.d
   shopt -s nullglob
@@ -168,6 +168,19 @@ if [[ -d "$SRC/etc/systemd/system/systemd-timesyncd.service.d" ]]; then
     installed=1
   done
   shopt -u nullglob
+fi
+# NTP kick when any interface gets an address (Wi‑Fi / ethernet).
+if [[ -f "$SRC/etc/NetworkManager/dispatcher.d/99-stickllm-clock" ]]; then
+  install -d -m 755 /etc/NetworkManager/dispatcher.d
+  sed -i 's/\r$//' "$SRC/etc/NetworkManager/dispatcher.d/99-stickllm-clock" 2>/dev/null || true
+  install -m 755 "$SRC/etc/NetworkManager/dispatcher.d/99-stickllm-clock" \
+    /etc/NetworkManager/dispatcher.d/99-stickllm-clock
+  echo "installed /etc/NetworkManager/dispatcher.d/99-stickllm-clock"
+  installed=1
+fi
+systemctl enable systemd-timesyncd.service >/dev/null 2>&1 || true
+if [[ -x /usr/local/bin/stickllm-clock-sync ]]; then
+  /usr/local/bin/stickllm-clock-sync >/dev/null 2>&1 &
 fi
 
 # Chromium enterprise policies (tabs, downloads, media auto-grant, proxy/web-mode).

@@ -1,0 +1,23 @@
+---
+description: Agreed fixes must be recorded in ISSUES + NEXT immediately — never leave them in chat only
+alwaysApply: true
+---
+
+# Record agreed fixes immediately
+
+When the user and agent **agree on a fix** (user confirms, says “yes”, “do that”, “hotfix”, “bake that”, or clearly accepts a proposed fix), do **all** of the following in the **same turn** as implementing or scheduling the work — not later, not “when we bake”:
+
+1. **ISSUES.md** — new or updated `ISS-NNN` at the top of Open (or Closed if already shipped). Status: `Open — bake in vX.Y.Z` (or hotfixed + bake). Include Fix line.
+2. **docs/NEXT-&lt;next-version&gt;.md** — one row in **Must bake** with stable short id (e.g. `CLK1`, `ST1`). Status `In tree → bake` once code lands, else `Agreed → implement`.
+3. **CHANGELOG.md** under `## Unreleased (→ vX.Y.Z)` — one bullet naming the ISS id.
+
+## Hard rules
+
+- Chat memory is **not** the record. If it is not in ISSUES + NEXT, it does not exist for bake/hotfix inventory.
+- Do not answer “what’s left?” from conversation alone — read NEXT + ISSUES.
+- Partial hotfixes still get recorded the moment the fix is agreed; mark Status honestly (hotfixed / in tree / agreed).
+- New product work after a ship goes on the **next** NEXT file; never overwrite a shipping tag or published ISO name.
+
+## Current next version
+
+As of post-v0.8.6 work: **v0.8.7** → `docs/NEXT-0.8.7.md`.

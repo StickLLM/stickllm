@@ -1,0 +1,40 @@
+#!/bin/bash
+# Sync wall clock from the internet (NTP) once uplink is up.
+# Wrong clock breaks TLS (StickLink / HTTPS) → "could not connect to server".
+set -euo pipefail
+
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+mkdir -p "$RUN"
+
+log() {
+  printf '%s\n' "$*" | tee -a "$RUN/clock-sync.log" >/dev/null
+  printf '%s\n' "$*"
+}
+
+# Best-effort: do not fail Wi‑Fi apply if NTP is slow.
+set +e
+timedatectl set-ntp true >/dev/null 2>&1
+systemctl enable systemd-timesyncd.service >/dev/null 2>&1
+systemctl restart systemd-timesyncd.service >/dev/null 2>&1
+
+# Wait briefly for a sync (USB boots often start years off).
+ok=0
+for _ in $(seq 1 30); do
+  st="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+  if [[ "$st" == "yes" ]]; then
+    ok=1
+    break
+  fi
+  sleep 1
+done
+
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [[ "$ok" == 1 ]]; then
+  printf 'synced=1\nat=%s\n' "$now" >"$RUN/clock-sync.json"
+  log "OK clock NTP synced at ${now}"
+  exit 0
+fi
+
+printf 'synced=0\nat=%s\n' "$now" >"$RUN/clock-sync.json"
+log "WARN clock NTP not confirmed yet at ${now} (timesyncd running; will keep trying)"
+exit 0

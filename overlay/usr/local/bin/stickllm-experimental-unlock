@@ -78,6 +78,13 @@ def _save_state(state: dict) -> None:
     tmp = STATE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
     tmp.replace(STATE)
+    # Same-machine reboot keep; other machine resets via stickllm-experimental-host.
+    try:
+        mod = _load_mod()
+        if hasattr(mod, "_stamp_experimental_host"):
+            mod._stamp_experimental_host(ROOT)
+    except Exception:
+        pass
 
 
 def secure_boot_enabled() -> bool | None:

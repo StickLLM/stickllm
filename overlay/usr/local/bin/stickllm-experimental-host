@@ -1,0 +1,195 @@
+#!/bin/bash
+# Bind Experimental state onto STICKLLM-DATA, keyed to this computer.
+# Same machine → keep NInfer/Strata default + unlock prefs across reboot.
+# Different machine → defaults (llama.cpp, unlocks off). Engines downloads stay.
+set -euo pipefail
+
+DATA="${STICKLLM_DATA_MNT:-/mnt/stickllm-data}"
+LIB_DATA="${STICKLLM_EXPERIMENTAL_DATA:-$DATA/experimental/lib}"
+LIB_VAR="${STICKLLM_EXPERIMENTAL_ROOT:-/var/lib/stickllm/experimental}"
+RUN="${STICKLLM_RUN:-/run/stickllm}"
+SETTINGS_LIB="${STICKLLM_SETTINGS_LIB:-/usr/local/lib/stickllm_usb_settings.py}"
+HOST_JSON="$LIB_DATA/host.json"
+
+mkdir -p "$RUN" 2>/dev/null || true
+
+log() { printf '%s\n' "$*" | tee -a "$RUN/experimental-host.log" >/dev/null; }
+
+this_machine() {
+  python3 - <<'PY'
+import json, sys
+from pathlib import Path
+lib = Path("/usr/local/lib/stickllm_usb_settings.py")
+if not lib.is_file():
+    print(json.dumps({"id": "", "label": "unknown"}))
+    raise SystemExit(0)
+import importlib.util
+spec = importlib.util.spec_from_file_location("stickllm_usb_settings", lib)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(json.dumps(mod.machine_id()))
+PY
+}
+
+write_defaults() {
+  # llama.cpp default; unlocks cleared. Keep engines/ + src/ (large downloads).
+  mkdir -p "$LIB_DATA"
+  cat >"$LIB_DATA/active-engine.json" <<'EOF'
+{
+  "engine": "llama.cpp",
+  "updated": 0,
+  "reset": "new-machine"
+}
+EOF
+  cat >"$LIB_DATA/active-engine.env" <<'EOF'
+STICKLLM_ACTIVE_ENGINE=llama.cpp
+STICKLLM_ENGINE_ROOT=
+STICKLLM_ENGINE_DEST=
+STICKLLM_ENGINE_TAG=
+STICKLLM_NINFER_MODEL=
+NINFER_MODEL_DIR=/mnt/stickllm-data/models
+NINFER_HOST=127.0.0.1
+NINFER_PORT=8080
+STICKLLM_LLAMA_HOST=127.0.0.1
+STICKLLM_LLAMA_PORT=8080
+EOF
+  rm -f "$LIB_DATA/exp-engine.enabled"
+  cat >"$LIB_DATA/unlock-state.json" <<'EOF'
+{
+  "cards": {}
+}
+EOF
+}
+
+write_host() {
+  local mid="$1" label="$2" match="$3"
+  mkdir -p "$LIB_DATA"
+  STICKLLM_HOST_MID="$mid" STICKLLM_HOST_LABEL="$label" STICKLLM_HOST_MATCH="$match" \
+  STICKLLM_HOST_JSON="$HOST_JSON" python3 - <<'PY'
+import json, os, time
+from pathlib import Path
+p = Path(os.environ["STICKLLM_HOST_JSON"])
+doc = {
+  "machine_id": os.environ.get("STICKLLM_HOST_MID") or "",
+  "machine_label": os.environ.get("STICKLLM_HOST_LABEL") or "this computer",
+  "match": os.environ.get("STICKLLM_HOST_MATCH") or "",
+  "updated": int(time.time()),
+}
+p.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+restore_unlock_grub() {
+  # Best-effort: put gpu_unlock.targets back into /etc/default/grub on same host.
+  # Live image still needs a prior module install; UI state at least matches.
+  [[ -x /usr/local/bin/stickllm-experimental-unlock ]] || return 0
+  [[ -f "$LIB_VAR/unlock-state.json" ]] || return 0
+  python3 - <<'PY' || true
+import json, subprocess
+from pathlib import Path
+state = Path("/var/lib/stickllm/experimental/unlock-state.json")
+try:
+    data = json.loads(state.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+cards = data.get("cards") or {}
+bdfs = []
+for bus, meta in cards.items():
+    if isinstance(meta, dict) and meta.get("applied") and meta.get("path") == "gpu_unlock":
+        bdfs.append(str(bus))
+if not bdfs:
+    raise SystemExit(0)
+# Call helper's set path via a tiny python reuse of unlock module
+import importlib.util
+spec = importlib.util.spec_from_file_location(
+    "u", "/usr/local/bin/stickllm-experimental-unlock"
+)
+# stickllm-experimental-unlock is a script with shebang — exec functions via runpy
+import runpy
+ns = runpy.run_path("/usr/local/bin/stickllm-experimental-unlock")
+if "set_gpu_unlock_targets" in ns:
+    ns["set_gpu_unlock_targets"](bdfs, enable=True)
+print("restored gpu_unlock.targets for", ",".join(bdfs))
+PY
+}
+
+# --- main ---
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run as root" >&2
+  exit 1
+fi
+
+if ! mountpoint -q "$DATA" 2>/dev/null; then
+  log "WARN DATA not mounted — experimental state stays ephemeral this boot"
+  mkdir -p "$LIB_VAR"
+  printf 'persist=0\nreason=no-data\n' >"$RUN/experimental-host.json"
+  exit 0
+fi
+
+mkdir -p "$LIB_DATA" "$DATA/experimental/ninfer-models" "$DATA/experimental/strata" "$DATA/models"
+
+# Migrate any overlay-only experimental tree into DATA before bind (first boot after fix).
+if [[ ! -e "$LIB_DATA/active-engine.json" ]] && [[ -e "$LIB_VAR/active-engine.json" ]] \
+  && ! mountpoint -q "$LIB_VAR" 2>/dev/null; then
+  log "Migrating overlay experimental → DATA"
+  cp -a "$LIB_VAR/." "$LIB_DATA/" 2>/dev/null || true
+fi
+
+mach="$(this_machine)"
+mid="$(printf '%s' "$mach" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
+label="$(printf '%s' "$mach" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("label","this computer"))')"
+prev=""
+if [[ -f "$HOST_JSON" ]]; then
+  prev="$(python3 -c 'import json; print(json.load(open("'"$HOST_JSON"'")).get("machine_id",""))' 2>/dev/null || true)"
+fi
+
+match="same"
+if [[ -z "$mid" ]]; then
+  match="unknown"
+  log "WARN no machine id — keeping stored settings"
+elif [[ -n "$prev" && "$prev" != "$mid" ]]; then
+  match="other"
+  log "New computer ($label) — Experimental defaults (llama.cpp, unlocks off)"
+  write_defaults
+elif [[ -z "$prev" ]]; then
+  match="new"
+  log "First host tag on this DATA — keeping current Experimental files"
+fi
+
+write_host "$mid" "$label" "$match"
+
+# Bind DATA lib → runtime path so all helpers keep using /var/lib/stickllm/experimental.
+mkdir -p "$LIB_VAR"
+if ! mountpoint -q "$LIB_VAR" 2>/dev/null; then
+  mount --bind "$LIB_DATA" "$LIB_VAR"
+  log "Bound $LIB_DATA -> $LIB_VAR"
+else
+  log "already bound $LIB_VAR"
+fi
+
+if [[ "$match" == "same" || "$match" == "new" ]]; then
+  restore_unlock_grub || true
+fi
+
+STICKLLM_HOST_MID="$mid" STICKLLM_HOST_LABEL="$label" STICKLLM_HOST_MATCH="$match" \
+STICKLLM_HOST_LIB="$LIB_DATA" STICKLLM_HOST_RUN="$RUN" python3 - <<'PY'
+import json, os, time
+from pathlib import Path
+Path(os.environ["STICKLLM_HOST_RUN"], "experimental-host.json").write_text(
+    json.dumps(
+        {
+            "persist": 1,
+            "match": os.environ.get("STICKLLM_HOST_MATCH") or "",
+            "machine_id": os.environ.get("STICKLLM_HOST_MID") or "",
+            "machine_label": os.environ.get("STICKLLM_HOST_LABEL") or "",
+            "lib": os.environ.get("STICKLLM_HOST_LIB") or "",
+            "updated": int(time.time()),
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+log "OK experimental host match=$match"
+exit 0

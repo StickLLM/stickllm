@@ -387,18 +387,40 @@
   }
   // 0.6.1: kiosk Power off with confirm. The gateway only accepts it from the
   // stick's own screen (loopback) and only with confirm:true.
+  // Native Browser/Terminal X11 windows sit above the desk page — window.confirm
+  // (and the in-page modal) stay on that page and were hidden behind an open
+  // browser. Yield natives first, then use the in-desk confirmBox.
   function powerOff() {
     if (!isLocal()) return;
-    if (!window.confirm("Power off this computer now?\n\nUnsaved work in open apps is lost. Your vault, chats and models are kept.")) return;
+    // Always minimise natives (bypass yieldNative debounce) so the confirm is visible.
+    yieldBrowser();
+    yieldTerminal();
     const api = appApi();
-    if (api.toast) api.toast("Powering off\u2026");
-    fetch("/api/system/power", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-StickLLM-Client": "ui" },
-      body: JSON.stringify({ action: "poweroff", confirm: true }),
-    }).then((r) => r.json().catch(() => ({}))).then((j) => {
-      if (!j || !j.ok) { if (api.toast) api.toast((j && j.message) || "Power off failed"); }
-    }).catch((e) => { if (api.toast) api.toast("Power off failed: " + e.message); });
+    const doPower = () => {
+      if (api.toast) api.toast("Powering off\u2026");
+      fetch("/api/system/power", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-StickLLM-Client": "ui" },
+        body: JSON.stringify({ action: "poweroff", confirm: true }),
+      }).then((r) => r.json().catch(() => ({}))).then((j) => {
+        if (!j || !j.ok) { if (api.toast) api.toast((j && j.message) || "Power off failed"); }
+      }).catch((e) => { if (api.toast) api.toast("Power off failed: " + e.message); });
+    };
+    const ask = () => {
+      if (typeof api.confirmBox === "function") {
+        api.confirmBox({
+          title: "Power off",
+          text: "Power off this computer now?\n\nUnsaved work in open apps is lost. Your vault, chats and models are kept.",
+          ok: "Power off",
+          danger: true,
+          cb: doPower,
+        });
+        return;
+      }
+      if (window.confirm("Power off this computer now?\n\nUnsaved work in open apps is lost. Your vault, chats and models are kept.")) doPower();
+    };
+    // Brief beat so minimise hits the compositor before the modal paints.
+    setTimeout(ask, 120);
   }
 
   // ---------- tray ----------

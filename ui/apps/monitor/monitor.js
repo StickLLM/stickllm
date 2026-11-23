@@ -83,14 +83,20 @@
     const row = mem || {};
     if (!row.available) return { title: "Memory", kind: "mem", lines: [{ text: row.message || "Memory stats are unavailable" }] };
     const p = pct(row.used, row.total);
+    const lines = [
+      { cls: "val clip", text: (n(row.used) ? (row.used / 1024 ** 3).toFixed(1) : "—") + " / " + gb(row.total) },
+      { cls: "dim", text: gb(row.free) + " available" },
+    ];
+    // USB→RAM model stage lives in tmpfs (Shmem). Show it so a pegged USB +
+    // modest "used" line doesn't look like staging failed.
+    if (n(row.shared) && row.shared >= 512 * 1024 * 1024) {
+      lines.push({ cls: "dim", text: gb(row.shared) + " shared (incl. RAM-staged models)" });
+    }
     return {
       title: "Memory",
       kind: "mem",
       gauges: p == null ? [] : [{ label: "RAM", pct: p, text: Math.round(p) + "%", tone: loadTone(p) }],
-      lines: [
-        { cls: "val clip", text: (n(row.used) ? (row.used / 1024 ** 3).toFixed(1) : "—") + " / " + gb(row.total) },
-        { cls: "dim", text: gb(row.free) + " free" },
-      ],
+      lines,
     };
   }
 

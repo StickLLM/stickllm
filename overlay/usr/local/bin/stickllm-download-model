@@ -145,8 +145,8 @@ mkdir -p "$DEST_DIR"
 
 if [[ -n "$HF_REPO" || -n "$HF_FILE" ]]; then
   case "$HF_FILE" in
-    *.gguf) ;;
-    *) echo "Refusing non-GGUF file: $HF_FILE"; exit 2 ;;
+    *.gguf|*.ninfer) ;;
+    *) echo "Refusing non-GGUF/.ninfer file: $HF_FILE"; exit 2 ;;
   esac
   case "$HF_FILE" in
     *..*|/*) echo "Refusing unsafe file path"; exit 2 ;;

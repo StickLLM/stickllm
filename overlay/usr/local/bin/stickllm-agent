@@ -737,6 +737,7 @@ cmd_run_container() {
     --log-opt max-file=2 \
     --network "$NETWORK" \
     --add-host llama:host-gateway \
+    --add-host host.docker.internal:host-gateway \
     "${BLOCK_HOST_ARGS[@]}" \
     "${DNS_ARGS[@]}" \
     -p 127.0.0.1:5099:5099 \

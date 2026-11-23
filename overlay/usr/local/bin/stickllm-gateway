@@ -475,19 +475,61 @@ def _inject_embed_runtime(html: str, pref: str) -> str:
     return re.sub(r"(?i)<html([^>]*)>", lambda match: match.group(0) + block, html, count=1)
 
 
+def _rewrite_a0_sync_js(text: str) -> str:
+    """StickLink-safe A0 sync without forking Agent Zero.
+
+    Over the paired link, Engine.IO handshake + state_request often exceed A0's
+    2s timeout, and auth.handlers can arrive empty → NO_HANDLERS / red sync.
+    Patch served JS only (gateway), not the A0 image.
+    """
+    out = text
+    # sync-store.js handshake under StickLink latency
+    out = out.replace(
+        'stateSocket.request("state_request", payload, { timeoutMs: 2000 })',
+        'stateSocket.request("state_request", payload, { timeoutMs: 20000 })',
+    )
+    out = out.replace(
+        "stateSocket.request('state_request', payload, { timeoutMs: 2000 })",
+        "stateSocket.request('state_request', payload, { timeoutMs: 20000 })",
+    )
+    # websocket.js: always activate ws_webui even if addHandlers raced
+    needle = "const handlers = [...this._handlers];"
+    if needle in out and "ws_webui" in out:
+        out = out.replace(
+            needle,
+            "const handlers = [...this._handlers];\n"
+            '      if (!handlers.includes("ws_webui")) handlers.push("ws_webui");',
+            1,
+        )
+    # Process state_push while DEGRADED (A0 #1840) — StickLink often degrades
+    # spuriously; dropping pushes leaves the red sync dot stuck.
+    out = out.replace(
+        'if (this.mode === SYNC_MODES.DEGRADED) {\n'
+        '      debug("[syncStore] ignoring state_push while DEGRADED");\n'
+        '      return;\n'
+        '    }',
+        'if (this.mode === SYNC_MODES.DEGRADED) {\n'
+        '      debug("[syncStore] state_push while DEGRADED (processing over StickLink)");\n'
+        '    }',
+    )
+    return out
+
+
 def rewrite_agent_embed_payload(data: bytes, ctype: str, prefix: str = AGENT_EMBED_PREFIX) -> bytes:
-    """Prefix path-absolute URLs in HTML and CSS. JavaScript bodies pass through."""
+    """Prefix path-absolute URLs in HTML/CSS; patch A0 sync JS for StickLink."""
     if not data:
         return data
     low = (ctype or "").split(";")[0].strip().lower()
-    if low not in ("text/html", "text/css"):
+    if low not in ("text/html", "text/css", "text/javascript", "application/javascript", "application/x-javascript"):
         return data
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return data
     pref = prefix.rstrip("/") or AGENT_EMBED_PREFIX
-    if low == "text/css":
+    if low in ("text/javascript", "application/javascript", "application/x-javascript"):
+        rewritten = _rewrite_a0_sync_js(text)
+    elif low == "text/css":
         rewritten = _prefix_css_urls(text, pref)
     else:
         rewritten = _inject_embed_runtime(_rewrite_embed_html(text, pref), pref)
@@ -2083,6 +2125,28 @@ def resolve_model() -> tuple[str, str, str, str]:
     return model_name, model_path, model_id, running
 
 
+def stage_progress_info() -> dict:
+    """USB→RAM staging progress (tmpfs copy before GPU Load)."""
+    doc = read_json_safe(RUN_DIR / "stage-progress.json") or {}
+    if not isinstance(doc, dict):
+        return {}
+    # Only surface active / just-finished stage signals to the status bar.
+    state = str(doc.get("state") or "")
+    if state not in ("copying", "done"):
+        return {}
+    out = {
+        "state": state,
+        "phase": str(doc.get("phase") or ""),
+        "percent": doc.get("percent"),
+        "bytes_done": doc.get("bytes_done"),
+        "bytes_total": doc.get("bytes_total"),
+        "caption": str(doc.get("caption") or ""),
+        "dest": str(doc.get("dest") or ""),
+        "src": str(doc.get("src") or ""),
+    }
+    return out
+
+
 def llama_load_info() -> dict:
     """Fit caption + last CUDA error written under /run/stickllm. No secrets."""
     plan = _parse_env_kv(read_text_safe(RUN_DIR / "llama-plan.env"))
@@ -2152,14 +2216,39 @@ def llama_warmup_info() -> dict:
 
 
 def llama_unit_state() -> dict:
-    """Whether stickllm-llama is actually starting or running. No secrets."""
-    snap = {"active_state": "", "sub_state": "", "process_alive": False}
+    """Whether the active :8080 engine unit is starting or running. No secrets.
+
+    llama.cpp → stickllm-llama.service. NInfer/Strata → stickllm-exp-engine.service
+    so the Models tray can show Loading… the same way on a slow USB weight load.
+    """
+    unit = "stickllm-llama.service"
+    engine = ""
+    try:
+        kv = _parse_env_kv(read_text_safe(RUN_DIR / "model.env"))
+        engine = str(kv.get("STICKLLM_ENGINE") or "").strip().lower()
+    except Exception:
+        engine = ""
+    if not engine:
+        try:
+            ae = read_json_safe(Path("/var/lib/stickllm/experimental/active-engine.json")) or {}
+            engine = str(ae.get("engine") or "").strip().lower()
+        except Exception:
+            engine = ""
+    if engine in ("ninfer-all", "strata"):
+        unit = "stickllm-exp-engine.service"
+    snap = {
+        "active_state": "",
+        "sub_state": "",
+        "process_alive": False,
+        "unit": unit,
+        "engine": engine or "llama.cpp",
+    }
     try:
         proc = subprocess.run(
             [
                 "systemctl",
                 "show",
-                "stickllm-llama.service",
+                unit,
                 "-p",
                 "ActiveState",
                 "-p",
@@ -2181,9 +2270,17 @@ def llama_unit_state() -> dict:
         snap["sub_state"] = vals.get("SubState") or ""
     except (OSError, subprocess.SubprocessError):
         pass
-    snap["process_alive"] = (
-        snap["active_state"] == "active" and snap["sub_state"] == "running"
-    )
+    # activating = still loading weights (NInfer from USB can take a long time).
+    snap["process_alive"] = snap["active_state"] in ("active", "activating") and snap[
+        "sub_state"
+    ] in ("running", "start", "auto-restart", "")
+    if snap["active_state"] == "activating":
+        snap["process_alive"] = True
+        snap["caption"] = (
+            "Loading NInfer weights…"
+            if engine == "ninfer-all"
+            else "Loading Experimental engine…"
+        )
     return snap
 
 
@@ -2300,7 +2397,7 @@ def connect_info(loopback: bool, llama_ok: bool = False) -> dict:
         "model_path": model_path,
         "running_model": running_model,
         "ctx_size": active_ctx_size(),
-        "vision": bool(active_mmproj()),
+        "vision": bool(active_mmproj()) or _model_env_engine() == "ninfer-all",
         "url": url,
         "local_url": local_url,
         "backend": detect_backend(),
@@ -2364,6 +2461,20 @@ def active_mmproj() -> str:
     except Exception:
         return ""
     return path if path and Path(path).is_file() else ""
+
+
+def _model_env_engine() -> str:
+    """Active inference engine from model.env (GGUF leave blank → llama.cpp)."""
+    env = RUN_DIR / "model.env"
+    if not env.is_file():
+        return ""
+    try:
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line.startswith("STICKLLM_ENGINE="):
+                return line.split("=", 1)[1].strip().lower()
+    except Exception:
+        return ""
+    return ""
 
 
 LOCAL_ONLY_CONTROL_PREFIXES = ("browser_", "terminal_")
@@ -5801,6 +5912,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "llama_load": llama_load_info(),
                 "llama_service": llama_unit_state(),
                 "llama_warmup": llama_warmup_info(),
+                "stage": stage_progress_info(),
                 # Unused stub (preparing-agent toast removed — caused A0 embed failure).
                 "agent_prompt": {"busy": False, "at": None, "age_s": None},
             }
@@ -6995,6 +7107,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             try:
                 if action == "model_download":
+                    timeout = 7200
+                elif action in (
+                    "experimental_ninfer_model_activate",
+                    "model_activate",
+                    "activate",
+                ):
+                    # USB→RAM stage of a 15–20 GiB .ninfer can take many minutes;
+                    # the old 180s cap cleared the Loading UI while copy continued.
                     timeout = 7200
                 elif action in (
                     "vault_lock",

@@ -7,15 +7,15 @@ Stick runtime copy of the lab reference bridge. Phone wire protocol unchanged
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
+import re
 import ssl
 import time
 from typing import Any, Callable, Awaitable
 from urllib.parse import urlparse
 
 import websockets
-
-import gzip
 
 from sticklink.util import b64u, unb64u
 
@@ -63,8 +63,10 @@ def _inject_lab_ux(raw: bytes, headers: dict) -> bytes:
 # worker SESS_BOX_MAX (64 KiB) / SESS_FRAME_MAX (96 KiB). 36 KiB payload is
 # ~49 KiB PT JSON and ~65 KiB wire b64 — tight; 24 KiB leaves headroom.
 CHUNK = 24 * 1024
-MAX_BODY = 8 * 1024 * 1024
+MAX_BODY = 32 * 1024 * 1024  # A0 work-dir PDF/Doc downloads over StickLink
 GZIP_MIN = 800
+# Never gzip Content-Disposition: attachment — phone save-as needs identity body.
+_ATTACHMENT_RE = re.compile(r"attachment", re.I)
 # Incomplete chunked requests older than this get 408 (avoid 180s phone stalls).
 REQ_BUF_TTL_SEC = 30.0
 
@@ -363,8 +365,19 @@ class AppMuxBridge:
             if ce:
                 headers["x-sticklink-upstream-ce"] = str(ce)
             plain_len = len(raw)
+            cd = str(headers.get("content-disposition") or "")
+            is_attachment = bool(_ATTACHMENT_RE.search(cd)) or (
+                "download_work_dir_file" in path_only
+            )
+            if is_attachment:
+                # Preserve filename for phone WebView save; keep identity body.
+                headers["x-sticklink-download"] = "1"
+                if "content-disposition" not in headers and plain_len:
+                    name = path_only.rsplit("/", 1)[-1] or "download"
+                    headers["content-disposition"] = f'attachment; filename="{name}"'
             # Gzip on the Noise DC to cut base64 wire size (phone LTE).
-            if plain_len >= GZIP_MIN:
+            # Skip for attachments — corrupted/opaque gzip breaks phone downloads.
+            if (not is_attachment) and plain_len >= GZIP_MIN:
                 gz = gzip.compress(raw, compresslevel=6)
                 if len(gz) + 64 < plain_len:
                     headers["x-sticklink-ce"] = "gzip"

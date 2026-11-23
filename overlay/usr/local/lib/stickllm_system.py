@@ -102,7 +102,19 @@ def memory_block(meminfo: str | None = None) -> dict:
     if total is None or avail is None:
         return {"available": False, "message": "Memory stats are unavailable"}
     used = max(0, total - avail)
-    return {"available": True, "total": total, "used": used, "free": avail}
+    # tmpfs model stage (/dev/shm, /tmp) shows up here — not in a small
+    # "anon-only" reading. Surface it so System Monitor isn't confusing during
+    # USB→RAM copy (USB pegged, Shared climbing, "used" still looks modest).
+    shmem = int(vals.get("Shmem") or 0)
+    cached = int(vals.get("Cached") or 0)
+    return {
+        "available": True,
+        "total": total,
+        "used": used,
+        "free": avail,
+        "shared": shmem,
+        "cached": cached,
+    }
 
 
 def gpu_block(runner=None) -> dict:

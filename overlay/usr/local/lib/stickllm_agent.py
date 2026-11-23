@@ -2465,6 +2465,11 @@ def apps_prompt_text() -> str:
         "Make documents with create_spreadsheet / create_document, open them with open_document."
     )
     lines.append(NO_GUI_RULE)
+    lines.append(
+        "Vision: phone photos are already shrunk before the model sees them. "
+        "If you cannot read an image or vision fails, say so once clearly — "
+        "do not loop on OCR, vision_load, or repeated screenshot retries."
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -2915,10 +2920,16 @@ def stickllm_attach_images_extension_source() -> str:
     llama endpoint unless the agent calls vision_load. This monologue_start
     hook mirrors vision_load's after_execution path: inject image_url parts
     before the first LLM call so Qwen-VL can see the pixels.
+
+    ISS-063: downscale/re-encode oversized phone photos to JPEG data URLs
+    (max edge 1280) so full-size shots cannot overflow context.
     """
     return '''from __future__ import annotations
 
+import base64
+import io
 from mimetypes import guess_type
+from pathlib import Path
 from typing import Any
 
 from helpers.extension import Extension
@@ -2927,7 +2938,9 @@ from plugins._model_config.helpers.model_config import get_chat_model_config
 
 _FLAG = "stickllm_attached_images_for"
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-_TOKENS_ESTIMATE = 1500
+_TOKENS_ESTIMATE = 800
+_MAX_EDGE = 1280
+_JPEG_QUALITY = 85
 
 
 def _attachment_paths(content: Any) -> list[str]:
@@ -2957,6 +2970,47 @@ def _is_image_path(path: str) -> bool:
     return lowered.endswith(_IMAGE_EXTS)
 
 
+def _shrink_to_data_url(path: str) -> str | None:
+    """Return a resized JPEG data URL, or None to leave the path as-is."""
+    try:
+        from PIL import Image  # type: ignore
+    except Exception:
+        return None
+    try:
+        raw: bytes | None = None
+        if path.startswith("data:image/") and ";base64," in path:
+            raw = base64.b64decode(path.split(";base64,", 1)[1], validate=False)
+        else:
+            p = Path(path)
+            if not p.is_file():
+                return None
+            raw = p.read_bytes()
+        if not raw:
+            return None
+        # Tiny already — skip re-encode
+        if len(raw) < 180_000:
+            return None
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        elif img.mode == "L":
+            img = img.convert("RGB")
+        w, h = img.size
+        scale = min(1.0, float(_MAX_EDGE) / float(max(w, h) or 1))
+        if scale < 0.999:
+            img = img.resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS,
+            )
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=_JPEG_QUALITY, optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{b64}"
+    except Exception:
+        return None
+
+
 class StickllmAttachImages(Extension):
     async def execute(self, loop_data=None, **kwargs):  # noqa: ANN001
         agent = self.agent
@@ -2981,9 +3035,8 @@ class StickllmAttachImages(Extension):
             if path in seen or not _is_image_path(path):
                 continue
             seen.add(path)
-            # Local /a0 paths and data URLs: litellm prepare_content converts
-            # file paths to data:image before the llama call.
-            image_urls.append({"type": "image_url", "image_url": {"url": path}})
+            url = _shrink_to_data_url(path) or path
+            image_urls.append({"type": "image_url", "image_url": {"url": url}})
         if not image_urls:
             return
         raw = history.RawMessage(
@@ -4114,9 +4167,89 @@ def _mmproj_path() -> str:
     return path if path and Path(path).is_file() else ""
 
 
+def _active_engine_id() -> str:
+    """llama.cpp | ninfer-all | strata from Experimental active-engine.json."""
+    try:
+        p = Path(
+            os.environ.get(
+                "STICKLLM_ACTIVE_ENGINE_FILE",
+                "/var/lib/stickllm/experimental/active-engine.json",
+            )
+        )
+        if not p.is_file():
+            return "llama.cpp"
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        eng = str((doc or {}).get("engine") or "llama.cpp").strip().lower()
+        return eng or "llama.cpp"
+    except (OSError, ValueError, TypeError):
+        return "llama.cpp"
+
+
+def llama_model_ctx_length(default: int = 32768) -> int:
+    """Context window the live engine advertises (NInfer is often 8192)."""
+    for url in (f"http://127.0.0.1:{LLAMA_BRIDGE_PORT}/v1/models", f"{LLAMA_BASE}/models"):
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        rows = payload.get("data")
+        if not isinstance(rows, list):
+            continue
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            for key in ("context_length", "context_window", "max_model_len"):
+                try:
+                    n = int(item.get(key) or 0)
+                except (TypeError, ValueError):
+                    n = 0
+                if n > 0:
+                    return n
+            meta = item.get("meta")
+            if isinstance(meta, dict):
+                try:
+                    n = int(meta.get("n_ctx") or 0)
+                except (TypeError, ValueError):
+                    n = 0
+                if n > 0:
+                    return n
+    return int(default)
+
+
 def _model_vision() -> bool:
-    """True when llama-server was started with an on-disk mmproj (multimodal)."""
-    return bool(_mmproj_path())
+    """True when the active :8080 engine can take images.
+
+    llama.cpp: on-disk mmproj. NInfer: trust /v1/models modalities (do not
+    assume every .ninfer is vision — that bloated A0 prompts past 8K).
+    """
+    if bool(_mmproj_path()):
+        return True
+    for url in (f"http://127.0.0.1:{LLAMA_BRIDGE_PORT}/v1/models", f"{LLAMA_BASE}/models"):
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        rows = payload.get("data")
+        if not isinstance(rows, list):
+            continue
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            mods = item.get("modalities")
+            if isinstance(mods, dict) and "vision" in mods:
+                return bool(mods.get("vision"))
+            arch = item.get("architecture")
+            if isinstance(arch, dict):
+                inputs = arch.get("input_modalities")
+                if isinstance(inputs, list):
+                    return "image" in inputs or "vision" in inputs
+    return False
 
 
 def _model_name() -> str:
@@ -4195,6 +4328,7 @@ def model_settings(model_name: str, *, vision: bool | None = None) -> dict[str, 
     chat_kwargs = _model_kwargs()
     util_kwargs = _util_model_kwargs()
     sees = _model_vision() if vision is None else bool(vision)
+    # Hard 32K limit for Agent Zero (product floor; engine must honor ≥32K).
     return {
         "chat_model_provider": LOCAL_PROVIDER,
         "chat_model_name": model_name,
@@ -4365,7 +4499,8 @@ def _sync_plugin_model_config(root: Path, model_name: str, *, vision: bool | Non
         slot["provider"] = LOCAL_PROVIDER
         slot["name"] = model_name
         slot["api_base"] = LLAMA_BASE
-        slot["ctx_length"] = 32768
+        # StickLLM floor 32K; follow live engine when Models → Context is higher.
+        slot["ctx_length"] = max(32768, int(llama_model_ctx_length(32768) or 32768))
         slot[ratio_key] = ratio
         if section == "chat_model":
             slot["vision"] = sees
@@ -4569,18 +4704,82 @@ def llama_model_ready_id() -> str:
     return ""
 
 
+def _norm_model_token(s: str) -> str:
+    """Collapse id/path noise so qwen36-27b matches NInfer's qwen3.6-27b."""
+    stem = Path(str(s or "")).name
+    for suf in (".gguf", ".ninfer"):
+        if stem.lower().endswith(suf):
+            stem = stem[: -len(suf)]
+    stem = re.sub(r"-0*1-of-0*\d+$", "", stem, flags=re.I)
+    return re.sub(r"[^a-z0-9]+", "", stem.lower())
+
+
 def _model_matches(model: str, expect: str) -> bool:
     """0.6.2 (A7): the id llama-server reports belongs to the model that was
-    just activated (alias, file name or path)."""
+    just activated (alias, file name or path).
+
+    NInfer advertises dotted ids (qwen3.6-27b) while StickLLM catalog ids use
+    qwen36-27b — treat those as the same after normalizing.
+    """
     if not expect:
         return True
     stem = Path(expect).name
-    for suf in (".gguf",):
+    for suf in (".gguf", ".ninfer"):
         if stem.lower().endswith(suf):
             stem = stem[: -len(suf)]
     stem = re.sub(r"-0*1-of-0*\d+$", "", stem)
     m = model.lower()
-    return stem.lower() in m or Path(model).name.lower().startswith(stem.lower()) or m in expect.lower()
+    if stem.lower() in m or Path(model).name.lower().startswith(stem.lower()) or m in expect.lower():
+        return True
+    nm, ne = _norm_model_token(model), _norm_model_token(expect)
+    if nm and ne and (nm == ne or nm in ne or ne in nm):
+        return True
+    return False
+
+
+def patch_a0_llama_cpp_api_base() -> dict:
+    """Point A0's baked llama_cpp default at the StickLLM bridge.
+
+    conf/model_providers.yaml ships api_base=http://host.docker.internal:8080/v1.
+    LiteLLM merges that over our preset api_base and A0 then fails with a
+    LiteLLM exception unless host.docker.internal is mapped (or this is patched).
+    """
+    sock = os.environ.get("DOCKER_HOST", "unix:///run/stickllm/agent-docker.sock")
+    if not sock.startswith("unix://") and not sock.startswith("tcp://"):
+        sock = "unix:///run/stickllm/agent-docker.sock"
+    env = {**os.environ, "DOCKER_HOST": sock}
+    try:
+        import subprocess
+
+        cid = subprocess.check_output(
+            ["docker", "ps", "-q", "--filter", "name=stickllm-agent-zero"],
+            text=True,
+            env=env,
+            timeout=15,
+        ).strip().splitlines()
+        if not cid:
+            return {"ok": False, "error": "agent container not running"}
+        container = cid[0]
+        script = (
+            "from pathlib import Path\n"
+            "p = Path('/a0/conf/model_providers.yaml')\n"
+            "t = p.read_text(encoding='utf-8')\n"
+            "old = 'http://host.docker.internal:8080'\n"
+            "new = 'http://172.30.0.1:8080'\n"
+            "n = t.count(old)\n"
+            "p.write_text(t.replace(old, new), encoding='utf-8') if n else None\n"
+            "print(n)\n"
+        )
+        out = subprocess.check_output(
+            ["docker", "exec", "-i", container, "/opt/venv-a0/bin/python", "-"],
+            input=script,
+            text=True,
+            env=env,
+            timeout=30,
+        ).strip()
+        return {"ok": True, "replaced": int(out or "0"), "container": container}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
 
 
 def sync_model(wait: float = 300.0, poll: float = 2.0, model_name: str | None = None,
@@ -4608,6 +4807,11 @@ def sync_model(wait: float = 300.0, poll: float = 2.0, model_name: str | None = 
         time.sleep(poll)
     if not model:
         return {"ok": False, "error": "llama-server did not report a model"}
+    # Keep LiteLLM from dialing host.docker.internal (broken on this bridge).
+    try:
+        patch_a0_llama_cpp_api_base()
+    except Exception:
+        pass
     root = PORTABLE
     (root / "model-config").mkdir(parents=True, exist_ok=True)
     preset = root / "model-config" / "presets.yaml"

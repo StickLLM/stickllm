@@ -92,4 +92,9 @@ if [[ -x /usr/local/bin/stickllm-lan-ip ]]; then
   /usr/local/bin/stickllm-lan-ip --wait 25 >/dev/null 2>&1 || true
 fi
 
+# Wrong wall clock → TLS failures ("could not connect to server"). Sync NTP now.
+if [[ -x /usr/local/bin/stickllm-clock-sync ]]; then
+  /usr/local/bin/stickllm-clock-sync >/dev/null 2>&1 &
+fi
+
 echo "OK wifi profile ${CONN_NAME} for ssid=${SSID}"

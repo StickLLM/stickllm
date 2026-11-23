@@ -12,6 +12,237 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-064 — A0-created files not downloadable on phone over StickLink
+| | |
+|---|---|
+| **ID** | ISS-064 |
+| **Date** | 2026-11-23 |
+| **Mode** | Agent Zero / StickLink |
+| **Severity** | MED (PDF/Doc created on stick unreachable from phone) |
+| **Status** | Open — **bake in v0.8.7** (in tree) |
+| **Summary** | Files Agent Zero creates (PDF, Doc, etc.) should be downloadable from A0’s UI through the paired StickLink session. Today the phone cannot pull those artifacts over the link. |
+| **Fix (v0.8.7)** | Mux: 32 MiB body cap; never gzip attachments / `download_work_dir_file`; 300s bridge timeout; `x-sticklink-download` + Content-Disposition preserved. |
+
+### ISS-063 — Oversized phone images overflow vision context
+| | |
+|---|---|
+| **ID** | ISS-063 |
+| **Date** | 2026-11-23 |
+| **Mode** | Agent Zero / StickLink / vision |
+| **Severity** | HIGH (full-size photos blow context; OCR loop on failure) |
+| **Status** | Open — **bake in v0.8.7** (in tree) |
+| **Summary** | Gateway should shrink oversized images before Agent Zero’s vision tool sees them. If vision still fails, A0 should report failure (prompt/settings) instead of looping on OCR. |
+| **Fix (v0.8.7)** | StickLLM attach-images extension: PIL resize ≤1280 JPEG data URL before history inject. Profile prompt: say vision failed once — no OCR loop. |
+
+### ISS-062 — A0 syncStore handshake NO_HANDLERS over StickLink
+| | |
+|---|---|
+| **ID** | ISS-062 |
+| **Date** | 2026-11-23 |
+| **Mode** | Agent Zero / StickLink |
+| **Severity** | HIGH (red sync dot; falls back to slow polling) |
+| **Status** | Open — **bake in v0.8.7** (in tree) |
+| **Summary** | Over the link, Agent Zero logs `[syncStore] handshake failed: state_request failed: NO_HANDLERS`. Red sync indicator stays on; polling fallback. |
+| **Fix (v0.8.7)** | Gateway rewrites served sync/websocket JS: force `ws_webui` in auth.handlers, 20s `state_request` timeout, process `state_push` while DEGRADED. Do **not** patch Agent Zero upstream. |
+
+### ISS-061 — StickLink session drops ~every 90s under load
+| | |
+|---|---|
+| **ID** | ISS-061 |
+| **Date** | 2026-11-23 |
+| **Mode** | StickLink |
+| **Severity** | HIGH (phone sess lost; no pong path for 90s) |
+| **Status** | Open — **bake in v0.8.7** (in tree) |
+| **Summary** | Under load, StickLink to phone goes quiet ~every 90s. Phone log: `sess lost: no pong path for 90s`; sometimes nothing received from stick. Repro window ~2026-11-23 17:29–17:32 ET — check stick link/relay logs. |
+| **Fix (v0.8.7)** | `ingest_transport_wire` answers ping/pong immediately (before mux queue) so heavy Agent Zero loads cannot starve the phone’s 90s pong watchdog. |
+
+### ISS-060 — Sticky Load under NInfer calls llama activate → “unknown model”
+| | |
+|---|---|
+| **ID** | ISS-060 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / Models / NInfer |
+| **Severity** | HIGH (Load broken for every NInfer card) |
+| **Status** | Open — **bake in v0.8.7** (lab-hotfixed) |
+| **Summary** | With NInfer selected, sticky **Load model** / card Load hit `#activate` → `model_activate` (llama catalog). HF / disk `.ninfer` ids (e.g. Inkling) fail with **unknown model**. |
+| **Fix (v0.8.7)** | Card Load + `#activate` under `ninfer-all` call `loadNinferModel` → `experimental_ninfer_model_activate` (stage + serve). Do not route NInfer ids through llama `model_activate`. |
+
+### ISS-059 — NInfer Models search is only 3 pinned Qwen ids, not Hugging Face
+| | |
+|---|---|
+| **ID** | ISS-059 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / Models / NInfer |
+| **Severity** | MED (HF site shows dozens of `.ninfer`; StickLLM shows 3) |
+| **Status** | Open — **bake in v0.8.7** (lab-hotfixed) |
+| **Summary** | Under NInfer, Browse/search only filters `NINFER_MODEL_CATALOG` (qwen38-27b, qwen36-27b, qwen36-35b-a3b) — the ids NInfer’s `download-model.sh` knows. UI explicitly says “not HF”. Hugging Face search for “ninfer” returns many community `.ninfer` artifacts the stick never queries. |
+| **Fix (v0.8.7)** | Engine-scoped HF search for `.ninfer` (same trust/fit filters as GGUF path). Keep the 3 official profiles pinned. Download → shared models dir via Downloads queue; Load via experimental serve (not only the 3 shell script ids). |
+
+### ISS-058 — Models Context + Advanced hidden for non-llama engines
+| | |
+|---|---|
+| **ID** | ISS-058 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / Models |
+| **Severity** | MED (engine UX parity broken; ctx stuck at bake default) |
+| **Status** | Open — **bake in v0.8.7** (lab-hotfixed) |
+| **Summary** | With NInfer (and any non-llama default), Models hides `#localTune`, so Context size, presets, KV, and Advanced disappear. llama.cpp shows them. Product: same config panel for every engine; grey only knobs that engine cannot honor. |
+| **Fix (v0.8.7)** | Stop hiding the whole panel by engine. Show `#localTune` whenever a local/installed model is selected. Wire Context (≥32768 floor) into NInfer `--max-context`/`--kv-capacity` (model.env + active-engine). KV type greyed under NInfer. Chat sampling knobs still apply; A0 ctx follows live engine (≥32K). |
+
+### ISS-057 — A0 vision forced true for every NInfer
+| | |
+|---|---|
+| **ID** | ISS-057 |
+| **Date** | 2026-11-23 |
+| **Mode** | Agent Zero / NInfer |
+| **Severity** | LOW (wrong modality; some models text-only) |
+| **Status** | Open — **bake in v0.8.7** |
+| **Summary** | Sync set vision=true for all NInfer loads; text-only profiles should follow `/v1/models` modalities. |
+| **Fix (v0.8.7)** | `_model_vision` / sync reads modalities from engine `/v1/models` (and mmproj for llama). |
+
+### ISS-056 — A0 LiteLLM fails on host.docker.internal
+| | |
+|---|---|
+| **ID** | ISS-056 |
+| **Date** | 2026-11-23 |
+| **Mode** | Agent Zero / NInfer |
+| **Severity** | HIGH (kiosk A0 chat broken after NInfer Load) |
+| **Status** | Open — **bake in v0.8.7** (lab-hotfixed) |
+| **Summary** | A0 `model_providers.yaml` used `http://host.docker.internal:8080/v1`; LiteLLM could not resolve/reach it on StickLLM docker bridge → UI errors. |
+| **Fix (v0.8.7)** | Patch api_base to `172.30.0.1:8080`; `stickllm-agent` `--add-host host.docker.internal:host-gateway`. |
+
+### ISS-055 — A0 model id mismatch vs NInfer `/v1/models`
+| | |
+|---|---|
+| **ID** | ISS-055 |
+| **Date** | 2026-11-23 |
+| **Mode** | Agent Zero / NInfer |
+| **Severity** | HIGH (404 / wrong model; chat naming and chat fail) |
+| **Status** | Open — **bake in v0.8.7** (lab-hotfixed) |
+| **Summary** | StickLLM used `qwen36-27b` / leftover `stickllm` while NInfer advertises `qwen3.6-27b` (and similar). Sync did not normalize. |
+| **Fix (v0.8.7)** | `_model_matches` collapses punctuation; sync util/chat to live `/v1/models` id. |
+
+### ISS-054 — NInfer bare serve 8K broke StickLLM/A0 32K floor
+| | |
+|---|---|
+| **ID** | ISS-054 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / NInfer / Agent Zero |
+| **Severity** | HIGH (LiteLLM `context_length_exceeded`; A0 unusable) |
+| **Status** | Open — **bake in v0.8.7** |
+| **Summary** | Product hard floor is 32K. Bare `ninfer-serve` defaulted `--max-context` 8192 while A0/presets used 32768 → engine rejected long prompts. |
+| **Fix (v0.8.7)** | `stickllm-experimental-serve` always passes `--max-context` and `--kv-capacity` ≥32768; A0 sync keeps ctx 32768. |
+
+### ISS-053 — USB Load slow; stage to RAM then load (reclaimable)
+| | |
+|---|---|
+| **ID** | ISS-053 |
+| **Date** | 2026-11-23 |
+| **Mode** | Models / Local / Experimental |
+| **Severity** | MED (Load stuck ~90% for minutes on USB; looks hung) |
+| **Status** | Open — **bake in v0.8.7** (lab-hotfixed; reuse fix 2026-11-23) |
+| **Summary** | Large GGUF/NInfer Load reads weights from USB flash; GPU idle until copy done. User asked USB→RAM then load; do not mlock; free when Unload/switch/pressure. Lab: Download staged Inkling to `/dev/shm`, then Load ignored it and re-copied USB→`/tmp` (stuck ~90%) so engine still read USB. |
+| **Fix (v0.8.7)** | `stickllm_stage.py` + control hooks: stage to `/tmp` or `/dev/shm` (not tiny `/run`); gateway/UI status bar %; free_stage on unload; reclaim_if_low_ram. Apply on Load and after Download when RAM allows. **Reuse:** before any new copy, `find_existing_staged` across all stage dirs; drop orphan `.partial`s; never duplicate a complete RAM copy just because `/tmp` has more free than `/dev/shm`. **UI:** gateway `experimental_ninfer_model_activate` timeout 7200s (180s was clearing Loading mid-copy); status chip follows `health.stage` (“Copying from USB to RAM…”) even after activate returns. |
+
+### ISS-052 — NInfer HF search / pills show GGUF as NInfer
+| | |
+|---|---|
+| **ID** | ISS-052 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / Models |
+| **Severity** | MED (wrong artifact type; Inkling looked like NInfer) |
+| **Status** | Open — **bake in v0.8.7** |
+| **Summary** | With NInfer default, search/pills labeled or queued GGUF/HF rows as NInfer (e.g. WaveCut Inkling). User: shouldn’t show GGUF when NInfer search; same experience + trust filters per engine. |
+| **Fix (v0.8.7)** | Engine-scoped catalog + HF search; GGUF path when row is GGUF; NInfer `.ninfer` when NInfer. |
+
+### ISS-051 — “unknown NInfer model” blocked downloads (Inkling etc.)
+| | |
+|---|---|
+| **ID** | ISS-051 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / Models |
+| **Severity** | MED (hard refuse; user can't download) |
+| **Status** | Open — **bake in v0.8.7** (hotfixed) |
+| **Summary** | With NInfer default, Download for GGUF/HF names (e.g. Inkling) hit `unknown NInfer model` and stopped. |
+| **Fix (v0.8.7)** | Soft gate: GGUF rows warn then queue as GGUF; unlisted NInfer ids warn then still call download-model.sh. Never hard-block. |
+
+### ISS-050 — Experimental settings lost on reboot (NInfer / GPU unlock)
+| | |
+|---|---|
+| **ID** | ISS-050 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / Local |
+| **Severity** | HIGH (Set default + unlock vanish every reboot) |
+| **Status** | Open — **bake in v0.8.7** |
+| **Summary** | NInfer default, GPU unlock, and engine state lived under `/var/lib/stickllm/experimental` on the live overlay → wiped on reboot. Models fell back to GGUF/llama.cpp. |
+| **Fix (v0.8.7)** | `stickllm-experimental-host`: bind-mount DATA `experimental/lib` → `/var/lib/…/experimental`. **Same machine** keeps settings; **different machine** resets to llama.cpp + unlocks off (engines downloads kept). |
+
+### ISS-049 — Setup “Open now” gives no feedback while model loads
+| | |
+|---|---|
+| **ID** | ISS-049 |
+| **Date** | 2026-11-23 |
+| **Mode** | Local / first-boot setup |
+| **Severity** | LOW (looks stuck; load still works) |
+| **Status** | Open — **bake in v0.8.7** |
+| **Summary** | First-boot Open model → **Open now** sits idle until activate returns, then advances. No Loading… on the button. |
+| **Fix (v0.8.7)** | Immediate **Loading…** + status line; disable button until activate settles or fails. |
+
+### ISS-048 — Power off OK popup hidden behind Browser
+| | |
+|---|---|
+| **ID** | ISS-048 |
+| **Date** | 2026-11-23 |
+| **Mode** | Local / desk |
+| **Severity** | MED (power off looks broken; confirm stuck behind) |
+| **Status** | Open — **bake in v0.8.7** |
+| **Summary** | Start → Power off used `window.confirm`. With Browser open, the OK dialog stayed on the desk Chromium window under the native X11 browser — user had to minimise to see it. |
+| **Fix (v0.8.7)** | `yieldNative()` then in-desk `confirmBox` (expose on `stickApp`). |
+
+### ISS-047 — Wrong wall clock after Wi‑Fi → TLS “could not connect”
+| | |
+|---|---|
+| **ID** | ISS-047 |
+| **Date** | 2026-11-23 |
+| **Mode** | StickLink / Wi‑Fi / all |
+| **Severity** | HIGH (TLS fails while clock is years off) |
+| **Status** | Open — **bake in v0.8.7** |
+| **Summary** | Stick still has wrong time after Wi‑Fi; StickLink/HTTPS shows “could not connect to server.” `systemd-timesyncd` was After= masked `NetworkManager-wait-online`, so NTP often never ran when Wi‑Fi came up later. |
+| **Fix (v0.8.7)** | Drop wait-online from timesyncd; `stickllm-clock-sync` on Wi‑Fi apply + NM dispatcher `99-stickllm-clock`; enable timesyncd in chroot hook. |
+
+### ISS-046 — Experimental engines must match llama.cpp Models UX
+| | |
+|---|---|
+| **ID** | ISS-046 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / Models |
+| **Severity** | MED (product consistency) |
+| **Status** | Open — **bake in v0.8.7** (in progress with ISS-044/045) |
+| **Summary** | NInfer/Strata should feel like llama.cpp on Models: same Download queue, **Load**/**Unload**, Loading % tray, A0 sync — not a separate “Activate” / silent USB wait path. |
+| **Fix (v0.8.7)** | Parity pass: queue + Load wording + loading status + Unload stops exp-engine; Strata catalog later. |
+
+### ISS-045 — NInfer “Running” / “Open Model” / A0 “no model” while still loading
+| | |
+|---|---|
+| **ID** | ISS-045 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / NInfer / Models / Agent Zero |
+| **Severity** | MED (misleading status; A0 bridge until :8080 ready) |
+| **Status** | Open — **bake in v0.8.7** |
+| **Summary** | After NInfer Load, card said **Running** as soon as `model_key` was set; tray stayed **Open Model**; A0 said no model. Reality: engine still loading weights from USB — `/health` not ok yet. Also used “Activate” instead of “Load”, and did not show GGUF-style Loading % (llama unit looked “dead”). |
+| **Fix (v0.8.7)** | **Load** wording; `running` only when healthy; write `model.env` + A0 `sync-model`; tray Loading % / “Loading NInfer weights from USB…” via exp-engine unit + health poll. |
+
+### ISS-044 — NInfer model downloads missing from Downloads queue
+| | |
+|---|---|
+| **ID** | ISS-044 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / NInfer / Models |
+| **Severity** | MED (download works; progress invisible in Downloads) |
+| **Status** | Open — **bake in v0.8.7** |
+| **Summary** | On v0.8.6, Models → Download for a NInfer profile runs `download-model.sh` but never appears in the GGUF Downloads queue / progress bar. Users think nothing started. (Vision/mmproj chips stay llama.cpp-only — NInfer rows are `.ninfer`, not GGUF+mmproj.) |
+| **Fix (v0.8.7)** | `ninfer_download_progress()` + merge into `status.download` / `status.download_queue`; UI polls and shows NInfer jobs on Downloads; keep NInfer catalog during poll. |
+
 ### ISS-043 — A0 “Automatic chat naming failed” on NInfer (empty content / thinking)
 | | |
 |---|---|

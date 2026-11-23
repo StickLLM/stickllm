@@ -1815,11 +1815,30 @@ def llama_service_snapshot(*, stop_loop: bool = True) -> dict:
 
 
 def model_unload() -> dict:
-    """Stop the chat llama-server (0.5.6: the user loads and unloads models).
+    """Stop the active :8080 engine (llama.cpp or Experimental). Same UX for all.
 
-    The app agent shares this server, so it loses its model too; nothing reloads
+    The app agent shares this port, so it loses its model too; nothing reloads
     on its own."""
-    r = sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
+    engine = "llama.cpp"
+    try:
+        mod = _experimental_mod()
+        if mod is not None and hasattr(mod, "read_active_engine"):
+            doc = mod.read_active_engine() or {}
+            engine = str(doc.get("engine") or "llama.cpp")
+            if engine in ("ninfer-all", "strata"):
+                # Keep engine as default, but clear the selected weight (Load again).
+                doc["model_key"] = ""
+                try:
+                    mod.write_active_engine(doc)
+                except Exception:
+                    pass
+                r = sh(["systemctl", "stop", "stickllm-exp-engine.service"], timeout=60)
+            else:
+                r = sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
+        else:
+            r = sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
+    except Exception:
+        r = sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
     for name in ("model.env", "current.gguf"):
         try:
             f = RUN / name
@@ -1827,10 +1846,19 @@ def model_unload() -> dict:
                 f.unlink()
         except Exception:
             pass
+    # Staged USB→RAM copies are reclaimable tmpfs — free on Unload so RAM
+    # is not held after the model is gone.
+    stage_free = free_model_stage(force=True)
     # Explicit unload: do not auto-restore this model after the next unlock.
     clear_last_model()
     _write_warmup_state({"status": "idle", "ts": int(time.time()), "note": "unloaded"})
-    return {"ok": bool(r.get("ok", True)), "unloaded": True}
+    return {
+        "ok": bool(r.get("ok", True)),
+        "unloaded": True,
+        "engine": engine,
+        "stage_freed": stage_free,
+        "note": "Model unloaded. Load one when you want to chat.",
+    }
 
 
 LAST_MODEL_NAME = "last-model.json"
@@ -2505,6 +2533,27 @@ def active_model_identity() -> dict:
     # another id must not be reported as the default 3B.
     if not name and path:
         name = os.path.basename(path)
+    # NInfer Load: prefer active-engine model_key when model.env is empty/stale.
+    try:
+        _emod = _experimental_mod()
+        if _emod is not None and hasattr(_emod, "read_active_engine"):
+            _adoc = _emod.read_active_engine() or {}
+            if str(_adoc.get("engine") or "") == "ninfer-all":
+                key = str(_adoc.get("model_key") or "").strip()
+                if key:
+                    mid = mid or key
+                    if not name:
+                        for e in list(getattr(_emod, "NINFER_MODEL_CATALOG", []) or []):
+                            if str(e.get("id") or "") == key:
+                                name = str(e.get("name") or key)
+                                break
+                        name = name or key
+                    if not path and hasattr(_emod, "find_ninfer_artifact"):
+                        art = _emod.find_ninfer_artifact(key, _adoc.get("model_dir"))
+                        if art is not None:
+                            path = str(art)
+    except Exception:
+        pass
     healthy, health_msg = llama_health_ok()
     ctx = active_ctx_size()
     out = {
@@ -2787,8 +2836,8 @@ def looks_vision(*parts: str) -> bool:
     return bool(_VISION_RE.search(blob))
 
 
-def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
-    """Search Hugging Face for GGUF files. Catalog hash hits are Verified."""
+def hf_search(query: str, abl: str = "include", vision: str = "any", fmt: str = "gguf") -> dict:
+    """Search Hugging Face for GGUF or .ninfer files. Catalog hash hits are Verified."""
     q = " ".join(str(query or "").split())
     if len(q) < 2:
         return {"ok": False, "error": "type at least 2 characters"}
@@ -2800,20 +2849,29 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
     vision = str(vision or "any").lower()
     if vision not in ("any", "only"):
         vision = "any"
+    fmt = str(fmt or "gguf").lower().strip()
+    if fmt in ("ninfer", "ninfer-all", ".ninfer"):
+        fmt = "ninfer"
+    else:
+        fmt = "gguf"
+    want_ext = ".ninfer" if fmt == "ninfer" else ".gguf"
     search_q = q
+    if fmt == "ninfer" and "ninfer" not in q.lower():
+        # HF has no library filter for .ninfer — bias the query toward those repos.
+        search_q = q + " ninfer"
     if abl == "only" and "abliterat" not in q.lower() and "uncensor" not in q.lower():
-        search_q = q + " abliterated"
+        search_q = search_q + " abliterated"
     if vision == "only" and not looks_vision(q):
-        search_q = search_q + " VL"
-    search_url = "https://huggingface.co/api/models?" + urllib.parse.urlencode(
-        {
-            "search": search_q,
-            "filter": "gguf",
-            "sort": "downloads",
-            "direction": "-1",
-            "limit": "8",
-        }
-    )
+        search_q = search_q + (" VL" if fmt == "gguf" else " vision")
+    search_params: dict[str, str] = {
+        "search": search_q,
+        "sort": "downloads",
+        "direction": "-1",
+        "limit": "12" if fmt == "ninfer" else "8",
+    }
+    if fmt == "gguf":
+        search_params["filter"] = "gguf"
+    search_url = "https://huggingface.co/api/models?" + urllib.parse.urlencode(search_params)
     try:
         listing = _hf_get_json(search_url, timeout=15)
     except urllib.error.URLError as exc:
@@ -2827,13 +2885,20 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
     installed_names: set[str] = set()
     for folder in model_dirs():
         try:
-            for p in gguf_index([Path(folder)]).get(Path(folder), []):
+            root = Path(folder)
+            for p in gguf_index([root]).get(root, []):
                 installed_names.add(p.name.lower())
+            try:
+                for p in root.glob("*.ninfer"):
+                    installed_names.add(p.name.lower())
+            except OSError:
+                pass
         except OSError:
             continue
     prefer = ("Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "Q4_K_S", "Q3_K_M", "IQ4_XS")
     models: list[dict] = []
     seen_cat: set[str] = set()
+    seen_file: set[str] = set()
     for item in listing:
         if len(models) >= 24:
             break
@@ -2860,20 +2925,23 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
             if not isinstance(sib, dict) or sib.get("type") not in (None, "file"):
                 continue
             name = str(sib.get("path") or sib.get("rfilename") or "")
-            if not name.lower().endswith(".gguf"):
-                continue
             low = name.lower()
+            if not low.endswith(want_ext):
+                continue
             try:
                 size = int(sib.get("size") or 0)
             except (TypeError, ValueError):
                 size = 0
-            if "mmproj" in low:
+            if fmt == "gguf" and "mmproj" in low:
                 mmproj_files.append((name, size))
                 continue
             oid = str((sib.get("lfs") or {}).get("oid") or "").lower() if isinstance(sib.get("lfs"), dict) else ""
             if re.fullmatch(r"[0-9a-f]{64}", oid):
                 lfs_sha[name] = oid
             files.append((name, size))
+        if not files:
+            continue
+
         def rank(pair: tuple[str, int]) -> tuple[int, int, int]:
             qm = _QUANT_RE.search(pair[0])
             quant = qm.group(1).upper() if qm else ""
@@ -2883,30 +2951,41 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
                 pri = 50
             split = 1 if "-of-" in pair[0].lower() else 0
             return (pri, split, -pair[1])
+
         files.sort(key=rank)
         org = repo.split("/", 1)[0].lower()
         downloads = int(item.get("downloads") or 0)
         for name, size in files[:4]:
             if len(models) >= 24:
                 break
+            base = Path(name).name
+            dedupe = f"{repo.lower()}::{base.lower()}"
+            if dedupe in seen_file:
+                continue
+            seen_file.add(dedupe)
             ablit = _is_abliterated(repo, name)
-            picked = _pick_mmproj(mmproj_files)
+            picked = None
             mmproj_repo = repo
-            if not picked and looks_vision(repo, name):
-                # Quant-only mirrors (e.g. Inkling IQ4_NL) often omit mmproj;
-                # resolve from a known companion repo so the vision pill works.
-                resolved = _resolve_mmproj(repo, "", 0, name)
-                if resolved:
-                    mmproj_repo, mm_name, mm_size = resolved
-                    picked = (mm_name, mm_size)
-            sees = bool(picked) or looks_vision(repo, name)
+            if fmt == "gguf":
+                picked = _pick_mmproj(mmproj_files)
+                if not picked and looks_vision(repo, name):
+                    # Quant-only mirrors (e.g. Inkling IQ4_NL) often omit mmproj;
+                    # resolve from a known companion repo so the vision pill works.
+                    resolved = _resolve_mmproj(repo, "", 0, name)
+                    if resolved:
+                        mmproj_repo, mm_name, mm_size = resolved
+                        picked = (mm_name, mm_size)
+            # NInfer packs often include vision in the .ninfer itself (no mmproj).
+            sees = bool(picked) or looks_vision(repo, name) or (
+                fmt == "ninfer" and ("vl" in base.lower() or "vision" in base.lower() or "qwen3" in base.lower())
+            )
             if vision == "only" and not sees:
                 continue
             if abl == "only" and not ablit:
                 continue
             if abl == "exclude" and ablit:
                 continue
-            sha = sha_idx.get((repo, name), "")
+            sha = sha_idx.get((repo, name), "") if fmt == "gguf" else ""
             if sha:
                 trust = "verified"
             elif org in _HF_COMMUNITY:
@@ -2914,53 +2993,64 @@ def hf_search(query: str, abl: str = "include", vision: str = "any") -> dict:
             else:
                 trust = "untrusted"
             qm = _QUANT_RE.search(name)
-            quant = qm.group(1).upper() if qm else ""
-            base = Path(name).name
+            quant = qm.group(1).upper() if qm else ("ninfer" if fmt == "ninfer" else "")
             mid = "hf:" + repo.replace("/", "__") + ":" + base
             installed = base.lower() in installed_names
-            # Same file as a catalog row (exact repo+file, or the on-disk copy by
-            # name): use the catalog id so the UI shows one card, not a duplicate.
-            cat_id = cat_by_file.get((repo, name)) or (
-                cat_by_file.get(("", base.lower())) if installed else None
-            )
-            if cat_id:
-                if cat_id in seen_cat:
-                    continue
-                seen_cat.add(cat_id)
-            models.append(
-                {
-                    "id": cat_id or mid,
-                    "name": base.replace(".gguf", ""),
-                    "repo": repo,
-                    "file": name,
-                    "hf_repo": repo,
-                    "hf_file": name,
-                    "sha256": sha,
-                    # Hugging Face's own LFS sha256: checks the download is the
-                    # file HF serves, not that StickLLM reviewed it.
-                    "lfs_sha256": lfs_sha.get(name, ""),
-                    "verified": bool(sha),
-                    "trust": trust,
-                    "quant": quant,
-                    "bytes": size,
-                    "approx_size_gb": round(size / (1024 ** 3), 2) if size else 0,
-                    "downloads": downloads,
-                    "installed": installed,
-                    "catalog_id": cat_id or "",
-                    "hf_id": mid,
-                    "source": "huggingface",
-                    "format": "GGUF",
-                    "hf": True,
-                    "pinned": bool(sha),
-                    "abliterated": ablit,
-                    "vision": sees,
-                    "mmproj_file": picked[0] if picked else "",
-                    "mmproj_bytes": picked[1] if picked else 0,
-                    "mmproj_repo": mmproj_repo if picked else "",
-                    "mmproj_ready": bool(picked) and Path(picked[0]).name.lower() in installed_names,
-                }
-            )
-    return {"ok": True, "query": q, "models": models}
+            cat_id = None
+            if fmt == "gguf":
+                # Same file as a catalog row (exact repo+file, or the on-disk copy by
+                # name): use the catalog id so the UI shows one card, not a duplicate.
+                cat_id = cat_by_file.get((repo, name)) or (
+                    cat_by_file.get(("", base.lower())) if installed else None
+                )
+                if cat_id:
+                    if cat_id in seen_cat:
+                        continue
+                    seen_cat.add(cat_id)
+            display = base
+            for suf in (".gguf", ".ninfer"):
+                if display.lower().endswith(suf):
+                    display = display[: -len(suf)]
+                    break
+            row = {
+                "id": cat_id or mid,
+                "name": display,
+                "repo": repo,
+                "file": name,
+                "hf_repo": repo,
+                "hf_file": name,
+                "sha256": sha,
+                # Hugging Face's own LFS sha256: checks the download is the
+                # file HF serves, not that StickLLM reviewed it.
+                "lfs_sha256": lfs_sha.get(name, ""),
+                "verified": bool(sha),
+                "trust": trust,
+                "quant": quant,
+                "bytes": size,
+                "approx_size_gb": round(size / (1024 ** 3), 2) if size else 0,
+                "downloads": downloads,
+                "installed": installed,
+                "catalog_id": cat_id or "",
+                "hf_id": mid,
+                "source": "huggingface",
+                "format": "ninfer" if fmt == "ninfer" else "GGUF",
+                "engine": "ninfer-all" if fmt == "ninfer" else "llama.cpp",
+                "hf": True,
+                "pinned": bool(sha),
+                "abliterated": ablit,
+                "vision": sees,
+                "mmproj_file": "",
+                "mmproj_bytes": 0,
+                "mmproj_repo": "",
+                "mmproj_ready": False,
+            }
+            if fmt == "gguf":
+                row["mmproj_file"] = picked[0] if picked else ""
+                row["mmproj_bytes"] = picked[1] if picked else 0
+                row["mmproj_repo"] = mmproj_repo if picked else ""
+                row["mmproj_ready"] = bool(picked) and Path(picked[0]).name.lower() in installed_names
+            models.append(row)
+    return {"ok": True, "query": q, "format": fmt, "models": models}
 
 
 def parse_catalog() -> list[dict]:
@@ -3135,6 +3225,99 @@ def hardware_warnings(vram_gb: float, gpu_count: int, backend: str = "") -> list
             return list(mod.hardware_warnings(None, vram_gb, gpu_count))
     except Exception:
         return []
+
+
+def _stage_mod():
+    """USB→RAM staging helper (optional; missing file = no-op)."""
+    lib = Path(os.environ.get("STICKLLM_STAGE_LIB", "/usr/local/lib/stickllm_stage.py"))
+    if not lib.is_file():
+        return None
+    try:
+        mod = getattr(_stage_mod, "_mod", None)
+        if mod is None:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("stickllm_stage", lib)
+            if spec is None or spec.loader is None:
+                return None
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _stage_mod._mod = mod
+        return mod
+    except Exception:
+        return None
+
+
+def stage_model_path(path: str | Path) -> dict:
+    """Best-effort USB→RAM stage. Returns {path, staged, ...}; never blocks Load on failure."""
+    sm = _stage_mod()
+    if sm is None or not hasattr(sm, "stage_model_to_ram"):
+        return {"ok": True, "staged": False, "path": str(path), "reason": "no-helper"}
+    try:
+        return sm.stage_model_to_ram(path)
+    except Exception as e:
+        return {"ok": True, "staged": False, "path": str(path), "error": str(e)}
+
+
+def stage_progress_for_status() -> dict:
+    sm = _stage_mod()
+    if sm is None or not hasattr(sm, "read_stage_progress"):
+        return {}
+    try:
+        return sm.read_stage_progress() or {}
+    except Exception:
+        return {}
+
+
+def free_model_stage(*, force: bool = True) -> dict:
+    """Give RAM back — staged copies are tmpfs, never locked."""
+    sm = _stage_mod()
+    if sm is None:
+        return {"ok": True, "freed": False, "reason": "no-helper"}
+    try:
+        if force and hasattr(sm, "free_stage"):
+            return sm.free_stage(keep=set(), reason="unload")
+        if hasattr(sm, "reclaim_if_low_ram"):
+            return sm.reclaim_if_low_ram(force=force)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "freed": False}
+
+
+def reclaim_stage_if_needed(**kwargs) -> dict:
+    sm = _stage_mod()
+    if sm is None or not hasattr(sm, "reclaim_if_low_ram"):
+        return {"ok": True, "freed": False}
+    try:
+        return sm.reclaim_if_low_ram(**kwargs)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# After a successful download, stage into RAM in the background — downloading
+# usually means the user is about to Load. Freed again on Unload / low RAM.
+_STAGED_AFTER_DL: set[str] = set()
+_STAGE_DL_LOCK = threading.Lock()
+
+
+def maybe_stage_after_download(path: str | Path) -> None:
+    p = Path(str(path or ""))
+    if not p.is_file():
+        return
+    key = str(p.resolve()) if p.exists() else str(p)
+    with _STAGE_DL_LOCK:
+        if key in _STAGED_AFTER_DL:
+            return
+        _STAGED_AFTER_DL.add(key)
+
+    def _run() -> None:
+        try:
+            reclaim_stage_if_needed()
+            stage_model_path(p)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, name="stickllm-stage-dl", daemon=True).start()
 
 
 def _experimental_mod():
@@ -3753,8 +3936,8 @@ def experimental_engine_set_default(params: dict | None = None) -> dict:
                 model_key = ""
         note = (
             "NInfer is now StickLLM default on :8080. Open Models, download a "
-            "compatible NInfer model into the StickLLM models folder, then Activate. "
-            "GGUF Activate does not apply while NInfer is default — use "
+            "compatible NInfer model into the StickLLM models folder, then Load. "
+            "GGUF Load does not apply while NInfer is default — use "
             "Set default → llama.cpp to restore."
         )
     else:
@@ -3815,14 +3998,31 @@ def experimental_ninfer_model_download(params: dict | None = None) -> dict:
     mod = _experimental_mod()
     if mod is None:
         return {"ok": False, "error": "experimental lib missing"}
-    catalog = list(getattr(mod, "NINFER_MODEL_CATALOG", []) or [])
-    ids = {str(e.get("id") or "") for e in catalog}
-    if mid not in ids:
+    if not mid or mid in (".", "..") or "\\" in mid or ".." in mid:
+        return {"ok": False, "error": "invalid model id"}
+    # HF / GGUF ids must use the GGUF queue — NInfer download-model.sh only
+    # accepts its own profile names (qwen38-27b, …) and prints usage otherwise.
+    if mid.startswith("hf:") or mid.lower().endswith(".gguf") or "/" in mid:
         return {
             "ok": False,
-            "error": f"unknown NInfer model {mid!r}",
-            "hint": "Supported: " + ", ".join(sorted(ids)),
+            "error": "gguf_not_ninfer",
+            "message": (
+                f"{mid!r} looks like a GGUF / Hugging Face file, not a NInfer profile. "
+                "Download it as GGUF (or switch Experimental → llama.cpp to Load it). "
+                "NInfer profiles are ids like qwen36-27b."
+            ),
         }
+    catalog = list(getattr(mod, "NINFER_MODEL_CATALOG", []) or [])
+    ids = {str(e.get("id") or "") for e in catalog}
+    # Soft gate only — never refuse a profile id. NInfer's download-model.sh may
+    # still fail upstream; UI shows a warning confirm for unlisted profiles.
+    warning = ""
+    if mid not in ids:
+        known = ", ".join(sorted(x for x in ids if x)) or "(none listed)"
+        warning = (
+            f"{mid!r} is not on StickLLM's short NInfer list ({known}). "
+            "Download will still be attempted via NInfer's own downloader."
+        )
     doc = mod.read_active_engine() or {}
     if str(doc.get("engine") or "") != "ninfer-all":
         return {
@@ -3903,18 +4103,156 @@ def experimental_ninfer_model_download(params: dict | None = None) -> dict:
         mod.write_active_engine(doc)
     except Exception:
         pass
-    return {
+    out = {
         "ok": True,
         "started": True,
         "id": mid,
         "model_dir": str(model_dir),
         "log": str(log),
-        "note": f"Downloading {mid} into {model_dir} — progress in Models / log.",
+        "note": f"Downloading {mid} into {model_dir} — progress on Downloads / Models queue.",
+    }
+    if warning:
+        out["warning"] = warning
+        out["unlisted"] = True
+    return out
+
+
+
+def ninfer_download_progress() -> dict:
+    """Surface NInfer download-model.sh progress in the Downloads queue UI.
+
+    NInfer does not use stickllm-download-model / GGUF queue — this synthesizes
+    a compatible progress + queue row from /run/stickllm/ninfer-model-download.*
+    """
+    state_path = RUN / "ninfer-model-download.json"
+    log_path = RUN / "ninfer-model-download.log"
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict) or not raw.get("id"):
+        return {}
+    mid = str(raw.get("id") or "")
+    st = str(raw.get("state") or "idle")
+    model_dir = Path(str(raw.get("model_dir") or "") or "")
+    # Still running?
+    running = False
+    try:
+        p = subprocess.run(
+            ["pgrep", "-f", "download-model.sh"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        running = p.returncode == 0 and bool((p.stdout or "").strip())
+    except Exception:
+        running = st == "downloading"
+    if st == "downloading" and not running:
+        # Process died without updating state — peek for finished artifact.
+        mod = _experimental_mod()
+        art = None
+        if mod is not None and hasattr(mod, "find_ninfer_artifact"):
+            art = mod.find_ninfer_artifact(mid, model_dir if model_dir.is_dir() else None)
+        if art is not None:
+            st = "done"
+            raw["state"] = "done"
+            raw["finished"] = int(time.time())
+            try:
+                state_path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+            except OSError:
+                pass
+            try:
+                maybe_stage_after_download(art)
+            except Exception:
+                pass
+        else:
+            st = "failed"
+            raw["state"] = "failed"
+            raw["error"] = "download-model.sh exited without a .ninfer artifact"
+            try:
+                state_path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+            except OSError:
+                pass
+    elif st == "done":
+        # Already marked done by the wrapper — still stage if RAM allows.
+        mod = _experimental_mod()
+        art = None
+        if mid and mod is not None and hasattr(mod, "find_ninfer_artifact"):
+            art = mod.find_ninfer_artifact(mid, model_dir if model_dir.is_dir() else None)
+        if art is not None:
+            try:
+                maybe_stage_after_download(art)
+            except Exception:
+                pass
+    # Expected size from catalog (~GiB).
+    expect_gb = 19.0
+    name = mid
+    mod = _experimental_mod()
+    if mod is not None:
+        for e in list(getattr(mod, "NINFER_MODEL_CATALOG", []) or []):
+            if str(e.get("id") or "") == mid:
+                expect_gb = float(e.get("approx_size_gb") or expect_gb)
+                name = str(e.get("name") or mid)
+                break
+    expect = int(expect_gb * (1024**3))
+    done = 0
+    if model_dir.is_dir():
+        try:
+            for p in model_dir.iterdir():
+                if not p.is_file():
+                    continue
+                n = p.name.lower()
+                if n.endswith(".ninfer") or n.endswith(".partial") or ".ninfer." in n or n.endswith(".tmp"):
+                    try:
+                        done += p.stat().st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    # Parse last % from NInfer log if present.
+    pct_log = None
+    if log_path.is_file():
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
+            for m in re.finditer(r"(\d{1,3}(?:\.\d+)?)\s*%", tail):
+                pct_log = float(m.group(1))
+        except OSError:
+            pass
+    if st == "done":
+        pct = 100.0
+        done = max(done, expect)
+    elif pct_log is not None:
+        pct = max(0.0, min(99.0, pct_log))
+    elif expect > 0 and done > 0:
+        pct = max(1.0, min(99.0, 100.0 * done / expect))
+    elif st == "downloading" or running:
+        pct = 2.0
+    else:
+        pct = 0.0
+    note = "NInfer profile (same Downloads queue as GGUF)"
+    if st == "failed":
+        note = str(raw.get("error") or "NInfer download failed")
+    elif st == "done":
+        note = "NInfer model ready — Load on Models"
+    return {
+        "id": mid,
+        "name": name,
+        "state": "downloading" if (st == "downloading" or running) and st != "done" else st,
+        "percent": round(pct, 1),
+        "bytes_done": done,
+        "bytes_total": expect,
+        "bytes": expect,
+        "engine": "ninfer-all",
+        "format": "ninfer",
+        "note": note,
+        "model_dir": str(model_dir) if model_dir else "",
+        "queueable": False,
     }
 
 
 def experimental_ninfer_model_activate(params: dict | None = None) -> dict:
-    """Select which NInfer profile serves on :8080 (Models → Activate)."""
+    """Load which NInfer profile serves on :8080 (Models → Load; same word as GGUF)."""
     params = params or {}
     mid = str(params.get("id") or params.get("model") or "").strip()
     mod = _experimental_mod()
@@ -3927,6 +4265,12 @@ def experimental_ninfer_model_activate(params: dict | None = None) -> dict:
             "error": "NInfer is not the active engine",
             "hint": "Settings → Experimental → Set default (NInfer) first.",
         }
+    try:
+        ctx_size = int(params.get("ctx_size") or params.get("ctx") or params.get("n_ctx") or LLAMA_CTX_FLOOR)
+    except (TypeError, ValueError):
+        ctx_size = LLAMA_CTX_FLOOR
+    if ctx_size < LLAMA_CTX_FLOOR:
+        ctx_size = LLAMA_CTX_FLOOR
     model_dir = str(doc.get("model_dir") or "")
     art = mod.find_ninfer_artifact(mid, model_dir) if hasattr(mod, "find_ninfer_artifact") else None
     if art is None:
@@ -3935,12 +4279,49 @@ def experimental_ninfer_model_activate(params: dict | None = None) -> dict:
             "error": f"{mid} is not downloaded yet",
             "hint": "Download it from Models first.",
         }
+    display = mid
+    for e in list(getattr(mod, "NINFER_MODEL_CATALOG", []) or []):
+        if str(e.get("id") or "") == mid:
+            display = str(e.get("name") or mid)
+            break
     doc["model_key"] = mid
+    doc["max_context"] = ctx_size
+    # Keep persistent model_dir on disk (DATA/SSD); staging is /run only.
     if model_dir:
         doc["model_dir"] = model_dir
     else:
         doc["model_dir"] = str(art.parent)
     mod.write_active_engine(doc)
+    # Stop engine first so the USB→RAM copy gets sequential bandwidth (not
+    # competing with a mid-Load from flash).
+    try:
+        sh(["systemctl", "stop", "stickllm-exp-engine.service"], timeout=90)
+    except Exception:
+        pass
+    # USB flash → tmpfs when RAM + tmpfs size allow (not tiny /run).
+    stg = stage_model_path(art)
+    load_path = Path(str(stg.get("path") or art))
+    # Same model.env contract as GGUF Load — tray / health / A0 sync read this.
+    try:
+        env_txt = (
+            f"STICKLLM_MODEL={load_path}\n"
+            f"STICKLLM_MODEL_ID={mid}\n"
+            f"STICKLLM_MODEL_NAME={display}\n"
+            f"STICKLLM_ENGINE=ninfer-all\n"
+            f"STICKLLM_CTX={ctx_size}\n"
+            f"NINFER_MAX_CONTEXT={ctx_size}\n"
+            f"STICKLLM_NINFER_MAX_CONTEXT={ctx_size}\n"
+        )
+        if stg.get("staged"):
+            env_txt += "STICKLLM_MODEL_STAGED=1\n"
+            env_txt += f"NINFER_MODEL_DIR={load_path.parent}\n"
+        (RUN / "model.env").write_text(env_txt, encoding="utf-8")
+        try:
+            os.chmod(RUN / "model.env", 0o644)
+        except OSError:
+            pass
+    except OSError as e:
+        return {"ok": False, "error": f"cannot write model.env: {e}"}
     sh(["systemctl", "daemon-reload"], timeout=60)
     sh(["systemctl", "reset-failed", "stickllm-exp-engine.service"], timeout=30)
     r = sh(["systemctl", "restart", "stickllm-exp-engine.service"], timeout=120)
@@ -3949,14 +4330,60 @@ def experimental_ninfer_model_activate(params: dict | None = None) -> dict:
         st = sh(["systemctl", "is-active", "stickllm-exp-engine.service"], timeout=15)
         active = ((st.get("stdout") or "") if isinstance(st, dict) else "").strip()
         started = active in ("active", "activating")
+    # Agent Zero Default preset follows the loaded id (waits for :8080).
+    try:
+        subprocess.Popen(
+            ["/usr/local/bin/stickllm-agent", "sync-model", "600", mid],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+    healthy = False
+    health_msg = "starting"
+    for _ in range(4):
+        time.sleep(0.35)
+        healthy, health_msg = llama_health_ok()
+        if healthy:
+            break
+    staged = bool(stg.get("staged"))
+    reused = bool(stg.get("reused"))
+    if healthy:
+        note = f"NInfer serving {display} on :8080."
+    elif reused:
+        note = f"Already in RAM — loading {display} on :8080…"
+    elif staged:
+        note = f"Copied to RAM — loading {display} on :8080…"
+    else:
+        reason = str(stg.get("reason") or "")
+        if "low-ram" in reason:
+            note = f"Not enough RAM to stage — loading {display} from USB on :8080…"
+        else:
+            note = f"Loading {display} on :8080…"
     return {
         "ok": True,
         "id": mid,
         "model_key": mid,
-        "path": str(art),
+        "name": display,
+        "path": str(load_path),
+        "usb_path": str(art),
+        "staged": staged,
+        "reused": reused,
+        "stage": {
+            "staged": staged,
+            "reason": stg.get("reason"),
+            "bytes": stg.get("bytes"),
+            "reused": reused,
+            "error": stg.get("error"),
+            "path": str(load_path) if staged else "",
+        },
         "model_dir": doc.get("model_dir"),
         "started": started,
-        "note": f"NInfer serving {mid} on :8080.",
+        "healthy": healthy,
+        "health": health_msg,
+        "ctx_size": ctx_size,
+        "note": note,
     }
 
 
@@ -4331,8 +4758,16 @@ def _drop_finished(items: list[dict]) -> list[dict]:
     kept = []
     for j in items:
         if _job_complete(j):
+            try:
+                maybe_stage_after_download(_final_path(j))
+            except Exception:
+                pass
             continue
         if prog_id and _same_job(j, {"id": prog_id, "file": prog.get("file") or ""}) and prog_state == "done":
+            try:
+                maybe_stage_after_download(_final_path(j))
+            except Exception:
+                pass
             continue
         if j.get("state") == "active" and prog_state == "failed" and prog_id and str(j.get("id") or "") == prog_id:
             j["state"] = "failed"
@@ -4641,8 +5076,13 @@ def _build_download_job(params: dict) -> dict:
     if repo or hf_file:
         if not repo or not hf_file:
             return {"ok": False, "error": "repo and file are both required"}
-        if not hf_file.lower().endswith(".gguf") or ".." in hf_file or hf_file.startswith("/"):
-            return {"ok": False, "error": "only a GGUF file path is allowed"}
+        low_file = hf_file.lower()
+        if (
+            not (low_file.endswith(".gguf") or low_file.endswith(".ninfer"))
+            or ".." in hf_file
+            or hf_file.startswith("/")
+        ):
+            return {"ok": False, "error": "only a GGUF or .ninfer file path is allowed"}
         if "/" not in repo:
             return {"ok": False, "error": "repo must look like org/name"}
         if nbytes <= 0:
@@ -5877,6 +6317,10 @@ def activate_model(model_id: str, ctx_size: int | None = None, kv_type: str | No
     path = split_first_part(m.get("path") or m.get("local_path") or "")
     if not path or not Path(path).is_file():
         return {"ok": False, "error": "model file missing"}
+    # USB → RAM stage when free memory allows (avoids random USB reads during Load).
+    stg = stage_model_path(path)
+    if stg.get("staged") and Path(str(stg.get("path") or "")).is_file():
+        path = str(stg["path"])
     try:
         arch = str(read_gguf_meta(path).get("general.architecture") or "")
     except Exception:
@@ -7737,6 +8181,12 @@ def handle(action: str, params: dict) -> dict:
         ram = detect_ram_gb()
         models = enrich_models_cached(vram, force=not light)
         watchdog = pump_download_queue() if not light else {"ok": True, "skipped": True}
+        # Reclaim USB→RAM staging when MemAvailable is tight (never locks RAM).
+        if not light:
+            try:
+                reclaim_stage_if_needed()
+            except Exception:
+                pass
         loaded = active_model_identity()
         online = _online_cached(force=not light)
         wifi_ssid = ""
@@ -7761,24 +8211,64 @@ def handle(action: str, params: dict) -> dict:
                 _adoc = _emod.read_active_engine() or {}
                 active_engine = str(_adoc.get("engine") or "llama.cpp")
                 if active_engine == "ninfer-all" and hasattr(_emod, "ninfer_catalog_rows"):
+                    _healthy, _ = llama_health_ok()
                     ninfer_catalog = _emod.ninfer_catalog_rows(
                         _adoc.get("model_dir") or (str(dl_dir) if dl_dir else None),
                         active_key=str(_adoc.get("model_key") or ""),
+                        serving=_healthy,
                     )
-                    # Surface in-progress NInfer weight download on Models cards.
-                    try:
-                        ninfer_dl = json.loads(
-                            (RUN / "ninfer-model-download.json").read_text(encoding="utf-8")
-                        )
-                    except Exception:
-                        ninfer_dl = {}
-                    if isinstance(ninfer_dl, dict) and ninfer_dl.get("state") == "downloading":
-                        did = str(ninfer_dl.get("id") or "")
-                        for row in ninfer_catalog:
-                            if row.get("id") == did:
-                                row["downloading"] = True
         except Exception:
             pass
+        # ISS-044: NInfer downloads share the Models Downloads queue UI.
+        ninfer_dl = ninfer_download_progress() or {}
+        if isinstance(ninfer_dl, dict) and ninfer_dl.get("state") == "downloading":
+            did = str(ninfer_dl.get("id") or "")
+            for row in ninfer_catalog:
+                if row.get("id") == did:
+                    row["downloading"] = True
+        dl_prog = download_progress()
+        dl_queue = list(watchdog.get("queue") or [])
+        if isinstance(ninfer_dl, dict) and ninfer_dl.get("id") and ninfer_dl.get("state") in (
+            "downloading",
+            "failed",
+            "done",
+        ):
+            q_state = {
+                "downloading": "active",
+                "failed": "failed",
+                "done": "done",
+            }.get(str(ninfer_dl.get("state")), "active")
+            # Prefer NInfer as the live progress bar when GGUF is idle.
+            if dl_prog.get("state") not in ("downloading", "verifying", "starting"):
+                dl_prog = {
+                    "state": "downloading" if q_state == "active" else ninfer_dl.get("state"),
+                    "id": ninfer_dl.get("id"),
+                    "name": ninfer_dl.get("name") or ninfer_dl.get("id"),
+                    "percent": ninfer_dl.get("percent"),
+                    "bytes_done": ninfer_dl.get("bytes_done") or 0,
+                    "bytes_total": ninfer_dl.get("bytes_total") or ninfer_dl.get("bytes") or 0,
+                    "note": ninfer_dl.get("note") or "",
+                    "engine": "ninfer-all",
+                    "format": "ninfer",
+                }
+            # Dedup then prepend so Downloads → Queue shows the NInfer job.
+            dl_queue = [q for q in dl_queue if str(q.get("id") or "") != str(ninfer_dl.get("id"))]
+            if q_state != "done":
+                dl_queue.insert(
+                    0,
+                    {
+                        "id": ninfer_dl.get("id"),
+                        "name": ninfer_dl.get("name") or ninfer_dl.get("id"),
+                        "state": q_state,
+                        "percent": ninfer_dl.get("percent"),
+                        "bytes": ninfer_dl.get("bytes_total") or ninfer_dl.get("bytes") or 0,
+                        "bytes_done": ninfer_dl.get("bytes_done") or 0,
+                        "engine": "ninfer-all",
+                        "format": "ninfer",
+                        "queueable": False,
+                        "error": ninfer_dl.get("note") if q_state == "failed" else "",
+                    },
+                )
         return {
             "ok": True,
             "session_mode": session_mode(),
@@ -7810,10 +8300,11 @@ def handle(action: str, params: dict) -> dict:
             "active_engine": active_engine,
             "ninfer_catalog": ninfer_catalog,
             "ninfer_download": ninfer_dl if isinstance(ninfer_dl, dict) else {},
-            "download": download_progress(),
-            "download_queue": watchdog.get("queue") or [],
+            "download": dl_prog,
+            "download_queue": dl_queue,
             "watchdog": watchdog,
             "llama_service": llama_service_snapshot(),
+            "stage": stage_progress_for_status(),
             "offload": read_json(RUN / "llama-fit.json"),
             "models_dirs": [str(p) for p in model_dirs()],
             "download_dir": str(dl_dir) if dl_dir else (str(preferred) if preferred else ""),
@@ -7869,6 +8360,7 @@ def handle(action: str, params: dict) -> dict:
             str(params.get("q") or params.get("query") or ""),
             str(params.get("abl") or "include"),
             str(params.get("vision") or "any"),
+            str(params.get("format") or params.get("fmt") or "gguf"),
         )
     if action == "model_download":
         return enqueue_download(params)

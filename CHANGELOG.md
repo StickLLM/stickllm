@@ -1,3 +1,28 @@
+## 0.8.7 - USB→RAM stage + NInfer Load/HF + clock NTP
+
+Must-bake from [docs/NEXT-0.8.7.md](docs/NEXT-0.8.7.md).
+
+- **NTP on Wi‑Fi (ISS-047).** Wrong wall clock broke TLS (“could not connect to server”). `stickllm-clock-sync` runs after Wi‑Fi apply and on NetworkManager up; timesyncd no longer waits on masked `NetworkManager-wait-online`.
+- **Power off confirm (ISS-048).** Start → Power off minimises native Browser/Terminal first and uses the in-desk confirm — `window.confirm` was hidden behind an open browser.
+- **Setup Open now (ISS-049).** First-boot model step shows **Loading…** immediately instead of sitting idle until activate returns.
+- **Experimental host persist (ISS-050).** NInfer / unlock prefs live on STICKLLM-DATA; same computer keeps them across reboot, a different computer gets llama.cpp defaults.
+- **Downloads soft gate (ISS-051).** Under NInfer, GGUF/HF names (e.g. Inkling) and unlisted NInfer ids warn and continue — no hard `unknown NInfer model` refuse.
+- **NInfer queue + Load parity (ISS-044/045/046).** Downloads queue shows NInfer jobs; **Load** wording; Running only when healthy; tray Loading %; A0 sync.
+- **StickLink Pairing phone… (SL1).** QR gap no longer flashes “StickLink unavailable.”
+- **Engine-scoped HF search (ISS-052).** NInfer search/pills do not present GGUF as NInfer.
+- **USB→RAM stage (ISS-053).** Stage weights to `/tmp` or `/dev/shm` before Load (and after Download when RAM allows); status bar %; reclaim on Unload/pressure; never mlock. Reuse a complete staged copy in any tmpfs instead of starting a second USB copy.
+- **NInfer 32K floor (ISS-054).** Serve `--max-context/--kv-capacity ≥32768`; A0 ctx 32768 (no silent 8K).
+- **A0 id match (ISS-055).** Normalize `qwen36` ↔ `qwen3.6`; sync to live `/v1/models` id.
+- **A0 LiteLLM bridge (ISS-056).** `172.30.0.1` + `--add-host host.docker.internal:host-gateway`.
+- **A0 vision modalities (ISS-057).** Vision from `/v1/models`, not forced for every NInfer.
+- **Context + Advanced for every engine (ISS-058).** Same Models tune panel under NInfer; Context → `--max-context`/`--kv-capacity` (≥32K); KV type greyed (llama-only); Chat sampling still applies; A0 follows live engine ctx.
+- **NInfer HF search (ISS-059).** Browse searches Hugging Face for `.ninfer` (not only the 3 pinned Qwen download-model.sh ids); same trust/fit filters; Download + Load into shared models dir.
+- **NInfer sticky Load (ISS-060).** Under NInfer, card Load / sticky Load call `experimental_ninfer_model_activate` (not llama `model_activate` → “unknown model”).
+- **StickLink keepalive under load (ISS-061).** Method C ingest answers ping/pong immediately so heavy A0 page loads cannot starve the phone’s 90s pong watchdog (`sess lost: no pong path`).
+- **A0 sync over StickLink (ISS-062).** Gateway rewrites served A0 sync/websocket JS: force `ws_webui` handlers, 20s handshake, process pushes while DEGRADED — no `NO_HANDLERS` / red sync. Not A0 fork.
+- **Vision image shrink (ISS-063).** Attach-images extension downscales phone photos to JPEG ≤1280 before history inject; profile prompt: report vision failure once (no OCR loop).
+- **A0 files on phone (ISS-064).** StickLink mux keeps attachment downloads identity-encoded (no gzip), 32 MiB body, 300s timeout for `download_work_dir_file`.
+
 ## 0.8.6 - Minesweeper open + A0 work Files + NInfer Models
 
 Must-bake from [docs/NEXT-0.8.6.md](docs/NEXT-0.8.6.md) / carry from [docs/NEXT-0.8.5.md](docs/NEXT-0.8.5.md).

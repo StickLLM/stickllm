@@ -1,0 +1,23 @@
+#!/bin/bash
+# When any interface gets connectivity, nudge NTP so wall clock catches up.
+# NetworkManager-wait-online is masked on StickLLM — timesyncd must not wait on it.
+iface="${1:-}"
+action="${2:-}"
+case "$action" in
+  up|dhcp4-change|dhcp6-change|connectivity-change)
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+
+# Only when we actually have an address / connectivity.
+if ! ip -4 route show default >/dev/null 2>&1 && ! ip -6 route show default >/dev/null 2>&1; then
+  exit 0
+fi
+
+if [[ -x /usr/local/bin/stickllm-clock-sync ]]; then
+  # Background — dispatcher must return quickly.
+  /usr/local/bin/stickllm-clock-sync >/dev/null 2>&1 &
+fi
+exit 0

@@ -354,14 +354,17 @@ def test_ninfer_catalog_rows_and_artifact_lookup(tmp_path):
     m = _load()
     art = tmp_path / "qwen3_8_27b.ninfer"
     art.write_bytes(b"x" * 64)
-    rows = m.ninfer_catalog_rows(tmp_path, active_key="qwen38-27b")
+    rows = m.ninfer_catalog_rows(tmp_path, active_key="qwen38-27b", serving=False)
     ids = {r["id"] for r in rows}
     assert "qwen38-27b" in ids
     hit = next(r for r in rows if r["id"] == "qwen38-27b")
     assert hit["installed"] is True
     assert hit["active"] is True
+    assert hit["running"] is False  # selected but :8080 not healthy yet
     assert hit["path"].endswith("qwen3_8_27b.ninfer")
     assert m.find_ninfer_artifact("qwen38-27b", tmp_path) == art
+    hot = m.ninfer_catalog_rows(tmp_path, active_key="qwen38-27b", serving=True)
+    assert next(r for r in hot if r["id"] == "qwen38-27b")["running"] is True
 
 
 def test_active_engine_env_id_does_not_override_json_path(tmp_path, monkeypatch):

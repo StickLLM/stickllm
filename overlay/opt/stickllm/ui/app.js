@@ -3183,9 +3183,11 @@ function confirmBox({ title, text, word, check, ok = "Delete", extra, cb, noCanc
   if ($("#cfCancel")) $("#cfCancel").hidden = !!noCancel;
   $("#cfExtra").hidden = !extra; $("#cfExtra").textContent = extra || "";
   cfCb = cb; $("#confirm").hidden = false;
-  // Setup wizard is z-index 9999; lift confirm above it (ISS-037 Delete vault).
+  // Setup wizard is z-index 9999; desk WinBox climbs too — keep confirm on top
+  // (ISS-037 Delete vault; ISS-048 Power off).
   try {
-    $("#confirm").style.zIndex = setupWizardShowing() ? "10050" : "";
+    const lift = setupWizardShowing() || document.getElementById("deskRoot") || document.querySelector(".deskLayer");
+    $("#confirm").style.zIndex = lift ? "10050" : "";
   } catch (_) {}
   setTimeout(() => (label ? $("#cfCheck") : $("#cfOk")).focus(), 20);
 }
@@ -3549,7 +3551,12 @@ function searchRows() {
     seen.add(row.id);
     out.push(row);
   }
+  // NInfer: merge HF .ninfer hits (not GGUF). llama: merge HF GGUF hits.
   for (const h of hfHits) {
+    if (state.activeEngine === "ninfer-all") {
+      const fmt = String(h.format || "").toLowerCase();
+      if (fmt && fmt !== "ninfer") continue;
+    }
     const row = lastCatalog.find((x) => x.id === h.id || (h.catalog_id && x.id === h.catalog_id));
     const m = row ? { ...h, ...row, hf_id: h.hf_id || h.id, repo: h.repo, file: h.file, sha256: h.sha256 || "", hf: true } : h;
     if (seen.has(m.id)) continue;
@@ -3568,6 +3575,28 @@ function showLoadTune() {
   const m = findModel(selectedModelId);
   return !!(m && m.installed);
 }
+/** Grey knobs the active engine cannot honor; keep the panel visible (ISS-058). */
+function syncEngineTuneChrome(ninferMode) {
+  const ninfer = ninferMode === true || state.activeEngine === "ninfer-all";
+  // KV cache type is llama.cpp-only; NInfer uses its own KV capacity (= max-context).
+  $$("#kvSeg button").forEach((b) => {
+    b.disabled = ninfer;
+    b.title = ninfer ? "KV cache type is llama.cpp-only; NInfer uses context size for KV capacity" : "";
+  });
+  if ($("#kvSeg")) $("#kvSeg").classList.toggle("disabled", ninfer);
+  const note = $("#tuneApplies");
+  if (note) {
+    note.textContent = ninfer
+      ? "Context size applies on the next Load (NInfer --max-context, floor 32K). Temperature, Top-p, Top-k, Repeat penalty and Max reply tokens apply to Chat. KV cache type is llama.cpp-only (greyed). Agent Zero uses its own settings."
+      : "Context and KV cache type apply on the next Load. Temperature, Top-p, Top-k, Repeat penalty and Max reply tokens apply to Chat messages (Agent Zero uses its own settings).";
+  }
+  const ctxNote = $("#ctxNote");
+  if (ctxNote && ninfer) {
+    ctxNote.textContent = "StickLLM requires at least 32,768 tokens of context. NInfer Load passes this as --max-context / --kv-capacity.";
+  } else if (ctxNote && !ninfer) {
+    ctxNote.textContent = "StickLLM requires at least 32,768 tokens of context. Models that cannot fit that are refused.";
+  }
+}
 function renderModelsList() {
   const list = $("#modelList");
   if (!list) return;
@@ -3579,8 +3608,10 @@ function renderModelsList() {
   });
   const localN = lastCatalog.filter((m) => m.installed).length;
   if ($("#localCount")) $("#localCount").textContent = String(localN);
-  if ($("#localTune")) $("#localTune").hidden = ninferMode || !showLoadTune();
-  if ($("#hfTokenBox")) $("#hfTokenBox").hidden = ninferMode || state.mtab !== "browse";
+  // ISS-058: same Preset / Context / Advanced panel for every engine.
+  if ($("#localTune")) $("#localTune").hidden = !showLoadTune();
+  syncEngineTuneChrome(ninferMode);
+  if ($("#hfTokenBox")) $("#hfTokenBox").hidden = state.mtab !== "browse";
   if ($("#mfTarget")) $("#mfTarget").value = state.mf.target;
   if ($("#customHw")) $("#customHw").hidden = state.mf.target !== "custom";
   if ($("#hwLine")) {
@@ -3607,7 +3638,7 @@ function renderModelsList() {
   if ($("#policyBanner")) {
     if (ninferMode) {
       $("#policyBanner").hidden = false;
-      $("#policyBanner").innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg><span><b>NInfer active:</b> showing NInfer-compatible models only (same models folder as GGUF). Download one, then Activate. Use llama.cpp in Experimental to restore the GGUF catalog.</span>`;
+      $("#policyBanner").innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg><span><b>NInfer active:</b> Browse searches Hugging Face for <b>.ninfer</b> files (plus the 3 official Qwen pins). GGUF stays under llama.cpp.</span>`;
     } else {
       $("#policyBanner").hidden = !rules.length;
       if (rules.length) {
@@ -3619,18 +3650,29 @@ function renderModelsList() {
   const searching = state.mtab === "browse" && (state.mf.q || "").trim().length >= 2;
   const localHits = searching ? catalogFuzzyHits(state.mf.q) : [];
   if ($("#browseNote")) {
-    $("#browseNote").textContent = searching
-      ? (hfBusy ? "Searching Hugging Face…" : "Hugging Face · GGUF only")
-      : "Pinned catalog · type to search Hugging Face";
+    if (ninferMode) {
+      $("#browseNote").textContent = searching
+        ? (hfBusy ? "Searching Hugging Face for .ninfer…" : "Hugging Face · .ninfer only")
+        : "Official NInfer pins · type to search Hugging Face .ninfer";
+    } else {
+      $("#browseNote").textContent = searching
+        ? (hfBusy ? "Searching Hugging Face…" : "Hugging Face · GGUF only")
+        : "Pinned catalog · type to search Hugging Face";
+    }
   }
   // Keep local catalog / installed fuzzy hits visible while HF loads (or fails).
   if (searching && hfBusy && !hfHits.length && !localHits.length) {
-    list.innerHTML = '<div class="emptyCards">Searching Hugging Face…</div>';
+    list.innerHTML = `<div class="emptyCards">${ninferMode ? "Searching Hugging Face for .ninfer…" : "Searching Hugging Face…"}</div>`;
     syncModelActions();
     return;
   }
   if (searching && hfErr && !hfHits.length && !localHits.length) {
     list.innerHTML = `<div class="emptyCards">${esc(hfErr)}</div>`;
+    syncModelActions();
+    return;
+  }
+  if (ninferMode && searching && !source.length) {
+    list.innerHTML = `<div class="emptyCards">No .ninfer models match “${esc((state.mf.q || "").trim())}”. Try another query, or use the official pins qwen38-27b / qwen36-27b / qwen36-35b-a3b. For GGUF (Inkling), switch Experimental → llama.cpp.</div>`;
     syncModelActions();
     return;
   }
@@ -3697,7 +3739,7 @@ function renderModelsList() {
     if (trust === "blocked") {
       actions = delBtn;
     } else if (have) {
-      actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : (ninferMode ? "Activate" : "Load")}</button>${!ninferMode && (run || loading) ? `<button class="btn sm ghost" data-unload="${esc(id)}" type="button" title="Stop this model (chat and the app agent have no model until you load one)">Unload</button>` : ""}${delBtn}`;
+      actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : "Load"}</button>${(run || loading) ? `<button class="btn sm ghost" data-unload="${esc(id)}" type="button" title="Stop this model (chat and the app agent have no model until you load one)">Unload</button>` : ""}${delBtn}`;
     } else if (m.downloading || queueState(id) === "active" || dlActiveId === id) {
       actions = `<span class="pill warn">downloading</span>`;
     } else if (queueState(id) === "pending") {
@@ -3709,13 +3751,18 @@ function renderModelsList() {
     } else {
       actions = `<button class="btn sm ${fit.k === "no" ? "" : "primary"}" data-dl="${esc(id)}" type="button">Download</button>`;
     }
-    const fmtPill = ninferMode || m.format === "ninfer" || m.engine === "ninfer-all" ? "NInfer" : "GGUF";
+    // Pill = this row's format only. Never stamp every HF/GGUF hit "NInfer"
+    // just because Experimental default is NInfer (that misled Inkling downloads).
+    const isNinferRow = String(m.format || "").toLowerCase() === "ninfer"
+      || m.engine === "ninfer-all"
+      || m.source === "ninfer";
+    const fmtPill = isNinferRow ? "NInfer" : "GGUF";
     return `<article class="mcard ${trust === "blocked" ? "blocked" : ""} ${sel ? "sel" : ""}" data-id="${esc(id)}" tabindex="0">
       <div class="mcTop">
         <div class="mcName"><b>${esc(name)}</b><small>${esc(q)} · ${have ? gbTxt + " on disk" : "~" + gbTxt}${have && !(fastDisk && where === "stick") ? " · on " + where : ""}${rec ? " · recommended" : ""}${have && fastDisk && where === "stick" ? ' <span class="pill slowUsb" title="Loads from the USB stick; a copy on the SSD loads much faster">Slow USB load</span>' : ""}</small></div>
         ${run ? '<span class="pill ok">running</span>' : ""}${loading ? '<span class="pill warn">loading</span>' : ""}${rec ? '<span class="pill acc">recommended</span>' : ""}
       </div>
-      <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${ninferMode ? "" : visionTag(m, id)}${!ninferMode && isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">${fmtPill}</span></div>
+      <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${visionTag(m, id)}${isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap" title="${isNinferRow ? "NInfer .ninfer profile" : "llama.cpp GGUF"}">${fmtPill}</span></div>
       <div class="mcFoot">
         <span class="fit ${fit.cls}" title="Needs ~${fit.need.toFixed(1)} GB">${fit.label}</span>${m.ram_warning && fit.k !== "no" ? `<span class="pill warn" title="${esc(m.ram_warning)}">low RAM</span>` : ""}${m.arch_warning ? `<span class="pill warn" title="${esc(m.arch_warning)}">experimental</span>` : ""}
         <span class="grow"></span>${actions}
@@ -3736,17 +3783,79 @@ function renderModelsList() {
     e.stopPropagation();
     selectedModelId = b.dataset.dl;
     if (state.activeEngine === "ninfer-all") {
-      b.disabled = true;
-      try {
-        const r = await control("experimental_ninfer_model_download", { id: selectedModelId });
-        if (r && r.ok === false) throw new Error(r.error || r.hint || "Download failed");
-        toast((r && r.note) || ("Downloading " + selectedModelId), { ms: 12000 });
-        refreshModels().catch(() => {});
-      } catch (err) {
-        toast(plainError(err.message || String(err)) || String(err));
-      } finally {
-        b.disabled = false;
+      const m = findModel(selectedModelId);
+      const id = String(selectedModelId || "");
+      const fmt = String((m && m.format) || "").toLowerCase();
+      const isNinferFmt = fmt === "ninfer" || !!(m && m.engine === "ninfer-all");
+      const isHfNinfer = !!(m && m.repo && m.file && /\.ninfer$/i.test(String(m.file || id)));
+      // GGUF rows must never hit NInfer download-model.sh.
+      const ggufLike = !!(
+        /\.gguf$/i.test(id)
+        || (m && (
+          fmt === "gguf"
+          || (m.repo && !isHfNinfer && !isNinferFmt)
+          || (m.engine && m.engine !== "ninfer-all" && fmt !== "ninfer")
+        ))
+      );
+      if (ggufLike) {
+        confirmBox({
+          title: "Download GGUF while NInfer is default?",
+          text: ((m && m.name) || id) + " is a llama.cpp GGUF file, not a NInfer profile. NInfer cannot download it. You can queue the GGUF now; Load it after switching back to llama.cpp in Experimental. Cancel leaves nothing queued.",
+          ok: "Download GGUF",
+          danger: false,
+          cb: () => { try { $("#dlModel").click(); } catch (_) {} },
+        });
+        return;
       }
+      // HF .ninfer → same Downloads queue as GGUF (curl + progress).
+      if (isHfNinfer) {
+        b.disabled = true;
+        try {
+          await doModelDownload(m);
+        } finally {
+          b.disabled = false;
+        }
+        return;
+      }
+      const startNinferDl = async () => {
+        b.disabled = true;
+        try {
+          const r = await control("experimental_ninfer_model_download", { id });
+          if (r && r.ok === false) {
+            if (r.error === "gguf_not_ninfer") {
+              confirmBox({
+                title: "Not a NInfer model",
+                text: r.message || "That file is GGUF. Download it as GGUF instead?",
+                ok: "Download GGUF",
+                danger: false,
+                cb: () => { try { $("#dlModel").click(); } catch (_) {} },
+              });
+              return;
+            }
+            throw new Error(r.error || r.hint || r.message || "Download failed");
+          }
+          toast((r && r.note) || ("Downloading " + id + " — see Downloads"), { ms: 12000 });
+          await refreshModels();
+          if (!dlPollTimer) startDlPoll();
+        } catch (err) {
+          toast(plainError(err.message || String(err)) || String(err));
+        } finally {
+          b.disabled = false;
+        }
+      };
+      const listed = !!(m && (m.format === "ninfer" || m.engine === "ninfer-all") && m.id && !String(m.source || "").includes("huggingface"));
+      // Unlisted official-script ids: warn, then still try download-model.sh.
+      if (!listed || (m && m.unlisted)) {
+        confirmBox({
+          title: "Unlisted NInfer model",
+          text: (id || "This id") + " is not on StickLLM’s short NInfer list (qwen38-27b, qwen36-27b, qwen36-35b-a3b). Download will still be attempted — it may fail if upstream has no such profile. Prefer Hugging Face search for other .ninfer files. Cancel leaves nothing queued.",
+          ok: "Download anyway",
+          danger: false,
+          cb: () => { startNinferDl(); },
+        });
+        return;
+      }
+      await startNinferDl();
       return;
     }
     $("#dlModel").click();
@@ -3756,23 +3865,12 @@ function renderModelsList() {
     e.stopPropagation();
     const id = b.dataset.load;
     const m = findModel(id);
-    // Paint Loading on this card immediately (before activate network call).
-    beginModelLoadUi(id, m?.name || id);
     if (state.activeEngine === "ninfer-all") {
-      paintSoon().then(async () => {
-        try {
-          const r = await control("experimental_ninfer_model_activate", { id });
-          if (r && r.ok === false) throw new Error(r.error || r.hint || "Activate failed");
-          finishLoadSuccess(m?.name || id);
-          toast((r && r.note) || ("NInfer serving " + id), { ms: 12000 });
-        } catch (err) {
-          loadingModelId = null;
-          toast(plainError(err.message || String(err)) || String(err));
-        }
-        refreshModelsNow();
-      });
+      loadNinferModel(id, m?.name || id);
       return;
     }
+    // Paint Loading on this card immediately (before activate network call).
+    beginModelLoadUi(id, m?.name || id);
     // Yield a frame so the badge/status line paint before the long activate await.
     paintSoon().then(() => $("#activate").click());
   }));
@@ -3962,29 +4060,39 @@ function applyDownloadView(st) {
   const d = st?.download || {};
   const live = ["downloading", "verifying", "starting"].includes(d.state);
   dlActiveId = live ? (d.id || "") : "";
+  // Card "downloading" pill also follows NInfer jobs merged into the queue.
+  if (!dlActiveId) {
+    const ni = (dlQueue || []).find((q) => q.state === "active" && (q.format === "ninfer" || q.engine === "ninfer-all"));
+    if (ni) dlActiveId = ni.id || "";
+  }
   renderDownload(d);
   renderQueuePanel();
 }
 function queueStatusLine(q) {
-  const labels = { active: "Downloading", pending: "Queued", paused: "Paused", failed: "Failed" };
+  const labels = { active: "Downloading", pending: "Queued", paused: "Paused", failed: "Failed", done: "Done" };
   const label = labels[q.state] || q.state || "Queued";
+  // Queue label follows the job, not the active engine (GGUF must not say NInfer).
+  const eng = (q.format === "ninfer" || q.engine === "ninfer-all") ? " · NInfer"
+    : (/\.gguf$/i.test(String(q.id || q.name || "")) || q.format === "gguf" || q.repo) ? " · GGUF" : "";
   const pct = q.percent == null ? "" : ` · ${Math.round(Number(q.percent))}%`;
   const size = q.bytes ? ` · ${fmtBytes(q.bytes_done)} / ${fmtBytes(q.bytes)}` : "";
   const err = q.error ? ` — ${q.error}` : "";
-  return `${label}${pct}${size}${err}`;
+  return `${label}${eng}${pct}${size}${err}`;
 }
 function renderQueuePanel() {
   const box = $("#queueList");
   if (!box) return;
   if (!dlQueue.length) {
-    box.innerHTML = '<div class="row"><div><b>Queue empty</b><small>Downloads you start from Models show up here.</small></div></div>';
+    box.innerHTML = '<div class="row"><div><b>Queue empty</b><small>Downloads you start from Models show up here (GGUF and NInfer).</small></div></div>';
     return;
   }
   box.innerHTML = dlQueue.map((q) => {
     const id = esc(q.id);
-    const start = q.state === "active" ? "" : `<button class="btn sm primary" data-qact="start" data-qid="${id}" type="button">Start</button>`;
-    const stop = q.state === "active" || q.state === "pending" ? `<button class="btn sm" data-qact="stop" data-qid="${id}" type="button">Stop</button>` : "";
-    const del = `<button class="btn sm danger ghost" data-qact="remove" data-qid="${id}" type="button">Delete</button>`;
+    const ninfer = q.format === "ninfer" || q.engine === "ninfer-all" || q.queueable === false;
+    // NInfer uses download-model.sh — not the GGUF Start/Stop/Remove helpers.
+    const start = (!ninfer && q.state !== "active") ? `<button class="btn sm primary" data-qact="start" data-qid="${id}" type="button">Start</button>` : "";
+    const stop = (!ninfer && (q.state === "active" || q.state === "pending")) ? `<button class="btn sm" data-qact="stop" data-qid="${id}" type="button">Stop</button>` : "";
+    const del = ninfer ? "" : `<button class="btn sm danger ghost" data-qact="remove" data-qid="${id}" type="button">Delete</button>`;
     return `<div class="row"><div><b>${esc(q.name || q.file || q.id)}</b><small>${esc(queueStatusLine(q))}</small></div><div class="qActions">${stop}${start}${del}</div></div>`;
   }).join("");
   $$("#queueList [data-qact]").forEach((b) => {
@@ -4044,7 +4152,9 @@ function renderDownload(d) {
 function downloadStillGoing(st) {
   const s = st?.download?.state;
   const queued = (st?.download_queue || dlQueue).some((q) => q.state === "pending" || q.state === "active");
-  return queued || ["downloading", "verifying", "starting"].includes(s);
+  const ninferLive = String(st?.ninfer_download?.state || "") === "downloading"
+    || (st?.download_queue || []).some((q) => q.state === "active" && (q.format === "ninfer" || q.engine === "ninfer-all"));
+  return queued || ninferLive || ["downloading", "verifying", "starting"].includes(s);
 }
 /** After GGUF/mmproj finishes, force a fresh catalog so the card flips to Installed / Load. */
 async function refreshCatalogAfterDownload(finishedId) {
@@ -4080,13 +4190,19 @@ function startDlPoll() {
       const curState = String(st?.download?.state || "");
       const curId = String(st?.download?.id || lastDlId || "");
       if (curId) lastDlId = curId;
+      if (st.active_engine) state.activeEngine = String(st.active_engine);
       applyDownloadView(st);
-      if (st.catalog) {
+      // Keep engine-filtered catalog (NInfer) — do not clobber with GGUF-only st.catalog.
+      if (state.activeEngine === "ninfer-all" && Array.isArray(st.ninfer_catalog) && st.ninfer_catalog.length) {
+        lastCatalog = st.ninfer_catalog;
+        renderModelsList();
+      } else if (st.catalog) {
         lastCatalog = st.catalog;
         renderModelsList();
       }
       const finished = !downloadStillGoing(st) || curState === "done";
-      const wasLive = ["downloading", "verifying", "starting"].includes(lastDlState);
+      const wasLive = ["downloading", "verifying", "starting"].includes(lastDlState)
+        || String(st?.ninfer_download?.state || "") === "done";
       lastDlState = curState || lastDlState;
       if (!finished) return;
       stopDlPoll();
@@ -4100,8 +4216,11 @@ function startDlPoll() {
         else toast("Vision download finished — open Models and Load the vision model to use images");
       } else if (wasLive || curState === "done") {
         const label = (m && (m.name || m.id)) || st?.download?.name || "Model";
-        if (m?.installed) toast(`${label} is installed — tap Load to use it`);
-        else toast("Download finished — Refresh if the card still says Download");
+        if (m?.installed) {
+          toast(`${label} is installed — tap Load to use it`);
+        } else {
+          toast("Download finished — Refresh if the card still says Download");
+        }
       }
     } catch (_) {}
   }, 1500);
@@ -4286,7 +4405,8 @@ function startLoadTick() {
   if (loadTickTimer) return;
   loadTickTimer = setInterval(() => {
     if (!loadStartedAt) return;
-    setChipLoad(true, 0, loadTickLabel, loadTickPhase, false);
+    // Keep last known pct (stage % or clock) — never pass 0 or real stage % is dropped.
+    setChipLoad(true, Math.max(1, loadShownPct || 1), loadTickLabel, loadTickPhase, false);
   }, 1000);
 }
 function loadBackendHint() {
@@ -4313,6 +4433,9 @@ function guessSizeGb(name) {
   if (p >= 6) return 5;
   return 2.5;
 }
+function ninferLoadActive() {
+  return state.activeEngine === "ninfer-all" || String(lastLlama?.engine || "") === "ninfer-all";
+}
 function llamaUnitBusy(health) {
   const svc = health && health.llama_service;
   if (!svc || typeof svc !== "object") return false;
@@ -4321,22 +4444,54 @@ function llamaUnitBusy(health) {
   const sub = String(svc.sub_state || "").toLowerCase();
   return active === "activating" || sub === "start" || sub === "auto-restart";
 }
+function stageView(health) {
+  const st = (health && health.stage) || {};
+  const state = String(st.state || "");
+  if (state !== "copying" && state !== "done") return null;
+  const caption = String(st.caption || "").trim()
+    || (state === "copying" ? "Copying from USB to RAM…" : "Copied to RAM — loading into GPU…");
+  let pct = Number(st.percent);
+  if (!Number.isFinite(pct) && st.bytes_total > 0) {
+    pct = (100 * Number(st.bytes_done || 0)) / Number(st.bytes_total);
+  }
+  if (!Number.isFinite(pct)) pct = state === "done" ? 100 : 1;
+  return {
+    state,
+    caption,
+    pct: Math.max(1, Math.min(99, pct)),
+    dest: String(st.dest || ""),
+    fromRam: /\/(tmp|dev\/shm)\//.test(String(st.dest || "")) || /Already in RAM|Copied to RAM/i.test(caption),
+  };
+}
 function llamaView(health) {
-  const svc = lastLlama || {};
+  const svc = (health && health.llama_service) || lastLlama || {};
+  if (health && health.llama_service) lastLlama = health.llama_service;
   const load = (health && health.llama_load) || {};
+  const stage = stageView(health);
   const restarts = Number(svc.n_restarts || 0);
   const fails = Number(svc.fail_count || load.fail_count || 0);
   const alive = !!svc.process_alive;
   const stopped = !!(svc.stopped || svc.result === "start-limit-hit");
-  const crashed = !alive && (restarts >= 1 || fails >= 1 || !!svc.error || !!load.error);
-  const giveUp = !alive && (stopped || restarts >= 2 || fails >= 2);
-  const caption = svc.caption || load.caption || "";
+  // While NInfer Load is in flight, stickllm-llama is intentionally down —
+  // do not treat that as a GPU crash.
+  const ninfer = ninferLoadActive() || (!!loadingModelId && state.activeEngine === "ninfer-all");
+  const crashed = !ninfer && !alive && (restarts >= 1 || fails >= 1 || !!svc.error || !!load.error);
+  const giveUp = !ninfer && !alive && (stopped || restarts >= 2 || fails >= 2);
+  const caption = (stage && stage.caption)
+    || svc.caption
+    || load.caption
+    || (ninfer && loadingModelId ? "Loading NInfer weights…" : "");
   const error = (svc.error || load.error || "").trim();
   let pct = 0;
-  if (!crashed && alive && Number.isFinite(Number(svc.progress_pct))) {
+  if (stage && stage.state === "copying" && !crashed) {
+    // Real USB→RAM copy % (system monitor USB pegged during this phase is expected).
+    pct = stage.pct;
+  } else if (!crashed && alive && Number.isFinite(Number(svc.progress_pct))) {
     pct = Math.max(1, Math.min(90, Number(svc.progress_pct) || 1));
+  } else if (ninfer && loadingModelId && !crashed) {
+    pct = Math.max(1, Math.min(88, shownLoadPct()));
   }
-  return { crashed, giveUp, alive, caption, error, pct, restarts, fails };
+  return { crashed, giveUp, alive: alive || (ninfer && !!loadingModelId), caption, error, pct, restarts, fails, ninfer, stage };
 }
 function loadPhaseText(view) {
   if (view.crashed || view.giveUp) {
@@ -4344,6 +4499,7 @@ function loadPhaseText(view) {
     return view.giveUp ? err : err;
   }
   if (view.caption) return view.caption;
+  if (view.ninfer || ninferLoadActive()) return "Loading NInfer weights…";
   if (!view.alive) return "Starting llama…";
   return "Loading weights…";
 }
@@ -4374,9 +4530,17 @@ function loadFinishedOk(j) {
   const envPath = String(j.connect?.model_path || "").trim();
   const gotId = String(j.connect?.model_id || "").trim();
   const wantPath = requestedLoadPath();
+  // NInfer: no llama-runtime.env path — model.env id/path + /health is enough.
+  if (ninferLoadActive() || state.activeEngine === "ninfer-all") {
+    if (gotId && (gotId === loadingModelId || gotId.replace(/[._]/g, "") === String(loadingModelId).replace(/[._]/g, ""))) {
+      return true;
+    }
+    if (wantPath && sameModelPath(envPath, wantPath)) return true;
+    if (loadActivateSettled && (gotId || envPath)) return true;
+  }
   if (runPath && wantPath && sameModelPath(runPath, wantPath)) return true;
   if (runPath && gotId === loadingModelId && envPath && sameModelPath(runPath, envPath)) return true;
-  // After Activate returned and we saw /health drop, env id/path matching the
+  // After Load returned and we saw /health drop, env id/path matching the
   // click is enough — runtime.env can lag on vision/mmproj loads.
   if (loadActivateSettled && loadSawNotOk) {
     if (gotId && gotId === loadingModelId) return true;
@@ -4411,6 +4575,11 @@ function runningModelLabel(j) {
 }
 function phaseForRequestedLoad(view, j) {
   if (view.crashed || view.giveUp) return view.error || "GPU load failed";
+  const st = stageView(j) || view.stage;
+  if (st && st.caption) return st.caption;
+  if (view.ninfer || ninferLoadActive() || state.activeEngine === "ninfer-all") {
+    return view.caption || "Loading NInfer weights…";
+  }
   const planModel = String(j?.llama_load?.model || "").trim();
   const wantPath = requestedLoadPath();
   const captionOk = !!(view.caption && planModel && wantPath && sameModelPath(planModel, wantPath));
@@ -4545,7 +4714,16 @@ function setChipLoad(loading, pct, name, phase, failed) {
   } else if (loadFailed) {
     return;
   } else {
-    pct = shownLoadPct();
+    const phaseText = String(phase || "");
+    const realStage = /Copying from USB to RAM|Already in RAM|Copied to RAM/i.test(phaseText)
+      && Number.isFinite(Number(pct)) && Number(pct) > 0;
+    if (realStage) {
+      // Trust USB→RAM / stage percent from /api/health (not the fake time tick).
+      loadShownPct = Math.max(loadShownPct || 1, Math.min(99, Number(pct)));
+      pct = loadShownPct;
+    } else {
+      pct = shownLoadPct();
+    }
     if (name) loadTickLabel = name;
     if (phase) loadTickPhase = phase;
     startLoadTick();
@@ -4584,7 +4762,10 @@ function beginModelLoadUi(id, name) {
   loadShownPct = 1;
   loadFailed = false;
   loadTickLabel = loadingModelName;
-  loadTickPhase = "Starting llama…";
+  const startPhase = (state.activeEngine === "ninfer-all")
+    ? "Preparing NInfer load…"
+    : "Starting llama…";
+  loadTickPhase = startPhase;
   loadStartedAt = Date.now();
   renderModelsList();
   if ($("#runName")) $("#runName").textContent = loadingModelName;
@@ -4593,7 +4774,7 @@ function beginModelLoadUi(id, name) {
     $("#popModel").textContent = `loading — ${loadingModelName}`;
     $("#popModel").title = loadingModelPath || "";
   }
-  setChipLoad(true, 1, loadingModelName, "Starting llama…");
+  setChipLoad(true, 1, loadingModelName, startPhase);
   toast("Loading " + loadingModelName + "…");
 }
 function paintSoon() {
@@ -4602,10 +4783,60 @@ function paintSoon() {
   });
 }
 
+async function loadNinferModel(id, name) {
+  beginModelLoadUi(id, name || id);
+  if (!loadPollTimer) startLoadPoll();
+  await paintSoon();
+  try {
+    const ctxSize = Math.max(LLAMA_CTX_FLOOR, Math.round(Number($("#ctx")?.value) || LLAMA_CTX_FLOOR));
+    const r = await control("experimental_ninfer_model_activate", { id, ctx_size: ctxSize });
+    if (r && r.ok === false) throw new Error(r.error || r.hint || "Load failed");
+    loadActivateSettled = true;
+    loadSawNotOk = true;
+    const staged = !!(r && (r.staged || r.stage?.staged));
+    const reused = !!(r && (r.stage?.reused || r.reused));
+    const loadNote = (r && r.note)
+      || (reused ? ("Already in RAM — loading " + (name || id) + "…")
+        : staged ? ("Copied to RAM — loading " + (name || id) + "…")
+          : ("Loading " + (name || id) + "…"));
+    toast(loadNote, { ms: 15000 });
+    if (r && r.healthy) {
+      finishLoadSuccess(r.name || name || id);
+    } else {
+      const phase = reused ? "Already in RAM — loading into GPU…"
+        : staged ? "Copied to RAM — loading into GPU…"
+          : "Loading NInfer weights…";
+      setChipLoad(true, shownLoadPct(), requestedLoadName(), phase);
+      if (!loadPollTimer) startLoadPoll();
+    }
+  } catch (err) {
+    loadActivateSettled = true;
+    if (!loadPollTimer) startLoadPoll();
+    const msg = plainError(err.message || String(err)) || String(err);
+    if (/timed? ?out|Timeout|temporarily/i.test(msg)) {
+      setChipLoad(true, shownLoadPct(), requestedLoadName(), "Copying from USB to RAM… (still working)");
+      toast("Still copying to RAM — status will update…", { ms: 12000 });
+    } else {
+      loadingModelId = null;
+      loadActivateSettled = false;
+      stopLoadPoll();
+      setChipLoad(false, 0, null);
+      toast(msg);
+    }
+  }
+  refreshModelsNow();
+}
+
 $("#activate").onclick = async () => {
   const m = findModel(selectedModelId);
   if (!m) return toast("Select a model");
   const name = m.name || m.id;
+  // ISS-058 showed the Load button under NInfer — it must not call llama model_activate
+  // (that returns "unknown model" for .ninfer / hf: ids).
+  if (state.activeEngine === "ninfer-all") {
+    await loadNinferModel(m.id, name);
+    return;
+  }
   {
     const ctx = +$("#ctx").value;
     const pf = preloadFit(m, ctx, state.kv);
@@ -5904,6 +6135,8 @@ function formatPairCode(code) {
 
 /** StickLink join URL QR (cellular) — NOT the LAN address. */
 let pairQrLastUrl = "";
+/** True after a scannable QR was shown until connected / idle / expired / Generate. */
+let pairQrAwaitingPhone = false;
 let pairQrPollTimer = null;
 let pairQrMinting = false;
 let pairQrExpAt = 0;
@@ -6016,6 +6249,7 @@ function paintSticklinkQr(url, meta) {
       img.alt = "StickLink join QR";
     }
     pairQrLastUrl = join;
+    pairQrAwaitingPhone = true;
     const via = (meta && meta.via) ? String(meta.via) : "sticklink";
     const until = (meta && meta.until) ? String(meta.until) : "";
     stopPairQrExpCountdown();
@@ -6040,6 +6274,7 @@ function paintSticklinkQr(url, meta) {
 }
 function paintSticklinkQrExpired(message) {
   const hint = $("#pairQrHint");
+  pairQrAwaitingPhone = false;
   showPairQrPlaceholder(
     "expired",
     "QR code expired",
@@ -6053,6 +6288,7 @@ function paintSticklinkQrExpired(message) {
 }
 function paintSticklinkQrConnected(message) {
   const hint = $("#pairQrHint");
+  pairQrAwaitingPhone = false;
   showPairQrPlaceholder(
     "expired",
     "Phone connected",
@@ -6061,6 +6297,22 @@ function paintSticklinkQrConnected(message) {
   if (hint) {
     hint.textContent = message
       || "Phone connected over StickLink. Generate a new QR after it disconnects.";
+  }
+  setPairQrButton("generate");
+}
+function paintSticklinkQrPairing(message) {
+  // Brief gap: join URL cleared before remint.status=connected — not a real outage.
+  const hint = $("#pairQrHint");
+  showPairQrPlaceholder(
+    "busy",
+    "Pairing phone…",
+    "Almost there",
+  );
+  // Keep awaiting so further polls stay on pairing, not "unavailable".
+  pairQrAwaitingPhone = true;
+  if (hint) {
+    hint.textContent = message
+      || "Phone is joining StickLink — hang on.";
   }
   setPairQrButton("generate");
 }
@@ -6094,6 +6346,7 @@ function sticklinkJoinIsReconnecting(j) {
 }
 function paintSticklinkQrIdle(message) {
   const hint = $("#pairQrHint");
+  pairQrAwaitingPhone = false;
   showPairQrPlaceholder(
     "expired",
     "No active QR",
@@ -6176,6 +6429,7 @@ function sticklinkPeerDead(j) {
 function paintSticklinkQrPeerDead(j) {
   const msg = (j && (j.message || (j.remint && j.remint.message)))
     || "StickLink Method C peer is not running.";
+  pairQrAwaitingPhone = false;
   showPairQrPlaceholder(
     "expired",
     "StickLink peer not running",
@@ -6314,6 +6568,13 @@ async function refreshSticklinkQr(force) {
       return;
     }
     if (!r.ok) {
+      // After a QR was shown, a short 404/empty join while the phone finishes
+      // pairing looks like an outage — show "Pairing phone…" instead.
+      // Cold start (never had a QR) still uses unavailable / idle, not pairing.
+      if (pairQrAwaitingPhone || pairQrLastUrl) {
+        paintSticklinkQrPairing((j && (j.message || j.error)) || "");
+        return;
+      }
       showPairQrPlaceholder(
         "expired",
         "StickLink unavailable",
@@ -6328,6 +6589,11 @@ async function refreshSticklinkQr(force) {
     }
     const url = (j && (j.url || j.join)) || "";
     if (!url) {
+      // Same transitional gap on HTTP 200 with empty url (between scan and connected).
+      if (pairQrAwaitingPhone || pairQrLastUrl) {
+        paintSticklinkQrPairing((j && j.message) || "");
+        return;
+      }
       paintSticklinkQrIdle((j && j.message) || "");
       return;
     }
@@ -6988,7 +7254,7 @@ function paintExperimental(j) {
           const ok = await expConfirm(
             "Set default — " + engId,
             engId === "ninfer-all"
-              ? "Continue switches StickLLM chat, health, and Agent Zero onto NInfer on :8080. Then open Models, download a compatible NInfer model into the StickLLM models folder, and Activate it — nothing auto-downloads a single default weight. You can switch back to llama.cpp anytime. Cancel leaves the stick unchanged."
+              ? "Continue switches StickLLM chat, health, and Agent Zero onto NInfer on :8080. Then open Models, download a compatible NInfer model into the StickLLM models folder, and Load it — nothing auto-downloads a single default weight. You can switch back to llama.cpp anytime. Cancel leaves the stick unchanged."
               : "Continue switches StickLLM chat, health, and Agent Zero off llama.cpp onto this Experimental engine on :8080. You can switch back to llama.cpp anytime. Cancel leaves the stick unchanged."
           );
           if (!ok) return;
@@ -8035,9 +8301,10 @@ async function openSetupWizard(opts) {
     $("#setupSkip").textContent = step >= LAST ? "Close" : "Skip";
     $("#setupNext").textContent = step >= LAST ? "Finish" : "Continue";
     // Hung create can leave Continue disabled with no busy overlay — always clear on paint.
+    // Keep disabled while Open-model activate is in flight (ISS-049).
     try {
       const busy = $("#vaultCreatingOverlay");
-      if (!(busy && busy.classList.contains("show"))) $("#setupNext").disabled = false;
+      if (!(busy && busy.classList.contains("show")) && !wiz.modelLoadBusy) $("#setupNext").disabled = false;
     } catch (_) {}
     if (step === STEP_MODEL) {
       $("#setupTitle").textContent = "Open model";
@@ -8052,7 +8319,12 @@ async function openSetupWizard(opts) {
 </div>
 <p class="muted small">Continue loads this text model. For images, download a vision model (Inkling, Qwen2.5-VL, …), tap its grey <b>vision</b> pill for mmproj, then Load it.</p>`;
       $("#setupSkip").textContent = "Skip";
-      $("#setupNext").textContent = "Open now";
+      if (wiz.modelLoadBusy) {
+        $("#setupNext").textContent = "Loading…";
+        $("#setupNext").disabled = true;
+      } else {
+        $("#setupNext").textContent = "Open now";
+      }
     } else if (step === STEP_NET) {
       $("#setupTitle").textContent = "Network";
       body.innerHTML = `<p class="muted">Checking network…</p>`;
@@ -8397,28 +8669,62 @@ ${wiz.vaultMode === "unlock" ? '<button type="button" class="btn danger" id="wiz
     showErr("");
     try {
       if (step === STEP_MODEL) {
-        try { await refreshModels(); } catch (_) {}
-        const m = starterModel();
-        if (m) {
-          try {
-            selectedModelId = m.id;
-            beginModelLoadUi(m.id, m.name || m.id);
-            startLoadPoll();
-            const res = await control("model_activate", {
-              id: m.id,
-              ctx_size: +($("#ctx")?.value || 32768),
-              kv_type: { f16: "f16", q8: "q8_0", q4: "q4_0" }[state.kv] || "f16",
-            });
-            loadActivateSettled = true;
-            if (res && res.ok === false && res.error) throw new Error(res.error);
-            toast("Loading " + (m.name || m.id) + "…");
-          } catch (e) {
-            showErr("Could not start the on-stick model: " + (e.message || e) + " — Continue again or Skip.");
-            return;
-          }
-        } else {
-          toast("On-stick model not listed yet — you can load it from Models later");
+        const nextBtn = $("#setupNext");
+        wiz.modelLoadBusy = true;
+        if (nextBtn) {
+          nextBtn.disabled = true;
+          nextBtn.textContent = "Loading…";
         }
+        const statusEl = document.createElement("p");
+        statusEl.id = "wizModelLoadStatus";
+        statusEl.className = "muted small";
+        statusEl.setAttribute("aria-live", "polite");
+        statusEl.textContent = "Starting the on-stick model — this can take a minute…";
+        try {
+          const old = $("#wizModelLoadStatus");
+          if (old) old.remove();
+          body.appendChild(statusEl);
+        } catch (_) {}
+        try {
+          try { await refreshModels(); } catch (_) {}
+          const m = starterModel();
+          if (m) {
+            try {
+              selectedModelId = m.id;
+              if (statusEl) statusEl.textContent = "Loading " + (m.name || m.id) + "…";
+              beginModelLoadUi(m.id, m.name || m.id);
+              startLoadPoll();
+              const res = await control("model_activate", {
+                id: m.id,
+                ctx_size: +($("#ctx")?.value || 32768),
+                kv_type: { f16: "f16", q8: "q8_0", q4: "q4_0" }[state.kv] || "f16",
+              });
+              loadActivateSettled = true;
+              if (res && res.ok === false && res.error) throw new Error(res.error);
+              toast("Loading " + (m.name || m.id) + "…");
+            } catch (e) {
+              wiz.modelLoadBusy = false;
+              if (nextBtn) {
+                nextBtn.disabled = false;
+                nextBtn.textContent = "Open now";
+              }
+              try { statusEl.remove(); } catch (_) {}
+              showErr("Could not start the on-stick model: " + (e.message || e) + " — Continue again or Skip.");
+              return;
+            }
+          } else {
+            toast("On-stick model not listed yet — you can load it from Models later");
+          }
+        } catch (e) {
+          wiz.modelLoadBusy = false;
+          if (nextBtn) {
+            nextBtn.disabled = false;
+            nextBtn.textContent = "Open now";
+          }
+          try { statusEl.remove(); } catch (_) {}
+          throw e;
+        }
+        wiz.modelLoadBusy = false;
       }
       if (step === STEP_NET) {
         wiz.ssid = ($("#wizSsid")?.value || "").trim();
@@ -8785,12 +9091,15 @@ async function refreshStatus() {
         const runPath = String(j.connect?.running_model || "").trim();
         const wantPath = requestedLoadPath();
         const progressTrust = !!(runPath && wantPath && sameModelPath(runPath, wantPath));
+        const staging = !!(view.stage && view.stage.state === "copying");
         if (view.crashed || view.giveUp) {
           setChipLoad(true, 0, label, phaseForRequestedLoad(view, j), true);
           showFewerLayers(view.giveUp);
         } else {
           showFewerLayers(false);
-          const pct = progressTrust && view.alive ? view.pct : 1;
+          // Prefer real stage % while USB→RAM copy runs (USB pegged is expected).
+          const pct = staging ? view.pct
+            : (progressTrust && view.alive ? view.pct : Math.max(1, view.pct || 1));
           setChipLoad(true, pct, label, phaseForRequestedLoad(view, j), false);
         }
         if ($("#popModel")) {
@@ -8827,9 +9136,28 @@ async function refreshStatus() {
         startLoadPoll();
       }
     } else {
-      stopLoadPoll();
-      $("#chipModel").textContent = "none";
-      setChipLoad(false, 0, null);
+      // USB→RAM stage can outlive a timed-out activate call — keep showing it.
+      const stOnly = stageView(j);
+      if (stOnly && (stOnly.state === "copying" || (stOnly.state === "done" && stOnly.pct < 100))) {
+        if (!loadStartedAt) loadStartedAt = Date.now();
+        if (!loadingModelId) {
+          // Soft load marker so the chip stays in loading mode during stage.
+          const destName = String(stOnly.dest || "").split("/").pop() || "";
+          loadingModelName = loadingModelName || destName.replace(/\.partial$/i, "") || "model";
+        }
+        setChipLoad(true, stOnly.pct, loadingModelName || "model", stOnly.caption, false);
+        if ($("#chipModel") && !loadingModelId) {
+          $("#chipModel").textContent = `loading ${Math.round(stOnly.pct)}%`;
+        }
+        if (!loadPollTimer) startLoadPoll();
+      } else if (stOnly && stOnly.state === "done" && /RAM/i.test(stOnly.caption) && !j.llama_ok) {
+        setChipLoad(true, Math.max(90, stOnly.pct || 90), loadingModelName || "model", stOnly.caption, false);
+        if (!loadPollTimer) startLoadPoll();
+      } else {
+        stopLoadPoll();
+        $("#chipModel").textContent = "none";
+        setChipLoad(false, 0, null);
+      }
     }
     $("#chipMeta").textContent = modelVision && j.llama_ok ? backend + " · vision" : backend;
     $("#statusChip .dot")?.classList.toggle("ok", !loadingModelId && !loadMismatchText && !!j.llama_ok);
@@ -8854,7 +9182,7 @@ async function refreshStatus() {
         pop.textContent = `${named} — not running`;
         pop.title = modelPath || "";
       } else {
-        pop.textContent = "none — Activate in Models";
+        pop.textContent = "none — Load in Models";
         pop.removeAttribute("title");
       }
     }
@@ -10537,17 +10865,25 @@ if ($("#mfSearch")) $("#mfSearch").addEventListener("input", (e) => {
   hfTimer = setTimeout(() => runHfSearch(q), 450);
 });
 async function runHfSearch(q) {
+  const ninfer = state.activeEngine === "ninfer-all";
   try {
     // Typo fix against catalog tokens (lnkling → inkling) before asking HF.
     const hq = correctedSearchQuery(q);
-    const res = await control("hf_search", { q: hq, abl: state.mf.abl || "include", vision: state.mf.vis || "any" });
+    const res = await control("hf_search", {
+      q: hq,
+      abl: state.mf.abl || "include",
+      vision: state.mf.vis || "any",
+      format: ninfer ? "ninfer" : "gguf",
+    });
     if ((state.mf.q || "").trim() !== q) return;
     if (!res.ok) {
       hfHits = [];
       hfErr = catalogFuzzyHits(q).length ? "" : (res.error || "Search failed");
     } else {
       hfHits = res.models || [];
-      const emptyMsg = state.mf.vis === "only" ? "No vision GGUF files for that search" : state.mf.abl === "only" ? "No abliterated GGUF files for that search" : "No GGUF files for that search";
+      const emptyMsg = ninfer
+        ? (state.mf.vis === "only" ? "No vision .ninfer files for that search" : state.mf.abl === "only" ? "No abliterated .ninfer files for that search" : "No .ninfer files for that search")
+        : (state.mf.vis === "only" ? "No vision GGUF files for that search" : state.mf.abl === "only" ? "No abliterated GGUF files for that search" : "No GGUF files for that search");
       hfErr = hfHits.length || catalogFuzzyHits(q).length ? "" : emptyMsg;
     }
   } catch (e) {
@@ -11167,7 +11503,7 @@ if ($("#switchVaultBtn")) $("#switchVaultBtn").onclick = () => loadVaultChoices(
 try { hardenVaultPassFields($("#vaultPass"), $("#np1"), $("#np2"), $("#deleteVaultPass")); } catch (_) {}
 
 window.stickApp = Object.freeze({
-  openSettings, closeSettings, showSec, lockVault, showApps, toast,
+  openSettings, closeSettings, showSec, lockVault, showApps, toast, confirmBox,
   setSessionMode, setWebMode, refreshWebMode, focusVaultUnlock, refreshApps, refreshAgentLink, refreshModels, installAgent,
   ensureAgentZeroStarted, moveAgentDrive, renderA0Drive, agentHttpReady,
   deskAppUrl, deskCatalog, deskAgent, control, agentFastPoll, authHeaders,

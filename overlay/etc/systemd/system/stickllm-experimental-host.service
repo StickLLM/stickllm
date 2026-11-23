@@ -1,0 +1,16 @@
+[Unit]
+Description=StickLLM Experimental state on DATA (same machine keep / other machine defaults)
+DefaultDependencies=no
+After=stickllm-usb.service local-fs.target
+Requires=stickllm-usb.service
+Before=stickllm-exp-engine.service stickllm-llama.service stickllm-control.service stickllm-ui.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/stickllm-experimental-host
+# Soft-fail: missing DATA must not block boot UX.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

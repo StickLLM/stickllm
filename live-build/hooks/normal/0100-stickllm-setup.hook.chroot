@@ -17,6 +17,8 @@ chmod 755 /usr/local/bin/stickllm-status \
           /usr/local/bin/stickllm-ssh-bootstrap \
           /usr/local/bin/stickllm-lan-ip \
           /usr/local/bin/stickllm-wifi-apply \
+          /usr/local/bin/stickllm-clock-sync \
+          /usr/local/bin/stickllm-experimental-host \
           /usr/local/bin/stickllm-wifi-setup \
           /usr/local/bin/stickllm-nvidia-prep \
           /usr/local/bin/stickllm-pick-gpus \
@@ -128,6 +130,7 @@ systemctl enable stickllm-exp-engine.service || true
 systemctl enable stickllm-ui.service || true
 systemctl enable stickllm-control.service || true
 systemctl enable stickllm-usb.service || true
+systemctl enable stickllm-experimental-host.service || true
 systemctl enable stickllm-bootstatus.service || true
 systemctl enable stickllm-local.service || true
 systemctl enable stickllm-kiosk.service || true
@@ -135,6 +138,8 @@ systemctl enable stickllm-web-mode.service || true
 systemctl enable seatd.service 2>/dev/null || true
 systemctl enable stickllm-ssh.service || true
 systemctl enable NetworkManager.service || true
+# NTP: wrong wall clock breaks TLS (StickLink). wait-online is masked — sync on Wi‑Fi up.
+systemctl enable systemd-timesyncd.service || true
 systemctl enable nvidia-persistenced.service || true
 # Docker must not start at boot. stickllm-agent starts dockerd after the vault unlocks.
 systemctl disable docker.service 2>/dev/null || true
@@ -209,6 +214,11 @@ fi
 # NM system-connections must be 600
 if [[ -d /etc/NetworkManager/system-connections ]]; then
   find /etc/NetworkManager/system-connections -type f -name '*.nmconnection' -exec chmod 600 {} + 2>/dev/null || true
+fi
+# NM dispatcher must be executable (root-owned, no world-writable).
+if [[ -f /etc/NetworkManager/dispatcher.d/99-stickllm-clock ]]; then
+  sed -i 's/\r$//' /etc/NetworkManager/dispatcher.d/99-stickllm-clock
+  chmod 755 /etc/NetworkManager/dispatcher.d/99-stickllm-clock
 fi
 
 cat >/etc/motd <<'EOF'

@@ -60,28 +60,102 @@ def _plan(mod) -> dict:
             str(doc.get("model_key") or "").strip()
             or os.environ.get("STICKLLM_NINFER_MODEL", "").strip()
         )
-        if not model_key:
-            return {
-                "ok": False,
-                "error": (
-                    "No NInfer model selected. Open Models, download a compatible "
-                    "NInfer model, then Activate."
-                ),
-                "model_dir": str(model_dir),
-            }
-        art = None
-        if hasattr(mod, "find_ninfer_artifact"):
-            art = mod.find_ninfer_artifact(model_key, model_dir)
-        if art is None:
-            return {
-                "ok": False,
-                "error": (
-                    f"NInfer model {model_key!r} is not downloaded yet. "
-                    "Open Models → Download, then Activate."
-                ),
-                "model_dir": str(model_dir),
-                "model_key": model_key,
-            }
+        # Prefer staged / explicit .ninfer from model.env (USB→RAM after download/Load).
+        staged = Path(os.environ.get("STICKLLM_MODEL") or "")
+        if not staged.is_file():
+            try:
+                for line in Path("/run/stickllm/model.env").read_text(encoding="utf-8").splitlines():
+                    if line.startswith("STICKLLM_MODEL="):
+                        staged = Path(line.split("=", 1)[1].strip())
+                        break
+                    if line.startswith("NINFER_MODEL_DIR="):
+                        model_dir = Path(line.split("=", 1)[1].strip())
+            except OSError:
+                pass
+        if staged.is_file() and staged.suffix.lower() == ".ninfer":
+            art = staged
+            model_dir = staged.parent
+        else:
+            if not model_key:
+                return {
+                    "ok": False,
+                    "error": (
+                        "No NInfer model selected. Open Models, download a compatible "
+                        "NInfer model, then Load."
+                    ),
+                    "model_dir": str(model_dir),
+                }
+            art = None
+            if hasattr(mod, "find_ninfer_artifact"):
+                art = mod.find_ninfer_artifact(model_key, model_dir)
+            if art is None:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"NInfer model {model_key!r} is not downloaded yet. "
+                        "Open Models → Download, then Load."
+                    ),
+                    "model_dir": str(model_dir),
+                    "model_key": model_key,
+                }
+        # Prefer ninfer-serve + explicit .ninfer path (USB or RAM stage). run.sh only
+        # knows a few profile names (e.g. qwen38-27b) and fails on qwen36-27b / staged files.
+        staged_ram = bool(
+            art.is_file()
+            and (
+                "model-stage" in str(art).replace("\\", "/")
+                or str(art).startswith("/dev/shm/")
+                or str(art).startswith("/tmp/stickllm/")
+            )
+        )
+        # StickLLM product floor is 32K (same as llama.cpp Activate). Bare
+        # ninfer-serve defaults to --max-context 8192, which breaks Agent Zero.
+        # Prefer Models → Context (written to model.env / active-engine on Load).
+        max_ctx = 0
+        for key in (
+            "NINFER_MAX_CONTEXT",
+            "STICKLLM_NINFER_MAX_CONTEXT",
+            "STICKLLM_CTX",
+        ):
+            try:
+                max_ctx = int(os.environ.get(key) or 0)
+            except (TypeError, ValueError):
+                max_ctx = 0
+            if max_ctx > 0:
+                break
+        if max_ctx <= 0:
+            try:
+                for line in Path("/run/stickllm/model.env").read_text(encoding="utf-8").splitlines():
+                    if line.startswith(("NINFER_MAX_CONTEXT=", "STICKLLM_NINFER_MAX_CONTEXT=", "STICKLLM_CTX=")):
+                        max_ctx = int(line.split("=", 1)[1].strip() or 0)
+                        if max_ctx > 0:
+                            break
+            except (OSError, ValueError):
+                max_ctx = 0
+        if max_ctx <= 0:
+            try:
+                max_ctx = int(doc.get("max_context") or 0)
+            except (TypeError, ValueError):
+                max_ctx = 0
+        if max_ctx < 32768:
+            max_ctx = 32768
+        if serve.is_file() and art.is_file():
+            argv = [
+                str(serve),
+                str(art),
+                "--host",
+                str(host),
+                "--port",
+                str(port),
+                "--max-context",
+                str(max_ctx),
+                "--kv-capacity",
+                str(max_ctx),
+            ]
+        elif run_sh.is_file() and model_key and not staged_ram:
+            argv = [str(run_sh), model_key]
+        else:
+            argv = [str(run_sh if run_sh.is_file() else serve), model_key or str(art)]
         return {
             "ok": True,
             "engine": eng,
@@ -89,21 +163,20 @@ def _plan(mod) -> dict:
             "host": host,
             "port": port,
             "model_dir": str(model_dir),
-            "model_key": model_key,
+            "model_key": model_key or art.stem,
             "model_path": str(art),
-            "argv": [str(run_sh if run_sh.is_file() else serve), model_key]
-            if run_sh.is_file()
-            else [str(serve), "--help"],
+            "argv": argv,
             "env": {
                 "NINFER_HOST": host,
                 "NINFER_PORT": str(port),
                 "NINFER_MODEL_DIR": str(model_dir),
                 "NINFER_SERVER": str(serve),
-                "STICKLLM_NINFER_MODEL": model_key,
+                "NINFER_CONTEXT": str(max_ctx),
+                "STICKLLM_NINFER_MODEL": model_key or art.stem,
             },
             "note": (
-                f"Serving NInfer profile {model_key} from {model_dir} on :8080. "
-                "Switch models from Models → Activate."
+                f"Serving NInfer {model_key or art.name} from {model_dir} on :8080. "
+                "Switch models from Models → Load."
             ),
         }
     if eng == "strata":

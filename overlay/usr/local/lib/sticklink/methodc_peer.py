@@ -698,7 +698,9 @@ class LocalA0Bridge:
             hdrs["Cookie"] = cookie
         req = urllib.request.Request(url, data=body, method=method.upper(), headers=hdrs)
         try:
-            with self.opener.open(req, timeout=60) as r:
+            # Downloads (PDF/Doc from A0 work dir) need a longer read timeout.
+            timeout = 300 if "download_work_dir_file" in path else 60
+            with self.opener.open(req, timeout=timeout) as r:
                 raw, status, resp_headers = r.read(), r.status, r.headers
         except urllib.error.HTTPError as e:
             raw, status, resp_headers = e.read(), e.code, e.headers
@@ -1748,7 +1750,9 @@ async def run_one_session(a0_https: str) -> None:
             transport_dead = False
 
         async def ingest_transport_wire(wire: bytes) -> None:
-            nonlocal last_rx, last_wss_rx
+            """Decrypt inbound frames. Answer ping/pong immediately so heavy
+            http_req/mux work cannot starve the phone's 90s pong watchdog."""
+            nonlocal last_rx, last_wss_rx, last_pong
             if len(wire) < 8:
                 return
             try:
@@ -1757,8 +1761,27 @@ async def run_one_session(a0_https: str) -> None:
             except Exception as e:
                 log(f"transport decrypt: {e}")
                 return
-            last_rx = time.time()
-            last_wss_rx = time.time()
+            now = time.time()
+            last_rx = now
+            last_wss_rx = now
+            # Fast path: keepalive must not wait behind Agent Zero page loads.
+            try:
+                peek = json.loads(pt)
+                tpeek = peek.get("t") if isinstance(peek, dict) else None
+            except Exception:
+                tpeek = None
+            if tpeek == "pong":
+                last_pong = now
+                return
+            if tpeek == "ping":
+                last_pong = now
+                try:
+                    send_pt(
+                        {"t": "pong", "ts": peek.get("ts"), "id": peek.get("id")}
+                    )
+                except Exception as e:
+                    log(f"ingest keepalive pong failed: {e}")
+                return
             await pt_in.put(pt)
 
         async def send_transport_frame(frame: bytes) -> None:

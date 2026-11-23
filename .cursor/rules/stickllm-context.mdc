@@ -14,3 +14,5 @@ Read these before changing the Agent Zero fork:
 - `docs/VAULT.md` — passcode, key file, recovery phrase
 
 Work only in `C:\Users\peter\stickllm-vault-wt` on branch `stickllm-agentzero`. Never use OneDrive. Do not fast-forward `main` until that line is accepted. ISOs go in `build-agentzero\`. Do not print the stick SSH password.
+
+**Agreed fixes:** same turn → `ISSUES.md` + `docs/NEXT-<next>.md` + CHANGELOG Unreleased. See `record-agreed-fixes.mdc`. Chat is not the bake list.

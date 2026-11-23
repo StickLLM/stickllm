@@ -960,19 +960,32 @@ def ninfer_model_dirs(primary: str | Path | None = None) -> list[Path]:
 
 
 def find_ninfer_artifact(model_id: str, model_dir: str | Path | None = None) -> Path | None:
-    """Locate a downloaded .ninfer for a profile id (qwen38-27b, …)."""
-    mid = (model_id or "").strip().lower()
-    if not mid:
+    """Locate a downloaded .ninfer for a profile id or HF file id."""
+    raw = (model_id or "").strip()
+    if not raw:
         return None
-    # qwen38-27b → qwen3_8_27b / qwen38-27b style stems
-    compact = mid.replace("-", "").replace("_", "")
+    mid = raw.lower()
+    # hf:org__repo:file.ninfer → match by basename / stem
+    base_name = ""
+    if mid.startswith("hf:") and ":" in mid[3:]:
+        base_name = mid.rsplit(":", 1)[-1]
+    elif mid.endswith(".ninfer"):
+        base_name = Path(mid).name.lower()
+    stem_hint = Path(base_name).stem.lower() if base_name else mid
+    if stem_hint.endswith(".ninfer"):
+        stem_hint = stem_hint[: -len(".ninfer")]
+    compact = stem_hint.replace("-", "").replace("_", "").replace(".", "")
     alts = {
         mid,
-        mid.replace("-", "_"),
-        mid.replace("_", "-"),
+        stem_hint,
+        stem_hint.replace("-", "_"),
+        stem_hint.replace("_", "-"),
         # qwen38-27b ↔ qwen3_8_27b
-        re.sub(r"qwen(\d)(\d+)", r"qwen\1_\2", mid.replace("-", "_")),
+        re.sub(r"qwen(\d)(\d+)", r"qwen\1_\2", stem_hint.replace("-", "_")),
     }
+    if base_name:
+        alts.add(base_name)
+        alts.add(Path(base_name).name.lower())
     for root in ninfer_model_dirs(model_dir):
         if not root.is_dir():
             continue
@@ -982,8 +995,15 @@ def find_ninfer_artifact(model_id: str, model_dir: str | Path | None = None) -> 
             continue
         for f in files:
             stem = f.stem.lower()
-            stem_c = stem.replace("-", "").replace("_", "")
-            if stem in alts or stem_c == compact or mid in stem or compact in stem_c:
+            stem_c = stem.replace("-", "").replace("_", "").replace(".", "")
+            fname = f.name.lower()
+            if (
+                fname in alts
+                or stem in alts
+                or stem_c == compact
+                or (stem_hint and (stem_hint in stem or stem in stem_hint))
+                or (compact and compact in stem_c)
+            ):
                 return f
     return None
 
@@ -991,9 +1011,15 @@ def find_ninfer_artifact(model_id: str, model_dir: str | Path | None = None) -> 
 def ninfer_catalog_rows(
     model_dir: str | Path | None = None,
     active_key: str = "",
+    serving: bool = False,
 ) -> list[dict[str, Any]]:
-    """Models-page rows when active engine is NInfer (not GGUF)."""
+    """Models-page rows when active engine is NInfer (not GGUF).
+
+    ``active_key`` = selected profile. ``serving`` = :8080 /health ok — only
+    then show Running (same as GGUF Load finishing).
+    """
     rows: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
     for entry in NINFER_MODEL_CATALOG:
         mid = str(entry.get("id") or "")
         art = find_ninfer_artifact(mid, model_dir)
@@ -1004,6 +1030,8 @@ def ninfer_catalog_rows(
                 size_gb = round(art.stat().st_size / (1024**3), 2) or size_gb
             except OSError:
                 pass
+            seen_paths.add(str(art.resolve()) if art.exists() else str(art))
+        selected = bool(active_key and active_key == mid)
         rows.append(
             {
                 "id": mid,
@@ -1018,15 +1046,99 @@ def ninfer_catalog_rows(
                 "recommended": mid == "qwen38-27b",
                 "deletable": installed,
                 "runnable": installed,
-                "running": bool(active_key and active_key == mid),
-                "active": bool(active_key and active_key == mid),
+                "running": bool(selected and serving),
+                "active": selected,
                 "fits": True,
                 "trust": "verified",
                 "note": entry.get("note") or "",
                 "source": "ninfer",
+                "vision": True,  # Qwen3.8 NInfer artifact includes vision (no mmproj)
             }
         )
+    # Also list any other .ninfer already on disk (HF downloads, manual copies).
+    for root in ninfer_model_dirs(model_dir):
+        if not root.is_dir():
+            continue
+        try:
+            files = sorted(root.glob("*.ninfer"), key=lambda p: p.name.lower())
+        except OSError:
+            continue
+        for art in files:
+            try:
+                key = str(art.resolve())
+            except OSError:
+                key = str(art)
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            try:
+                size_gb = round(art.stat().st_size / (1024**3), 2)
+            except OSError:
+                size_gb = 0.0
+            mid = art.stem
+            selected = bool(
+                active_key
+                and (
+                    active_key == mid
+                    or active_key.lower().endswith(":" + art.name.lower())
+                    or active_key.lower() == art.name.lower()
+                )
+            )
+            rows.append(
+                {
+                    "id": mid,
+                    "name": mid,
+                    "approx_size_gb": size_gb,
+                    "size_gb": size_gb,
+                    "installed": True,
+                    "path": str(art),
+                    "engine": "ninfer-all",
+                    "format": "ninfer",
+                    "quant": "ninfer",
+                    "recommended": False,
+                    "deletable": True,
+                    "runnable": True,
+                    "running": bool(selected and serving),
+                    "active": selected,
+                    "fits": True,
+                    "trust": "community",
+                    "note": "Downloaded .ninfer on this stick",
+                    "source": "disk",
+                    "vision": "vl" in mid.lower() or "vision" in mid.lower() or "qwen3" in mid.lower(),
+                    "file": art.name,
+                }
+            )
     return rows
+
+
+def _stamp_experimental_host(root: Path | None = None) -> None:
+    """Tag Experimental DATA with this computer so reboot keeps settings here only."""
+    try:
+        import importlib.util
+
+        lib = Path("/usr/local/lib/stickllm_usb_settings.py")
+        if not lib.is_file():
+            return
+        spec = importlib.util.spec_from_file_location("stickllm_usb_settings", lib)
+        if spec is None or spec.loader is None:
+            return
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mid = mod.machine_id()
+        base = root or ACTIVE_ENGINE_PATH.parent
+        base.mkdir(parents=True, exist_ok=True)
+        host = {
+            "machine_id": mid.get("id") or "",
+            "machine_label": mid.get("label") or "this computer",
+            "match": "same",
+            "updated": int(time.time()),
+        }
+        hp = base / "host.json"
+        tmp = hp.with_suffix(".tmp")
+        tmp.write_text(json.dumps(host, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(hp)
+    except Exception:
+        return
 
 
 def write_active_engine(doc: dict[str, Any], path: str | Path | None = None) -> dict[str, Any]:
@@ -1038,9 +1150,16 @@ def write_active_engine(doc: dict[str, Any], path: str | Path | None = None) -> 
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
     tmp.replace(p)
+    _stamp_experimental_host(p.parent)
     # Env file for systemd EnvironmentFile=
     env_path = p.with_suffix(".env")
     model_key = str(out.get("model_key") or "").strip()
+    try:
+        max_ctx = int(out.get("max_context") or 0)
+    except (TypeError, ValueError):
+        max_ctx = 0
+    if max_ctx < 32768:
+        max_ctx = 32768
     lines = [
         f"STICKLLM_ACTIVE_ENGINE={out.get('engine') or 'llama.cpp'}",
         f"STICKLLM_ENGINE_ROOT={out.get('root') or ''}",
@@ -1050,6 +1169,9 @@ def write_active_engine(doc: dict[str, Any], path: str | Path | None = None) -> 
         f"NINFER_MODEL_DIR={out.get('model_dir') or NINFER_MODELS_DIR}",
         f"NINFER_HOST=127.0.0.1",
         f"NINFER_PORT=8080",
+        f"NINFER_MAX_CONTEXT={max_ctx}",
+        f"STICKLLM_NINFER_MAX_CONTEXT={max_ctx}",
+        f"STICKLLM_CTX={max_ctx}",
         f"STICKLLM_LLAMA_HOST=127.0.0.1",
         f"STICKLLM_LLAMA_PORT=8080",
     ]
