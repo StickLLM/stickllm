@@ -26,6 +26,16 @@ Tracked issues: [ISS-037](../ISSUES.md) (vault Delete + Skip), [ISS-038](../ISSU
 | **4** | **`the_listener` Python** | In tree → bake | Entrypoint supervisord patch: `/usr/bin/python3`. |
 | **5** | **Offline VM gate** | After flash | No NIC: `/api/health` **200 within 60 s**. |
 
+## Carry into v0.8.6 (lab hotfix on v0.8.5 stick)
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| **MS1** | **Minesweeper intermittent LAN open** | Baked in **v0.8.6** (ISS-039) | Desk open raced apps-session cookie → 401 iframe sometimes. Per-id pair gate + await prime + iframe 401 retry. Sequential script loader with retry (StickLink parallel fetch flake). Body `onload` waits for `__stickllmMsReady` so `load_images()` does not run before scripts finish. |
+| **AZ1** | **Agent Zero work folder discoverable** | Baked in **v0.8.6** (ISS-040) | Files root **Agent Zero** → `vault/addons/agent-zero/work` (same as `/a0/usr/workdir`); default root when vault unlocked. Optional later: desk shortcut; A0 save PDFs into `Documents`. |
+| **NI1** | **NInfer Models path + Set-default copy** | Baked in **v0.8.6** (ISS-041) | Set default popup: need a **compatible NInfer model from Models** (no single-model default). Models filters by active engine. **Same models dir as llama/GGUF** (not `experimental/ninfer-models`). |
+| **NI2** | **ACTIVE_ENGINE env path collision** | Baked in **v0.8.6** (ISS-042) | `STICKLLM_ACTIVE_ENGINE=ninfer-all` in systemd env was misread as JSON path → serve always llama.cpp exit. Path env → `STICKLLM_ACTIVE_ENGINE_FILE`. |
+| **NI3** | **A0 chat naming on NInfer** | Baked in **v0.8.6** (ISS-043) | NInfer thinking → empty `content`; utility needs top-level `enable_thinking: false` (not only LiteLLM `extra_body`). Sync model id `qwen3.8-27b`. |
+
 ## Lab lessons (do not repeat)
 
 - **“Preload completed” ≠ ready.** That line is from `preload.py` in parallel; uvicorn may still be unbound. Gate on HTTP `/api/health`, not that log line.

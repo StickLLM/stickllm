@@ -58,18 +58,47 @@ ENGINES_ROOT = Path(
         "/var/lib/stickllm/experimental/engines",
     )
 )
+# Path to active-engine.json only. Do NOT use STICKLLM_ACTIVE_ENGINE here —
+# that name is the engine *id* written into active-engine.env for systemd
+# (ninfer-all / strata / llama.cpp). Colliding the two made EnvironmentFile=
+# set the path to "ninfer-all", so serve fell back to llama.cpp and exited.
 ACTIVE_ENGINE_PATH = Path(
     os.environ.get(
-        "STICKLLM_ACTIVE_ENGINE",
+        "STICKLLM_ACTIVE_ENGINE_FILE",
         "/var/lib/stickllm/experimental/active-engine.json",
     )
 )
+# Fallback only when StickLLM models dir is unavailable. Prefer the same
+# vault/DATA models folder as GGUF (set at Set default / download time).
 NINFER_MODELS_DIR = Path(
     os.environ.get(
         "STICKLLM_NINFER_MODELS",
-        "/mnt/stickllm-data/experimental/ninfer-models",
+        "/mnt/stickllm-data/models",
     )
 )
+# Legacy lab path — still scanned so already-downloaded .ninfer files show up.
+NINFER_MODELS_DIR_LEGACY = Path("/mnt/stickllm-data/experimental/ninfer-models")
+# Official NInfer-all download-model.sh / run.sh profile ids (not GGUF).
+NINFER_MODEL_CATALOG: list[dict[str, Any]] = [
+    {
+        "id": "qwen38-27b",
+        "name": "Qwen3.8 27B (NInfer)",
+        "approx_size_gb": 19.0,
+        "note": "DFlash2 profile; ~19 GiB .ninfer",
+    },
+    {
+        "id": "qwen36-27b",
+        "name": "Qwen3.6 27B (NInfer)",
+        "approx_size_gb": 16.0,
+        "note": "NInfer profile; size varies by pack",
+    },
+    {
+        "id": "qwen36-35b-a3b",
+        "name": "Qwen3.6 35B-A3B (NInfer)",
+        "approx_size_gb": 22.0,
+        "note": "MoE profile; needs ample VRAM",
+    },
+]
 STRATA_DATA_DIR = Path(
     os.environ.get(
         "STICKLLM_STRATA_DATA",
@@ -903,9 +932,101 @@ def read_active_engine(path: str | Path | None = None) -> dict[str, Any]:
         "dest": str(raw.get("dest") or ""),
         "root": str(raw.get("root") or ""),
         "model_dir": str(raw.get("model_dir") or ""),
+        "model_key": str(raw.get("model_key") or ""),
         "note": str(raw.get("note") or ""),
         "updated": int(raw.get("updated") or 0),
     }
+
+
+def ninfer_model_dirs(primary: str | Path | None = None) -> list[Path]:
+    """Search order for .ninfer artifacts (shared models dir first)."""
+    out: list[Path] = []
+    seen: set[str] = set()
+
+    def add(p: Path | None) -> None:
+        if p is None:
+            return
+        key = str(p)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(p)
+
+    if primary:
+        add(Path(primary))
+    add(NINFER_MODELS_DIR)
+    add(NINFER_MODELS_DIR_LEGACY)
+    return out
+
+
+def find_ninfer_artifact(model_id: str, model_dir: str | Path | None = None) -> Path | None:
+    """Locate a downloaded .ninfer for a profile id (qwen38-27b, …)."""
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return None
+    # qwen38-27b → qwen3_8_27b / qwen38-27b style stems
+    compact = mid.replace("-", "").replace("_", "")
+    alts = {
+        mid,
+        mid.replace("-", "_"),
+        mid.replace("_", "-"),
+        # qwen38-27b ↔ qwen3_8_27b
+        re.sub(r"qwen(\d)(\d+)", r"qwen\1_\2", mid.replace("-", "_")),
+    }
+    for root in ninfer_model_dirs(model_dir):
+        if not root.is_dir():
+            continue
+        try:
+            files = list(root.glob("*.ninfer"))
+        except OSError:
+            continue
+        for f in files:
+            stem = f.stem.lower()
+            stem_c = stem.replace("-", "").replace("_", "")
+            if stem in alts or stem_c == compact or mid in stem or compact in stem_c:
+                return f
+    return None
+
+
+def ninfer_catalog_rows(
+    model_dir: str | Path | None = None,
+    active_key: str = "",
+) -> list[dict[str, Any]]:
+    """Models-page rows when active engine is NInfer (not GGUF)."""
+    rows: list[dict[str, Any]] = []
+    for entry in NINFER_MODEL_CATALOG:
+        mid = str(entry.get("id") or "")
+        art = find_ninfer_artifact(mid, model_dir)
+        installed = art is not None
+        size_gb = float(entry.get("approx_size_gb") or 0)
+        if art is not None:
+            try:
+                size_gb = round(art.stat().st_size / (1024**3), 2) or size_gb
+            except OSError:
+                pass
+        rows.append(
+            {
+                "id": mid,
+                "name": entry.get("name") or mid,
+                "approx_size_gb": size_gb,
+                "size_gb": size_gb,
+                "installed": installed,
+                "path": str(art) if art else "",
+                "engine": "ninfer-all",
+                "format": "ninfer",
+                "quant": "ninfer",
+                "recommended": mid == "qwen38-27b",
+                "deletable": installed,
+                "runnable": installed,
+                "running": bool(active_key and active_key == mid),
+                "active": bool(active_key and active_key == mid),
+                "fits": True,
+                "trust": "verified",
+                "note": entry.get("note") or "",
+                "source": "ninfer",
+            }
+        )
+    return rows
 
 
 def write_active_engine(doc: dict[str, Any], path: str | Path | None = None) -> dict[str, Any]:
@@ -919,11 +1040,13 @@ def write_active_engine(doc: dict[str, Any], path: str | Path | None = None) -> 
     tmp.replace(p)
     # Env file for systemd EnvironmentFile=
     env_path = p.with_suffix(".env")
+    model_key = str(out.get("model_key") or "").strip()
     lines = [
         f"STICKLLM_ACTIVE_ENGINE={out.get('engine') or 'llama.cpp'}",
         f"STICKLLM_ENGINE_ROOT={out.get('root') or ''}",
         f"STICKLLM_ENGINE_DEST={out.get('dest') or ''}",
         f"STICKLLM_ENGINE_TAG={out.get('tag') or ''}",
+        f"STICKLLM_NINFER_MODEL={model_key}",
         f"NINFER_MODEL_DIR={out.get('model_dir') or NINFER_MODELS_DIR}",
         f"NINFER_HOST=127.0.0.1",
         f"NINFER_PORT=8080",

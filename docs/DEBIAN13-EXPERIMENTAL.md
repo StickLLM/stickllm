@@ -14,8 +14,8 @@ NVIDIA firmware / `.run` files / prebuilt patched `nvidia.ko` stay **out of the 
 
 | Slot | Tag |
 | --- | --- |
-| **N** | `v0.8.3` |
-| **N-1** | `v0.8.2` |
+| **N** | `v0.8.6` |
+| **N-1** | `v0.8.5` |
 | **Golden** | `v0.2.0` (unchanged) |
 
 ---
@@ -45,7 +45,7 @@ NVIDIA firmware / `.run` files / prebuilt patched `nvidia.ko` stay **out of the 
 2. **Set default** — Confirm. Stops `stickllm-llama`, extracts the engine if needed, starts `stickllm-exp-engine.service` on `127.0.0.1:8080`. Chat, health, and Agent Zero use that OpenAI-compatible port.
 3. **Use llama.cpp** — appears when an Experimental engine is active; Confirm restores llama-server.
 4. **Re-download…** — optional re-fetch (Confirm). Does not switch engines by itself.
-5. **NInfer models** — NInfer does **not** load StickLLM GGUF catalog weights. First start runs `run.sh qwen38-27b` and may download ~19 GiB into `/mnt/stickllm-data/experimental/ninfer-models/`. GGUF **Activate** applies again only after restoring llama.cpp.
+5. **NInfer models** — NInfer does **not** load StickLLM GGUF weights. **v0.8.6 ([ISS-041](../ISSUES.md)):** after Set default, open **Models**, download a **compatible** NInfer profile into the **same models directory** as GGUF, then **Activate**. No hard-coded auto weight. Serve refuses to start until a profile is selected and present on disk. GGUF **Activate** applies again only after restoring llama.cpp.
 6. **Strata** — AppImage extract + CUDA engine; driver &lt; 580 uses CUDA 12 pack. May use a local GGUF or download a Strata model on first start.
 7. **Reboot** — not required for download/status/set-default. Unlock apply still needs reboot when used.
 

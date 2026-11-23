@@ -182,7 +182,7 @@ def test_file_api_rejects_a_path_outside_the_three_roots(tmp_path, monkeypatch):
     mounts_text = mounts.read_text(encoding="utf-8")
     doc = files.roots_document(mounts_text)
     available = {row["id"]: row["available"] for row in doc["roots"]}
-    assert available == {"home": True, "vault": True, "ssd": True}
+    assert available == {"a0work": True, "home": True, "vault": True, "ssd": True}
     assert files.ssd_apps_dir(mounts_text) == apps
     assert files.list_dir("ssd", "", mounts_text)["exists"] is False
     assert not apps.exists()
@@ -223,6 +223,7 @@ def test_file_api_rejects_a_path_outside_the_three_roots(tmp_path, monkeypatch):
 
     locked = files.roots_document("")
     assert {row["id"]: row["available"] for row in locked["roots"]}["vault"] is False
+    assert {row["id"]: row["available"] for row in locked["roots"]}["a0work"] is False
     assert {row["id"]: row["available"] for row in locked["roots"]}["ssd"] is False
     try:
         files.list_dir("vault", "", "")

@@ -18,7 +18,7 @@ Environment=NINFER_HOST=127.0.0.1
 Environment=NINFER_PORT=8080
 # Root: third-party engines ship private CUDA backends under their extract dir.
 ExecStartPre=+/bin/bash -c '/usr/local/bin/stickllm-nvidia-prep || true'
-ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /mnt/stickllm-data/experimental/ninfer-models /mnt/stickllm-data/experimental/strata; chmod 755 /var/lib/stickllm/experimental 2>/dev/null || true'
+ExecStartPre=+/bin/bash -c 'mkdir -p /run/stickllm /mnt/stickllm-data/models /mnt/stickllm-data/experimental/ninfer-models /mnt/stickllm-data/experimental/strata; chmod 755 /var/lib/stickllm/experimental 2>/dev/null || true'
 ExecStart=/usr/local/bin/stickllm-experimental-serve
 Restart=on-failure
 RestartSec=5

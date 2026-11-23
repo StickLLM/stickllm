@@ -49,8 +49,10 @@
       box.appendChild(btn);
     });
     if (!root) {
-      const first = (doc.roots || []).find((item) => item.available);
-      if (first) root = first.id;
+      // Prefer Agent Zero work (where the agent saves PDFs / files).
+      const prefer = (doc.roots || []).find((item) => item.id === "a0work" && item.available)
+        || (doc.roots || []).find((item) => item.available);
+      if (prefer) root = prefer.id;
     }
   }
   async function refresh() {

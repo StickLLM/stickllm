@@ -56,7 +56,32 @@ def _plan(mod) -> dict:
         model_dir.mkdir(parents=True, exist_ok=True)
         run_sh = root / "run.sh"
         serve = root / "ninfer-serve"
-        model_key = os.environ.get("STICKLLM_NINFER_MODEL", "qwen38-27b")
+        model_key = (
+            str(doc.get("model_key") or "").strip()
+            or os.environ.get("STICKLLM_NINFER_MODEL", "").strip()
+        )
+        if not model_key:
+            return {
+                "ok": False,
+                "error": (
+                    "No NInfer model selected. Open Models, download a compatible "
+                    "NInfer model, then Activate."
+                ),
+                "model_dir": str(model_dir),
+            }
+        art = None
+        if hasattr(mod, "find_ninfer_artifact"):
+            art = mod.find_ninfer_artifact(model_key, model_dir)
+        if art is None:
+            return {
+                "ok": False,
+                "error": (
+                    f"NInfer model {model_key!r} is not downloaded yet. "
+                    "Open Models → Download, then Activate."
+                ),
+                "model_dir": str(model_dir),
+                "model_key": model_key,
+            }
         return {
             "ok": True,
             "engine": eng,
@@ -65,6 +90,7 @@ def _plan(mod) -> dict:
             "port": port,
             "model_dir": str(model_dir),
             "model_key": model_key,
+            "model_path": str(art),
             "argv": [str(run_sh if run_sh.is_file() else serve), model_key]
             if run_sh.is_file()
             else [str(serve), "--help"],
@@ -73,10 +99,11 @@ def _plan(mod) -> dict:
                 "NINFER_PORT": str(port),
                 "NINFER_MODEL_DIR": str(model_dir),
                 "NINFER_SERVER": str(serve),
+                "STICKLLM_NINFER_MODEL": model_key,
             },
             "note": (
-                "NInfer run.sh downloads its .ninfer artifact into NINFER_MODEL_DIR on first "
-                "start (~19 GiB for qwen38-27b), then serves OpenAI APIs on :8080."
+                f"Serving NInfer profile {model_key} from {model_dir} on :8080. "
+                "Switch models from Models → Activate."
             ),
         }
     if eng == "strata":

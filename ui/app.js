@@ -75,6 +75,8 @@ const state = {
   mode: "ephemeral", vaultOpen: false, web: true, theme: "dark",
   chats: [], ephemeral: [], current: null, attach: [],
   mtab: "browse", ablAck: false, kv: "f16",
+  // llama.cpp | ninfer-all | strata — Models catalog follows active engine (ISS-041).
+  activeEngine: "llama.cpp",
   mf: { target: "this", fits: false, ctx: 32768, trust: ALL_TRUST(), abl: "include", quant: "any", lic: "any", vis: "any", q: "", sort: "fit" },
   policy: { verifiedOnly: false, hideUnc: false },
 };
@@ -867,7 +869,17 @@ function openAppPaired(a) {
   }
   // Desktop layout (desktop.js): starter and installed catalog apps open in
   // a window on the desktop (0.5.6), never a browser tab.
-  if (window.stickDesk && window.stickDesk.handles(id)) return !!window.stickDesk.openApp(id);
+  if (window.stickDesk && window.stickDesk.handles(id)) {
+    // LAN: await apps-session before openApp so Minesweeper iframe is not a
+    // racey 401 (pointerdown only fired primeAppsSession without waiting).
+    if (!detectLocalHost() && token) {
+      Promise.resolve(primeAppsSession(true))
+        .then(() => window.stickDesk.openApp(id))
+        .catch(() => { try { window.stickDesk.openApp(id); } catch (_) {} });
+      return true;
+    }
+    return !!window.stickDesk.openApp(id);
+  }
   const link = a.dataset.openLink || "";
   const target = a.getAttribute("target") || ("stickllm-" + id);
   const href = a.href;
@@ -1130,10 +1142,15 @@ function toast(msg, opts) {
   item.append(span, x);
   stack.appendChild(item);
   while (stack.children.length > 4) stack.firstElementChild.remove();
-  const ms = opts.ms || (item.classList.contains("warn") ? 8000 : Math.max(2800, Math.min(8000, text.length * 60)));
+  // Long confirm notes (e.g. Experimental Set default) need time to read;
+  // floor 5s / warn 12s / long text up to 25s. opts.ms wins.
+  const ms = opts.ms || (item.classList.contains("warn")
+    ? 12000
+    : Math.max(5000, Math.min(25000, text.length * 90)));
+  item._ms = ms;
   item._t = setTimeout(close, ms);
   item.onmouseenter = () => clearTimeout(item._t);
-  item.onmouseleave = () => { item._t = setTimeout(close, 2500); };
+  item.onmouseleave = () => { item._t = setTimeout(close, Math.max(4000, Math.floor((item._ms || ms) / 2))); };
   // The single #toast slot is for progress/open-app only; drop a finished one.
   const t = $("#toast");
   if (t && !t.classList.contains("busy") && !t.querySelector("button")) { clearTimeout(tt); t.hidden = true; }
@@ -3554,6 +3571,7 @@ function showLoadTune() {
 function renderModelsList() {
   const list = $("#modelList");
   if (!list) return;
+  const ninferMode = state.activeEngine === "ninfer-all";
   $$(".tabs [data-tab]").forEach((b) => {
     const on = b.dataset.tab === state.mtab;
     b.classList.toggle("on", on);
@@ -3561,8 +3579,8 @@ function renderModelsList() {
   });
   const localN = lastCatalog.filter((m) => m.installed).length;
   if ($("#localCount")) $("#localCount").textContent = String(localN);
-  if ($("#localTune")) $("#localTune").hidden = !showLoadTune();
-  if ($("#hfTokenBox")) $("#hfTokenBox").hidden = state.mtab !== "browse";
+  if ($("#localTune")) $("#localTune").hidden = ninferMode || !showLoadTune();
+  if ($("#hfTokenBox")) $("#hfTokenBox").hidden = ninferMode || state.mtab !== "browse";
   if ($("#mfTarget")) $("#mfTarget").value = state.mf.target;
   if ($("#customHw")) $("#customHw").hidden = state.mf.target !== "custom";
   if ($("#hwLine")) {
@@ -3587,9 +3605,14 @@ function renderModelsList() {
     state.policy.hideUnc && "uncensored models hidden",
   ].filter(Boolean);
   if ($("#policyBanner")) {
-    $("#policyBanner").hidden = !rules.length;
-    if (rules.length) {
-      $("#policyBanner").innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg><span><b>Machine policy:</b> ${rules.join(" · ")}.</span>`;
+    if (ninferMode) {
+      $("#policyBanner").hidden = false;
+      $("#policyBanner").innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg><span><b>NInfer active:</b> showing NInfer-compatible models only (same models folder as GGUF). Download one, then Activate. Use llama.cpp in Experimental to restore the GGUF catalog.</span>`;
+    } else {
+      $("#policyBanner").hidden = !rules.length;
+      if (rules.length) {
+        $("#policyBanner").innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg><span><b>Machine policy:</b> ${rules.join(" · ")}.</span>`;
+      }
     }
   }
   const source = browseSource();
@@ -3674,8 +3697,8 @@ function renderModelsList() {
     if (trust === "blocked") {
       actions = delBtn;
     } else if (have) {
-      actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : "Load"}</button>${run || loading ? `<button class="btn sm ghost" data-unload="${esc(id)}" type="button" title="Stop this model (chat and the app agent have no model until you load one)">Unload</button>` : ""}${delBtn}`;
-    } else if (queueState(id) === "active" || dlActiveId === id) {
+      actions = `<span class="pill ok">installed</span><button class="btn sm primary" data-load="${esc(id)}" type="button" ${fit.k === "no" && m.runnable === false ? "disabled" : ""}>${run ? "Running" : loading ? "Loading…" : (ninferMode ? "Activate" : "Load")}</button>${!ninferMode && (run || loading) ? `<button class="btn sm ghost" data-unload="${esc(id)}" type="button" title="Stop this model (chat and the app agent have no model until you load one)">Unload</button>` : ""}${delBtn}`;
+    } else if (m.downloading || queueState(id) === "active" || dlActiveId === id) {
       actions = `<span class="pill warn">downloading</span>`;
     } else if (queueState(id) === "pending") {
       actions = `<span class="pill">queued</span>`;
@@ -3686,12 +3709,13 @@ function renderModelsList() {
     } else {
       actions = `<button class="btn sm ${fit.k === "no" ? "" : "primary"}" data-dl="${esc(id)}" type="button">Download</button>`;
     }
+    const fmtPill = ninferMode || m.format === "ninfer" || m.engine === "ninfer-all" ? "NInfer" : "GGUF";
     return `<article class="mcard ${trust === "blocked" ? "blocked" : ""} ${sel ? "sel" : ""}" data-id="${esc(id)}" tabindex="0">
       <div class="mcTop">
         <div class="mcName"><b>${esc(name)}</b><small>${esc(q)} · ${have ? gbTxt + " on disk" : "~" + gbTxt}${have && !(fastDisk && where === "stick") ? " · on " + where : ""}${rec ? " · recommended" : ""}${have && fastDisk && where === "stick" ? ' <span class="pill slowUsb" title="Loads from the USB stick; a copy on the SSD loads much faster">Slow USB load</span>' : ""}</small></div>
         ${run ? '<span class="pill ok">running</span>' : ""}${loading ? '<span class="pill warn">loading</span>' : ""}${rec ? '<span class="pill acc">recommended</span>' : ""}
       </div>
-      <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${visionTag(m, id)}${isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">GGUF</span></div>
+      <div class="tags"><span class="trust ${t.c}" title="${t.d}">${t.l}</span>${ninferMode ? "" : visionTag(m, id)}${!ninferMode && isAbliterated(m) ? '<span class="pill abl">⚠ uncensored</span>' : ""}<span class="pill cap">${fmtPill}</span></div>
       <div class="mcFoot">
         <span class="fit ${fit.cls}" title="Needs ~${fit.need.toFixed(1)} GB">${fit.label}</span>${m.ram_warning && fit.k !== "no" ? `<span class="pill warn" title="${esc(m.ram_warning)}">low RAM</span>` : ""}${m.arch_warning ? `<span class="pill warn" title="${esc(m.arch_warning)}">experimental</span>` : ""}
         <span class="grow"></span>${actions}
@@ -3708,7 +3732,25 @@ function renderModelsList() {
     c.onclick = pick;
     c.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e); } };
   });
-  $$("#modelList [data-dl]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); selectedModelId = b.dataset.dl; $("#dlModel").click(); }));
+  $$("#modelList [data-dl]").forEach((b) => (b.onclick = async (e) => {
+    e.stopPropagation();
+    selectedModelId = b.dataset.dl;
+    if (state.activeEngine === "ninfer-all") {
+      b.disabled = true;
+      try {
+        const r = await control("experimental_ninfer_model_download", { id: selectedModelId });
+        if (r && r.ok === false) throw new Error(r.error || r.hint || "Download failed");
+        toast((r && r.note) || ("Downloading " + selectedModelId), { ms: 12000 });
+        refreshModels().catch(() => {});
+      } catch (err) {
+        toast(plainError(err.message || String(err)) || String(err));
+      } finally {
+        b.disabled = false;
+      }
+      return;
+    }
+    $("#dlModel").click();
+  }));
   $$("#modelList [data-mmproj]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); downloadMmproj(b.dataset.mmproj); }));
   $$("#modelList [data-load]").forEach((b) => (b.onclick = (e) => {
     e.stopPropagation();
@@ -3716,6 +3758,21 @@ function renderModelsList() {
     const m = findModel(id);
     // Paint Loading on this card immediately (before activate network call).
     beginModelLoadUi(id, m?.name || id);
+    if (state.activeEngine === "ninfer-all") {
+      paintSoon().then(async () => {
+        try {
+          const r = await control("experimental_ninfer_model_activate", { id });
+          if (r && r.ok === false) throw new Error(r.error || r.hint || "Activate failed");
+          finishLoadSuccess(m?.name || id);
+          toast((r && r.note) || ("NInfer serving " + id), { ms: 12000 });
+        } catch (err) {
+          loadingModelId = null;
+          toast(plainError(err.message || String(err)) || String(err));
+        }
+        refreshModelsNow();
+      });
+      return;
+    }
     // Yield a frame so the badge/status line paint before the long activate await.
     paintSoon().then(() => $("#activate").click());
   }));
@@ -3817,7 +3874,12 @@ async function refreshModelsNow() {
   const st = await control("status");
   if (st.llama_service) lastLlama = st.llama_service;
   if (st.offload && st.offload.caption && lastLlama && !lastLlama.caption) lastLlama.caption = st.offload.caption;
-  lastCatalog = st.catalog || [];
+  state.activeEngine = String(st.active_engine || "llama.cpp");
+  if (state.activeEngine === "ninfer-all" && Array.isArray(st.ninfer_catalog) && st.ninfer_catalog.length) {
+    lastCatalog = st.ninfer_catalog;
+  } else {
+    lastCatalog = st.catalog || [];
+  }
   const probe = st.probe || {};
   const gpuCount = Number(st.gpu_count ?? (Array.isArray(st.gpus) ? st.gpus.length : 0)) || 0;
   // No made-up defaults (0.5.6): an unknown or GPU-less host shows 0 GB VRAM, not 24.
@@ -6925,7 +6987,9 @@ function paintExperimental(j) {
           const engId = b.dataset.expSetDefault || "";
           const ok = await expConfirm(
             "Set default — " + engId,
-            "Continue switches StickLLM chat, health, and Agent Zero off llama.cpp onto this Experimental engine on :8080. NInfer may download its own ~19 GiB model into DATA on first start. You can switch back to llama.cpp anytime. Cancel leaves the stick unchanged."
+            engId === "ninfer-all"
+              ? "Continue switches StickLLM chat, health, and Agent Zero onto NInfer on :8080. Then open Models, download a compatible NInfer model into the StickLLM models folder, and Activate it — nothing auto-downloads a single default weight. You can switch back to llama.cpp anytime. Cancel leaves the stick unchanged."
+              : "Continue switches StickLLM chat, health, and Agent Zero off llama.cpp onto this Experimental engine on :8080. You can switch back to llama.cpp anytime. Cancel leaves the stick unchanged."
           );
           if (!ok) return;
           try {
@@ -6936,8 +7000,9 @@ function paintExperimental(j) {
             if (r && r.ok === false) {
               throw new Error(r.error || r.hint || "Set default failed");
             }
-            toast((r && (r.note || r.hint)) || ("Default engine: " + engId));
+            toast((r && (r.note || r.hint)) || ("Default engine: " + engId), { ms: 25000 });
             await refreshExperimental();
+            if (engId === "ninfer-all") refreshModels().catch(() => {});
           } catch (e) {
             toast(plainError(e.message || String(e)) || (e.message || String(e)));
           }
@@ -6964,7 +7029,7 @@ function paintExperimental(j) {
                 confirmed: true,
               });
               if (r && r.ok === false) throw new Error(r.error || r.hint || "Restore failed");
-              toast((r && r.note) || "llama.cpp restored");
+              toast((r && r.note) || "llama.cpp restored", { ms: 20000 });
               await refreshExperimental();
             } catch (e) {
               toast(plainError(e.message || String(e)) || (e.message || String(e)));

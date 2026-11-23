@@ -7,21 +7,21 @@ node / disk number before writing.
 
 | Image | Where | Checksum |
 |---|---|---|
-| **Current** v0.8.3 | Google Drive `StickLLM-v0.8.3.iso` | [`checksums/v0.8.3.sha256`](../checksums/v0.8.3.sha256) → `26ceba9f…` |
-| **N-1** v0.8.2 | Google Drive `StickLLM-v0.8.2.iso` | [`checksums/v0.8.2.sha256`](../checksums/v0.8.2.sha256) → `c678993c…` |
+| **Current** v0.8.6 | Google Drive `StickLLM-v0.8.6.iso` | [`checksums/v0.8.6.sha256`](../checksums/v0.8.6.sha256) (fill after bake) |
+| **N-1** v0.8.5 | Google Drive `StickLLM-v0.8.5.iso` | [`checksums/v0.8.5.sha256`](../checksums/v0.8.5.sha256) → `a7555511…` |
 
-**Hash of record is in this repo** (`checksums/v0.8.3.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous published ships stay under their own names — never overwrite those files with different contents. `v0.8.1` is outside the rolling window (removable). Never touch Drive golden **v0.2**.
+**Hash of record is in this repo** (`checksums/v0.8.6.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous published ships stay under their own names — never overwrite those files with different contents. Never touch Drive golden **v0.2**.
 
-N-1 restore: `StickLLM-v0.8.2.iso` — see [RESTORE.md](RESTORE.md).
+N-1 restore: `StickLLM-v0.8.5.iso` — see [RESTORE.md](RESTORE.md).
 
 ## Verify SHA-256
 
 ```powershell
-(Get-FileHash .\StickLLM-v0.8.3.iso -Algorithm SHA256).Hash
+(Get-FileHash .\StickLLM-v0.8.6.iso -Algorithm SHA256).Hash
 ```
 
 ```bash
-sha256sum StickLLM-v0.8.3.iso
+sha256sum StickLLM-v0.8.6.iso
 ```
 
 ## Windows

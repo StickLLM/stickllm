@@ -888,6 +888,47 @@
     return false;
   }
 
+  function appFrameLooksUnauthorized(frame) {
+    try {
+      const doc = frame.contentDocument;
+      if (!doc) return false;
+      const text = String((doc.body && doc.body.innerText) || "").trim();
+      if (!text) return false;
+      if (/pair_required|unauthorized/i.test(text)) return true;
+      if (text.charAt(0) === "{") {
+        try {
+          const j = JSON.parse(text);
+          return !!(j && (j.error === "pair_required" || j.error === "unauthorized"));
+        } catch (_) {}
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+  function armAppFramePairRetry(frame, url) {
+    // LAN / StickLink: apps-session cookie can lag the first iframe navigation,
+    // so Minesweeper (and other /apps/*) intermittently paint 401 JSON. Reload
+    // once after re-priming the session cookie.
+    if (isLocal() || !url || String(url).indexOf("/apps/") < 0) return;
+    let tries = 0;
+    const onLoad = () => {
+      if (tries >= 2) return;
+      if (!appFrameLooksUnauthorized(frame)) return;
+      tries += 1;
+      const api = appApi();
+      Promise.resolve(api.primeAppsSession ? api.primeAppsSession(true) : true)
+        .then(() => new Promise((r) => setTimeout(r, 80)))
+        .then(() => {
+          try {
+            const u = String(url);
+            frame.src = u + (u.indexOf("?") >= 0 ? "&" : "?") + "_pairretry=" + tries;
+          } catch (_) {}
+        })
+        .catch(() => {});
+    };
+    frame.addEventListener("load", onLoad);
+  }
   function createWin(params, spec) {
     const wb = new window.WinBox(Object.assign(params, {
       root: ui.layer,
@@ -899,8 +940,14 @@
       f.name = "stickllm-" + spec.id;          // the app bridge answers Agent Zero for named apps
       f.title = spec.title;
       if (spec.url && typeof spec.url.then === "function") {
-        spec.url.then((u) => { f.src = u || "about:blank"; }, () => { f.src = "about:blank"; });
-      } else f.src = spec.url;
+        spec.url.then((u) => {
+          f.src = u || "about:blank";
+          armAppFramePairRetry(f, u);
+        }, () => { f.src = "about:blank"; });
+      } else {
+        f.src = spec.url;
+        armAppFramePairRetry(f, spec.url);
+      }
       // Explicit feature allow-list so Chat/Agent embeds can call getUserMedia
       // when the top page is a secure context (https://stick-ip/).
       f.setAttribute("allow", "microphone *; camera *; autoplay; clipboard-read; clipboard-write; fullscreen");
@@ -1002,21 +1049,28 @@
     // LAN / StickLink: /apps/* and /agent-zero/ need pair cookies. Without a
     // gate, WinBox opens a 401 JSON iframe and Agent Zero is a silent no-op.
     if (needsLanPair(id) && api.ensurePaired) {
-      if (openApp._pairing) return openApp._pairing;
-      openApp._pairing = Promise.resolve(api.ensurePaired())
+      // Per-id gate: a shared _pairing promise used to open the *first* click's
+      // app when Minesweeper was clicked during an Agent Zero pair — intermittent
+      // "sometimes opens, sometimes doesn't" on the desk.
+      if (!openApp._pairingById) openApp._pairingById = Object.create(null);
+      if (openApp._pairingById[id]) return openApp._pairingById[id];
+      openApp._pairingById[id] = Promise.resolve(api.ensurePaired())
         .then(async (ok) => {
           if (!ok) {
             if (api.toast) api.toast("Pair this browser with the code on the stick screen (F9), then open the app again.");
             return null;
           }
           try { if (api.startAppStatus) api.startAppStatus(); } catch (_) {}
+          // Force a fresh apps-session cookie before the iframe navigates.
           try { if (api.primeAppsSession) await api.primeAppsSession(true); } catch (_) {}
+          // Brief yield so Set-Cookie is visible to the iframe navigation.
+          await new Promise((r) => setTimeout(r, 50));
           try { if (api.refreshStatus) await api.refreshStatus(); } catch (_) {}
           return openAppNow(id);
         })
         .catch(() => null)
-        .finally(() => { openApp._pairing = null; });
-      return openApp._pairing;
+        .finally(() => { if (openApp._pairingById) delete openApp._pairingById[id]; });
+      return openApp._pairingById[id];
     }
     return openAppNow(id);
   }

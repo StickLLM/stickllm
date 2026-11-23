@@ -348,3 +348,55 @@ def test_ninfer_sha_matches_payload_family_not_dual_pack():
     sha = [a for a in plan["assets"] if a.get("role") == "checksums"]
     assert sha and "sm70" in sha[0]["name"]
     assert "12.9-13.4" not in sha[0]["name"]
+
+
+def test_ninfer_catalog_rows_and_artifact_lookup(tmp_path):
+    m = _load()
+    art = tmp_path / "qwen3_8_27b.ninfer"
+    art.write_bytes(b"x" * 64)
+    rows = m.ninfer_catalog_rows(tmp_path, active_key="qwen38-27b")
+    ids = {r["id"] for r in rows}
+    assert "qwen38-27b" in ids
+    hit = next(r for r in rows if r["id"] == "qwen38-27b")
+    assert hit["installed"] is True
+    assert hit["active"] is True
+    assert hit["path"].endswith("qwen3_8_27b.ninfer")
+    assert m.find_ninfer_artifact("qwen38-27b", tmp_path) == art
+
+
+def test_active_engine_env_id_does_not_override_json_path(tmp_path, monkeypatch):
+    """systemd EnvironmentFile sets STICKLLM_ACTIVE_ENGINE=ninfer-all (engine id).
+
+    That must not be treated as the path to active-engine.json (ISS / lab: serve
+    then always fell back to llama.cpp and exited).
+    """
+    import importlib.util
+
+    json_path = tmp_path / "active-engine.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "engine": "ninfer-all",
+                "tag": "t",
+                "dest": "/x",
+                "root": "/x/extracted",
+                "model_dir": "/m",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STICKLLM_ACTIVE_ENGINE", "ninfer-all")
+    monkeypatch.setenv("STICKLLM_ACTIVE_ENGINE_FILE", str(json_path))
+    spec = importlib.util.spec_from_file_location("stickllm_experimental_env", MOD)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    doc = mod.read_active_engine()
+    assert doc["engine"] == "ninfer-all"
+    # Without FILE override, STICKLLM_ACTIVE_ENGINE must still not become the path.
+    monkeypatch.delenv("STICKLLM_ACTIVE_ENGINE_FILE", raising=False)
+    monkeypatch.setenv("STICKLLM_ACTIVE_ENGINE", "ninfer-all")
+    spec2 = importlib.util.spec_from_file_location("stickllm_experimental_env2", MOD)
+    mod2 = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(mod2)
+    assert Path(mod2.ACTIVE_ENGINE_PATH).as_posix() == "/var/lib/stickllm/experimental/active-engine.json"

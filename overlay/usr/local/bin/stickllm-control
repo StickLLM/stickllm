@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import struct
@@ -3729,13 +3730,32 @@ def experimental_engine_set_default(params: dict | None = None) -> dict:
 
     model_dir = ""
     note = ""
+    model_key = ""
     if engine == "ninfer-all":
-        model_dir = str(getattr(mod, "NINFER_MODELS_DIR", Path("/mnt/stickllm-data/experimental/ninfer-models")))
+        # Same StickLLM models folder as GGUF downloads (ISS-041).
+        pref = vault_download_models_dir() or get_preferred_models_dir()
+        if pref is not None:
+            model_dir = str(pref)
+        else:
+            model_dir = str(
+                getattr(mod, "NINFER_MODELS_DIR", Path("/mnt/stickllm-data/models"))
+            )
         Path(model_dir).mkdir(parents=True, exist_ok=True)
+        # Keep any previously activated NInfer profile; otherwise wait for Models.
+        prev = {}
+        try:
+            prev = mod.read_active_engine() or {}
+        except Exception:
+            prev = {}
+        model_key = str(prev.get("model_key") or "").strip()
+        if model_key and hasattr(mod, "find_ninfer_artifact"):
+            if mod.find_ninfer_artifact(model_key, model_dir) is None:
+                model_key = ""
         note = (
-            "NInfer is now StickLLM default on :8080. First start may download "
-            "~19 GiB qwen38-27b into DATA (ninfer-models). StickLLM GGUF Activate "
-            "does not apply while NInfer is default — use Set default → llama.cpp to restore."
+            "NInfer is now StickLLM default on :8080. Open Models, download a "
+            "compatible NInfer model into the StickLLM models folder, then Activate. "
+            "GGUF Activate does not apply while NInfer is default — use "
+            "Set default → llama.cpp to restore."
         )
     else:
         model_dir = str(getattr(mod, "STRATA_DATA_DIR", Path("/mnt/stickllm-data/experimental/strata")))
@@ -3753,6 +3773,7 @@ def experimental_engine_set_default(params: dict | None = None) -> dict:
             "dest": str(dest),
             "root": ready.get("root") or "",
             "model_dir": model_dir,
+            "model_key": model_key,
             "note": note,
         }
     )
@@ -3784,6 +3805,158 @@ def experimental_engine_set_default(params: dict | None = None) -> dict:
         "note": note,
         "detail": doc,
         "extract": ready,
+    }
+
+
+def experimental_ninfer_model_download(params: dict | None = None) -> dict:
+    """Download a NInfer .ninfer profile into the StickLLM models directory."""
+    params = params or {}
+    mid = str(params.get("id") or params.get("model") or "").strip()
+    mod = _experimental_mod()
+    if mod is None:
+        return {"ok": False, "error": "experimental lib missing"}
+    catalog = list(getattr(mod, "NINFER_MODEL_CATALOG", []) or [])
+    ids = {str(e.get("id") or "") for e in catalog}
+    if mid not in ids:
+        return {
+            "ok": False,
+            "error": f"unknown NInfer model {mid!r}",
+            "hint": "Supported: " + ", ".join(sorted(ids)),
+        }
+    doc = mod.read_active_engine() or {}
+    if str(doc.get("engine") or "") != "ninfer-all":
+        return {
+            "ok": False,
+            "error": "NInfer is not the active engine",
+            "hint": "Settings → Experimental → Set default (NInfer), then download from Models.",
+        }
+    root = Path(str(doc.get("root") or ""))
+    if not root.is_dir():
+        return {"ok": False, "error": "NInfer engine root missing — re-run Set default"}
+    dl_sh = root / "download-model.sh"
+    if not dl_sh.is_file():
+        return {"ok": False, "error": "download-model.sh missing in NInfer extract"}
+    pref = vault_download_models_dir() or get_preferred_models_dir()
+    model_dir = Path(str(doc.get("model_dir") or "") or (str(pref) if pref else str(mod.NINFER_MODELS_DIR)))
+    model_dir.mkdir(parents=True, exist_ok=True)
+    if hasattr(mod, "find_ninfer_artifact") and mod.find_ninfer_artifact(mid, model_dir) is not None:
+        return {
+            "ok": True,
+            "already": True,
+            "id": mid,
+            "model_dir": str(model_dir),
+            "note": f"{mid} already present in {model_dir}",
+        }
+    log = Path("/run/stickllm/ninfer-model-download.log")
+    state = Path("/run/stickllm/ninfer-model-download.json")
+    try:
+        Path("/run/stickllm").mkdir(parents=True, exist_ok=True)
+        state.write_text(
+            json.dumps(
+                {
+                    "id": mid,
+                    "state": "downloading",
+                    "model_dir": str(model_dir),
+                    "started": int(time.time()),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    # Background: NInfer's own downloader into the shared models dir.
+    wrapper = (
+        "#!/bin/bash\n"
+        f"cd {shlex.quote(str(root))} || exit 91\n"
+        f"export NINFER_MODEL_DIR={shlex.quote(str(model_dir))}\n"
+        f"./download-model.sh {shlex.quote(mid)} >{shlex.quote(str(log))} 2>&1\n"
+        "ec=$?\n"
+        "EC=$ec python3 - <<'PY'\n"
+        "import json, os, time\n"
+        f"p = {str(state)!r}\n"
+        "ec = int(os.environ.get('EC', '1'))\n"
+        f"st = {{'id': {mid!r}, 'state': 'done' if ec == 0 else 'failed', "
+        f"'code': ec, 'model_dir': {str(model_dir)!r}, 'finished': int(time.time())}}\n"
+        "open(p, 'w', encoding='utf-8').write(json.dumps(st) + '\\n')\n"
+        "PY\n"
+        "exit $ec\n"
+    )
+    script = Path("/run/stickllm/ninfer-model-download.sh")
+    try:
+        script.write_text(wrapper, encoding="utf-8")
+        script.chmod(0o755)
+    except OSError as e:
+        return {"ok": False, "error": f"cannot write download script: {e}"}
+    try:
+        subprocess.Popen(
+            ["/bin/bash", str(script)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    # Persist model_dir on active engine so serve + Models agree.
+    try:
+        doc["model_dir"] = str(model_dir)
+        mod.write_active_engine(doc)
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "started": True,
+        "id": mid,
+        "model_dir": str(model_dir),
+        "log": str(log),
+        "note": f"Downloading {mid} into {model_dir} — progress in Models / log.",
+    }
+
+
+def experimental_ninfer_model_activate(params: dict | None = None) -> dict:
+    """Select which NInfer profile serves on :8080 (Models → Activate)."""
+    params = params or {}
+    mid = str(params.get("id") or params.get("model") or "").strip()
+    mod = _experimental_mod()
+    if mod is None:
+        return {"ok": False, "error": "experimental lib missing"}
+    doc = mod.read_active_engine() or {}
+    if str(doc.get("engine") or "") != "ninfer-all":
+        return {
+            "ok": False,
+            "error": "NInfer is not the active engine",
+            "hint": "Settings → Experimental → Set default (NInfer) first.",
+        }
+    model_dir = str(doc.get("model_dir") or "")
+    art = mod.find_ninfer_artifact(mid, model_dir) if hasattr(mod, "find_ninfer_artifact") else None
+    if art is None:
+        return {
+            "ok": False,
+            "error": f"{mid} is not downloaded yet",
+            "hint": "Download it from Models first.",
+        }
+    doc["model_key"] = mid
+    if model_dir:
+        doc["model_dir"] = model_dir
+    else:
+        doc["model_dir"] = str(art.parent)
+    mod.write_active_engine(doc)
+    sh(["systemctl", "daemon-reload"], timeout=60)
+    sh(["systemctl", "reset-failed", "stickllm-exp-engine.service"], timeout=30)
+    r = sh(["systemctl", "restart", "stickllm-exp-engine.service"], timeout=120)
+    started = bool(isinstance(r, dict) and r.get("ok"))
+    if not started:
+        st = sh(["systemctl", "is-active", "stickllm-exp-engine.service"], timeout=15)
+        active = ((st.get("stdout") or "") if isinstance(st, dict) else "").strip()
+        started = active in ("active", "activating")
+    return {
+        "ok": True,
+        "id": mid,
+        "model_key": mid,
+        "path": str(art),
+        "model_dir": doc.get("model_dir"),
+        "started": started,
+        "note": f"NInfer serving {mid} on :8080.",
     }
 
 
@@ -7579,6 +7752,33 @@ def handle(action: str, params: dict) -> dict:
             data_models = MNT / "models"
             dl_dir = data_models if _path_is_dir(data_models) or _path_is_dir(MNT) else None
         preferred = get_preferred_models_dir()
+        active_engine = "llama.cpp"
+        ninfer_catalog: list = []
+        ninfer_dl = {}
+        try:
+            _emod = _experimental_mod()
+            if _emod is not None and hasattr(_emod, "read_active_engine"):
+                _adoc = _emod.read_active_engine() or {}
+                active_engine = str(_adoc.get("engine") or "llama.cpp")
+                if active_engine == "ninfer-all" and hasattr(_emod, "ninfer_catalog_rows"):
+                    ninfer_catalog = _emod.ninfer_catalog_rows(
+                        _adoc.get("model_dir") or (str(dl_dir) if dl_dir else None),
+                        active_key=str(_adoc.get("model_key") or ""),
+                    )
+                    # Surface in-progress NInfer weight download on Models cards.
+                    try:
+                        ninfer_dl = json.loads(
+                            (RUN / "ninfer-model-download.json").read_text(encoding="utf-8")
+                        )
+                    except Exception:
+                        ninfer_dl = {}
+                    if isinstance(ninfer_dl, dict) and ninfer_dl.get("state") == "downloading":
+                        did = str(ninfer_dl.get("id") or "")
+                        for row in ninfer_catalog:
+                            if row.get("id") == did:
+                                row["downloading"] = True
+        except Exception:
+            pass
         return {
             "ok": True,
             "session_mode": session_mode(),
@@ -7607,6 +7807,9 @@ def handle(action: str, params: dict) -> dict:
             "online": online,
             "wifi": {"ssid": wifi_ssid, "online": online},
             "catalog": models,
+            "active_engine": active_engine,
+            "ninfer_catalog": ninfer_catalog,
+            "ninfer_download": ninfer_dl if isinstance(ninfer_dl, dict) else {},
             "download": download_progress(),
             "download_queue": watchdog.get("queue") or [],
             "watchdog": watchdog,
@@ -7728,6 +7931,10 @@ def handle(action: str, params: dict) -> dict:
         return experimental_action_stub("engine_download", params)
     if action == "experimental_engine_set_default":
         return experimental_action_stub("engine_set_default", params)
+    if action == "experimental_ninfer_model_download":
+        return experimental_ninfer_model_download(params)
+    if action == "experimental_ninfer_model_activate":
+        return experimental_ninfer_model_activate(params)
     if action == "experimental_unlock_apply":
         return experimental_action_stub("unlock_apply", params)
     if action == "experimental_unlock_disable":

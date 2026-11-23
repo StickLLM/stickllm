@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Desktop file roots for StickLLM.
 
-The file manager, notepad, and media player may touch only three places:
+The file manager, notepad, and media player may touch only these places:
 
 - ``/home/stickllm``
 - the unlocked vault mount (``/var/lib/stickllm/vault``)
+- Agent Zero's work folder inside that vault (``…/addons/agent-zero/work``),
+  shown as its own root so users need not dig under ``addons/``
 - the host SSD apps folder beside the models directory the product already
   recorded (``<models>/../apps``), and only while that SSD is mounted
 
@@ -170,18 +172,24 @@ def root_map(mounts_text: str | None = None) -> dict[str, Path | None]:
     ssd = ssd_apps_dir(mounts_text)
     if ssd is not None and ssd.is_symlink():
         ssd = None
-    return {"home": home, "vault": vault, "ssd": ssd}
+    # Same bytes as /a0/usr/workdir inside the Agent Zero container.
+    a0work = (vault / "addons" / "agent-zero" / "work") if vault is not None else None
+    if a0work is not None and a0work.is_symlink():
+        a0work = None
+    return {"a0work": a0work, "home": home, "vault": vault, "ssd": ssd}
 
 
 def roots_document(mounts_text: str | None = None) -> dict:
     found = root_map(mounts_text)
     rows = []
     labels = {
+        "a0work": "Agent Zero",
         "home": "Home",
         "vault": "Vault",
         "ssd": "SSD apps",
     }
-    for key in ("home", "vault", "ssd"):
+    # Agent Zero first — that is where the agent writes PDFs and other files.
+    for key in ("a0work", "home", "vault", "ssd"):
         path = found[key]
         rows.append(
             {
@@ -197,7 +205,7 @@ def roots_document(mounts_text: str | None = None) -> dict:
 def _root_path(root_id: str, mounts_text: str | None = None) -> Path:
     found = root_map(mounts_text)
     if root_id not in found:
-        raise FilesError("bad_root", "That folder is not one of the three allowed roots.")
+        raise FilesError("bad_root", "That folder is not one of the allowed roots.")
     path = found[root_id]
     if path is None:
         raise FilesError(

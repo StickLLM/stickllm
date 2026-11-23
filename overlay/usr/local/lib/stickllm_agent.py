@@ -4164,15 +4164,24 @@ def _model_kwargs() -> dict[str, object]:
 def _util_model_kwargs() -> dict[str, object]:
     """Utility calls (chat naming, memory) need a non-empty ``content`` field.
 
-    Qwen3.5 thinking mode fills ``reasoning_content`` and often leaves
-    ``content`` empty within a short completion; Agent Zero's
-    ``call_utility_model`` returns only ``content`` and the chat-naming
-    plugin then toasts "Utility Model was not reachable". Disable thinking
-    for the utility slot only (chat can keep native reasoning).
+    Thinking models (Qwen3.5 / Qwen3.8 on llama.cpp or NInfer) fill
+    ``reasoning_content`` and often leave ``content`` empty on short
+    completions; Agent Zero's ``call_utility_model`` returns only ``content``
+    and chat naming then toasts failure. Disable thinking for the utility
+    slot only (chat can keep native reasoning).
+
+    Pass both shapes: LiteLLM needs ``extra_body``; NInfer ignores that and
+    reads top-level ``enable_thinking`` / ``chat_template_kwargs`` (lab
+    2026-11-23: extra_body alone → empty content; top-level → real titles).
     """
     kwargs = dict(_model_kwargs())
-    # LiteLLM openai-compatible path: unknown top-level keys are dropped.
-    kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+    think_off = {"enable_thinking": False}
+    kwargs["extra_body"] = {
+        "chat_template_kwargs": dict(think_off),
+        "enable_thinking": False,
+    }
+    kwargs["chat_template_kwargs"] = dict(think_off)
+    kwargs["enable_thinking"] = False
     return kwargs
 
 
@@ -4241,8 +4250,12 @@ def preset_text(model_name: str, *, vision: bool | None = None) -> str:
         f"      api_base: {LLAMA_BASE}\n"
         "      api_key: dummy\n"
         f"      timeout: {MODEL_TIMEOUT}\n"
-        # Qwen3.5: naming/memory need content, not reasoning_content (see _util_model_kwargs).
+        # Thinking off for naming/memory (see _util_model_kwargs): LiteLLM + NInfer.
+        "      enable_thinking: false\n"
+        "      chat_template_kwargs:\n"
+        "        enable_thinking: false\n"
         "      extra_body:\n"
+        "        enable_thinking: false\n"
         "        chat_template_kwargs:\n"
         "          enable_thinking: false\n"
         "  embedding:\n"

@@ -1,3 +1,14 @@
+## 0.8.6 - Minesweeper open + A0 work Files + NInfer Models
+
+Must-bake from [docs/NEXT-0.8.6.md](docs/NEXT-0.8.6.md) / carry from [docs/NEXT-0.8.5.md](docs/NEXT-0.8.5.md).
+
+- **ISS-039:** Minesweeper / apps LAN open — per-id pair gate, apps-session await, iframe 401 retry, sequential script loader, `__stickllmMsReady` before onload.
+- **ISS-040:** Files **Agent Zero** root → `vault/addons/agent-zero/work` (same as `/a0/usr/workdir`); default when vault unlocked.
+- **ISS-041:** NInfer Set-default copy (download compatible model from Models; no hard-coded auto weight). Models catalog filters by active engine; `.ninfer` downloads land in the **same models dir** as GGUF; Activate selects the profile.
+- **ISS-042:** `STICKLLM_ACTIVE_ENGINE_FILE` for active-engine.json path (env id no longer collides with path).
+- **ISS-043:** Agent Zero utility naming — top-level `enable_thinking: false` for NInfer empty-content fix.
+- Longer Experimental Set-default toast; toast duration floor for long notes.
+
 ## 0.8.5 - Vault erase + Agent Zero offline first-start
 
 Must-bake from [docs/NEXT-0.8.5.md](docs/NEXT-0.8.5.md). Checklist: `C:\Users\peter\stickllm-hotfix-checklist-2026-11-22.md` §33–38 + prior punch list already in v0.8.4 tree.

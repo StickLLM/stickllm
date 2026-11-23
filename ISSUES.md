@@ -12,6 +12,61 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-043 — A0 “Automatic chat naming failed” on NInfer (empty content / thinking)
+| | |
+|---|---|
+| **ID** | ISS-043 |
+| **Date** | 2026-11-23 |
+| **Mode** | Agent Zero / NInfer |
+| **Severity** | MED (chat works; naming toast every turn) |
+| **Status** | Baked in **v0.8.6** |
+| **Summary** | With NInfer `qwen3.8-27b`, utility/chat-naming calls return empty `content` and fill `reasoning_content` (thinking). A0 only reads `content` → “Automatic chat naming failed (utility model busy or unreachable).” StickLLM already set LiteLLM `extra_body.chat_template_kwargs.enable_thinking=false` for Qwen3.5; **NInfer ignores `extra_body`** and needs top-level `enable_thinking: false` / `chat_template_kwargs`. Also sync util/chat model id to `/v1/models` id (`qwen3.8-27b`), not a leftover GGUF name. |
+| **Fix** | `_util_model_kwargs` + `presets.yaml` pass top-level thinking-off as well as `extra_body`; sync-model after NInfer Set default. |
+
+### ISS-042 — NInfer Set default never serves: STICKLLM_ACTIVE_ENGINE env path collision
+| | |
+|---|---|
+| **ID** | ISS-042 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / NInfer |
+| **Severity** | HIGH (Set default appears to work; :8080 never comes up) |
+| **Status** | Baked in **v0.8.6** |
+| **Summary** | `active-engine.env` sets `STICKLLM_ACTIVE_ENGINE=ninfer-all` for systemd. `stickllm_experimental.ACTIVE_ENGINE_PATH` also read that same env var as the **JSON file path**, so serve looked for a file named `ninfer-all`, defaulted to llama.cpp, and exited (`active engine is llama.cpp — use stickllm-llama.service`). Crash-loop / inactive; Models Load also fails because GGUF Activate is blocked while “NInfer is default” and nothing is on :8080. |
+| **Fix** | Path env is `STICKLLM_ACTIVE_ENGINE_FILE` only; engine id keeps `STICKLLM_ACTIVE_ENGINE`. Unit: `test_active_engine_env_id_does_not_override_json_path`. |
+
+### ISS-041 — NInfer models via Models page (same path as llama); Set-default copy
+| | |
+|---|---|
+| **ID** | ISS-041 |
+| **Date** | 2026-11-23 |
+| **Mode** | Experimental / NInfer-all / Models |
+| **Severity** | MED (engine installed; weights UX is invisible / GGUF-only) |
+| **Status** | Baked in **v0.8.6** |
+| **Summary** | NInfer Set default toast/dialog implies a single auto `qwen38-27b` (~19 GiB) into a side path. Product: after Set default, user must **download a compatible NInfer model** like any other model — **no hard-coded default weight**. Models page filters by **active engine** (NInfer → NInfer-compatible only; llama.cpp → GGUF). **Storage path is the same as llama/GGUF downloads** (StickLLM models dir / Downloads queue), not a separate `experimental/ninfer-models` silo. Today lab DL uses `download-model.sh` → `/mnt/stickllm-data/experimental/ninfer-models/` and Models stays GGUF-only. |
+| **Fix (v0.8.6)** | (1) **Copy:** Experimental Set default Confirm + success toast: engine is default on :8080; **download a compatible NInfer model from Models** before chat works; do **not** name only `qwen38-27b` / imply auto-download of one pin. (2) **Models:** when `active_engine=ninfer-all`, catalog + filters show NInfer-compatible artifacts; llama default → GGUF as today. (3) **Path:** enqueue/install into the **same models directory** as GGUF; `NINFER_MODEL_DIR` / serve points there. (4) Activate selects which `.ninfer` NInfer serves. Strata same pattern later. |
+
+### ISS-040 — Agent Zero work files are undiscoverable in Files / Office
+| | |
+|---|---|
+| **ID** | ISS-040 |
+| **Date** | 2026-11-23 |
+| **Mode** | Local kiosk / Files / Office |
+| **Severity** | MED (files exist in vault but users cannot find them) |
+| **Status** | Baked in **v0.8.6** |
+| **Summary** | Agent Zero writes user artifacts under `/a0/usr/workdir` → `vault/addons/agent-zero/work`. StickLLM Files only exposed Home / Vault / SSD apps, so opening Vault meant digging `addons/agent-zero/work`. Office “choose file” shows the raw `/var/lib/stickllm/vault/...` path. Nobody finds that without help. |
+| **Fix** | Files gains an **Agent Zero** root (same folder) and opens there by default when the vault is unlocked. Carry: optional desk shortcut; teach A0 / `open_document` to prefer `vault/Documents` for user-facing PDFs. |
+
+### ISS-039 — Minesweeper intermittent open on LAN / StickLink browser
+| | |
+|---|---|
+| **ID** | ISS-039 |
+| **Date** | 2026-11-23 |
+| **Mode** | Local / LAN browser desk |
+| **Severity** | MED (opens sometimes; blank/401 or half-loaded board other times) |
+| **Status** | Baked in **v0.8.6** |
+| **Summary** | Minesweeper (and other `/apps/*`) intermittently fail to open in a paired LAN browser: race between `primeAppsSession` cookies and WinBox iframe navigation (401 JSON), shared `openApp._pairing` opening the wrong app, and parallel script fetches dropping a file through StickLink. |
+| **Fix** | Per-id pair gate + await apps-session before iframe; iframe 401 retry; sequential minesweeper script loader with retry. Tracked in [docs/NEXT-0.8.5.md](docs/NEXT-0.8.5.md) carry-forward **MS1**. |
+
 ### ISS-038 — Agent Zero on v0.8.4: USB exec bits + first-boot online deps + false “Preload completed”
 | | |
 |---|---|
