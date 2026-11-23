@@ -224,6 +224,16 @@ def test_pick_gpus_cuda_path_untouched():
     assert "} >\"$OUT\" 2>/dev/null || true" not in s  # errors no longer swallowed
 
 
+def test_pick_gpus_ensures_cuda_sonames_at_boot():
+    # v0.8.3 regression: sonames only in stickllm-hotfix → Vulkan on clean flash.
+    s = (BIN / "stickllm-pick-gpus").read_text(encoding="utf-8")
+    assert "ensure_cuda_sonames()" in s
+    assert "libggml-cuda.so.0" in s
+    assert "libllama-common.so.1" in s
+    # Function must be invoked (not only defined).
+    assert s.count("ensure_cuda_sonames") >= 2
+
+
 def test_unit_runs_pick_gpus_as_root():
     u = UNIT.read_text(encoding="utf-8")
     assert "ExecStartPre=-+/usr/local/bin/stickllm-pick-gpus" in u

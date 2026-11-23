@@ -12,6 +12,30 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 
 ## Open
 
+### ISS-038 — Agent Zero on v0.8.4: USB exec bits + first-boot online deps + false “Preload completed”
+| | |
+|---|---|
+| **ID** | ISS-038 |
+| **Date** | 2026-11-22 |
+| **Mode** | Local / Agent Zero / USB docker graph |
+| **Severity** | HIGH (A0 never binds `:5099` offline or after graph mode loss; lab “unstick” can leave UI stopped) |
+| **Status** | Open — root cause confirmed on running stick; target **v0.8.5** (see [docs/NEXT-0.8.5.md](docs/NEXT-0.8.5.md); checklist #35–37) |
+| **Summary** | Three separate failures stacked on the v0.8.4 Lexar lab stick. (1) Exec bits were lost when the docker graph was written to USB (`/mnt/stickllm-data/stickllm-docker`); `run_ui` exited **126** until layer dirs were `chmod`’d. (2) `stickllm-agent run` does `docker rm -f` + `docker run` on every start, so A0 re-runs runtime installs each boot (`_05_framework_dependencies` → uv `filelock`/`fsspec` → “Restarting process…”, then Local TTS `en-core-web-sm` from GitHub, plus `/opt/venv-a0/bin/uv` symlink). Online ≈68 s to health 200; offline fails/hangs and **5099 never binds**. (3) “Preload completed” is from `preload.py` in parallel — **not** end of startup. Lab `_unstick_a0_hang.py` stopped `run_ui` (exit 241) and never restarted it; `supervisorctl start run_ui` brought it up in ~11 s; with deps already present, `docker restart` → health 200 in ~19 s. |
+| **Notes** | Noise only: `the_listener` “No module named 'supervisor'”; searxng “dubious ownership”. **What fixed the running stick:** chmod on container/graph exec bits; one online first-start so downloads finished; `supervisorctl start run_ui` after the killed unstick. **v0.8.5 must:** (1) bake into the A0 image framework deps `_05` wants, `en_core_web_sm` 3.8.0, uv symlink, MiniLM/HF cache — then re-pin digest in image-ready; **or** make `_05` + Local TTS prep no-ops when offline; (2) preserve file modes when writing the docker graph to USB (`rsync -a` / `tar --same-permissions`) + build check `test -x /opt/pyenv/versions/3.12.4/bin/python3.12` inside the container; (3) run `the_listener` under `/usr/bin/python3` or install supervisor in its venv; (4) offline VM gate (no NIC): `/api/health` 200 within 60 s of sys. |
+
+### ISS-037 — Forgotten / corrupt vault passcode deadlocks first-boot setup (Delete vault + Skip) — **must ship in v0.8.5**
+| | |
+|---|---|
+| **ID** | ISS-037 |
+| **Date** | 2026-11-22 |
+| **Mode** | Local / kiosk first-boot setup |
+| **Severity** | HIGH (stick unusable until vault blob deleted by hand) |
+| **Status** | Open — **must be in v0.8.5**; partial lab mitigation only (Skip UI hotfix + manual blob delete); see [docs/NEXT-0.8.5.md](docs/NEXT-0.8.5.md) |
+| **Summary** | If the vault is corrupt/unreadable, or the password is wrong/forgotten, setup sticks on the vault screen with no way forward. Pre-hotfix UI hid Skip; “Skip” / “Full setup” still looped into unlock-only via `maybeOfferSetupOrUnlock` when `probe.found \|\| st.blob`. Operator needs an in-product **Delete vault and start fresh** path, then Create or Skip. |
+| **Fix (v0.8.5)** | **(1) UI.** On vault unlock/setup, show **Delete vault and start fresh** when the vault won’t open (corrupt/unreadable), after a wrong password, and via a **Forgot password?** link next to the password field. **(2) Confirm.** Warning: “This permanently erases the vault and everything in it (chats, saved settings, keys). It can't be undone.” Checkbox “I understand this erases my vault”; **Delete** disabled until checked; **Cancel**. No typed confirmation words. **(3) Delete action.** Remove vault container, header and key files, and any mount/mapping. Stop dependent services cleanly first; show progress “Deleting vault…”. Leave models and the rest of the stick alone. **(4) After.** Setup continues with **Create new vault** or **Skip (no vault)**. Skip must finish setup without a vault (no re-entry into unlock-only). **(5) Audit.** Log delete time + reason (`corrupt` / `wrong_password` / `forgotten`); never log password or key material. |
+| **VM gate** | Corrupt vault file → boot → Delete shows → delete → finish via **Create** and via **Skip**. Wrong password ×3 → Forgot password → Delete → setup finishes. Normal path: correct password still unlocks; Delete does not get in the way. |
+| **Notes** | Repro (v0.8.4 Lexar lab, 2026-11-22): vault pointer at wiped MODELS USB; unlock failed forever; Skip returned to unlock gate. Lab escape was SSH delete of blob + pointers. In-tree start: `skipVaultSetupForNow`, `app.js?v=v084vaultskip` — must survive probe loop and ship with Delete. |
+
 ### ISS-036 — Peer reconnect still requires a WebRTC DataChannel; durable `?rt=` WSS resume deadlocks
 | | |
 |---|---|

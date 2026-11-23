@@ -6996,7 +6996,14 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 if action == "model_download":
                     timeout = 7200
-                elif action in ("vault_lock", "vault_delete", "vault_destroy", "set_session_mode", "session_mode"):
+                elif action in (
+                    "vault_lock",
+                    "vault_delete",
+                    "vault_destroy",
+                    "vault_erase_setup",
+                    "set_session_mode",
+                    "session_mode",
+                ):
                     # Model stop (60s) + vault lock/delete (control allows 360s+).
                     timeout = 480
                 elif action in ("web_mode_set", "set_web_mode"):

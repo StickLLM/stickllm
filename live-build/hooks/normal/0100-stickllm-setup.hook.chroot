@@ -157,15 +157,34 @@ systemctl disable stickllm-appagent-llm.service 2>/dev/null || true
 # Baked /opt/stickllm must be readable by stickllm-llama (not root).
 # 0.7.8 Lexar / 0.8.0: umask 077 during factory-token bake left GGUFs 600/700 →
 # Permission denied / "model missing". Dirs 755, models 644, bins/libs 755.
+# v0.8.5: NEVER chmod 644 under /opt/stickllm/docker — that is the Agent Zero
+# overlay2 graph. a0_seed.sh forces +x before bake; a blanket 644 here stripped
+# exec bits → run_ui exit 126 / Permission denied on python (ISS-038 / checklist #35).
 mkdir -p /opt/stickllm /opt/stickllm/models /opt/stickllm/models/appagent /opt/stickllm/lib
 if [[ -d /opt/stickllm ]]; then
   find /opt/stickllm -type d -exec chmod 755 {} + 2>/dev/null || true
-  find /opt/stickllm -type f -exec chmod 644 {} + 2>/dev/null || true
+  find /opt/stickllm -type f ! -path '/opt/stickllm/docker/*' -exec chmod 644 {} + 2>/dev/null || true
   find /opt/stickllm/bin -type f -exec chmod 755 {} + 2>/dev/null || true
   for d in /opt/stickllm/lib /opt/stickllm/lib-cpu /opt/stickllm/lib-vulkan; do
     [[ -d "$d" ]] || continue
     find "$d" -type f \( -name '*.so' -o -name '*.so.*' \) -exec chmod 755 {} + 2>/dev/null || true
   done
+fi
+# Re-assert docker graph exec bits after any earlier chmod (squashfs bake gate).
+if [[ -d /opt/stickllm/docker/overlay2 ]]; then
+  find /opt/stickllm/docker/overlay2 -type f -exec chmod a+x {} + 2>/dev/null || true
+  BASH_SAMPLE="$(find /opt/stickllm/docker/overlay2 -path '*/diff/usr/bin/bash' -type f 2>/dev/null | head -1 || true)"
+  if [[ -n "$BASH_SAMPLE" && ! -x "$BASH_SAMPLE" ]]; then
+    echo "ERROR: /opt/stickllm/docker overlay bash not executable after chmod ($BASH_SAMPLE)" >&2
+    ls -la "$BASH_SAMPLE" 2>&1 || true
+    exit 1
+  fi
+  PY_SAMPLE="$(find /opt/stickllm/docker/overlay2 -path '*/diff/opt/pyenv/versions/3.12.4/bin/python3.12' -type f 2>/dev/null | head -1 || true)"
+  if [[ -n "$PY_SAMPLE" && ! -x "$PY_SAMPLE" ]]; then
+    echo "ERROR: A0 pyenv python3.12 not executable in docker seed ($PY_SAMPLE)" >&2
+    ls -la "$PY_SAMPLE" 2>&1 || true
+    exit 1
+  fi
 fi
 # CUDA backend register preload must be executable by stickllm-llama (LD_PRELOAD).
 if [[ -f /opt/stickllm/lib/stickllm-cuda-register.so ]]; then

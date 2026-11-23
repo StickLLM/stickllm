@@ -77,12 +77,14 @@ def setup_status() -> dict:
 
     marker = False
     marker_ts = ""
+    vault_skipped = False
     if SETUP_FILE.is_file():
         try:
             doc = json.loads(SETUP_FILE.read_text(encoding="utf-8"))
             if isinstance(doc, dict):
                 marker = bool(doc.get("setup_complete"))
                 marker_ts = str(doc.get("updated_utc") or "")
+                vault_skipped = bool(doc.get("vault_skipped"))
         except (OSError, ValueError, TypeError):
             marker = False
 
@@ -119,8 +121,13 @@ def setup_status() -> dict:
             blob_exists = True
             source = source if source != "none" else "path"
 
-    configured = bool(marker or blob_exists or unlocked)
-    if marker:
+    # vault_skipped: operator finished setup without unlocking; do not treat a
+    # leftover blob as "must unlock" (ISS-037). Still report blob for Delete UI.
+    configured = bool(marker or unlocked or (blob_exists and not vault_skipped))
+    if vault_skipped and marker:
+        configured = True
+        source = "vault_skipped"
+    elif marker:
         source = "marker"
     elif unlocked and source == "none":
         source = "unlocked"
@@ -130,16 +137,22 @@ def setup_status() -> dict:
         "setup_complete": configured,
         "vault_configured": bool(blob_exists or marker or unlocked),
         "vault_unlocked": unlocked,
+        "vault_skipped": vault_skipped,
         "vault_path": vault_path,
         "blob": blob if blob_exists else "",
+        "blob_exists": blob_exists,
         "data_mounted": _data_mounted(),
         "source": source,
         "updated_utc": marker_ts or None,
         "note": (
-            "Setup is remembered on STICKLLM-DATA (not the browser). "
-            "Reboot asks for the vault passcode only."
-            if configured
-            else "No prior setup found — first-boot wizard will run."
+            "Setup finished without a vault (Ephemeral). Unlock or create in Settings → Storage."
+            if vault_skipped and not unlocked
+            else (
+                "Setup is remembered on STICKLLM-DATA (not the browser). "
+                "Reboot asks for the vault passcode only."
+                if configured
+                else "No prior setup found — first-boot wizard will run."
+            )
         ),
     }
 
@@ -155,6 +168,7 @@ def setup_mark_complete(params: dict | None = None) -> dict:
         }
     vault_path = str(params.get("vault_path") or params.get("path") or "").strip()
     blob = str(params.get("blob") or "").strip()
+    vault_skipped = bool(params.get("vault_skipped"))
     if not vault_path or not blob:
         st = setup_status()
         vault_path = vault_path or str(st.get("vault_path") or "")
@@ -162,6 +176,7 @@ def setup_mark_complete(params: dict | None = None) -> dict:
     doc = {
         "version": 1,
         "setup_complete": True,
+        "vault_skipped": vault_skipped,
         "vault_path": vault_path or None,
         "blob_name": Path(blob).name if blob else "stickllm-vault.img",
         "updated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -7241,7 +7256,7 @@ def browser_focus(params: dict) -> dict:
 _GGUF_INVALIDATE_ACTIONS = {
     "model_delete", "set_models_dir", "set_session_mode", "vault_unlock", "vault_lock",
     "vault_use", "vault_attach", "vault_setup", "vault_move_model", "vault_find_models",
-    "vault_delete", "vault_destroy",
+    "vault_delete", "vault_destroy", "vault_erase_setup",
     "model_download", "mmproj_download",
 }
 
@@ -7824,6 +7839,8 @@ def handle(action: str, params: dict) -> dict:
         return vault_action("lock", params)
     if action == "vault_delete" or action == "vault_destroy":
         return vault_action("destroy", params)
+    if action == "vault_erase_setup":
+        return vault_action("erase-setup", params)
     if action == "vault_move_model":
         return vault_action("move-model", params)
     if action == "vault_list_movable":
@@ -7982,18 +7999,27 @@ def vault_action(cmd: str, params: dict) -> dict:
         # then Agent Zero, add-ons and dockerd stop; 120s killed the lock midway.
         r = sh([script, "lock"], timeout=360)
         return merge_vault_run(r)
-    if cmd == "destroy":
-        # Settings → Delete vault. Typed DELETE_VAULT + passcode. Blob file only.
+    if cmd in ("destroy", "erase-setup"):
+        # destroy: Settings → Delete vault (DELETE_VAULT + passcode).
+        # erase-setup: ISS-037 setup recovery (ERASE_VAULT, no passcode).
+        erase_setup = cmd == "erase-setup"
         confirm = str(params.get("confirm") or "").strip()
         passcode = str(params.get("passcode") or "")
         path = str(params.get("path") or params.get("blob") or params.get("dir") or "").strip()
-        if confirm != "DELETE_VAULT":
-            return {
-                "ok": False,
-                "error": "typed confirm must be DELETE_VAULT",
-            }
-        if not passcode:
-            return {"ok": False, "error": "passcode required"}
+        reason = str(params.get("reason") or "forgotten").strip().lower()
+        if reason not in ("corrupt", "wrong_password", "forgotten"):
+            reason = "forgotten"
+        if erase_setup:
+            if confirm != "ERASE_VAULT":
+                return {"ok": False, "error": "confirm must be ERASE_VAULT"}
+        else:
+            if confirm != "DELETE_VAULT":
+                return {
+                    "ok": False,
+                    "error": "typed confirm must be DELETE_VAULT",
+                }
+            if not passcode:
+                return {"ok": False, "error": "passcode required"}
         if path and _looks_like_block_device(path):
             return {
                 "ok": False,
@@ -8034,9 +8060,14 @@ def vault_action(cmd: str, params: dict) -> dict:
                 err = lock_r.get("error") or lock_r.get("stderr") or "lock failed before delete"
                 return merge_vault_run({"ok": False, "error": str(err)[:500], **lock_r})
         env = os.environ.copy()
-        env["STICKLLM_VAULT_CONFIRM"] = "DELETE_VAULT"
-        env["STICKLLM_VAULT_PASS"] = passcode
-        cmd_args = [script, "destroy"]
+        if erase_setup:
+            env["STICKLLM_VAULT_CONFIRM"] = "ERASE_VAULT"
+            env["STICKLLM_VAULT_ERASE_REASON"] = reason
+            cmd_args = [script, "erase-setup"]
+        else:
+            env["STICKLLM_VAULT_CONFIRM"] = "DELETE_VAULT"
+            env["STICKLLM_VAULT_PASS"] = passcode
+            cmd_args = [script, "destroy"]
         if path:
             cmd_args.append(path)
         try:
@@ -8054,17 +8085,17 @@ def vault_action(cmd: str, params: dict) -> dict:
                 "stdout": (p.stdout or "")[-4000:],
                 "stderr": (p.stderr or "")[-2000:],
                 "deleted": path or st.get("blob") or "",
+                "reason": reason if erase_setup else None,
                 "kept": [
                     "sibling models/ beside the blob",
                     "STICKLLM-DATA models",
                     "USB settings LUKS (pairing / secrets / computer hints)",
-                    "vault.key on DATA",
                 ],
                 "cleared": [
                     "stickllm-vault.img (LUKS header + file)",
                     "vault-meta for this blob",
                     "stickllm-vault-location.json / stickllm-setup.json when pointed here",
-                ],
+                ] + (["vault.key"] if erase_setup else []),
             }
             if p.returncode != 0 and not r.get("error"):
                 err = (p.stderr or "").strip().splitlines()

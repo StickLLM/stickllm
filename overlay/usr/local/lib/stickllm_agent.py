@@ -675,6 +675,9 @@ def seed_layers_executable(seed: Path | None = None) -> bool:
                 "diff/usr/bin/python3.12",
                 "diff/usr/bin/python3",
                 "diff/opt/venv-a0/bin/python",
+                "diff/opt/pyenv/versions/3.12.4/bin/python3.12",
+                "diff/opt/pyenv/versions/3.12.4/bin/python3",
+                "diff/opt/pyenv/versions/3.12.4/bin/python",
             ):
                 py = ent / rel
                 if py.is_file() or py.is_symlink():
@@ -857,6 +860,13 @@ def ensure_seeded(root: Path | None = None) -> dict:
         out["ok"] = (root / "image").is_dir()
         out["mounted"] = mounts > 0
         out["mounts"] = mounts
+        if out["ok"] and overlay_dst.is_dir():
+            try:
+                fixed = chmod_overlay_exec(overlay_dst)
+                if fixed:
+                    out["data_chmod_fixed"] = fixed
+            except OSError:
+                pass
         if not out["ok"]:
             out["error"] = "seed_mount_incomplete"
     except OSError as exc:

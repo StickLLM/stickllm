@@ -3165,13 +3165,23 @@ function confirmBox({ title, text, word, check, ok = "Delete", extra, cb, noCanc
   $("#cfOk").className = danger ? "btn danger" : "btn primary";
   if ($("#cfCancel")) $("#cfCancel").hidden = !!noCancel;
   $("#cfExtra").hidden = !extra; $("#cfExtra").textContent = extra || "";
-  cfCb = cb; $("#confirm").hidden = false; setTimeout(() => (label ? $("#cfCheck") : $("#cfOk")).focus(), 20);
+  cfCb = cb; $("#confirm").hidden = false;
+  // Setup wizard is z-index 9999; lift confirm above it (ISS-037 Delete vault).
+  try {
+    $("#confirm").style.zIndex = setupWizardShowing() ? "10050" : "";
+  } catch (_) {}
+  setTimeout(() => (label ? $("#cfCheck") : $("#cfOk")).focus(), 20);
 }
 if ($("#cfCheck")) $("#cfCheck").onchange = () => ($("#cfOk").disabled = !$("#cfCheck").checked);
-$("#cfCancel").onclick = () => { $("#confirm").hidden = true; if ($("#cfCancel")) $("#cfCancel").hidden = false; };
+$("#cfCancel").onclick = () => {
+  $("#confirm").hidden = true;
+  if ($("#cfCancel")) $("#cfCancel").hidden = false;
+  try { $("#confirm").style.zIndex = ""; } catch (_) {}
+};
 $("#cfOk").onclick = () => {
   $("#confirm").hidden = true;
   if ($("#cfCancel")) $("#cfCancel").hidden = false;
+  try { $("#confirm").style.zIndex = ""; } catch (_) {}
   $("#cfOk").className = "btn danger";
   cfCb?.();
 };
@@ -7476,6 +7486,87 @@ function markSetupDone(extra) {
   }
   control("setup_mark_complete", extra && typeof extra === "object" ? extra : {}).catch(() => {});
 }
+/** Leave setup without unlocking/creating a vault — stay Ephemeral.
+ * Used when the passcode is unknown or the vault is on another machine.
+ * Persists vault_skipped so maybeOfferSetupOrUnlock does not reopen unlock-only. */
+async function skipVaultSetupForNow(opts) {
+  const quiet = !!(opts && opts.quiet);
+  try {
+    localStorage.setItem("stickllm_vault_skipped", "1");
+  } catch (_) {}
+  markSetupDone({
+    vault_skipped: true,
+    ...(opts && opts.vault_path ? { vault_path: opts.vault_path } : {}),
+  });
+  dismissSetupWizard();
+  try {
+    await setSessionMode("ephemeral", { quiet: true });
+  } catch (_) {}
+  try { applyModeUi("ephemeral"); } catch (_) {}
+  if (!quiet) toast("Continuing without vault (Ephemeral). Unlock later in Settings → Storage.");
+  try { await refreshSetupState(true); } catch (_) {}
+  try { await refreshAgentLink(); } catch (_) {}
+}
+
+/** ISS-037: erase vault blob without passcode (setup recovery). */
+async function eraseVaultFromSetup(opts) {
+  const reason = (opts && opts.reason) || "forgotten";
+  const path = (opts && (opts.path || opts.blob || opts.vaultPath)) || "";
+  showVaultCreating(true, "open");
+  try {
+    const t = $("#vaultBusyTitle");
+    const s = $("#vaultBusySub");
+    if (t) t.textContent = "Deleting vault…";
+    if (s) s.textContent = "Stopping services and removing the vault file.";
+  } catch (_) {}
+  try {
+    const res = await control("vault_erase_setup", {
+      confirm: "ERASE_VAULT",
+      reason,
+      ...(path ? { path } : {}),
+    });
+    if (!res || res.ok === false) {
+      throw new Error((res && (res.error || res.stderr)) || "erase failed");
+    }
+    clearVaultPresenceCache();
+    try { localStorage.removeItem("stickllm_vault_skipped"); } catch (_) {}
+    setVaultChrome(false, true);
+    toast("Vault deleted");
+    return res;
+  } finally {
+    showVaultCreating(false);
+  }
+}
+
+/** Confirm + erase; returns true if deleted. */
+async function confirmEraseVaultSetup(opts) {
+  const ok = await new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    confirmBox({
+      title: "Delete vault and start fresh?",
+      text: "This permanently erases the vault and everything in it (chats, saved settings, keys). It can't be undone.",
+      check: "I understand this erases my vault",
+      ok: "Delete",
+      danger: true,
+      cb: () => done(true),
+    });
+    const cancel = $("#cfCancel");
+    if (cancel) {
+      const onCancel = () => {
+        $("#confirm").hidden = true;
+        cancel.hidden = false;
+        try { $("#confirm").style.zIndex = ""; } catch (_) {}
+        done(false);
+        cancel.removeEventListener("click", onCancel);
+      };
+      cancel.addEventListener("click", onCancel);
+    }
+  });
+  if (!ok) return false;
+  await eraseVaultFromSetup(opts || {});
+  return true;
+}
 async function refreshSetupState(force) {
   if (!force && setupStateCache && (Date.now() - (setupStateCache._at || 0)) < 15000) {
     return setupStateCache;
@@ -7616,24 +7707,60 @@ async function openVaultUnlockOnly(opts) {
   const vaultPath = (realPath || (opts && opts.vaultPath) || st.vault_path || ($("#vaultPath") && $("#vaultPath").value) || "").trim();
   if (vaultPath && $("#vaultPath")) $("#vaultPath").value = vaultPath;
   $("#setupTitle").textContent = "Welcome back";
-  $("#setupBack").hidden = true;
-  $("#setupSkip").textContent = "Full setup";
+  $("#setupBack").hidden = false;
+  $("#setupBack").textContent = "Full setup";
+  $("#setupSkip").textContent = "Skip for now";
   $("#setupSkip").hidden = false;
   $("#setupNext").textContent = "Unlock";
+  let wrongPassCount = 0;
+  const blobPath = (probe && probe.blob) || st.blob || (vaultPath ? (String(vaultPath).replace(/\/+$/, "") + "/stickllm-vault.img") : "");
   body.innerHTML = `
 <form autocomplete="off" onsubmit="return false">
 <p>A vault was found on this computer. Enter the passcode to unlock — Wi‑Fi and settings come back from the vault.</p>
 <label class="field"><span>Vault passcode</span><input id="wizP1" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
+<p class="muted small"><a href="#" id="wizForgotPass">Forgot password?</a></p>
 <p class="muted small">Vault: <code id="wizVaultShow"></code></p>
+<p class="muted small">Can't unlock? <b>Delete vault and start fresh</b> erases this vault, then you can create a new one or Skip. <b>Skip for now</b> keeps the file and continues in Ephemeral.</p>
+<button type="button" class="btn danger" id="wizDeleteVault">Delete vault and start fresh</button>
 </form>`;
   $("#wizVaultShow").textContent = vaultPath || st.blob || (probe && probe.blob) || "(saved location)";
   hardenVaultPassFields($("#wizP1"));
   wireVaultPassEnterToSetupNext(body);
   setTimeout(() => $("#wizP1")?.focus(), 50);
-  $("#setupSkip").onclick = () => {
+  const afterErase = async () => {
+    try { await refreshSetupState(true); } catch (_) {}
+    overlay.classList.remove("show");
+    setSetupChrome(false);
+    await openSetupWizard({ force: true });
+  };
+  const runErase = async (reason) => {
+    showErr("");
+    try {
+      const deleted = await confirmEraseVaultSetup({
+        reason,
+        path: blobPath || vaultPath || "",
+        vaultPath,
+      });
+      if (deleted) await afterErase();
+    } catch (e) {
+      showErr(String(e.message || e));
+    }
+  };
+  $("#wizForgotPass").onclick = (e) => {
+    e.preventDefault();
+    runErase("forgotten").catch(() => {});
+  };
+  $("#wizDeleteVault").onclick = () => {
+    const reason = wrongPassCount > 0 ? "wrong_password" : "corrupt";
+    runErase(reason).catch(() => {});
+  };
+  $("#setupBack").onclick = () => {
     overlay.classList.remove("show");
     setSetupChrome(false);
     openSetupWizard({ force: true }).catch(() => {});
+  };
+  $("#setupSkip").onclick = () => {
+    skipVaultSetupForNow({ vault_path: vaultPath || "" }).catch(() => {});
   };
   $("#setupNext").onclick = async () => {
     showErr("");
@@ -7647,6 +7774,7 @@ async function openVaultUnlockOnly(opts) {
       const res = await control("vault_unlock", { passcode: pass, ...(vaultPath ? { path: vaultPath } : {}) });
       showVaultCreating(false);
       if (!res || res.ok === false) throw new Error((res && (res.error || res.message)) || "Unlock failed");
+      try { localStorage.removeItem("stickllm_vault_skipped"); } catch (_) {}
       markSetupDone({ vault_path: vaultPath });
       overlay.classList.remove("show");
       setSetupChrome(false);
@@ -7656,7 +7784,11 @@ async function openVaultUnlockOnly(opts) {
       await refreshSetupState(true);
     } catch (e) {
       showVaultCreating(false);
+      wrongPassCount += 1;
       showErr(String(e.message || e));
+      if (wrongPassCount >= 3) {
+        showErr(String(e.message || e) + " — Use Forgot password? or Delete vault and start fresh.");
+      }
     }
   };
 }
@@ -8049,7 +8181,9 @@ Mount ${esc(u.label)}<div class="muted small">${esc(u.device)} → ${esc(u.sugge
         return;
       }
       $("#setupTitle").textContent = wiz.vaultMode === "unlock" ? "Unlock vault" : "Vault passcode";
-      $("#setupSkip").hidden = true; // vault step: no skip past create/unlock
+      $("#setupSkip").hidden = false;
+      $("#setupSkip").textContent = "Skip for now";
+      wiz.wrongPassCount = wiz.wrongPassCount || 0;
       body.innerHTML = `
 <form autocomplete="off" onsubmit="return false">
 <p>${wiz.vaultMode === "unlock"
@@ -8057,9 +8191,12 @@ Mount ${esc(u.label)}<div class="muted small">${esc(u.device)} → ${esc(u.sugge
   : "Encrypt chats and settings. Models can live beside the vault on the same drive."}</p>
 <label class="field"><span>Passcode (8+ characters)</span><input id="wizP1" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
 <label class="field" ${wiz.vaultMode === "unlock" ? "hidden" : ""}><span>Confirm passcode</span><input id="wizP2" type="text" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" readonly></label>
+${wiz.vaultMode === "unlock" ? '<p class="muted small"><a href="#" id="wizForgotPass">Forgot password?</a></p>' : ""}
 <p class="muted small">Vault path: <code id="wizVaultShow"></code>
   <button type="button" class="btn ghost sm" id="wizChangeDrive">Choose a different drive</button></p>
 <p class="muted small" id="wizVaultHint" hidden></p>
+<p class="muted small">Can't unlock or don't want a vault yet? <b>Skip for now</b> finishes setup in Ephemeral. Or <b>Delete vault and start fresh</b> erases this vault so you can create a new one.</p>
+${wiz.vaultMode === "unlock" ? '<button type="button" class="btn danger" id="wizDeleteVault">Delete vault and start fresh</button>' : ""}
 </form>`;
       $("#wizVaultShow").textContent = wiz.vaultPath || "(choose storage first)";
       $("#wizP1").value = wiz.pass1;
@@ -8072,6 +8209,37 @@ Mount ${esc(u.label)}<div class="muted small">${esc(u.device)} → ${esc(u.sugge
         step = STEP_STOR;
         render();
       };
+      const wizErase = async (reason) => {
+        showErr("");
+        try {
+          const blob = (wiz.vaultPath || "").replace(/\/+$/, "") + "/stickllm-vault.img";
+          const deleted = await confirmEraseVaultSetup({
+            reason,
+            path: blob,
+            vaultPath: wiz.vaultPath || "",
+          });
+          if (!deleted) return;
+          wiz.vaultMode = "create";
+          wiz.wrongPassCount = 0;
+          wiz.vaultDone = false;
+          try { await refreshSetupState(true); } catch (_) {}
+          render();
+        } catch (e) {
+          showErr(String(e.message || e));
+        }
+      };
+      if ($("#wizForgotPass")) {
+        $("#wizForgotPass").onclick = (e) => {
+          e.preventDefault();
+          wizErase("forgotten").catch(() => {});
+        };
+      }
+      if ($("#wizDeleteVault")) {
+        $("#wizDeleteVault").onclick = () => {
+          const reason = wiz.wrongPassCount > 0 ? "wrong_password" : "corrupt";
+          wizErase(reason).catch(() => {});
+        };
+      }
       if (wiz.vaultMode === "unlock") {
         const h = $("#wizVaultHint");
         if (h) { h.hidden = false; h.textContent = "Existing stickllm-vault.img found — unlock instead of create."; }
@@ -8153,7 +8321,11 @@ Mount ${esc(u.label)}<div class="muted small">${esc(u.device)} → ${esc(u.sugge
       enterVaultModeNow().catch(() => {});
       return;
     }
-    if (step === STEP_VAULT) return; // skip hidden
+    if (step === STEP_VAULT) {
+      // Allow finishing setup without vault when passcode unknown / unlock fails.
+      skipVaultSetupForNow({ vault_path: wiz.vaultPath || "" }).catch(() => {});
+      return;
+    }
     step += 1; render();
   };
   $("#setupNext").onclick = async () => {
@@ -8375,6 +8547,9 @@ Mount ${esc(u.label)}<div class="muted small">${esc(u.device)} → ${esc(u.sugge
           } catch (e) {
             showVaultCreating(false);
             const msg = String(e.message || e);
+            if (wiz.vaultMode === "unlock") {
+              wiz.wrongPassCount = (wiz.wrongPassCount || 0) + 1;
+            }
             // Create may have finished despite a client timeout/error.
             try {
               const stFail = await refreshSetupState(true);
@@ -8408,6 +8583,10 @@ Mount ${esc(u.label)}<div class="muted small">${esc(u.device)} → ${esc(u.sugge
                 wiz.vaultMode = "unlock";
                 render();
                 showErr("A vault already exists here — enter the passcode to unlock.");
+                return;
+              }
+              if (wiz.vaultMode === "unlock" && (wiz.wrongPassCount || 0) >= 3) {
+                showErr(msg + " — Use Forgot password? or Delete vault and start fresh.");
                 return;
               }
               throw e2;
@@ -8461,6 +8640,13 @@ async function maybeOfferSetupOrUnlock() {
       // Sync unlock chrome only. Never force Vault session mode here —
       // enterVaultModeNow was stealing Ephemeral on every health poll.
       if (!state.vaultOpen) setVaultChrome(true);
+      return;
+    }
+    // ISS-037: Skip / vault_skipped must finish setup without re-entering unlock.
+    let skippedLocal = false;
+    try { skippedLocal = localStorage.getItem("stickllm_vault_skipped") === "1"; } catch (_) {}
+    if (st.vault_skipped || skippedLocal) {
+      if (!st.setup_complete) markSetupDone({ vault_skipped: true, vault_path: st.vault_path || "" });
       return;
     }
     if (probe.found || st.blob || st.blob_exists) {

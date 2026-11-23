@@ -1,3 +1,17 @@
+## 0.8.5 - Vault erase + Agent Zero offline first-start
+
+Must-bake from [docs/NEXT-0.8.5.md](docs/NEXT-0.8.5.md). Checklist: `C:\Users\peter\stickllm-hotfix-checklist-2026-11-22.md` §33–38 + prior punch list already in v0.8.4 tree.
+
+- **ISS-037 Delete vault in setup.** Unlock/setup shows **Delete vault and start fresh** (corrupt/unreadable, after wrong password, and **Forgot password?**). Confirm checkbox only (no typed words). `vault_erase_setup` / `erase-setup` removes blob + header + `vault.key` + pointers after stopping dependents; logs reason (`corrupt` / `wrong_password` / `forgotten`) never passcodes. Then Create or **Skip**; `vault_skipped` stops unlock-only re-entry.
+- **ISS-038 Agent Zero exec bits + offline start.** Chroot hook no longer `chmod 644` under `/opt/stickllm/docker` (that stripped overlay `+x` → exit 126). Re-assert seed `+x` + pyenv python check at bake. Entrypoint: bulk restore `+x`, framework deps warn-and-continue (no uv / no `restart_process`), Local TTS soft-fail, `the_listener` under `/usr/bin/python3`. `ensure_seeded` chmods DATA overlay2 after bind.
+- Includes prior v0.8.4 batch (CUDA boot sonames, Method C keepalive, StickLink large-body mux, Terminal/vision/SSH/setup USB items from the stick-swap checklist).
+
+## 0.8.4 - CUDA boot + Method C keepalive + mux
+
+- **CUDA sonames at boot.** `ensure_cuda_sonames` in `stickllm-pick-gpus` so NVIDIA stays CUDA after flash.
+- **Method C peer + keepalive** (`methodc-noise-keep-20261121.3`).
+- **StickLink app-mux large POST bodies** (~250 KiB phone photos).
+
 ## 0.8.3 - Stick-swap punch list baked
 
 See [docs/NEXT-0.8.3.md](docs/NEXT-0.8.3.md).  

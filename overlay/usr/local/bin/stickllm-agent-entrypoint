@@ -44,6 +44,21 @@ if [[ -z "${A0_PY}" ]]; then
   A0_PY=/opt/venv-a0/bin/python
 fi
 
+# USB/docker graph can drop +x on entire venv/pyenv trees while metadata still boots.
+for d in /opt/venv-a0/bin /opt/pyenv/versions/3.12.4/bin; do
+  if [[ -d "$d" ]]; then
+    chmod a+rx "$d"/* 2>/dev/null || true
+  fi
+done
+[[ -e /usr/local/bin/uv && ! -x /usr/local/bin/uv ]] && chmod a+rx /usr/local/bin/uv 2>/dev/null || true
+for p in /usr/bin/python3.13 /usr/bin/python3.12 /usr/bin/python3 \
+  /opt/pyenv/versions/3.12.4/bin/python /opt/pyenv/versions/3.12.4/bin/python3.12 \
+  /opt/venv-a0/bin/python /opt/venv-a0/bin/python3; do
+  if [[ -e "$p" && ! -x "$p" ]]; then
+    chmod a+rx "$p" 2>/dev/null || true
+  fi
+done
+
 # Mute sshd and the tunnel API in supervisord. Upstream initialize.sh runs
 # "cp -r /per/* /" before supervisord starts, so /per's copy of the config
 # overwrote the /etc patch and run_tunnel_api still started and went FATAL.
@@ -63,6 +78,7 @@ def mute(text):
     lines = text.splitlines()
     out = []
     program = ""
+    section_kind = ""
     seen_autostart = False
     # Keep SearXNG (run_searxng) — Agent Zero built-in web search. Mute only
     # host-owned sshd and the unused tunnel API.
@@ -80,7 +96,15 @@ def mute(text):
             # run_tunnel_api used to inherit the mute and lose its command.
             if program:
                 out = flush_autostart(out, program, seen_autostart)
-            program = line[len("[program:") :].rstrip("]") if line.startswith("[program:") else ""
+            if line.startswith("[program:"):
+                program = line[len("[program:") :].rstrip("]")
+                section_kind = "program"
+            elif line.startswith("[eventlistener:"):
+                program = line[len("[eventlistener:") :].rstrip("]")
+                section_kind = "eventlistener"
+            else:
+                program = ""
+                section_kind = ""
             seen_autostart = False
             out.append(line)
             continue
@@ -94,6 +118,20 @@ def mute(text):
             seen_autostart = True
             out.append("autostart=false")
             continue
+        if (
+            section_kind == "eventlistener"
+            and program == "the_listener"
+            and line.startswith("command=")
+        ):
+            parts = line.split("=", 1)[1].split()
+            if parts and (
+                "/opt/venv" in parts[0]
+                or "venv-a0" in parts[0]
+                or "python" in parts[0]
+            ):
+                parts[0] = "/usr/bin/python3"
+                out.append("command=" + " ".join(parts))
+                continue
         out.append(line)
     if program:
         out = flush_autostart(out, program, seen_autostart)
@@ -219,6 +257,117 @@ if [[ -x /opt/venv-a0/bin/python ]]; then
     /opt/venv-a0/bin/python -c "import numpy,scipy,scipy.special; print('a0-entrypoint: numpy', numpy.__version__, 'scipy', scipy.__version__)" || true
   fi
 fi
+
+# Debian 13 / A0 image refresh: startup_migration/_05_framework_dependencies raises
+# RuntimeError("Framework dependency update requires 'uv'.") when requirements.txt
+# drifts ahead of the venv (filelock/fsspec observed) and shutil.which("uv") fails
+# under /opt/venv-a0/bin/python even though /usr/local/bin/uv exists. That crash-loops
+# run_ui and leaves the desk on step 6 / ~94%. Put uv on the venv PATH and soft-fail
+# the migration so Agent Zero still comes up offline.
+export PATH="/opt/venv-a0/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
+if [[ -x /usr/local/bin/uv && -d /opt/venv-a0/bin ]]; then
+  ln -sfn /usr/local/bin/uv /opt/venv-a0/bin/uv 2>/dev/null || true
+fi
+if [[ -f /a0/extensions/python/startup_migration/_05_framework_dependencies.py ]]; then
+  "$A0_PY" - <<'PY' || true
+from pathlib import Path
+p = Path("/a0/extensions/python/startup_migration/_05_framework_dependencies.py")
+text = p.read_text(encoding="utf-8", errors="replace")
+if "StickLLM: do not crash-loop" in text:
+    raise SystemExit(0)
+p.write_text(
+    '''"""StickLLM: do not crash-loop if framework deps need a network uv install."""
+from helpers.extension import Extension
+from helpers.print_style import PrintStyle
+
+class FrameworkDependencies(Extension):
+    def execute(self, **kwargs):
+        try:
+            from pathlib import Path
+            import importlib.metadata
+            from packaging.requirements import Requirement
+            from helpers import files, runtime
+            if not runtime.is_dockerized():
+                return
+            req_file = Path(files.get_abs_path("requirements.txt"))
+            packages = {"litellm","openai","python-dotenv","aiohttp","anyio","urllib3","filelock","fsspec","multidict"}
+            requirements = []
+            for line in req_file.read_text(encoding="utf-8").splitlines():
+                line = line.partition("#")[0].strip()
+                if line:
+                    r = Requirement(line)
+                    if r.name in packages:
+                        requirements.append(r)
+            outdated = []
+            for r in requirements:
+                try:
+                    installed = importlib.metadata.version(r.name)
+                except importlib.metadata.PackageNotFoundError:
+                    installed = None
+                if installed is None or installed not in r.specifier:
+                    outdated.append(str(r))
+            if not outdated:
+                return
+            PrintStyle.warning(
+                "StickLLM: skip framework dep update (no network install): "
+                + ", ".join(outdated)
+            )
+            return
+        except Exception as exc:
+            PrintStyle.warning(f"StickLLM: framework dep migration skipped: {exc}")
+            return
+'''
+    ,
+    encoding="utf-8",
+)
+print("a0-entrypoint: patched framework_dependencies soft-fail")
+PY
+fi
+
+# Best-effort: Local TTS / spaCy en-core-web-sm prep hard-fails offline without the model.
+"$A0_PY" - <<'PY' || true
+import re
+from pathlib import Path
+
+MARKER = "StickLLM: local-tts offline soft-fail"
+NEEDLES = ("Local TTS requires", "en-core-web-sm", "en_core_web_sm")
+root = Path("/a0")
+if not root.is_dir():
+    raise SystemExit(0)
+patched = []
+for path in root.rglob("*.py"):
+    if "site-packages" in path.parts:
+        continue
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    if MARKER in text or not any(n in text for n in NEEDLES):
+        continue
+    if "raise RuntimeError" not in text and "raise" not in text:
+        continue
+    new = text
+    for needle in NEEDLES:
+        new = re.sub(
+            rf"raise RuntimeError\(([^)]*{re.escape(needle)}[^)]*)\)",
+            r'PrintStyle.warning(\1); return',
+            new,
+        )
+    if new == text:
+        continue
+    if "from helpers.print_style import PrintStyle" not in new:
+        new = "from helpers.print_style import PrintStyle\n" + MARKER + "\n" + new
+    else:
+        new = MARKER + "\n" + new
+    try:
+        path.write_text(new, encoding="utf-8")
+        patched.append(str(path))
+    except OSError:
+        pass
+if patched:
+    print("a0-entrypoint: softened Local TTS/spaCy hard-fails:", ", ".join(patched[:5]))
+PY
+
 mkdir -p /tmp /var/tmp
 chmod 1777 /tmp /var/tmp || true
 mkdir -p /a0/usr/logs

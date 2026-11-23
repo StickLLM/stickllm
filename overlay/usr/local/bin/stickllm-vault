@@ -427,7 +427,7 @@ confirm_phrase() {
   local expect="$1" prompt="$2"
   local got=""
   case "$expect" in
-    CREATE-VAULT|GROW-VAULT|MOVE-MODEL|DELETE_VAULT) got="${STICKLLM_VAULT_CONFIRM:-}" ;;
+    CREATE-VAULT|GROW-VAULT|MOVE-MODEL|DELETE_VAULT|ERASE_VAULT) got="${STICKLLM_VAULT_CONFIRM:-}" ;;
     SPACE-OK) got="${STICKLLM_VAULT_CONFIRM_SPACE:-}" ;;
     SAVED) got="${STICKLLM_VAULT_CONFIRM_SAVED:-}" ;;
     WIPE-OK) got="${STICKLLM_VAULT_CONFIRM_WIPE:-${STICKLLM_VAULT_CONFIRM:-}}" ;;
@@ -3058,6 +3058,99 @@ for key in ("STICKLLM_CLR_LOC", "STICKLLM_CLR_SETUP"):
 PY
 }
 
+# Resolve destroy/erase target path. Sets globals _DESTROY_TGT _DESTROY_ROOT.
+_resolve_destroy_target() {
+  local raw="${1:-}"
+  _DESTROY_TGT=""
+  _DESTROY_ROOT=""
+  if [[ -n "$raw" ]]; then
+    is_block_device_path "$raw" && die "refusing block device path — delete only stickllm-vault.img"
+    if [[ -f "$raw" ]]; then
+      _DESTROY_TGT="$(readlink -f "$raw" 2>/dev/null || printf '%s' "$raw")"
+      _DESTROY_ROOT="$(dirname "$_DESTROY_TGT")"
+    elif [[ -d "$raw" ]]; then
+      _DESTROY_ROOT="$(readlink -f "$raw" 2>/dev/null || printf '%s' "$raw")"
+      _DESTROY_TGT="$_DESTROY_ROOT/$BLOB_NAME"
+    else
+      die "usage: destroy|erase-setup [dir|stickllm-vault.img]"
+    fi
+  else
+    _DESTROY_TGT="$(vault_target || true)"
+    [[ -n "$_DESTROY_TGT" ]] || die "no vault configured — pass a path to stickllm-vault.img"
+    _DESTROY_ROOT="$(dirname "$_DESTROY_TGT")"
+    if [[ -f "$META_DIR/root" ]]; then
+      _DESTROY_ROOT="$(tr -d '\n' <"$META_DIR/root" || printf '%s' "$_DESTROY_ROOT")"
+    fi
+  fi
+  is_block_device_path "$_DESTROY_TGT" && die "refusing block device — delete only the vault file blob"
+  [[ "$(basename "$_DESTROY_TGT")" == "$BLOB_NAME" || "$_DESTROY_TGT" == *.img ]] \
+    || die "refusing unexpected blob name (want $BLOB_NAME)"
+}
+
+_lock_if_active_blob() {
+  local tgt="$1"
+  local active=""
+  active="$(vault_target 2>/dev/null || true)"
+  if is_mounted || mapper_open; then
+    if [[ -z "$active" || "$(readlink -f "$active" 2>/dev/null || printf '%s' "$active")" == "$(readlink -f "$tgt" 2>/dev/null || printf '%s' "$tgt")" ]]; then
+      cmd_lock || die "could not lock/umount vault before delete"
+    fi
+  fi
+}
+
+_wipe_and_unlink_blob() {
+  local tgt="$1"
+  # Header wipe then unlink — never wipefs/partition/format the parent FS.
+  if cryptsetup isLuks "$tgt" >/dev/null 2>&1; then
+    cryptsetup luksErase --batch-mode "$tgt" 2>/dev/null \
+      || dd if=/dev/zero of="$tgt" bs=1M count=16 conv=notrunc status=none 2>/dev/null \
+      || true
+  else
+    # Corrupt / unreadable: still zero the head then unlink.
+    dd if=/dev/zero of="$tgt" bs=1M count=16 conv=notrunc status=none 2>/dev/null || true
+  fi
+  rm -f "$tgt" || die "could not remove vault blob (file still present)"
+  [[ ! -e "$tgt" ]] || die "vault blob still present after delete"
+}
+
+# ISS-037 / v0.8.5: setup "Delete vault and start fresh" — no passcode.
+# Confirm ERASE_VAULT. Reason: corrupt | wrong_password | forgotten (audit only).
+# Also removes vault.key. Never logs passcode/key material.
+cmd_erase_setup() {
+  need_root
+  confirm_phrase "ERASE_VAULT" "Confirm ERASE_VAULT to permanently erase this vault (setup recovery): "
+  local reason="${STICKLLM_VAULT_ERASE_REASON:-forgotten}"
+  case "$reason" in
+    corrupt|wrong_password|forgotten) ;;
+    *) reason="forgotten" ;;
+  esac
+  _resolve_destroy_target "${1:-}"
+  local tgt="$_DESTROY_TGT"
+  [[ -e "$tgt" || -f "$tgt" ]] || die "vault blob missing: $tgt"
+
+  _lock_if_active_blob "$tgt"
+
+  echo "stickllm-vault: erase-setup reason=${reason} blob=${tgt}" >&2
+  logger -t stickllm-vault "erase-setup reason=${reason} time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null || true
+
+  _wipe_and_unlink_blob "$tgt"
+
+  # Key file(s) — start fresh must not leave a stale key pointing at a gone blob.
+  local k
+  for k in "$DATA_MNT/vault.key" "/var/lib/stickllm/vault.key"; do
+    [[ -f "$k" ]] && rm -f "$k" 2>/dev/null || true
+  done
+
+  clear_config_after_destroy "$tgt"
+  # Drop setup marker so wizard can Create or Skip cleanly.
+  rm -f "$SETUP_FILE" 2>/dev/null || true
+  download_policy locked 2>/dev/null || true
+  json_state absent "vault erased in setup (${reason}) — create or skip"
+  echo "Vault erased (setup): $tgt"
+  echo "Cleared: blob, vault.key, vault-meta, location/setup pointers when pointed here."
+  echo "Kept: sibling models/, STICKLLM-DATA models, USB settings LUKS, pairing."
+}
+
 cmd_destroy() {
   # Delete ONE StickLLM vault blob file. Never formats disks / host partitions.
   # Survives: sibling <root>/models/, STICKLLM-DATA models, USB settings LUKS
@@ -3066,31 +3159,9 @@ cmd_destroy() {
   need_root
   confirm_phrase "DELETE_VAULT" "Type DELETE_VAULT to permanently erase this vault blob: "
 
-  local raw="${1:-}"
-  local tgt="" root=""
-  if [[ -n "$raw" ]]; then
-    is_block_device_path "$raw" && die "refusing block device path — delete only stickllm-vault.img"
-    if [[ -f "$raw" ]]; then
-      tgt="$(readlink -f "$raw" 2>/dev/null || printf '%s' "$raw")"
-      root="$(dirname "$tgt")"
-    elif [[ -d "$raw" ]]; then
-      root="$(readlink -f "$raw" 2>/dev/null || printf '%s' "$raw")"
-      tgt="$root/$BLOB_NAME"
-    else
-      die "usage: destroy [dir|stickllm-vault.img]  (passcode via STICKLLM_VAULT_PASS)"
-    fi
-  else
-    tgt="$(vault_target || true)"
-    [[ -n "$tgt" ]] || die "no vault configured — pass a path to stickllm-vault.img"
-    root="$(dirname "$tgt")"
-    if [[ -f "$META_DIR/root" ]]; then
-      root="$(tr -d '\n' <"$META_DIR/root" || printf '%s' "$root")"
-    fi
-  fi
-
-  is_block_device_path "$tgt" && die "refusing block device — delete only the vault file blob"
+  _resolve_destroy_target "${1:-}"
+  local tgt="$_DESTROY_TGT"
   [[ -f "$tgt" ]] || die "vault blob missing: $tgt"
-  [[ "$(basename "$tgt")" == "$BLOB_NAME" || "$tgt" == *.img ]] || die "refusing unexpected blob name (want $BLOB_NAME)"
   cryptsetup isLuks "$tgt" >/dev/null 2>&1 || die "not a LUKS vault blob: $tgt"
 
   local pass="${STICKLLM_VAULT_PASS:-}"
@@ -3107,22 +3178,10 @@ cmd_destroy() {
   fi
   unset pass
 
-  # If this blob is the open vault, reuse clean lock teardown (addons stop + umount).
-  local active=""
-  active="$(vault_target 2>/dev/null || true)"
-  if is_mounted || mapper_open; then
-    if [[ -z "$active" || "$(readlink -f "$active" 2>/dev/null || printf '%s' "$active")" == "$(readlink -f "$tgt" 2>/dev/null || printf '%s' "$tgt")" ]]; then
-      cmd_lock || die "could not lock/umount vault before delete"
-    fi
-  fi
+  _lock_if_active_blob "$tgt"
 
   echo "stickllm-vault: destroying vault blob file only: $tgt" >&2
-  # Header wipe then unlink — never wipefs/partition/format the parent FS.
-  cryptsetup luksErase --batch-mode "$tgt" 2>/dev/null \
-    || dd if=/dev/zero of="$tgt" bs=1M count=16 conv=notrunc status=none 2>/dev/null \
-    || true
-  rm -f "$tgt" || die "could not remove vault blob (file still present)"
-  [[ ! -e "$tgt" ]] || die "vault blob still present after delete"
+  _wipe_and_unlink_blob "$tgt"
 
   clear_config_after_destroy "$tgt"
   download_policy locked 2>/dev/null || true
@@ -3321,6 +3380,7 @@ main() {
     unlock) cmd_unlock "$@" ;;
     lock) cmd_lock "$@" ;;
     destroy|delete|delete-vault) cmd_destroy "$@" ;;
+    erase-setup|erase_setup) cmd_erase_setup "$@" ;;
     ui-mount-status|ui-ns) cmd_ui_mount_status ;;
     ui-refresh) cmd_ui_refresh ;;
     ensure-addons) cmd_ensure_addons ;;

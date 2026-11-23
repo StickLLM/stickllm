@@ -10,12 +10,12 @@ NVIDIA firmware / `.run` files / prebuilt patched `nvidia.ko` stay **out of the 
 
 `release/v0.8.2`
 
-### Rolling slots after v0.8.2 ships
+### Rolling slots (current)
 
 | Slot | Tag |
 | --- | --- |
-| **N** | `v0.8.2` |
-| **N-1** | `v0.8.1` |
+| **N** | `v0.8.3` |
+| **N-1** | `v0.8.2` |
 | **Golden** | `v0.2.0` (unchanged) |
 
 ---
