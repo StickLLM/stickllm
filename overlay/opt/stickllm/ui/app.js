@@ -3379,12 +3379,34 @@ function hardwarePool() {
   }
   return hwInfo;
 }
+function isNinferModel(m) {
+  if (!m) return false;
+  if (String(m.format || "").toLowerCase() === "ninfer") return true;
+  if (m.engine === "ninfer-all" || m.source === "ninfer") return true;
+  if (/\.ninfer$/i.test(String(m.file || m.path || m.id || ""))) return true;
+  return false;
+}
 function fitOf(m) {
   const hw = hardwarePool();
   const gb = modelGb(m) || Number(m.min_vram_gb || 0) || 4;
-  const kvMul = { f16: 1, q8: 0.53, q4: 0.28 }[state.kv] || 1;
-  const kv = Math.max(0.5, (gb / 8) * (state.mf.ctx / 8192) * kvMul);
-  const need = gb + kv + 1;
+  const ninfer = isNinferModel(m);
+  let kv;
+  let need;
+  let weightForSpill = gb;
+  if (ninfer) {
+    // ISS-082: NInfer MoE packs are not dense GGUF. The old heuristic
+    // need = file_gb + (gb/8)*(ctx/8k) marks qwen36-27b Partial at 32K on a
+    // 24 GB 3090 while lab Load at 96K only uses ~22.5 GB VRAM.
+    // Weights ≈ pack size; KV grows ~1.8 GiB per 32K (calibrated to that lab).
+    const w = Math.max(1, gb * 1.05);
+    kv = Math.max(0.5, (state.mf.ctx / 32768) * 1.8);
+    need = w + kv + 0.5;
+    weightForSpill = w;
+  } else {
+    const kvMul = { f16: 1, q8: 0.53, q4: 0.28 }[state.kv] || 1;
+    kv = Math.max(0.5, (gb / 8) * (state.mf.ctx / 8192) * kvMul);
+    need = gb + kv + 1;
+  }
   const vk = hw.backend === "vulkan";
   // Vulkan plans one card (no cross-card split): the pool is that card's VRAM.
   const pool = vk ? (Number(hw.vramEach) || Number(hw.vram) || 0) : (Number(hw.vram) || 0);
@@ -3393,7 +3415,8 @@ function fitOf(m) {
   const ram = Number(hw.ram) || 0;
   const size = fitGb(need);
   // 0.5.6 RAM check: whatever does not fit in VRAM runs from system RAM.
-  const spill = Math.max(0, gb * 1.1 - pool);
+  // NInfer serve keeps the pack on GPU — do not paint Partial from GGUF offload math.
+  const spill = ninfer ? Math.max(0, need - pool) : Math.max(0, weightForSpill * 1.1 - pool);
   const ramShort = ram > 0 && spill > 0 && spill + 1 > ram;
   const ramNote = ramShort ? ` · needs ~${fitGb(spill + 1)} RAM, ${fitGb(ram)} free` : "";
   if (pool > 0 && cards > 1 && each > 0 && need <= each) return { k: "gpu", need, kv, label: `Fits on 1 GPU · ${size}`, cls: "fit-ok" };
@@ -3402,7 +3425,11 @@ function fitOf(m) {
     if (ram > 0 && need + 1.5 <= ram) return { k: "offload", need, kv, label: `CPU only · ${size} in RAM`, cls: "fit-warn" };
     return { k: "no", need, kv, label: ram > 0 ? `Not enough RAM · needs ${size}, ${fitGb(ram)} free` : `Won't fit · needs ${size}`, cls: "fit-no" };
   }
-  if (!ramShort && need <= pool + ram - 2) return { k: "offload", need, kv, label: `Partial · ${fitGb(pool)} in VRAM`, cls: "fit-warn" };
+  if (!ninfer && !ramShort && need <= pool + ram - 2) return { k: "offload", need, kv, label: `Partial · ${fitGb(pool)} in VRAM`, cls: "fit-warn" };
+  if (ninfer && !ramShort && need > pool && need <= pool + 1.5) {
+    // Near ceiling: warn but do not claim GGUF-style CPU offload.
+    return { k: "offload", need, kv, label: `Tight on VRAM · ~${size}`, cls: "fit-warn" };
+  }
   return { k: "no", need, kv, label: ramShort ? `Won't fit${ramNote}` : `Won't fit · needs ${size}`, cls: "fit-no" };
 }
 function visionTag(m, id) {
