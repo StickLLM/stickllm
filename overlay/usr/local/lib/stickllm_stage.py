@@ -20,6 +20,10 @@ MIN_STAGE_BYTES = int(float(os.environ.get("STICKLLM_STAGE_MIN_GB", "2")) * (102
 # Keep headroom for OS + KV / activations after the copy / under pressure.
 HEADROOM_BYTES = int(float(os.environ.get("STICKLLM_STAGE_HEADROOM_GB", "10")) * (1024**3))
 PROGRESS = RUN / "stage-progress.json"
+RAM_BUSY = RUN / "ram-busy.json"
+USB_DRAIN = RUN / "usb-drain.json"
+USB_DRAIN_PID = RUN / "usb-drain.pid"
+USB_DRAIN_STOP = RUN / "usb-drain.stop"
 
 
 def _mem_available() -> int:
@@ -312,7 +316,533 @@ def path_on_usb(path: Path) -> bool:
     return False
 
 
+def can_land_download(need_bytes: int) -> tuple[bool, Path | None, str]:
+    """ISS-070: can the download land in tmpfs (and still persist to USB)?
+
+    When True, caller should write the primary download into the returned dir and
+    mirror a durable copy onto the USB models folder — avoiding USB-at-100% on
+    download and again on a later USB→RAM stage.
+    """
+    # ISS-071: soft-lock — another ram+usb / stage Load owns the headroom window.
+    busy = ram_busy_status()
+    if busy.get("held"):
+        return False, None, f"ram-busy:{busy.get('reason') or 'held'}"
+    need = max(int(need_bytes or 0), MIN_STAGE_BYTES)
+    avail = _mem_available()
+    want = need + HEADROOM_BYTES
+    if avail < want:
+        return False, None, f"low-ram need={want} avail={avail}"
+    d = stage_dir_for(need)
+    fs_free = _fs_free(d)
+    if fs_free < need:
+        return False, None, f"low-tmpfs need={need} free={fs_free} dir={d}"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return False, None, f"mkdir-failed:{e}"
+    return True, d, f"ok need={need} avail={avail} dir={d}"
+
+
+def ram_busy_status() -> dict:
+    """ISS-071 soft RAM-busy lock status."""
+    try:
+        raw = json.loads(RAM_BUSY.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and raw.get("held"):
+            return raw
+    except Exception:
+        pass
+    return {"held": False}
+
+
+def acquire_ram_busy(reason: str, *, owner: str = "") -> tuple[bool, str]:
+    """Acquire soft lock for ram+usb download / stage Load. Same owner may re-enter."""
+    RUN.mkdir(parents=True, exist_ok=True)
+    cur = ram_busy_status()
+    if cur.get("held"):
+        if owner and str(cur.get("owner") or "") == owner:
+            return True, "reentrant"
+        return False, f"busy:{cur.get('reason') or cur.get('owner') or 'held'}"
+    doc = {
+        "held": True,
+        "reason": reason or "ram-busy",
+        "owner": owner or "",
+        "since": int(time.time()),
+    }
+    try:
+        tmp = RAM_BUSY.with_suffix(".tmp")
+        tmp.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o666)
+        except OSError:
+            pass
+        tmp.replace(RAM_BUSY)
+        try:
+            os.chmod(RAM_BUSY, 0o666)
+        except OSError:
+            pass
+    except OSError as e:
+        return False, str(e)
+    return True, "acquired"
+
+
+def release_ram_busy(*, owner: str = "", force: bool = False) -> dict:
+    """Release soft RAM-busy lock (ISS-071)."""
+    cur = ram_busy_status()
+    if not cur.get("held"):
+        try:
+            RAM_BUSY.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {"ok": True, "released": False, "reason": "not-held"}
+    if owner and not force and str(cur.get("owner") or "") not in ("", owner):
+        return {"ok": False, "released": False, "reason": "owner-mismatch", "held_by": cur.get("owner")}
+    try:
+        RAM_BUSY.unlink(missing_ok=True)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "released": True, "was": cur}
+
+
+def reserve_stage_file(path: Path, size: int) -> dict:
+    """ISS-071: pre-size (fallocate) the full artifact on tmpfs so peers cannot steal bytes."""
+    path = Path(path)
+    need = max(0, int(size or 0))
+    out: dict = {"ok": False, "path": str(path), "bytes": need}
+    if need <= 0:
+        out["ok"] = True
+        out["reason"] = "noop"
+        return out
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        out["error"] = str(e)
+        return out
+    # If a growing partial already exists, only extend — never shrink progress.
+    try:
+        if path.is_file():
+            cur = path.stat().st_size
+            if cur >= need:
+                out["ok"] = True
+                out["reason"] = "already-sized"
+                out["bytes"] = cur
+                return out
+    except OSError:
+        pass
+    try:
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError as e:
+        out["error"] = str(e)
+        return out
+    try:
+        try:
+            if hasattr(os, "posix_fallocate"):
+                os.posix_fallocate(fd, 0, need)
+            else:
+                os.ftruncate(fd, need)
+        except OSError as e:
+            # Some tmpfs builds reject fallocate — truncate still reserves inode size.
+            try:
+                os.ftruncate(fd, need)
+            except OSError:
+                out["error"] = str(e)
+                return out
+            out["fallback"] = "ftruncate"
+        out["ok"] = True
+        out["reason"] = "reserved"
+        return out
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def usb_drain_status() -> dict:
+    """ISS-073 background USB mirror status."""
+    try:
+        raw = json.loads(USB_DRAIN.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        pass
+    return {}
+
+
+def _write_usb_drain(doc: dict) -> None:
+    RUN.mkdir(parents=True, exist_ok=True)
+    payload = dict(doc)
+    payload["updated"] = int(time.time())
+    tmp = USB_DRAIN.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o666)
+        except OSError:
+            pass
+        tmp.replace(USB_DRAIN)
+        try:
+            os.chmod(USB_DRAIN, 0o666)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def stop_async_usb_drain() -> None:
+    """Signal the drain worker to exit (best-effort)."""
+    try:
+        RUN.mkdir(parents=True, exist_ok=True)
+        USB_DRAIN_STOP.write_text(str(int(time.time())) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        pid = int(USB_DRAIN_PID.read_text(encoding="utf-8").strip())
+    except Exception:
+        pid = 0
+    if pid > 1:
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+
+
+def start_async_usb_drain(
+    src: Path,
+    usb_dir: Path,
+    *,
+    expect_bytes: int = 0,
+    final_name: str | None = None,
+) -> dict:
+    """ISS-073: HF→RAM continues while a background worker drains bytes to USB.
+
+    Watches ``src`` (file or directory). For a directory, drains the largest
+    matching ``*.ninfer`` / ``*.partial`` / ``*.part`` artifact. Copies only
+    newly grown bytes into ``usb_dir/<name>.partial``, then renames to final
+    when the source is complete and ``join``/stop finalizes.
+    """
+    import subprocess
+    import textwrap
+
+    src = Path(src)
+    usb_dir = Path(usb_dir)
+    out: dict = {"ok": False, "src": str(src), "usb_dir": str(usb_dir)}
+    try:
+        usb_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        out["error"] = str(e)
+        return out
+    # Replace any prior drain.
+    stop_async_usb_drain()
+    try:
+        USB_DRAIN_STOP.unlink(missing_ok=True)
+    except OSError:
+        pass
+    name = final_name or (src.name if src.is_file() else "")
+    _write_usb_drain(
+        {
+            "state": "starting",
+            "src": str(src),
+            "usb_dir": str(usb_dir),
+            "final_name": name,
+            "expect_bytes": int(expect_bytes or 0),
+            "bytes_done": 0,
+        }
+    )
+    worker = textwrap.dedent(
+        r"""
+        import json, os, time
+        from pathlib import Path
+
+        RUN = Path(os.environ.get("STICKLLM_RUN", "/run/stickllm"))
+        SRC = Path(os.environ["STICKLLM_DRAIN_SRC"])
+        USB = Path(os.environ["STICKLLM_DRAIN_USB"])
+        EXPECT = int(os.environ.get("STICKLLM_DRAIN_EXPECT") or 0)
+        FINAL_NAME = (os.environ.get("STICKLLM_DRAIN_NAME") or "").strip()
+        STATE = RUN / "usb-drain.json"
+        STOP = RUN / "usb-drain.stop"
+        PIDF = RUN / "usb-drain.pid"
+        CHUNK = 8 * 1024 * 1024
+
+        def write(doc):
+            doc = dict(doc)
+            doc["updated"] = int(time.time())
+            tmp = STATE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+            tmp.replace(STATE)
+
+        def pick_src():
+            if SRC.is_file():
+                return SRC
+            if not SRC.is_dir():
+                return None
+            best = None
+            best_sz = -1
+            for p in SRC.iterdir():
+                if not p.is_file():
+                    continue
+                n = p.name.lower()
+                if not (
+                    n.endswith(".ninfer")
+                    or n.endswith(".partial")
+                    or n.endswith(".part")
+                    or n.endswith(".gguf")
+                    or ".ninfer." in n
+                ):
+                    continue
+                try:
+                    sz = p.stat().st_size
+                except OSError:
+                    continue
+                if sz > best_sz:
+                    best = p
+                    best_sz = sz
+            return best
+
+        def final_for(src_path: Path) -> Path:
+            name = FINAL_NAME
+            if not name:
+                name = src_path.name
+                for suf in (".partial", ".part"):
+                    if name.endswith(suf):
+                        name = name[: -len(suf)]
+                        break
+            return USB / name
+
+        try:
+            PIDF.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+        copied = 0
+        dest_partial = None
+        src_path = None
+        finalize = False
+        write({"state": "draining", "src": str(SRC), "usb_dir": str(USB),
+               "expect_bytes": EXPECT, "bytes_done": 0, "final_name": FINAL_NAME})
+
+        while True:
+            if STOP.is_file():
+                finalize = True
+            src_path = pick_src()
+            if src_path is None:
+                if finalize:
+                    break
+                time.sleep(1.0)
+                continue
+            dest_final = final_for(src_path)
+            dest_partial = Path(str(dest_final) + ".partial")
+            try:
+                src_sz = src_path.stat().st_size
+            except OSError:
+                time.sleep(0.5)
+                continue
+            # Already complete on USB?
+            try:
+                if dest_final.is_file() and dest_final.stat().st_size == src_sz and src_sz > 0:
+                    # Prefer exact match when source looks finished (no .partial/.part).
+                    if not src_path.name.endswith((".partial", ".part")):
+                        write({"state": "done", "src": str(src_path), "usb_dir": str(USB),
+                               "path": str(dest_final), "bytes_done": src_sz,
+                               "expect_bytes": EXPECT, "final_name": dest_final.name})
+                        break
+            except OSError:
+                pass
+            try:
+                if dest_partial.is_file():
+                    copied = dest_partial.stat().st_size
+                else:
+                    copied = 0
+            except OSError:
+                copied = 0
+            if src_sz > copied:
+                try:
+                    with src_path.open("rb") as inf, dest_partial.open("ab" if copied else "wb") as out:
+                        inf.seek(copied)
+                        while True:
+                            if STOP.is_file():
+                                finalize = True
+                            buf = inf.read(CHUNK)
+                            if not buf:
+                                break
+                            out.write(buf)
+                            copied += len(buf)
+                            if copied % (64 * 1024 * 1024) < CHUNK:
+                                try:
+                                    out.flush()
+                                    os.fsync(out.fileno())
+                                except OSError:
+                                    pass
+                            write({"state": "draining", "src": str(src_path), "usb_dir": str(USB),
+                                   "partial": str(dest_partial), "bytes_done": copied,
+                                   "src_bytes": src_sz, "expect_bytes": EXPECT,
+                                   "final_name": dest_final.name})
+                except OSError as e:
+                    write({"state": "error", "error": str(e), "bytes_done": copied,
+                           "src": str(src_path), "usb_dir": str(USB)})
+                    time.sleep(1.0)
+                    continue
+            # Finalize when source is complete (not a partial name) and sizes match.
+            src_done = not src_path.name.endswith((".partial", ".part"))
+            if (finalize or src_done) and src_sz > 0 and copied >= src_sz:
+                try:
+                    with dest_partial.open("rb+") as out:
+                        out.flush()
+                        os.fsync(out.fileno())
+                except OSError:
+                    pass
+                try:
+                    dest_partial.replace(dest_final)
+                    try:
+                        os.chmod(dest_final, 0o644)
+                    except OSError:
+                        pass
+                    write({"state": "done", "src": str(src_path), "usb_dir": str(USB),
+                           "path": str(dest_final), "bytes_done": copied,
+                           "expect_bytes": EXPECT, "final_name": dest_final.name})
+                    break
+                except OSError as e:
+                    write({"state": "error", "error": str(e), "bytes_done": copied,
+                           "src": str(src_path), "usb_dir": str(USB)})
+                    if finalize:
+                        break
+            if finalize and src_sz > 0 and copied >= src_sz:
+                break
+            time.sleep(0.75)
+
+        try:
+            STOP.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            PIDF.unlink(missing_ok=True)
+        except OSError:
+            pass
+        """
+    )
+    env = os.environ.copy()
+    env["STICKLLM_DRAIN_SRC"] = str(src)
+    env["STICKLLM_DRAIN_USB"] = str(usb_dir)
+    env["STICKLLM_DRAIN_EXPECT"] = str(int(expect_bytes or 0))
+    env["STICKLLM_DRAIN_NAME"] = name or ""
+    env["STICKLLM_RUN"] = str(RUN)
+    try:
+        proc = subprocess.Popen(
+            ["python3", "-c", worker],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
+        try:
+            USB_DRAIN_PID.write_text(str(proc.pid) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+        out["ok"] = True
+        out["pid"] = proc.pid
+        out["state"] = "started"
+        return out
+    except OSError as e:
+        out["error"] = str(e)
+        _write_usb_drain({"state": "error", "error": str(e)})
+        return out
+
+
+def join_async_usb_drain(*, timeout: float = 3600.0) -> dict:
+    """Stop growth watch and wait for USB drain to finish / catch up (ISS-073)."""
+    stop_async_usb_drain()
+    # Re-create stop flag (stop_async may have signaled already).
+    try:
+        RUN.mkdir(parents=True, exist_ok=True)
+        USB_DRAIN_STOP.write_text(str(int(time.time())) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    deadline = time.time() + max(5.0, float(timeout))
+    last: dict = {}
+    while time.time() < deadline:
+        last = usb_drain_status()
+        st = str(last.get("state") or "")
+        if st in ("done", "error", ""):
+            break
+        # Worker gone?
+        alive = False
+        try:
+            pid = int(USB_DRAIN_PID.read_text(encoding="utf-8").strip())
+            if pid > 1:
+                os.kill(pid, 0)
+                alive = True
+        except Exception:
+            alive = False
+        if not alive and st not in ("starting", "draining"):
+            break
+        if not alive:
+            # Process exited without state flip — treat empty as idle.
+            if st in ("", "starting"):
+                break
+            # Give one more second for final state write.
+            time.sleep(1.0)
+            last = usb_drain_status()
+            break
+        time.sleep(0.5)
+    try:
+        USB_DRAIN_STOP.unlink(missing_ok=True)
+    except OSError:
+        pass
+    last = usb_drain_status() or last
+    last["ok"] = str(last.get("state") or "") == "done"
+    return last
+
+
+def persist_staged_to_usb(staged: Path, usb_dir: Path) -> dict:
+    """Copy a completed staged file (and GGUF siblings) onto the durable USB dir."""
+    import shutil
+
+    out: dict = {"ok": False, "copied": [], "usb_dir": str(usb_dir)}
+    staged = Path(staged)
+    usb_dir = Path(usb_dir)
+    if not staged.is_file():
+        out["error"] = "missing staged"
+        return out
+    try:
+        usb_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        out["error"] = str(e)
+        return out
+    for p in sibling_parts(staged):
+        dest = usb_dir / p.name
+        try:
+            if dest.is_file() and dest.stat().st_size == p.stat().st_size:
+                out["copied"].append(str(dest))
+                continue
+            tmp = Path(str(dest) + ".partial")
+            shutil.copyfile(p, tmp)
+            try:
+                with tmp.open("rb+") as fh:
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except OSError:
+                pass
+            tmp.replace(dest)
+            try:
+                os.chmod(dest, 0o644)
+            except OSError:
+                pass
+            out["copied"].append(str(dest))
+        except OSError as e:
+            out["error"] = str(e)
+            return out
+    out["ok"] = True
+    out["path"] = str(usb_dir / staged.name)
+    return out
+
+
 def should_stage(path: Path) -> tuple[bool, str]:
+    busy = ram_busy_status()
+    if busy.get("held") and "load" not in str(busy.get("reason") or "").lower():
+        # Allow Load that already owns the lock; refuse competing stage.
+        if "download" in str(busy.get("reason") or "").lower() or "ram+usb" in str(
+            busy.get("reason") or ""
+        ):
+            return False, f"ram-busy:{busy.get('reason')}"
     if not path.is_file():
         return False, "missing"
     try:
@@ -434,6 +964,26 @@ def stage_model_to_ram(path: str | Path) -> dict:
         result["reason"] = "stat-failed"
         return result
 
+    # Already in tmpfs (ISS-070 download landed here) — no USB re-read.
+    if _path_is_staged(src):
+        STAGE_DIR = src.parent
+        free_stage(keep={p.name for p in parts}, reason="already-ram")
+        _write_progress(
+            {
+                "state": "done",
+                "phase": "staged",
+                "percent": 100,
+                "bytes_done": total,
+                "bytes_total": total,
+                "path": str(src),
+                "note": "download already in RAM",
+            }
+        )
+        result["staged"] = True
+        result["path"] = str(src)
+        result["reason"] = "already-ram"
+        return result
+
     # Prefer an already-complete RAM copy in any tmpfs (download stage or prior Load).
     existing = find_existing_staged(parts)
     if existing is not None:
@@ -470,6 +1020,12 @@ def stage_model_to_ram(path: str | Path) -> dict:
         if "low-ram" in reason or "low-tmpfs" in reason:
             reclaim_if_low_ram(force=False)
         return result
+    # ISS-071: soft-lock the stage/Load window so a ram+usb download cannot race.
+    got, why = acquire_ram_busy("stage-load", owner=f"stage:{src.name}")
+    if not got:
+        result["reason"] = f"ram-busy:{why}"
+        result["ok"] = False
+        return result
     STAGE_DIR = stage_dir_for(total)
     # Make room: drop other staged models (keep only this set once copy starts).
     reclaim_if_low_ram(need_extra=total, force=False)
@@ -492,6 +1048,7 @@ def stage_model_to_ram(path: str | Path) -> dict:
                 "caption": "Already in RAM — loading…",
             }
         )
+        release_ram_busy(owner=f"stage:{src.name}")
         result.update(
             {
                 "staged": True,
@@ -503,6 +1060,7 @@ def stage_model_to_ram(path: str | Path) -> dict:
         return result
     ok, reason = should_stage(src)
     if not ok:
+        release_ram_busy(owner=f"stage:{src.name}", force=True)
         result["reason"] = reason
         return result
     STAGE_DIR = stage_dir_for(total)
@@ -527,6 +1085,7 @@ def stage_model_to_ram(path: str | Path) -> dict:
                     "caption": "Already in RAM — loading…",
                 }
             )
+            release_ram_busy(owner=f"stage:{src.name}")
             result.update({"staged": True, "path": str(dest_main), "reused": True, "reason": "reused"})
             return result
     except OSError:
@@ -576,6 +1135,7 @@ def stage_model_to_ram(path: str | Path) -> dict:
             tmp.replace(dest)
     except OSError as e:
         clear_progress()
+        release_ram_busy(owner=f"stage:{src.name}", force=True)
         result.update({"ok": False, "error": str(e), "path": str(src), "reason": f"copy-failed:{e}"})
         return result
 
@@ -591,6 +1151,9 @@ def stage_model_to_ram(path: str | Path) -> dict:
             "caption": "Copied to RAM — loading into GPU…",
         }
     )
+    # Load path keeps the soft-lock until activate finishes / Unload; release here
+    # only when we are not handing off to an engine Load (caller may re-acquire).
+    release_ram_busy(owner=f"stage:{src.name}")
     result.update({"staged": True, "path": str(dest_main), "bytes": total, "reason": "copied"})
     return result
 

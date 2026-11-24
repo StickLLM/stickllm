@@ -1,3 +1,23 @@
+## Unreleased (→ v0.8.9)
+
+Must-bake checklist: [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
+
+- **NInfer VRAM-ceiling warn (follow-on ISS-072).** Optional Advanced warn when requested context is near GPU VRAM capacity (host MemAvailable can still pass 128K while 3090/27B fails).
+
+## 0.8.8 - NInfer status/queue + RAM land + async USB + context guard
+
+Must-bake from [docs/NEXT-0.8.8.md](docs/NEXT-0.8.8.md). **ISO** `c5aa2305…`.
+
+- **NInfer false “loading Qwen2.5” (ISS-065).** Set default → NInfer no longer paints parked GGUF as loading; tray shows download or none until a `.ninfer` is Loaded.
+- **NInfer false “Downloading Qwen2.5” (ISS-069).** Leftover GGUF `*.partial` no longer invents an active download over a live NInfer pull; Models shows the real NInfer job name.
+- **Download to free RAM + USB persist (ISS-070).** When RAM allows, land downloads in tmpfs and keep a durable USB copy — avoid USB-at-100% on download then again on stage/Load. After RAM verify, Models treats the staged `.ninfer` as installed (Load) while USB copy finishes; UI says Saving to USB, not Download.
+- **RAM spike guard (ISS-071).** After headroom check (`need + ~10 GiB`), reserve full tmpfs size (`fallocate`), soft-lock other heavy Load/stage during ram+usb download/Load, persist USB ASAP, then release.
+- **Pipeline persist (ISS-073).** Async USB mirror during ram+usb download so HF→RAM runs full speed while USB drains in the background; download end ≈ USB caught up, then RAM→GPU. High-ctx Load stays blocked/warned until headroom is safe.
+- **NInfer HF token (ISS-066).** Official NInfer profile downloads export the saved Models HF token (`HF_TOKEN` / hub / StickLLM) for **speed** and gated repos; UI no longer says catalog downloads need no token; Test verifies whoami.
+- **Local timezone on first internet (ISS-067).** Clock sync leaves `Etc/UTC` by geolocating public IP on first uplink (persists IANA zone) — not hard-locked to Eastern or UTC; HTTP Date fallback if drift is large.
+- **NInfer download Stop / Resume (ISS-068).** Downloads queue Stop / Resume / Delete work for NInfer profile pulls (same as GGUF); pause keeps the partial.
+- **NInfer Context slider + Load guard (ISS-072).** Advanced Context under NInfer can move again (catalog `ctx_max` 128K); Load applies `--max-context`/`--kv-capacity` (≥32K). Presets no longer use llama KV VRAM fit for NInfer. Activate refuses while USB persist is busy or MemAvailable cannot cover KV(ctx)+headroom. Guard prefers an existing tmpfs stage so a USB `model_dir` hit does not double-count the file against MemAvailable (fixes false 64K refuse when 27B is already in `/dev/shm`). Refuse copy names **context too large** / try 32K — not a vague “not enough RAM” that sounds like Load is broken.
+
 ## 0.8.7 - USB→RAM stage + NInfer Load/HF + clock NTP
 
 Must-bake from [docs/NEXT-0.8.7.md](docs/NEXT-0.8.7.md).

@@ -79,23 +79,30 @@ NINFER_MODELS_DIR = Path(
 # Legacy lab path — still scanned so already-downloaded .ninfer files show up.
 NINFER_MODELS_DIR_LEGACY = Path("/mnt/stickllm-data/experimental/ninfer-models")
 # Official NInfer-all download-model.sh / run.sh profile ids (not GGUF).
+# Product tune presets go to 128K; NInfer --max-context/--kv-capacity follow
+# Models → Context (floor 32K). Rows must expose ctx_max or the UI slider
+# min=max=32768 and cannot move (ISS-072).
+NINFER_CTX_MAX_DEFAULT = 131072
 NINFER_MODEL_CATALOG: list[dict[str, Any]] = [
     {
         "id": "qwen38-27b",
         "name": "Qwen3.8 27B (NInfer)",
         "approx_size_gb": 19.0,
+        "ctx_max": NINFER_CTX_MAX_DEFAULT,
         "note": "DFlash2 profile; ~19 GiB .ninfer",
     },
     {
         "id": "qwen36-27b",
         "name": "Qwen3.6 27B (NInfer)",
         "approx_size_gb": 16.0,
+        "ctx_max": NINFER_CTX_MAX_DEFAULT,
         "note": "NInfer profile; size varies by pack",
     },
     {
         "id": "qwen36-35b-a3b",
         "name": "Qwen3.6 35B-A3B (NInfer)",
         "approx_size_gb": 22.0,
+        "ctx_max": NINFER_CTX_MAX_DEFAULT,
         "note": "MoE profile; needs ample VRAM",
     },
 ]
@@ -956,6 +963,9 @@ def ninfer_model_dirs(primary: str | Path | None = None) -> list[Path]:
         add(Path(primary))
     add(NINFER_MODELS_DIR)
     add(NINFER_MODELS_DIR_LEGACY)
+    # ISS-070: download may finish in tmpfs before USB persist completes.
+    add(Path("/dev/shm/stickllm-model-stage"))
+    add(Path("/tmp/stickllm/model-stage"))
     return out
 
 
@@ -1032,6 +1042,12 @@ def ninfer_catalog_rows(
                 pass
             seen_paths.add(str(art.resolve()) if art.exists() else str(art))
         selected = bool(active_key and active_key == mid)
+        try:
+            ctx_max = int(entry.get("ctx_max") or entry.get("max_context") or NINFER_CTX_MAX_DEFAULT)
+        except (TypeError, ValueError):
+            ctx_max = NINFER_CTX_MAX_DEFAULT
+        if ctx_max < 32768:
+            ctx_max = NINFER_CTX_MAX_DEFAULT
         rows.append(
             {
                 "id": mid,
@@ -1043,6 +1059,8 @@ def ninfer_catalog_rows(
                 "engine": "ninfer-all",
                 "format": "ninfer",
                 "quant": "ninfer",
+                "ctx_max": ctx_max,
+                "max_context": ctx_max,
                 "recommended": mid == "qwen38-27b",
                 "deletable": installed,
                 "runnable": installed,
@@ -1095,6 +1113,8 @@ def ninfer_catalog_rows(
                     "engine": "ninfer-all",
                     "format": "ninfer",
                     "quant": "ninfer",
+                    "ctx_max": NINFER_CTX_MAX_DEFAULT,
+                    "max_context": NINFER_CTX_MAX_DEFAULT,
                     "recommended": False,
                     "deletable": True,
                     "runnable": True,

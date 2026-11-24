@@ -460,6 +460,38 @@ PY
     write_progress "moving" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "moving into the models folder"
     mv "$TMP" "$DEST"
     chmod 644 "$DEST"
+    # ISS-070/073: primary may be tmpfs; durable copy on USB (async drain preferred).
+    if [[ -n "${STICKLLM_DOWNLOAD_MIRROR:-}" ]]; then
+      mkdir -p "$STICKLLM_DOWNLOAD_MIRROR"
+      MIRROR_DEST="${STICKLLM_DOWNLOAD_MIRROR}/$(basename "$DEST")"
+      write_progress "moving" "$f" "$BYTES_BEFORE" "$TOTAL_BYTES" "persisting to USB"
+      DRAINED=0
+      STICKLLM_DRAIN_JOIN=1 STICKLLM_DRAIN_DEST="$DEST" STICKLLM_DRAIN_MIRROR="$MIRROR_DEST" python3 - <<'PY' && DRAINED=1 || true
+import importlib.util, os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ss", "/usr/local/lib/stickllm_stage.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+dest = Path(os.environ["STICKLLM_DRAIN_DEST"])
+mirror = Path(os.environ["STICKLLM_DRAIN_MIRROR"])
+joined = {}
+if hasattr(m, "join_async_usb_drain"):
+    joined = m.join_async_usb_drain(timeout=7200) or {}
+ok = bool(joined.get("ok")) and mirror.is_file() and mirror.stat().st_size == dest.stat().st_size
+if not ok and hasattr(m, "persist_staged_to_usb"):
+    out = m.persist_staged_to_usb(dest, mirror.parent)
+    ok = bool(out.get("ok"))
+raise SystemExit(0 if ok else 1)
+PY
+      if [[ "$DRAINED" -ne 1 ]]; then
+        cp -a "$DEST" "$MIRROR_DEST"
+        chmod 644 "$MIRROR_DEST" 2>/dev/null || true
+      fi
+      if [[ -f "${DEST}.stickllm.json" ]]; then
+        cp -a "${DEST}.stickllm.json" "${MIRROR_DEST}.stickllm.json" 2>/dev/null || true
+      fi
+      echo "Persisted durable copy → $MIRROR_DEST"
+    fi
     SZ="$(stat -c%s "$DEST" 2>/dev/null || echo 0)"
     BYTES_BEFORE=$((BYTES_BEFORE + SZ))
     echo "OK sha256 $f"
@@ -475,6 +507,19 @@ if [[ -n "$FIRST" ]]; then
 fi
 
 [[ "$BYTES_BEFORE" -gt 0 ]] || BYTES_BEFORE="$TOTAL_BYTES"
+# ISS-071: release soft RAM-busy lock acquired by control for ram+usb land.
+STICKLLM_RAM_BUSY_OWNER="${STICKLLM_RAM_BUSY_OWNER:-}" python3 - <<'PY' || true
+import importlib.util, os
+owner = (os.environ.get("STICKLLM_RAM_BUSY_OWNER") or "").strip()
+try:
+    spec = importlib.util.spec_from_file_location("ss", "/usr/local/lib/stickllm_stage.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    if hasattr(m, "release_ram_busy"):
+        m.release_ram_busy(owner=owner, force=True)
+except Exception:
+    pass
+PY
 # 0.6.2: "done" stays until the queue/UI has read it (no idle reset).
 write_progress "done" "$FIRST" "$BYTES_BEFORE" "$BYTES_BEFORE" "complete"
 echo "Downloaded and verified. Activate from the Models page to load."

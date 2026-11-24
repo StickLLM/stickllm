@@ -14,27 +14,27 @@ Keep the **last two** recoverable ships (**N** and **N-1**) plus Drive golden fo
 Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship):
 
 - **Golden (forever):** `v0.2.0` / Drive ISO / `checksums/v0.2.sha256` (`4914087d…`)
-- **N-1:** `v0.8.5` / Drive + `out/v0.8.5/` / `checksums/v0.8.5.sha256` (`a7555511…`)
-- **N:** `v0.8.6` / Drive + `out/v0.8.6/` / `checksums/v0.8.6.sha256` (`17d096c0…`)
+- **N-1:** `v0.8.7` / Drive + `out/v0.8.7/` / `checksums/v0.8.7.sha256` (`5e554919…`)
+- **N:** `v0.8.8` / Drive + `out/v0.8.8/` / `checksums/v0.8.8.sha256` (`c5aa2305…`)
 
-Older public/local ships (`v0.8.4`, `v0.8.3`, `v0.8.2`, `v0.8.1`, …) are **outside** the rolling window. Tags/checksums may remain; local `out/` / Drive ISOs for those may be removed after N advances again. **Never** delete or overwrite Drive golden **v0.2.0**.
+Older public/local ships (`v0.8.6`, `v0.8.5`, `v0.8.4`, …) are **outside** the rolling window. Tags/checksums may remain; local `out/` / Drive ISOs for those may be removed after N advances again. **Never** delete or overwrite Drive golden **v0.2.0**.
 
-**Do not flash `v0.3.5`** (truncated ISO). Prefer **v0.8.6** (or **v0.8.5** as restore).
+**Do not flash `v0.3.5`** (truncated ISO). Prefer **v0.8.8** (or **v0.8.7** as restore).
 
 ## Never overwrite
 
-- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.8.5`, `v0.8.6`, or any published shipping tag once cut.
+- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.8.7`, `v0.8.8`, or any published shipping tag once cut.
 - Do **not** change or replace published checksum files once shipped.
 - Do **not** overwrite the Drive / StickLLM-releases **v0.2** ISO artifact (hash `4914087d…`).
-- Do **not** overwrite the Drive **v0.8.5** ISO under the same name if contents differ.
-- Do **not** overwrite the Drive **v0.8.6** ISO under the same name if contents differ.
+- Do **not** overwrite the Drive **v0.8.7** ISO under the same name if contents differ.
+- Do **not** overwrite the Drive **v0.8.8** ISO under the same name if contents differ.
 - Do **not** flash or publish a later build under an existing release name if contents differ.
-- When cutting the next ship after **v0.8.6**, keep N/N-1 tags and their `out/<version>/` ISO directories; drop older slots from the rolling window as needed.
+- When cutting the next ship after **v0.8.8**, keep N/N-1 tags and their `out/<version>/` ISO directories; drop older slots from the rolling window as needed.
 
 ## New work gets new names
 
-- New product work → new tag (`v0.8.7`, `v0.9.0`, …), new `out/<version>/StickLLM-vX.Y.Z.iso`, new checksum file.
-- **Naming:** v0.3.7+ use exactly `StickLLM-vX.Y.Z.iso` (example: `StickLLM-v0.8.6.iso`). Through v0.3.6, published files stay `stickllm-amd-rtx3090-v….hybrid.iso` — never rename or rewrite those.
+- New product work → new tag (`v0.8.9`, `v0.9.0`, …), new `out/<version>/StickLLM-vX.Y.Z.iso`, new checksum file.
+- **Naming:** v0.3.7+ use exactly `StickLLM-vX.Y.Z.iso` (example: `StickLLM-v0.8.8.iso`). Through v0.3.6, published files stay `stickllm-amd-rtx3090-v….hybrid.iso` — never rename or rewrite those.
 - Rebuilds of an older line → distinct `out/` path; never overwrite a shipping ISO name. Compare hash to the shipping checksum; report bit-identical if equal.
 - WIP / abandoned experiments → branch only (`wip/…`); never replace a shipping tag or Drive ISO.
 

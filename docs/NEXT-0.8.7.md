@@ -1,44 +1,48 @@
-# Pending for v0.8.7
+# v0.8.7 — SHIPPED
 
-Post-**v0.8.6** punch list. Shipping tag/ISO must be a **new** name
-(`v0.8.7` / `StickLLM-v0.8.7.iso`) — never overwrite `v0.8.6`
-(`17d096c0…`).
+**ISO:** `StickLLM-v0.8.7.iso`  
+**Checksum:** `5e55491903c3340f215e730462ec08d4c508ff91aaf8f2ce8710cdb3c448e8aa` (`checksums/v0.8.7.sha256`)  
+**Tag / tree:** release bake including ISS-044 … ISS-064 (see CHANGELOG 0.8.7).
 
-## Must bake
+This file is **historical**. Do not add new must-bake rows here.
 
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| **NI4** | NInfer downloads in Models Downloads queue (ISS-044) | In tree → bake | Merge `ninfer_download_progress` into `status.download` + `download_queue`; UI poll keeps NInfer catalog; toast points at Downloads. |
-| **NI5** | NInfer Load wording + status parity (ISS-045) | In tree → bake | Use **Load** (not Activate). Card Running only when `:8080` healthy; write `model.env` + A0 `sync-model`; tray **Loading %** like GGUF (USB can take minutes); exp-engine unit drives busy state. |
-| **NI6** | Engine UX parity with llama.cpp (ISS-046) | In tree → bake | Same Download / Load / Unload / tray / A0 follow for NInfer (Strata later). |
-| **SL1** | StickLink QR flash “unavailable” while pairing | In tree → bake | Brief join-URL gap before `connected` showed “StickLink unavailable”; show **Pairing phone…** instead. |
-| **CLK1** | Sync clock from internet when Wi‑Fi is up (ISS-047) | In tree → bake | Wrong RTC → TLS fail (“could not connect”). NTP kick on Wi‑Fi apply + NM up; timesyncd no longer waits on masked wait-online. |
-| **PWR1** | Power off confirm hidden behind Browser (ISS-048) | In tree → bake | Minimise native Browser/Terminal first; use in-desk confirmBox instead of window.confirm. |
-| **SU1** | Setup Open now → Loading… feedback (ISS-049) | In tree → bake | Button + status line while starter model activate runs. |
-| **EX1** | Experimental settings survive reboot on same PC (ISS-050) | In tree → bake | DATA bind-mount + machine-id: same host keep NInfer/unlock; other host → defaults. |
-| **DL1** | Warn-but-allow downloads under NInfer (ISS-051) | In tree → bake | No more hard `unknown NInfer model`; GGUF (Inkling) warns then queues; unlisted NInfer ids warn then try. |
-| **SR1** | HF search / pills under NInfer must not show GGUF as NInfer (ISS-052) | In tree → bake | Engine-filtered catalog + search; trust filters same as GGUF path. |
-| **ST1** | USB→RAM stage before Load / after Download (ISS-053) | In tree → bake (lab-hotfixed) | `stickllm_stage.py`: copy to `/tmp` or `/dev/shm` (not `/run`); status bar %; free on Unload/switch/low MemAvailable; never mlock. GGUF + NInfer. **Reuse complete staged file across mounts** (do not re-copy USB→`/tmp` when `/dev/shm` already has it). Gateway activate timeout **7200s** (was 180s — wiped Loading UI mid-copy). Status chip keeps **Copying from USB to RAM…** from `health.stage` even if activate returns/times out. |
-| **CTX1** | NInfer hard 32K context floor (ISS-054) | In tree → bake | `ninfer-serve --max-context/--kv-capacity ≥32768`; A0 presets `ctx_length`/`context_length` 32768. Bare NInfer default 8192 caused LiteLLM `context_length_exceeded`. |
-| **A01** | A0 model id match NInfer (ISS-055) | In tree → bake | Normalize `qwen36-27b` ↔ `qwen3.6-27b`; sync util/chat to `/v1/models` id (not leftover `stickllm`). |
-| **A02** | A0 LiteLLM host.docker.internal broken on bridge (ISS-056) | In tree → bake | Patch providers → `172.30.0.1`; docker `--add-host host.docker.internal:host-gateway`. |
-| **A03** | A0 vision from `/v1/models` modalities (ISS-057) | In tree → bake | Do not force vision=true for every NInfer; read modalities. |
-| **TU1** | Same Models Context + Advanced for every engine that supports them (ISS-058) | In tree → bake (lab-hotfixed) | Show `#localTune` under NInfer. Context → `--max-context`/`--kv-capacity` via model.env + active-engine (≥32K). KV type greyed (llama-only). Chat sampling knobs still apply. A0 ctx follows live engine (≥32K). |
-| **HF1** | NInfer HF search finds real `.ninfer` models, not only 3 pins (ISS-059) | In tree → bake (lab-hotfixed) | HF search `format=ninfer`; Download via shared queue (`.ninfer` allowed); keep 3 official pins; disk-discovered `.ninfer` listed; Load via find_ninfer_artifact. |
-| **LD1** | Sticky Load under NInfer → experimental activate (ISS-060) | In tree → bake (lab-hotfixed) | Card Load + `#activate` under `ninfer-all` call `loadNinferModel` → `experimental_ninfer_model_activate`. Never llama `model_activate` for `.ninfer` / `hf:` ids (“unknown model”). |
-| **SL2** | StickLink keepalive under load (ISS-061) | In tree → bake | Phone `sess lost: no pong path for 90s` under load. Ingest-path answers ping/pong immediately so heavy `http_req` cannot starve the phone watchdog. |
-| **A04** | A0 syncStore `NO_HANDLERS` over link (ISS-062) | In tree → bake | Gateway rewrites served A0 sync/websocket JS: force `ws_webui` handlers, 20s handshake timeout, process pushes while DEGRADED. Not A0 fork. |
-| **VI1** | Shrink oversized images before A0 vision (ISS-063) | In tree → bake | StickLLM attach-images extension downscales to JPEG ≤1280px before history inject; profile prompt: fail once, no OCR loop. |
-| **AZF1** | A0 work files downloadable on phone (ISS-064) | In tree → bake | Mux: 32 MiB body, no gzip on Content-Disposition attachment / `download_work_dir_file`, 300s bridge timeout, `x-sticklink-download`. |
+## Post-ship (NOT in this ISO)
 
-## Product rules
+Discovered / fixed **after** the v0.8.7 bake → tracked only in **[NEXT-0.8.8.md](NEXT-0.8.8.md)**:
 
-**Engine UX parity with llama.cpp.** Whatever engine is default on `:8080` (llama.cpp, NInfer, Strata), Models should feel the same: Download → queue, **Load** / **Unload**, tray Loading % → model name, A0 follows the loaded id. Internals differ (GGUF vs `.ninfer`, mmproj vs built-in vision); the words and status chrome do not.
+| ISS | Short |
+|-----|--------|
+| ISS-065 | NInfer false “loading Qwen2.5” |
+| ISS-066 | NInfer HF token on profile download |
+| ISS-067 | Timezone from IP on first internet |
+| ISS-068 | NInfer queue Stop / Resume / Delete |
+| ISS-069 | Models “Downloading Qwen2.5” over live NInfer pull |
 
-**Hard 32K context floor** for StickLLM chat + A0 + experimental serve (unless a smaller model truly cannot fit — refuse, do not silently drop to 8K).
+Lab hotfixes of those on a stick running v0.8.7 are **not** part of this ship. Reflash of this ISO loses them.
 
-**Agreed fixes are recorded** in ISSUES + this file + CHANGELOG Unreleased in the same turn — see `.cursor/rules/record-agreed-fixes.mdc`.
+## What shipped in the ISO (ISS-044 … ISS-064)
 
-## Notes
-
-- Vision **mmproj chip** is llama.cpp GGUF-only. NInfer Qwen3.8 vision is built into the `.ninfer` artifact (`--vision`) — no separate download chip.
+| # | Item | Final |
+|---|------|--------|
+| **NI4** | NInfer downloads in Downloads queue (ISS-044) | Shipped in ISO |
+| **NI5** | NInfer Load wording + status (ISS-045) | Shipped in ISO |
+| **NI6** | Engine UX parity pass (ISS-046) | Shipped in ISO (Stop/Resume for official pins incomplete → **ISS-068** on 0.8.8) |
+| **SL1** | StickLink Pairing phone… | Shipped in ISO |
+| **CLK1** | NTP on Wi‑Fi (ISS-047) | Shipped in ISO (timezone geo → **ISS-067**) |
+| **PWR1** | Power off confirm (ISS-048) | Shipped in ISO |
+| **SU1** | Setup Open now Loading (ISS-049) | Shipped in ISO |
+| **EX1** | Experimental host persist (ISS-050) | Shipped in ISO |
+| **DL1** | Soft-gate downloads (ISS-051) | Shipped in ISO |
+| **SR1** | Engine-scoped HF search (ISS-052) | Shipped in ISO |
+| **ST1** | USB→RAM stage (ISS-053) | Shipped in ISO |
+| **CTX1** | NInfer 32K floor (ISS-054) | Shipped in ISO |
+| **A01** | A0 id match (ISS-055) | Shipped in ISO |
+| **A02** | A0 LiteLLM bridge (ISS-056) | Shipped in ISO |
+| **A03** | A0 vision modalities (ISS-057) | Shipped in ISO |
+| **TU1** | Tune panel all engines (ISS-058) | Shipped in ISO |
+| **HF1** | NInfer HF `.ninfer` search (ISS-059) | Shipped in ISO |
+| **LD1** | Sticky Load → ninfer activate (ISS-060) | Shipped in ISO |
+| **SL2** | StickLink keepalive under load (ISS-061) | Shipped in ISO |
+| **A04** | A0 syncStore NO_HANDLERS (ISS-062) | Shipped in ISO |
+| **VI1** | Vision image shrink (ISS-063) | Shipped in ISO |
+| **AZF1** | A0 files on phone (ISS-064) | Shipped in ISO |

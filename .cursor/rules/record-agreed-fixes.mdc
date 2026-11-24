@@ -15,9 +15,27 @@ When the user and agent **agree on a fix** (user confirms, says “yes”, “do
 
 - Chat memory is **not** the record. If it is not in ISSUES + NEXT, it does not exist for bake/hotfix inventory.
 - Do not answer “what’s left?” from conversation alone — read NEXT + ISSUES.
-- Partial hotfixes still get recorded the moment the fix is agreed; mark Status honestly (hotfixed / in tree / agreed).
+- Partial hotfixes still get recorded the moment the fix is agreed; mark Status honestly.
 - New product work after a ship goes on the **next** NEXT file; never overwrite a shipping tag or published ISO name.
+
+## Lab hotfix ≠ ISO (never conflate)
+
+- **Shipped** = in the named ISO + checksum (and Closed in ISSUES for that version).
+- **Lab-hotfixed on vX** = on one stick only; still **Open — bake in vX+1** until a new ISO contains it. Say so in NEXT Truth table.
+- After a version ships: mark that NEXT file **SHIPPED**; move its ISS ids to **Closed**; do not leave “bake in vX” open forever.
+- Do not re-fix a Closed/shipped ISS under the same id — open a **new** ISS if it regresses.
+- Never tell the user a fix is “in this build” unless it is in the flashed ISO checksum.
+
+## Status vocabulary (use exactly)
+
+| Status | Meaning |
+|--------|---------|
+| `Agreed → implement` | Accepted; code not landed |
+| `In tree → bake vX.Y.Z` | Code in git; **not** in a shipping ISO yet |
+| `In tree + lab stick → bake vX.Y.Z` | Also copied onto a running stick; still not in ISO |
+| `Closed — shipped in vX.Y.Z ISO` | In that ISO checksum; done |
 
 ## Current next version
 
-As of post-v0.8.6 work: **v0.8.7** → `docs/NEXT-0.8.7.md`.
+As of post-v0.8.8 ship: **v0.8.9** → `docs/NEXT-0.8.9.md`.
+Shipped in v0.8.8 ISO: **ISS-065 … ISS-073**.

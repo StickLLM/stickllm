@@ -2534,11 +2534,15 @@ def active_model_identity() -> dict:
     if not name and path:
         name = os.path.basename(path)
     # NInfer Load: prefer active-engine model_key when model.env is empty/stale.
+    # Never surface a leftover GGUF (baked Qwen2.5) as "loading" while NInfer is
+    # default with no profile selected — that lied on the status chip/tray.
+    ninfer_default = False
     try:
         _emod = _experimental_mod()
         if _emod is not None and hasattr(_emod, "read_active_engine"):
             _adoc = _emod.read_active_engine() or {}
             if str(_adoc.get("engine") or "") == "ninfer-all":
+                ninfer_default = True
                 key = str(_adoc.get("model_key") or "").strip()
                 if key:
                     mid = mid or key
@@ -2552,9 +2556,15 @@ def active_model_identity() -> dict:
                         art = _emod.find_ninfer_artifact(key, _adoc.get("model_dir"))
                         if art is not None:
                             path = str(art)
+                else:
+                    # No NInfer profile yet — ignore GGUF model.env leftovers.
+                    if not path or str(path).lower().endswith(".gguf"):
+                        path, mid, name = "", "", ""
     except Exception:
         pass
     healthy, health_msg = llama_health_ok()
+    if ninfer_default and not mid and not path:
+        healthy, health_msg = False, "ninfer: no model selected"
     ctx = active_ctx_size()
     out = {
         "path": path,
@@ -3312,6 +3322,13 @@ def maybe_stage_after_download(path: str | Path) -> None:
 
     def _run() -> None:
         try:
+            sm = _stage_mod()
+            # ISS-070: already in tmpfs from download — persist USB, skip USB→RAM.
+            if sm is not None and hasattr(sm, "_path_is_staged") and sm._path_is_staged(p):
+                usb = vault_download_models_dir() or get_preferred_models_dir()
+                if usb is not None and hasattr(sm, "persist_staged_to_usb"):
+                    sm.persist_staged_to_usb(p, Path(usb))
+                return
             reclaim_stage_if_needed()
             stage_model_path(p)
         except Exception:
@@ -3867,6 +3884,14 @@ def experimental_engine_set_default(params: dict | None = None) -> dict:
                 "note": "StickLLM default restored",
             }
         )
+        # Restore parked GGUF model.env if NInfer Set-default moved it aside.
+        env_path = RUN / "model.env"
+        env_gguf_bak = RUN / "model.env.gguf-prev"
+        if env_gguf_bak.is_file() and not env_path.is_file():
+            try:
+                env_gguf_bak.replace(env_path)
+            except OSError:
+                pass
         sh(["systemctl", "stop", "stickllm-exp-engine.service"], timeout=60)
         sh(["systemctl", "reset-failed", "stickllm-exp-engine.service"], timeout=30)
         # Resume llama only when a model is already selected.
@@ -3961,6 +3986,23 @@ def experimental_engine_set_default(params: dict | None = None) -> dict:
         }
     )
 
+    # Park GGUF model.env when switching to NInfer without a selected profile so
+    # tray/health stop saying "loading Qwen2.5…" during engine activate / downloads.
+    env_path = RUN / "model.env"
+    env_gguf_bak = RUN / "model.env.gguf-prev"
+    if engine == "ninfer-all" and not model_key and env_path.is_file():
+        try:
+            text = env_path.read_text(encoding="utf-8", errors="replace")
+            if ".gguf" in text.lower() or "qwen2.5" in text.lower():
+                try:
+                    env_gguf_bak.unlink(missing_ok=True)
+                except TypeError:
+                    if env_gguf_bak.is_file():
+                        env_gguf_bak.unlink()
+                env_path.replace(env_gguf_bak)
+        except OSError:
+            pass
+
     # Free GPU from llama.cpp, then start Experimental engine on the same port.
     sh(["systemctl", "stop", "stickllm-llama.service"], timeout=60)
     sh(["systemctl", "reset-failed", "stickllm-llama.service"], timeout=30)
@@ -4037,16 +4079,73 @@ def experimental_ninfer_model_download(params: dict | None = None) -> dict:
     if not dl_sh.is_file():
         return {"ok": False, "error": "download-model.sh missing in NInfer extract"}
     pref = vault_download_models_dir() or get_preferred_models_dir()
-    model_dir = Path(str(doc.get("model_dir") or "") or (str(pref) if pref else str(mod.NINFER_MODELS_DIR)))
-    model_dir.mkdir(parents=True, exist_ok=True)
-    if hasattr(mod, "find_ninfer_artifact") and mod.find_ninfer_artifact(mid, model_dir) is not None:
+    usb_dir = Path(str(doc.get("model_dir") or "") or (str(pref) if pref else str(mod.NINFER_MODELS_DIR)))
+    usb_dir.mkdir(parents=True, exist_ok=True)
+    # Also treat already-on-USB as done.
+    if hasattr(mod, "find_ninfer_artifact") and mod.find_ninfer_artifact(mid, usb_dir) is not None:
         return {
             "ok": True,
             "already": True,
             "id": mid,
-            "model_dir": str(model_dir),
-            "note": f"{mid} already present in {model_dir}",
+            "model_dir": str(usb_dir),
+            "note": f"{mid} already present in {usb_dir}",
         }
+    # ISS-070: land in free RAM when it fits; persist durable copy to USB on finish.
+    # NEVER switch to RAM if USB already has a substantial .part — that restarts
+    # from 0% and abandons an in-progress USB pull (lab incident 2026-11-23).
+    expect_gb = 19.0
+    for e in list(getattr(mod, "NINFER_MODEL_CATALOG", []) or []):
+        if str(e.get("id") or "") == mid:
+            expect_gb = float(e.get("approx_size_gb") or expect_gb)
+            break
+    need = int(expect_gb * (1024**3))
+    model_dir = usb_dir
+    land = "usb-only"
+    land_note = ""
+    existing_partial = 0
+    try:
+        for p in usb_dir.iterdir():
+            if not p.is_file():
+                continue
+            n = p.name.lower()
+            if not (n.endswith(".part") or n.endswith(".partial") or ".ninfer." in n):
+                continue
+            if mid.replace(".", "").replace("-", "")[:6] not in n.replace(".", "").replace("-", ""):
+                # loose match: qwen36 / qwen3_6
+                if "qwen" not in n and mid.lower() not in n:
+                    continue
+            try:
+                existing_partial = max(existing_partial, p.stat().st_size)
+            except OSError:
+                pass
+    except OSError:
+        existing_partial = 0
+    sm = _stage_mod()
+    if existing_partial >= 256 * 1024 * 1024:
+        land = "usb-only"
+        land_note = f"keep USB partial ({existing_partial} bytes) — do not restart into RAM"
+    elif sm is not None and hasattr(sm, "can_land_download"):
+        ok_land, ram_dir, why = sm.can_land_download(need)
+        land_note = why
+        if ok_land and ram_dir is not None:
+            model_dir = Path(ram_dir)
+            model_dir.mkdir(parents=True, exist_ok=True)
+            land = "ram+usb"
+    # ISS-071: soft-lock + fallocate reserve for ram+usb landing.
+    if land == "ram+usb" and sm is not None:
+        if hasattr(sm, "acquire_ram_busy"):
+            got, why = sm.acquire_ram_busy(f"ram+usb-download:{mid}", owner=f"ninfer-dl:{mid}")
+            if not got:
+                land = "usb-only"
+                model_dir = usb_dir
+                land_note = f"ram-busy-fallback:{why}"
+            elif hasattr(sm, "reserve_stage_file") and need > 0:
+                # Reserve expected bytes under a stable partial name (download grows into it).
+                reserve_path = Path(model_dir) / f"{mid.replace('/', '_')}.ninfer.partial"
+                try:
+                    sm.reserve_stage_file(reserve_path, need)
+                except Exception:
+                    pass
     log = Path("/run/stickllm/ninfer-model-download.log")
     state = Path("/run/stickllm/ninfer-model-download.json")
     try:
@@ -4057,6 +4156,9 @@ def experimental_ninfer_model_download(params: dict | None = None) -> dict:
                     "id": mid,
                     "state": "downloading",
                     "model_dir": str(model_dir),
+                    "usb_dir": str(usb_dir),
+                    "land": land,
+                    "land_note": land_note,
                     "started": int(time.time()),
                 }
             )
@@ -4065,19 +4167,105 @@ def experimental_ninfer_model_download(params: dict | None = None) -> dict:
         )
     except OSError:
         pass
-    # Background: NInfer's own downloader into the shared models dir.
+    # ISS-073: start background USB drain while HF→RAM download runs.
+    if land == "ram+usb" and sm is not None and hasattr(sm, "start_async_usb_drain"):
+        try:
+            sm.start_async_usb_drain(
+                Path(model_dir),
+                Path(usb_dir),
+                expect_bytes=need,
+                final_name=None,
+            )
+        except Exception:
+            pass
+    # Background: NInfer's own downloader (tmpfs when land=ram+usb).
+    # Same HF token as GGUF Downloads queue (faster + gated/uncensored repos).
+    hf_tok = (read_hf_token() or "").strip()
+    hf_exports = ""
+    if hf_tok:
+        # Common env names NInfer / huggingface_hub / curl wrappers honor.
+        q = shlex.quote(hf_tok)
+        hf_exports = (
+            f"export HF_TOKEN={q}\n"
+            f"export HUGGING_FACE_HUB_TOKEN={q}\n"
+            f"export STICKLLM_HF_TOKEN={q}\n"
+        )
+    usb_q = shlex.quote(str(usb_dir))
+    model_q = shlex.quote(str(model_dir))
     wrapper = (
         "#!/bin/bash\n"
         f"cd {shlex.quote(str(root))} || exit 91\n"
-        f"export NINFER_MODEL_DIR={shlex.quote(str(model_dir))}\n"
+        f"export NINFER_MODEL_DIR={model_q}\n"
+        f"{hf_exports}"
         f"./download-model.sh {shlex.quote(mid)} >{shlex.quote(str(log))} 2>&1\n"
         "ec=$?\n"
-        "EC=$ec python3 - <<'PY'\n"
-        "import json, os, time\n"
-        f"p = {str(state)!r}\n"
+        f"LAND={shlex.quote(land)}\n"
+        f"USB_DIR={usb_q}\n"
+        f"MODEL_DIR={model_q}\n"
+        f"OWNER={shlex.quote('ninfer-dl:' + mid)}\n"
+        "EC=$ec LAND=$LAND USB_DIR=$USB_DIR MODEL_DIR=$MODEL_DIR OWNER=$OWNER MID="
+        f"{shlex.quote(mid)} STATE={shlex.quote(str(state))} python3 - <<'PY'\n"
+        "import json, os, time, importlib.util\n"
+        "from pathlib import Path\n"
+        "p = os.environ['STATE']\n"
         "ec = int(os.environ.get('EC', '1'))\n"
-        f"st = {{'id': {mid!r}, 'state': 'done' if ec == 0 else 'failed', "
-        f"'code': ec, 'model_dir': {str(model_dir)!r}, 'finished': int(time.time())}}\n"
+        "mid = os.environ.get('MID', '')\n"
+        "model_dir = os.environ.get('MODEL_DIR', '')\n"
+        "usb_dir = os.environ.get('USB_DIR', '')\n"
+        "land = os.environ.get('LAND', 'usb-only')\n"
+        "owner = os.environ.get('OWNER', '')\n"
+        "prev = {}\n"
+        "try:\n"
+        "    prev = json.loads(open(p, encoding='utf-8').read())\n"
+        "except Exception:\n"
+        "    prev = {}\n"
+        "m = None\n"
+        "try:\n"
+        "    spec = importlib.util.spec_from_file_location('ss', '/usr/local/lib/stickllm_stage.py')\n"
+        "    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "except Exception:\n"
+        "    m = None\n"
+        "if prev.get('paused') or prev.get('state') == 'paused':\n"
+        "    st = dict(prev)\n"
+        "    st['state'] = 'paused'\n"
+        "    st['paused'] = True\n"
+        "    st['code'] = ec\n"
+        "    st['finished'] = int(time.time())\n"
+        "    if m is not None and hasattr(m, 'stop_async_usb_drain'):\n"
+        "        try: m.stop_async_usb_drain()\n"
+        "        except Exception: pass\n"
+        "    if m is not None and hasattr(m, 'release_ram_busy'):\n"
+        "        try: m.release_ram_busy(owner=owner, force=True)\n"
+        "        except Exception: pass\n"
+        "else:\n"
+        "    st = {'id': mid, 'state': 'done' if ec == 0 else 'failed', 'code': ec,\n"
+        "          'model_dir': model_dir, 'usb_dir': usb_dir, 'land': land,\n"
+        "          'finished': int(time.time())}\n"
+        "    if ec == 0 and land == 'ram+usb' and model_dir and usb_dir and m is not None:\n"
+        "        try:\n"
+        "            # ISS-073: finish background drain (download end ≈ USB caught up).\n"
+        "            joined = {}\n"
+        "            if hasattr(m, 'join_async_usb_drain'):\n"
+        "                joined = m.join_async_usb_drain(timeout=7200) or {}\n"
+        "            art = None\n"
+        "            d = Path(model_dir)\n"
+        "            if d.is_dir():\n"
+        "                for pth in d.iterdir():\n"
+        "                    if pth.is_file() and pth.suffix.lower() == '.ninfer':\n"
+        "                        art = pth; break\n"
+        "            if art is not None and not joined.get('ok'):\n"
+        "                # Fallback serial persist if drain missed the final.\n"
+        "                m.persist_staged_to_usb(art, Path(usb_dir))\n"
+        "            elif art is not None and joined.get('ok'):\n"
+        "                # Ensure final USB name exists even if drain used a partial basename.\n"
+        "                usb_final = Path(usb_dir) / art.name\n"
+        "                if not usb_final.is_file():\n"
+        "                    m.persist_staged_to_usb(art, Path(usb_dir))\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "    if m is not None and hasattr(m, 'release_ram_busy'):\n"
+        "        try: m.release_ram_busy(owner=owner, force=True)\n"
+        "        except Exception: pass\n"
         "open(p, 'w', encoding='utf-8').write(json.dumps(st) + '\\n')\n"
         "PY\n"
         "exit $ec\n"
@@ -4089,17 +4277,21 @@ def experimental_ninfer_model_download(params: dict | None = None) -> dict:
     except OSError as e:
         return {"ok": False, "error": f"cannot write download script: {e}"}
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             ["/bin/bash", str(script)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        try:
+            (RUN / "ninfer-model-download.pid").write_text(str(proc.pid) + "\n", encoding="utf-8")
+        except OSError:
+            pass
     except OSError as e:
         return {"ok": False, "error": str(e)}
-    # Persist model_dir on active engine so serve + Models agree.
+    # Durable catalog path stays on USB; download may be writing into tmpfs.
     try:
-        doc["model_dir"] = str(model_dir)
+        doc["model_dir"] = str(usb_dir)
         mod.write_active_engine(doc)
     except Exception:
         pass
@@ -4108,9 +4300,22 @@ def experimental_ninfer_model_download(params: dict | None = None) -> dict:
         "started": True,
         "id": mid,
         "model_dir": str(model_dir),
+        "usb_dir": str(usb_dir),
+        "land": land,
         "log": str(log),
-        "note": f"Downloading {mid} into {model_dir} — progress on Downloads / Models queue.",
+        "hf_token": bool(hf_tok),
+        "note": (
+            f"Downloading {mid} into RAM ({model_dir}); durable copy → {usb_dir}."
+            if land == "ram+usb"
+            else f"Downloading {mid} into {model_dir} — progress on Downloads / Models queue."
+        ),
     }
+    if not hf_tok:
+        out["note"] = (
+            f"Downloading {mid} without a Hugging Face token (slower). "
+            "Save a read token under Models for faster downloads."
+            + (" RAM landing still used." if land == "ram+usb" else "")
+        )
     if warning:
         out["warning"] = warning
         out["unlisted"] = True
@@ -4148,32 +4353,43 @@ def ninfer_download_progress() -> dict:
         running = p.returncode == 0 and bool((p.stdout or "").strip())
     except Exception:
         running = st == "downloading"
-    if st == "downloading" and not running:
-        # Process died without updating state — peek for finished artifact.
-        mod = _experimental_mod()
-        art = None
-        if mod is not None and hasattr(mod, "find_ninfer_artifact"):
-            art = mod.find_ninfer_artifact(mid, model_dir if model_dir.is_dir() else None)
-        if art is not None:
-            st = "done"
-            raw["state"] = "done"
-            raw["finished"] = int(time.time())
+    if st == "paused":
+        running = False
+    elif st == "downloading" and not running:
+        # User Stop → paused: do not treat a killed process as failed.
+        if raw.get("paused"):
+            st = "paused"
+            raw["state"] = "paused"
             try:
                 state_path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
             except OSError:
-                pass
-            try:
-                maybe_stage_after_download(art)
-            except Exception:
                 pass
         else:
-            st = "failed"
-            raw["state"] = "failed"
-            raw["error"] = "download-model.sh exited without a .ninfer artifact"
-            try:
-                state_path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
-            except OSError:
-                pass
+            # Process died without updating state — peek for finished artifact.
+            mod = _experimental_mod()
+            art = None
+            if mod is not None and hasattr(mod, "find_ninfer_artifact"):
+                art = mod.find_ninfer_artifact(mid, model_dir if model_dir.is_dir() else None)
+            if art is not None:
+                st = "done"
+                raw["state"] = "done"
+                raw["finished"] = int(time.time())
+                try:
+                    state_path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+                except OSError:
+                    pass
+                try:
+                    maybe_stage_after_download(art)
+                except Exception:
+                    pass
+            else:
+                st = "failed"
+                raw["state"] = "failed"
+                raw["error"] = "download-model.sh exited without a .ninfer artifact"
+                try:
+                    state_path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+                except OSError:
+                    pass
     elif st == "done":
         # Already marked done by the wrapper — still stage if RAM allows.
         mod = _experimental_mod()
@@ -4231,14 +4447,69 @@ def ninfer_download_progress() -> dict:
     else:
         pct = 0.0
     note = "NInfer profile (same Downloads queue as GGUF)"
+    out_state = st
+    # ISS-073: async drain may be Saving to USB while HF→RAM still runs.
+    try:
+        sm_dr = _stage_mod()
+        if sm_dr is not None and hasattr(sm_dr, "usb_drain_status"):
+            dr = sm_dr.usb_drain_status() or {}
+            if str(dr.get("state") or "") in ("starting", "draining") and st in (
+                "downloading",
+                "done",
+            ):
+                note = "Saving to USB (download landing in RAM) — Load after USB catches up"
+                if st == "done":
+                    out_state = "persisting"
+    except Exception:
+        pass
+    # After RAM verify, wrapper may still be copying to USB (*.ninfer.partial).
+    usb_partial = None
+    usb_dir = Path(str(raw.get("usb_dir") or "") or "")
+    if st == "done" and usb_dir.is_dir():
+        try:
+            for p in usb_dir.iterdir():
+                if p.is_file() and p.name.endswith(".ninfer.partial"):
+                    usb_partial = p
+                    break
+                if p.is_file() and p.name.endswith(".partial") and ".ninfer" in p.name.lower():
+                    usb_partial = p
+                    break
+        except OSError:
+            pass
+    wrapper_alive = False
+    try:
+        wp = subprocess.run(
+            ["pgrep", "-f", "ninfer-model-download.sh"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        wrapper_alive = wp.returncode == 0 and bool((wp.stdout or "").strip())
+    except Exception:
+        wrapper_alive = False
     if st == "failed":
         note = str(raw.get("error") or "NInfer download failed")
+    elif st == "done" and usb_partial is not None and wrapper_alive:
+        out_state = "persisting"
+        try:
+            usb_done = int(usb_partial.stat().st_size)
+        except OSError:
+            usb_done = 0
+        if expect > 0 and usb_done > 0:
+            pct = max(1.0, min(99.0, 100.0 * usb_done / expect))
+        done = usb_done
+        note = "Saving to USB (download already in RAM) — Load works now"
     elif st == "done":
         note = "NInfer model ready — Load on Models"
+    elif st == "paused":
+        note = "Stopped — Resume keeps the partial download"
+    if (st == "downloading" or running) and st not in ("done", "paused", "failed"):
+        out_state = "downloading"
     return {
         "id": mid,
         "name": name,
-        "state": "downloading" if (st == "downloading" or running) and st != "done" else st,
+        "state": out_state,
         "percent": round(pct, 1),
         "bytes_done": done,
         "bytes_total": expect,
@@ -4247,8 +4518,163 @@ def ninfer_download_progress() -> dict:
         "format": "ninfer",
         "note": note,
         "model_dir": str(model_dir) if model_dir else "",
-        "queueable": False,
+        "queueable": True,
+        "paused": st == "paused",
     }
+
+
+def _ninfer_usb_persist_busy() -> tuple[bool, str]:
+    """True while ISS-070/073 ram+usb is still draining the durable USB copy."""
+    try:
+        prog = ninfer_download_progress() or {}
+    except Exception:
+        prog = {}
+    if str(prog.get("state") or "") == "persisting":
+        return True, "USB persist still running — wait until Saving to USB finishes before Load"
+    # ISS-073 async drain still copying.
+    sm = _stage_mod()
+    try:
+        if sm is not None and hasattr(sm, "usb_drain_status"):
+            dr = sm.usb_drain_status() or {}
+            if str(dr.get("state") or "") in ("starting", "draining"):
+                return True, "USB persist still running — wait until Saving to USB finishes before Load"
+    except Exception:
+        pass
+    # Wrapper alive + partial under usb_dir even if state file already says done.
+    state_path = RUN / "ninfer-model-download.json"
+    raw: dict = {}
+    try:
+        if state_path.is_file():
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    if str(raw.get("land") or "") != "ram+usb":
+        return False, ""
+    usb_dir = Path(str(raw.get("usb_dir") or "") or "")
+    if not usb_dir.is_dir():
+        return False, ""
+    partial = None
+    try:
+        for p in usb_dir.iterdir():
+            if not p.is_file():
+                continue
+            n = p.name.lower()
+            if n.endswith(".ninfer.partial") or (n.endswith(".partial") and ".ninfer" in n):
+                partial = p
+                break
+    except OSError:
+        partial = None
+    if partial is None:
+        return False, ""
+    try:
+        wp = subprocess.run(
+            ["pgrep", "-f", "ninfer-model-download.sh"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if wp.returncode == 0 and (wp.stdout or "").strip():
+            return True, "USB persist still running — wait until Saving to USB finishes before Load"
+    except Exception:
+        pass
+    return False, ""
+
+
+def _ninfer_resolve_ram_artifact(art: Path) -> tuple[Path, bool]:
+    """Prefer a complete tmpfs stage of ``art`` when one already exists.
+
+    ``find_ninfer_artifact`` often returns the USB copy first (model_dir on
+    DATA). MemAvailable already reflects a resident shm stage — counting the
+    USB file size again falsely refuses high-ctx Load (ISS-072).
+    """
+    sm = _stage_mod()
+    try:
+        if sm is not None and hasattr(sm, "find_existing_staged"):
+            staged = sm.find_existing_staged([Path(art)])
+            if staged is not None:
+                return Path(staged), True
+    except Exception:
+        pass
+    already_ram = False
+    try:
+        if sm is not None and hasattr(sm, "path_on_usb"):
+            already_ram = not bool(sm.path_on_usb(Path(art)))
+        else:
+            s = str(art).replace("\\", "/")
+            already_ram = (
+                s.startswith("/dev/shm/")
+                or s.startswith("/tmp/")
+                or "/model-stage/" in s
+                or s.startswith(str(RUN).replace("\\", "/") + "/")
+            )
+    except Exception:
+        already_ram = False
+    return Path(art), already_ram
+
+
+def _ninfer_load_ram_guard(art: Path, ctx_size: int) -> tuple[bool, str, dict]:
+    """ISS-072/071 minimum: refuse Load when MemAvailable cannot cover KV + headroom.
+
+    Model already in tmpfs: need ≈ KV(ctx) + HEADROOM.
+    Model still on USB only: need ≈ file + KV(ctx) + HEADROOM (stage + serve).
+    Never double-count a USB path when the same bytes are already staged in RAM.
+    """
+    sm = _stage_mod()
+    try:
+        headroom = int(getattr(sm, "HEADROOM_BYTES", 10 * 1024**3) if sm else 10 * 1024**3)
+    except Exception:
+        headroom = 10 * 1024**3
+    art, already_ram = _ninfer_resolve_ram_artifact(Path(art))
+    try:
+        file_bytes = int(art.stat().st_size) if art.is_file() else 0
+    except OSError:
+        file_bytes = 0
+    kv_bpt = kv_bytes_per_token({}, 0, max(file_bytes, 1), kv_type="f16")
+    kv_need = int(kv_bpt) * max(int(ctx_size), LLAMA_CTX_FLOOR)
+    need = kv_need + headroom
+    if not already_ram and file_bytes > 0:
+        need += file_bytes
+    avail = 0
+    try:
+        if sm is not None and hasattr(sm, "_mem_available"):
+            avail = int(sm._mem_available())
+        else:
+            avail = int(detect_ram_gb() * (1024**3))
+    except Exception:
+        avail = 0
+    info = {
+        "need": need,
+        "avail": avail,
+        "kv_need": kv_need,
+        "headroom": headroom,
+        "file_bytes": file_bytes,
+        "already_ram": already_ram,
+        "art": str(art),
+        "ctx_size": int(ctx_size),
+    }
+    if avail > 0 and avail < need:
+        need_gb = need / (1024**3)
+        avail_gb = avail / (1024**3)
+        # Human context label (65536 → 64K) so the refuse reads as "ctx too big",
+        # not "this stick has no RAM / Load is broken".
+        ctx_i = int(ctx_size)
+        if ctx_i >= 1024 and ctx_i % 1024 == 0:
+            ctx_label = f"{ctx_i // 1024}K"
+        else:
+            ctx_label = str(ctx_i)
+        return (
+            False,
+            (
+                f"Context {ctx_label} is too large for free RAM "
+                f"(need ~{need_gb:.1f} GiB for this context + headroom, "
+                f"MemAvailable {avail_gb:.1f} GiB). "
+                "Lower Context under Advanced (try 32K) and Load again — "
+                "the model is fine; only the context setting is too high."
+            ),
+            info,
+        )
+    return True, "", info
 
 
 def experimental_ninfer_model_activate(params: dict | None = None) -> dict:
@@ -4278,6 +4704,40 @@ def experimental_ninfer_model_activate(params: dict | None = None) -> dict:
             "ok": False,
             "error": f"{mid} is not downloaded yet",
             "hint": "Download it from Models first.",
+        }
+    # Prefer complete shm/tmp stage before guard + stage (avoid USB path double-count).
+    art, _already = _ninfer_resolve_ram_artifact(Path(art))
+    # ISS-072 / ISS-071 minimum Load guard: do not kill kiosk with high-ctx Load
+    # while USB persist is draining, or when MemAvailable cannot cover KV+headroom.
+    busy, busy_msg = _ninfer_usb_persist_busy()
+    if busy:
+        return {
+            "ok": False,
+            "error": busy_msg,
+            "hint": "Models status shows Saving to USB — Load after it finishes.",
+            "guard": "usb-persist",
+        }
+    sm_busy = _stage_mod()
+    try:
+        if sm_busy is not None and hasattr(sm_busy, "ram_busy_status"):
+            rb = sm_busy.ram_busy_status() or {}
+            if rb.get("held") and "download" in str(rb.get("reason") or "").lower():
+                return {
+                    "ok": False,
+                    "error": "RAM busy with a download — wait until Saving to USB finishes before Load",
+                    "hint": "Another ram+usb download holds the soft lock (ISS-071).",
+                    "guard": "ram-busy",
+                }
+    except Exception:
+        pass
+    ok_ram, ram_msg, ram_info = _ninfer_load_ram_guard(Path(art), ctx_size)
+    if not ok_ram:
+        return {
+            "ok": False,
+            "error": ram_msg,
+            "hint": "Drop Context to 32K under Advanced, then Load — this is a context-size limit, not a missing model.",
+            "guard": "ram-headroom",
+            "ram": ram_info,
         }
     display = mid
     for e in list(getattr(mod, "NINFER_MODEL_CATALOG", []) or []):
@@ -4554,6 +5014,47 @@ def write_hf_token(token: str) -> dict:
         "settings_mounted": settings_open,
         "note": "Hugging Face token saved on the USB stick settings partition",
     }
+
+
+def test_hf_token() -> dict:
+    """Check the saved HF token against Hugging Face (whoami)."""
+    tok = (read_hf_token() or "").strip()
+    if not tok:
+        return {
+            "ok": False,
+            "saved": False,
+            "error": "No Hugging Face token saved — add one for faster downloads and gated models",
+        }
+    try:
+        req = urllib.request.Request(
+            "https://huggingface.co/api/whoami-v2",
+            headers={
+                "Authorization": f"Bearer {tok}",
+                "User-Agent": "StickLLM/0.8",
+            },
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            code = getattr(resp, "status", 200) or 200
+    except urllib.error.HTTPError as e:
+        if int(getattr(e, "code", 0) or 0) in (401, 403):
+            return {"ok": False, "saved": True, "error": "Token rejected by Hugging Face (check it is a valid read token)"}
+        return {"ok": False, "saved": True, "error": f"Hugging Face HTTP {getattr(e, 'code', '?')}"}
+    except Exception as e:
+        return {"ok": False, "saved": True, "error": f"Could not reach Hugging Face: {e}"}
+    name = ""
+    try:
+        data = json.loads(body) if body else {}
+        if isinstance(data, dict):
+            name = str(data.get("name") or data.get("fullname") or "")
+    except json.JSONDecodeError:
+        pass
+    note = "Hugging Face token works"
+    if name:
+        note = f"Hugging Face token works ({name})"
+    note += " — downloads use it for speed and gated repos"
+    return {"ok": True, "saved": True, "name": name, "http": code, "note": note}
 
 
 def _public_queue(items: list[dict]) -> list[dict]:
@@ -4946,6 +5447,28 @@ def _mark_active(items: list[dict]) -> None:
 def _start_download_job(job: dict) -> None:
     write_download_sidecar(job)
     dest = str(job.get("dest") or "")
+    usb_dest = str(job.get("usb_dest") or dest or "")
+    # ISS-070: land in free RAM when it fits; persist durable copy to USB.
+    try:
+        need = int(job.get("bytes") or 0)
+    except (TypeError, ValueError):
+        need = 0
+    sm = _stage_mod()
+    if sm is not None and hasattr(sm, "can_land_download") and usb_dest:
+        ok_land, ram_dir, why = sm.can_land_download(need if need > 0 else 4 * (1024**3))
+        if ok_land and ram_dir is not None:
+            job["usb_dest"] = usb_dest
+            job["dest"] = str(ram_dir)
+            job["land"] = "ram+usb"
+            job["land_note"] = why
+            dest = str(ram_dir)
+            # ISS-071 soft-lock for the download window.
+            if hasattr(sm, "acquire_ram_busy"):
+                jid = str(job.get("id") or "gguf")
+                sm.acquire_ram_busy(f"ram+usb-download:{jid}", owner=f"gguf-dl:{jid}")
+        else:
+            job["land"] = "usb-only"
+            job["land_note"] = why
     cmd = ["/usr/local/bin/stickllm-download-model", "--i-understand"]
     repo = str(job.get("repo") or "")
     hf_file = str(job.get("file") or "")
@@ -4971,9 +5494,36 @@ def _start_download_job(job: dict) -> None:
     env["STICKLLM_SESSION_MODE"] = session_mode()
     if dest:
         env["STICKLLM_MODELS_DIR"] = dest
+    mirror = str(job.get("usb_dest") or "")
+    if mirror and mirror != dest:
+        env["STICKLLM_DOWNLOAD_MIRROR"] = mirror
+        # ISS-073: drain USB in parallel while GGUF lands in RAM.
+        if str(job.get("land") or "") == "ram+usb" and sm is not None and hasattr(
+            sm, "start_async_usb_drain"
+        ):
+            try:
+                fname = str(job.get("file") or "") or None
+                sm.start_async_usb_drain(
+                    Path(dest),
+                    Path(mirror),
+                    expect_bytes=int(job.get("bytes") or 0),
+                    final_name=Path(fname).name if fname else None,
+                )
+            except Exception:
+                pass
+        if str(job.get("land") or "") == "ram+usb" and sm is not None and hasattr(
+            sm, "reserve_stage_file"
+        ):
+            try:
+                fname = str(job.get("file") or job.get("name") or "model.gguf")
+                base = Path(fname).name
+                sm.reserve_stage_file(Path(dest) / (base + ".partial"), int(job.get("bytes") or 0))
+            except Exception:
+                pass
     token = read_hf_token()
     if token:
         env["STICKLLM_HF_TOKEN"] = token
+    env["STICKLLM_RAM_BUSY_OWNER"] = f"gguf-dl:{mid}"
     RUN.mkdir(parents=True, exist_ok=True)
     (RUN / "download.starting").write_text(
         json.dumps({"id": mid, "t": time.time()}) + "\n", encoding="utf-8"
@@ -5508,9 +6058,211 @@ def _queue_remove(mid: str) -> dict:
     }
 
 
+def _ninfer_dl_raw() -> dict:
+    try:
+        raw = json.loads((RUN / "ninfer-model-download.json").read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _ninfer_queue_id_match(mid: str) -> bool:
+    mid = str(mid or "").strip()
+    if not mid:
+        return False
+    raw = _ninfer_dl_raw()
+    return str(raw.get("id") or "") == mid
+
+
+def _stop_ninfer_download_processes() -> None:
+    """Stop NInfer download-model.sh / wrapper. Leaves partial .ninfer on disk."""
+    pids: set[int] = set()
+    try:
+        pids.add(int((RUN / "ninfer-model-download.pid").read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        pass
+    for pat in (
+        "/run/stickllm/ninfer-model-download.sh",
+        "ninfer-model-download.sh",
+    ):
+        try:
+            p = subprocess.run(
+                ["pgrep", "-f", pat],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            for line in (p.stdout or "").split():
+                if line.isdigit():
+                    pids.add(int(line))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    kids: set[int] = set()
+    for pid in list(pids):
+        try:
+            raw = Path(f"/proc/{pid}/task/{pid}/children").read_text(encoding="utf-8")
+        except OSError:
+            continue
+        kids.update(int(part) for part in raw.split() if part.isdigit())
+    pids |= kids
+    me = os.getpid()
+    pids = {pid for pid in pids if pid > 1 and pid != me}
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    time.sleep(0.4)
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        (RUN / "ninfer-model-download.pid").unlink()
+    except OSError:
+        pass
+
+
+def _ninfer_queue_public() -> list[dict]:
+    prog = ninfer_download_progress() or {}
+    if not isinstance(prog, dict) or not prog.get("id"):
+        return []
+    st = str(prog.get("state") or "")
+    if st == "done":
+        return []
+    q_state = {
+        "downloading": "active",
+        "paused": "paused",
+        "failed": "failed",
+    }.get(st, st or "active")
+    return [
+        {
+            "id": prog.get("id"),
+            "name": prog.get("name") or prog.get("id"),
+            "state": q_state,
+            "percent": prog.get("percent"),
+            "bytes": prog.get("bytes_total") or prog.get("bytes") or 0,
+            "bytes_done": prog.get("bytes_done") or 0,
+            "engine": "ninfer-all",
+            "format": "ninfer",
+            "queueable": True,
+            "error": prog.get("note") if q_state == "failed" else "",
+        }
+    ]
+
+
+def _ninfer_queue_stop(mid: str) -> dict:
+    mid = str(mid or "").strip()
+    raw = _ninfer_dl_raw()
+    if str(raw.get("id") or "") != mid:
+        return {"ok": False, "error": "not in the download queue"}
+    raw["state"] = "paused"
+    raw["paused"] = True
+    raw["error"] = ""
+    raw["updated"] = int(time.time())
+    try:
+        (RUN / "ninfer-model-download.json").write_text(json.dumps(raw) + "\n", encoding="utf-8")
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    _stop_ninfer_download_processes()
+    # Re-assert paused after wrapper exit may race.
+    raw = _ninfer_dl_raw()
+    if str(raw.get("id") or "") == mid:
+        raw["state"] = "paused"
+        raw["paused"] = True
+        try:
+            (RUN / "ninfer-model-download.json").write_text(json.dumps(raw) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    prog = ninfer_download_progress() or {}
+    return {
+        "ok": True,
+        "note": "Stopped. The partial download is kept — Resume to continue.",
+        "download": {
+            "state": "paused",
+            "id": prog.get("id") or mid,
+            "name": prog.get("name") or mid,
+            "percent": prog.get("percent"),
+            "bytes_done": prog.get("bytes_done") or 0,
+            "bytes_total": prog.get("bytes_total") or 0,
+            "note": prog.get("note") or "Stopped",
+            "engine": "ninfer-all",
+            "format": "ninfer",
+        },
+        "queue": _ninfer_queue_public(),
+    }
+
+
+def _ninfer_queue_start(mid: str) -> dict:
+    mid = str(mid or "").strip()
+    raw = _ninfer_dl_raw()
+    if str(raw.get("id") or "") != mid and raw.get("state") not in ("", None):
+        # Allow resume when state file id matches, or when empty after remove.
+        if str(raw.get("id") or "") and str(raw.get("id") or "") != mid:
+            return {"ok": False, "error": "not in the download queue"}
+    # Clear paused so a fresh wrapper can finish as done/failed.
+    if raw:
+        raw.pop("paused", None)
+        raw["state"] = "downloading"
+        try:
+            (RUN / "ninfer-model-download.json").write_text(json.dumps(raw) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    _stop_ninfer_download_processes()
+    started = experimental_ninfer_model_download({"id": mid})
+    if not started.get("ok"):
+        return started
+    prog = ninfer_download_progress() or {}
+    return {
+        "ok": True,
+        "note": started.get("note") or "Download resumed",
+        "started": True,
+        "download": {
+            "state": "downloading",
+            "id": prog.get("id") or mid,
+            "name": prog.get("name") or mid,
+            "percent": prog.get("percent"),
+            "bytes_done": prog.get("bytes_done") or 0,
+            "bytes_total": prog.get("bytes_total") or 0,
+            "note": prog.get("note") or "",
+            "engine": "ninfer-all",
+            "format": "ninfer",
+        },
+        "queue": _ninfer_queue_public(),
+    }
+
+
+def _ninfer_queue_remove(mid: str) -> dict:
+    mid = str(mid or "").strip()
+    raw = _ninfer_dl_raw()
+    if str(raw.get("id") or "") != mid:
+        return {"ok": False, "error": "not in the download queue"}
+    _stop_ninfer_download_processes()
+    for name in ("ninfer-model-download.json", "ninfer-model-download.sh"):
+        try:
+            (RUN / name).unlink()
+        except OSError:
+            pass
+    return {
+        "ok": True,
+        "note": "Removed from the queue. The partial file is still on disk.",
+        "download": {"state": "idle", "id": "", "name": "", "percent": 0},
+        "queue": [],
+    }
+
+
 def queue_stop(mid: str) -> dict:
     if not str(mid or "").strip():
         return {"ok": False, "error": "id required"}
+    if _ninfer_queue_id_match(mid):
+        with QUEUE_LOCK:
+            return _ninfer_queue_stop(mid)
     with QUEUE_LOCK:
         return _queue_stop(mid)
 
@@ -5518,6 +6270,9 @@ def queue_stop(mid: str) -> dict:
 def queue_start(mid: str) -> dict:
     if not str(mid or "").strip():
         return {"ok": False, "error": "id required"}
+    if _ninfer_queue_id_match(mid):
+        with QUEUE_LOCK:
+            return _ninfer_queue_start(mid)
     with QUEUE_LOCK:
         return _queue_start(mid)
 
@@ -5525,6 +6280,9 @@ def queue_start(mid: str) -> dict:
 def queue_remove(mid: str) -> dict:
     if not str(mid or "").strip():
         return {"ok": False, "error": "id required"}
+    if _ninfer_queue_id_match(mid):
+        with QUEUE_LOCK:
+            return _ninfer_queue_remove(mid)
     with QUEUE_LOCK:
         return _queue_remove(mid)
 
@@ -5567,6 +6325,9 @@ def download_progress() -> dict:
     for d in model_dirs():
         try:
             for p in d.glob("*.partial"):
+                # ISS-070 USB persist uses *.ninfer.partial — not a GGUF download.
+                if ".ninfer" in p.name.lower():
+                    continue
                 try:
                     partials.append((p, p.stat().st_size))
                 except OSError:
@@ -5585,6 +6346,11 @@ def download_progress() -> dict:
                 "note": "download running (size unknown yet)",
             }
         return {"state": "idle"}
+
+    # Leftover *.partial without a live curl must not look like an active download
+    # (Models then shows that GGUF name over a live NInfer job).
+    if not download_running() and _live_downloader_pid() is None:
+        return {"state": "idle", "note": "partial on disk (not active)"}
 
     partials.sort(key=lambda x: -x[1])
     path, done = partials[0]
@@ -8230,18 +8996,38 @@ def handle(action: str, params: dict) -> dict:
         dl_queue = list(watchdog.get("queue") or [])
         if isinstance(ninfer_dl, dict) and ninfer_dl.get("id") and ninfer_dl.get("state") in (
             "downloading",
+            "persisting",
+            "paused",
             "failed",
             "done",
         ):
             q_state = {
                 "downloading": "active",
+                "persisting": "active",
+                "paused": "paused",
                 "failed": "failed",
                 "done": "done",
             }.get(str(ninfer_dl.get("state")), "active")
-            # Prefer NInfer as the live progress bar when GGUF is idle.
-            if dl_prog.get("state") not in ("downloading", "verifying", "starting"):
+            # Prefer live NInfer over GGUF. Leftover GGUF *.partial used to invent
+            # state=downloading ("partial on disk") with no curl — Models then
+            # showed "Downloading Qwen2.5-7B" over a real NInfer pull (ISS-065).
+            gguf_really_running = bool(download_running())
+            ninfer_live = q_state in ("active", "paused")
+            use_ninfer_bar = (ninfer_live and not gguf_really_running) or (
+                dl_prog.get("state") not in ("downloading", "verifying", "starting", "persisting")
+            )
+            if use_ninfer_bar and q_state != "done":
+                bar_state = (
+                    "persisting"
+                    if str(ninfer_dl.get("state")) == "persisting"
+                    else (
+                        "downloading"
+                        if q_state == "active"
+                        else ("paused" if q_state == "paused" else ninfer_dl.get("state"))
+                    )
+                )
                 dl_prog = {
-                    "state": "downloading" if q_state == "active" else ninfer_dl.get("state"),
+                    "state": bar_state,
                     "id": ninfer_dl.get("id"),
                     "name": ninfer_dl.get("name") or ninfer_dl.get("id"),
                     "percent": ninfer_dl.get("percent"),
@@ -8265,7 +9051,7 @@ def handle(action: str, params: dict) -> dict:
                         "bytes_done": ninfer_dl.get("bytes_done") or 0,
                         "engine": "ninfer-all",
                         "format": "ninfer",
-                        "queueable": False,
+                        "queueable": True,
                         "error": ninfer_dl.get("note") if q_state == "failed" else "",
                     },
                 )
@@ -8381,6 +9167,8 @@ def handle(action: str, params: dict) -> dict:
         return r
     if action == "set_hf_token":
         return write_hf_token(str(params.get("token") or ""))
+    if action == "test_hf_token":
+        return test_hf_token()
     if action == "model_activate":
         mid = str(params.get("id") or "").strip()
         if not mid:

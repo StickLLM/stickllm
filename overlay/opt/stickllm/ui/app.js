@@ -3834,7 +3834,11 @@ function renderModelsList() {
             }
             throw new Error(r.error || r.hint || r.message || "Download failed");
           }
-          toast((r && r.note) || ("Downloading " + id + " — see Downloads"), { ms: 12000 });
+          const note = (r && r.note) || ("Downloading " + id + " — see Downloads");
+          toast(note, { ms: 12000 });
+          if (r && r.hf_token === false) {
+            toast("No Hugging Face token saved — download will be slow. Add a token under Models for faster pulls.", { ms: 10000 });
+          }
           await refreshModels();
           if (!dlPollTimer) startDlPoll();
         } catch (err) {
@@ -3922,7 +3926,12 @@ function syncModelActions() {
     $("#activate").textContent = m.running ? "Reload with these settings" : (midLoad ? "Loading…" : "Load model");
   }
   if ($("#delModel")) $("#delModel").hidden = !m.deletable;
-  const max = Number(m.ctx_max || m.ctxMax || 32768);
+  // NInfer rows must expose ctx_max (default 128K). Falling back to 32768 made
+  // #ctx.min === #ctx.max so the Advanced context slider could not move (ISS-072).
+  const ninferRow = state.activeEngine === "ninfer-all"
+    || m.engine === "ninfer-all"
+    || m.format === "ninfer";
+  const max = Number(m.ctx_max || m.ctxMax || m.max_context || (ninferRow ? 131072 : 32768));
   try { updateDynamicPresets(m); } catch (_) {}
   if ($("#ctx")) {
     $("#ctx").min = LLAMA_CTX_FLOOR;
@@ -4019,16 +4028,38 @@ async function refreshModelsNow() {
   let name = st.loaded?.name || run?.name || "none";
   if (loadingModelId) name = requestedLoadName();
   else if (loadMismatchText) name = "Load failed";
+  // NInfer default + no .ninfer selected: do not show parked GGUF (Qwen2.5) as
+  // "loading …" while downloads / exp-engine activate (ISS-065).
+  const ninferEng = state.activeEngine === "ninfer-all";
+  const loadedPath = String(st.loaded?.path || "");
+  const loadedIsGguf = /\.gguf$/i.test(loadedPath);
+  const ninferHasProfile = !!(st.loaded?.id) && !loadedIsGguf;
+  if (ninferEng && !loadingModelId && !loadMismatchText && !ninferHasProfile) {
+    if (downloadStillGoing(st)) {
+      const d = st.download || {};
+      const q = (st.download_queue || []).find((x) => x.state === "active" || x.state === "paused");
+      // Prefer NInfer queue row; never show a stale GGUF partial name (Qwen2.5).
+      const ninferBar = (d.format === "ninfer" || d.engine === "ninfer-all") ? d : null;
+      const ninferQ = (q && (q.format === "ninfer" || q.engine === "ninfer-all")) ? q : null;
+      name = (ninferBar && ninferBar.name) || ninferQ?.name || ninferBar?.id || ninferQ?.id
+        || "NInfer download…";
+    } else {
+      name = "none";
+    }
+  }
   if ($("#runName")) $("#runName").textContent = name;
   if ($("#recName")) $("#recName").textContent = String(probe.recommend_id || probe.recommend || "—");
   const pill = $("#runPill");
   if (pill) {
-    const loadedRun = !!(st.loaded && st.loaded.running);
-    const activeLoading = !!loadingModelId || (!loadMismatchText && lastCatalog.some((m) => m.active && !m.running && llamaStarting()));
+    const loadedRun = !!(st.loaded && st.loaded.running) && !(ninferEng && loadedIsGguf);
+    const activeLoading = !!loadingModelId || (!loadMismatchText && !ninferEng
+      && lastCatalog.some((m) => m.active && !m.running && llamaStarting()));
     if (loadingModelId) {
       pill.textContent = "loading"; pill.className = "pill warn";
     } else if (loadMismatchText) {
       pill.textContent = "failed"; pill.className = "pill";
+    } else if (ninferEng && !ninferHasProfile && downloadStillGoing(st)) {
+      pill.textContent = "downloading"; pill.className = "pill warn";
     } else if (st.llama_ok || st.llama?.status === "ok" || loadedRun || run?.running) {
       pill.textContent = "running"; pill.className = "pill ok";
     } else if (activeLoading) {
@@ -4058,7 +4089,7 @@ function queueState(id) {
 function applyDownloadView(st) {
   if (Array.isArray(st?.download_queue)) dlQueue = st.download_queue;
   const d = st?.download || {};
-  const live = ["downloading", "verifying", "starting"].includes(d.state);
+  const live = ["downloading", "verifying", "starting", "persisting"].includes(d.state);
   dlActiveId = live ? (d.id || "") : "";
   // Card "downloading" pill also follows NInfer jobs merged into the queue.
   if (!dlActiveId) {
@@ -4088,11 +4119,11 @@ function renderQueuePanel() {
   }
   box.innerHTML = dlQueue.map((q) => {
     const id = esc(q.id);
-    const ninfer = q.format === "ninfer" || q.engine === "ninfer-all" || q.queueable === false;
-    // NInfer uses download-model.sh — not the GGUF Start/Stop/Remove helpers.
-    const start = (!ninfer && q.state !== "active") ? `<button class="btn sm primary" data-qact="start" data-qid="${id}" type="button">Start</button>` : "";
-    const stop = (!ninfer && (q.state === "active" || q.state === "pending")) ? `<button class="btn sm" data-qact="stop" data-qid="${id}" type="button">Stop</button>` : "";
-    const del = ninfer ? "" : `<button class="btn sm danger ghost" data-qact="remove" data-qid="${id}" type="button">Delete</button>`;
+    // ISS-068: NInfer shares Stop / Resume / Delete with the GGUF queue.
+    const resumeLabel = (q.state === "paused" || q.state === "failed") ? "Resume" : "Start";
+    const start = (q.state !== "active") ? `<button class="btn sm primary" data-qact="start" data-qid="${id}" type="button">${resumeLabel}</button>` : "";
+    const stop = (q.state === "active" || q.state === "pending") ? `<button class="btn sm" data-qact="stop" data-qid="${id}" type="button">Stop</button>` : "";
+    const del = `<button class="btn sm danger ghost" data-qact="remove" data-qid="${id}" type="button">Delete</button>`;
     return `<div class="row"><div><b>${esc(q.name || q.file || q.id)}</b><small>${esc(queueStatusLine(q))}</small></div><div class="qActions">${stop}${start}${del}</div></div>`;
   }).join("");
   $$("#queueList [data-qact]").forEach((b) => {
@@ -4127,13 +4158,17 @@ function renderDownload(d) {
   const box = $("#dlBox");
   const state_ = d?.state || "idle";
   const waiting = dlQueue.filter((q) => q.state === "pending" || q.state === "failed" || q.state === "paused");
-  const active = ["downloading", "verifying", "starting", "failed", "done"].includes(state_);
+  const active = ["downloading", "verifying", "starting", "persisting", "failed", "done", "paused"].includes(state_);
   if (!active && !waiting.length) {
     box.hidden = true;
     return;
   }
   box.hidden = false;
-  const label = state_ === "done" ? "Downloaded " : state_ === "failed" ? "Failed " : "Downloading ";
+  const label = state_ === "done" ? "Downloaded "
+    : state_ === "failed" ? "Failed "
+    : state_ === "paused" ? "Paused "
+    : state_ === "persisting" ? "Saving to USB "
+    : "Downloading ";
   $("#dlName").textContent = active ? label + (d.name || d.id || "model") : "Download queue";
   const pct = d.percent == null ? (state_ === "done" ? 100 : active ? 2 : 0) : Number(d.percent);
   $("#dlFill").style.width = Math.max(active ? 2 : 0, Math.min(100, pct)) + "%";
@@ -4152,9 +4187,10 @@ function renderDownload(d) {
 function downloadStillGoing(st) {
   const s = st?.download?.state;
   const queued = (st?.download_queue || dlQueue).some((q) => q.state === "pending" || q.state === "active");
-  const ninferLive = String(st?.ninfer_download?.state || "") === "downloading"
+  const ns = String(st?.ninfer_download?.state || "");
+  const ninferLive = ns === "downloading" || ns === "persisting"
     || (st?.download_queue || []).some((q) => q.state === "active" && (q.format === "ninfer" || q.engine === "ninfer-all"));
-  return queued || ninferLive || ["downloading", "verifying", "starting"].includes(s);
+  return queued || ninferLive || ["downloading", "verifying", "starting", "persisting"].includes(s);
 }
 /** After GGUF/mmproj finishes, force a fresh catalog so the card flips to Installed / Load. */
 async function refreshCatalogAfterDownload(finishedId) {
@@ -4260,8 +4296,13 @@ function pickCtx(m, target, kvs, max, poolGb) {
   return { ctx: Math.max(2048, Math.min(max, roundCtxDown(ctxThatFits(m, kv, poolGb)))), kv };
 }
 function dynamicPresets(m, poolGb = vramPoolGb()) {
-  const max = Number(m?.ctx_max || m?.ctxMax || 131072) || 131072;
-  if (!(poolGb > 0)) {
+  const ninferRow = state.activeEngine === "ninfer-all"
+    || m?.engine === "ninfer-all"
+    || m?.format === "ninfer";
+  const max = Number(m?.ctx_max || m?.ctxMax || m?.max_context || 131072) || 131072;
+  // NInfer KV capacity follows --max-context; llama.cpp VRAM/KV estimates do not
+  // apply and would pin every preset at the 32K floor on large .ninfer packs.
+  if (ninferRow || !(poolGb > 0)) {
     return { fast: { ctx: Math.min(32768, max), kv: "q8", temp: 0.7 },
              balanced: { ctx: Math.min(65536, max), kv: "f16", temp: 0.7 },
              long: { ctx: Math.min(131072, max), kv: "q4", temp: 0.6 } };
@@ -9123,7 +9164,13 @@ async function refreshStatus() {
       } else {
         setChipLoad(false, 100, readyName);
       }
-    } else if (named && named !== "none" && llamaUnitBusy(j)) {
+    } else if (
+      named && named !== "none" && llamaUnitBusy(j)
+      // NInfer default must not paint parked GGUF (Qwen2.5) as "loading …"
+      // while exp-engine activates or a .ninfer download runs (ISS-065).
+      && state.activeEngine !== "ninfer-all"
+      && !/\.gguf$/i.test(String(modelPath || ""))
+    ) {
       // Reload while this unit is actually starting. A saved model name is not a load.
       if (!loadStartedAt) {
         loadStartedAt = Date.now();
@@ -9135,6 +9182,17 @@ async function refreshStatus() {
         showFewerLayers(view.giveUp);
         startLoadPoll();
       }
+    } else if (state.activeEngine === "ninfer-all" && downloadStillGoing(j) && !loadingModelId) {
+      const d = j.download || {};
+      const q = (j.download_queue || []).find((x) => x.state === "active");
+      const dlName = d.name || q?.name || d.id || q?.id || "NInfer model";
+      const pct = Number(d.percent ?? q?.percent);
+      $("#chipModel").textContent = Number.isFinite(pct)
+        ? `downloading ${dlName} ${Math.round(pct)}%`
+        : `downloading ${dlName}`;
+      setChipLoad(false, 0, null);
+      if ($("#runName")) $("#runName").textContent = dlName;
+      if ($("#runPill")) { $("#runPill").textContent = "downloading"; $("#runPill").className = "pill warn"; }
     } else {
       // USB→RAM stage can outlive a timed-out activate call — keep showing it.
       const stOnly = stageView(j);
@@ -10927,7 +10985,19 @@ if ($("#hfToken")) $("#hfToken").addEventListener("input", () => {
   }, 700);
 });
 if ($("#hfShow")) $("#hfShow").onclick = () => { const i = $("#hfToken"); if (i) i.classList.toggle("secret"); };
-if ($("#hfTest")) $("#hfTest").onclick = () => toast("HF token test — live gated downloads come later; catalog downloads need no token");
+if ($("#hfTest")) $("#hfTest").onclick = async () => {
+  const stEl = $("#hfState");
+  if (stEl) stEl.textContent = "Testing…";
+  try {
+    const res = await control("test_hf_token", {});
+    if (stEl) stEl.textContent = res.ok ? "OK" : "Failed";
+    if (res.ok) toast(res.note || "Hugging Face token works — used for faster downloads");
+    else toast(res.error || "Hugging Face token test failed");
+  } catch (e) {
+    if (stEl) stEl.textContent = "Failed";
+    toast(plainError(e.message || String(e)) || String(e));
+  }
+};
 
 applyModeUi("ephemeral");
 newChat();

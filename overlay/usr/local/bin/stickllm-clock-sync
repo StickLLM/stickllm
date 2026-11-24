@@ -1,6 +1,8 @@
 #!/bin/bash
-# Sync wall clock from the internet (NTP) once uplink is up.
+# Sync wall clock from the internet once uplink is up.
 # Wrong clock breaks TLS (StickLink / HTTPS) → "could not connect to server".
+# Also: USB boots often leave Timezone=Etc/UTC — desk then shows "wrong" local time.
+# First internet connect: pick timezone from public IP geolocation (not hard-coded).
 set -euo pipefail
 
 RUN="${STICKLLM_RUN:-/run/stickllm}"
@@ -11,6 +13,81 @@ log() {
   printf '%s\n' "$*"
 }
 
+# Sticky preference: /var/lib/stickllm/timezone (IANA name). Written once by
+# auto-detect, or by the user. Do not hard-code America/New_York / Etc/UTC.
+TZ_FILE="/var/lib/stickllm/timezone"
+AUTO_DONE="/var/lib/stickllm/timezone-auto-done"
+
+is_utc_tz() {
+  case "${1:-}" in
+    Etc/UTC|UTC|Etc/GMT|GMT|"") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+valid_iana_tz() {
+  local z="${1:-}"
+  [[ -n "$z" ]] || return 1
+  [[ "$z" != *..* && "$z" != /* && "$z" != *\\* ]] || return 1
+  [[ -f "/usr/share/zoneinfo/$z" ]] || return 1
+  is_utc_tz "$z" && return 1
+  return 0
+}
+
+# Geo timezone from public IP — first successful plain-text / JSON probe wins.
+detect_tz_from_ip() {
+  local z="" body=""
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+  # ipapi.co — plain text IANA zone
+  z="$(curl -fsS --max-time 6 https://ipapi.co/timezone/ 2>/dev/null | tr -d '\r\n' | head -c 64 || true)"
+  if valid_iana_tz "$z"; then
+    printf '%s\n' "$z"
+    return 0
+  fi
+  # worldtimeapi — JSON {"timezone":"..."}
+  body="$(curl -fsS --max-time 6 https://worldtimeapi.org/api/ip 2>/dev/null || true)"
+  z="$(printf '%s' "$body" | sed -n 's/.*"timezone"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | tr -d '\r\n')"
+  if valid_iana_tz "$z"; then
+    printf '%s\n' "$z"
+    return 0
+  fi
+  # ipinfo.io — JSON {"timezone":"..."} (no token; best-effort)
+  body="$(curl -fsS --max-time 6 https://ipinfo.io/json 2>/dev/null || true)"
+  z="$(printf '%s' "$body" | sed -n 's/.*"timezone"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | tr -d '\r\n')"
+  if valid_iana_tz "$z"; then
+    printf '%s\n' "$z"
+    return 0
+  fi
+  return 1
+}
+
+tz_wanted=""
+if [[ -f "$TZ_FILE" ]]; then
+  tz_wanted="$(tr -d '\r\n' <"$TZ_FILE" | head -c 64)"
+fi
+cur_tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+
+# First uplink while still UTC: geolocate once, then remember.
+if [[ -z "$tz_wanted" ]] && is_utc_tz "$cur_tz" && [[ ! -f "$AUTO_DONE" ]]; then
+  if detected="$(detect_tz_from_ip)"; then
+    tz_wanted="$detected"
+    mkdir -p /var/lib/stickllm
+    printf '%s\n' "$tz_wanted" >"$TZ_FILE"
+    printf 'source=ip-geo\nat=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$AUTO_DONE"
+    log "timezone auto-detected from IP: ${tz_wanted}"
+  else
+    log "WARN timezone still UTC — IP geolocation unavailable (will retry next uplink)"
+  fi
+fi
+
+if [[ -n "$tz_wanted" ]] && valid_iana_tz "$tz_wanted" && [[ "$tz_wanted" != "$cur_tz" ]]; then
+  timedatectl set-timezone "$tz_wanted" >/dev/null 2>&1 && log "timezone set to ${tz_wanted}" || true
+elif [[ -n "$tz_wanted" ]] && is_utc_tz "$tz_wanted"; then
+  log "WARN ignoring UTC sticky timezone file (want a real local zone)"
+fi
+
 # Best-effort: do not fail Wi‑Fi apply if NTP is slow.
 set +e
 timedatectl set-ntp true >/dev/null 2>&1
@@ -19,7 +96,7 @@ systemctl restart systemd-timesyncd.service >/dev/null 2>&1
 
 # Wait briefly for a sync (USB boots often start years off).
 ok=0
-for _ in $(seq 1 30); do
+for _ in $(seq 1 20); do
   st="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
   if [[ "$st" == "yes" ]]; then
     ok=1
@@ -28,13 +105,41 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
+# HTTP Date fallback / verify — NTP can report "synchronized" while RTC is still wrong
+# (or UDP/123 blocked). Cloudflare Date header is authoritative wall time (UTC).
+http_set=0
+if command -v curl >/dev/null 2>&1; then
+  hdr="$(curl -sI --max-time 8 https://1.1.1.1 2>/dev/null | awk -F': ' 'BEGIN{IGNORECASE=1}/^date:/{print $2; exit}')"
+  if [[ -n "$hdr" ]]; then
+    epoch="$(date -u -d "$hdr" +%s 2>/dev/null || true)"
+    if [[ -n "$epoch" ]]; then
+      now_epoch="$(date -u +%s)"
+      drift=$(( now_epoch - epoch ))
+      if (( drift < 0 )); then drift=$(( -drift )); fi
+      # If off by >90s, or NTP never confirmed, force-set from HTTP Date.
+      if [[ "$ok" != "1" ]] || (( drift > 90 )); then
+        timedatectl set-ntp false >/dev/null 2>&1
+        date -u -s "@${epoch}" >/dev/null 2>&1
+        hwclock -w --utc >/dev/null 2>&1
+        timedatectl set-ntp true >/dev/null 2>&1
+        systemctl restart systemd-timesyncd.service >/dev/null 2>&1
+        http_set=1
+        ok=1
+        log "OK clock set from HTTP Date (${hdr}, drift was ${drift}s)"
+      fi
+    fi
+  fi
+fi
+
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+local_now="$(date +%Y-%m-%dT%H:%M:%S%z)"
+cur_tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
 if [[ "$ok" == 1 ]]; then
-  printf 'synced=1\nat=%s\n' "$now" >"$RUN/clock-sync.json"
-  log "OK clock NTP synced at ${now}"
+  printf 'synced=1\nat=%s\nlocal=%s\nhttp=%s\ntimezone=%s\n' "$now" "$local_now" "$http_set" "$cur_tz" >"$RUN/clock-sync.json"
+  log "OK clock synced at ${now} local=${local_now} tz=${cur_tz}"
   exit 0
 fi
 
-printf 'synced=0\nat=%s\n' "$now" >"$RUN/clock-sync.json"
-log "WARN clock NTP not confirmed yet at ${now} (timesyncd running; will keep trying)"
+printf 'synced=0\nat=%s\nlocal=%s\ntimezone=%s\n' "$now" "$local_now" "$cur_tz" >"$RUN/clock-sync.json"
+log "WARN clock NTP not confirmed yet at ${now} tz=${cur_tz} (timesyncd running; will keep trying)"
 exit 0
