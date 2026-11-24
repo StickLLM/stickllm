@@ -164,7 +164,7 @@ Parked with security (do not build yet):
 - [ ] P2 Multi-user / roles + optional separate vault per user (after Phase 1 multi-device) — ISS-077 phase 2
 
 ## Mobile
-- [ ] **P1 Chat / Work / A0 modes** — **Chat** = StickLLM `/api/chat` (old `#app` UI; simple + optional Web). **Work** = today’s Android “Chat” renamed (A0 with complexity hidden). **A0** = full Agent Zero. ChatGPT-style: simple vs multi-step. Stick code for Chat still present; desk WinBox mount retired. Track: **ISS-078**
+- [ ] **P1 Chat / Work / A0 modes** — **Chat** = StickLLM `/api/chat` (old `#app` UI; simple + optional Web). **Work** = today’s Android “Chat” renamed (A0 with complexity hidden). **A0** = full Agent Zero. ChatGPT-style: simple vs multi-step. **Chat → A0 handoff required** (explicit Work/A0 switch or “send to agent”; stick already has Agent Zero toggle → `/api/agent/ask` + inline steps). Soft suggest OK; silent auto-escalate later. Stick Chat code still present; desk WinBox mount retired. Track: **ISS-078**
 - [ ] **P1 Phone web client** — https://stickllm.com/app/ (QR scan → connect → phone site). Goal: replace StickDroid APK when connection/timeouts are solid. Lab WIP; APK remains until then. Track: **ISS-079**
 - [ ] P1 PWA / installable web client (iOS, Android, GrapheneOS) — overlaps ISS-079
 - [ ] P1 QR pairing via phone camera (StickLink QR path ships on the stick; StickDroid / stickllm.com/app)

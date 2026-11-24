@@ -39,8 +39,9 @@ ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Close
 | **Status** | Open — design agreed; implement on phone clients post-0.8.9 unless pulled forward |
 | **Summary** | Today Android “Chat” and “A0” are **both Agent Zero** (Chat only hides complexity). Product: three modes like ChatGPT simple vs agentic. |
 | **Modes** | **Chat** = old StickLLM Chat UI (`ui/#app`, `/api/chat`) — simple Q&A, optional Web lookup, no A0 monologue. **Work** = rename today’s simplified A0 “Chat” (agent tasks, chrome stripped). **A0** = full Agent Zero UI. |
-| **Why** | Simple asks (e.g. price lookup with Web) should not pay full A0 planning tax; complex multi-step work stays in Work/A0. Desk still A0-only until we choose to re-host `#app` there. |
-| **Code already on stick** | Chat UI + `/api/chat` never deleted — only desk WinBox mount retired (~0.6.5). Phone / web client must route Chat → `/api/chat`, Work/A0 → Agent Zero. |
+| **Handoff (agreed)** | Chat must be able to **hand off to Agent Zero** when needed. Default UX: **explicit** — user switches to Work / A0, or uses a “send to agent” / Agent Zero control (ChatGPT-style escalate). Stick already has this in `#app`: Agent Zero toggle → `/api/agent/ask` + poll, inline steps, link to full A0 window, clipboard fallback. Soft “switch to Work?” suggestion from the Chat model is OK. **Silent auto-escalate** mid-Chat without a user affordance is **later / optional** (needs clear rules so simple Q&A never always jumps to A0). |
+| **Why** | Simple asks (e.g. price lookup with Web) should not pay full A0 planning tax; complex multi-step work stays in Work/A0, reachable from Chat without starting over. Desk still A0-only until we choose to re-host `#app` there. |
+| **Code already on stick** | Chat UI + `/api/chat` never deleted — only desk WinBox mount retired (~0.6.5). Phone / web client must route Chat → `/api/chat`, Work/A0 → Agent Zero, and preserve Chat→A0 handoff (`/api/agent/ask` path or equivalent StickLink mux). |
 | **Related** | ISS-079 (web app may replace APK); ISS-077 (multi-device). |
 
 
