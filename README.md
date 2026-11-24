@@ -9,8 +9,8 @@ to the USB or internal disks unless you explicitly approve a write.
 | | |
 |---|---|
 | Repo | [github.com/StickLLM/stickllm](https://github.com/StickLLM/stickllm) |
-| Current image | **v0.8.1** — `StickLLM-v0.8.1.iso`, hash in [`checksums/v0.8.1.sha256`](checksums/v0.8.1.sha256) |
-| Last GitHub Release | **v0.3.9** (older public line on Drive; prior git history is private) |
+| Current image | **v0.8.8** — `StickLLM-v0.8.8.iso`, hash in [`checksums/v0.8.8.sha256`](checksums/v0.8.8.sha256) (`c5aa2305…`) |
+| GitHub Release | [v0.8.8](https://github.com/StickLLM/stickllm/releases/tag/v0.8.8) (ISO on Drive; checksum in git) |
 | Minimum hardware | **16 GB** system RAM · **8 GB** GPU |
 | GPU backends | **AMD:** ROCm and Vulkan · **NVIDIA:** CUDA · **Intel GPU:** Vulkan |
 | Tested hardware | NVIDIA: single / dual RTX 3090 · AMD: single RX 570 / RX 580 — [HARDWARE.md](docs/HARDWARE.md) |
@@ -20,7 +20,7 @@ to the USB or internal disks unless you explicitly approve a write.
 
 ---
 
-## Get StickLLM (v0.8.1)
+## Get StickLLM (v0.8.8)
 
 ### 1. Download
 
@@ -28,24 +28,25 @@ ISO is on **Google Drive** (GitHub’s 2 GB asset limit). Same folder as the old
 
 https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing
 
-File: `StickLLM-v0.8.1.iso`
+File: `StickLLM-v0.8.8.iso`
 
+Release notes: [GitHub Release v0.8.8](https://github.com/StickLLM/stickllm/releases/tag/v0.8.8).  
 The hash of record is in this repo. Check the file you download against it.
 
-Previous published ships stay available (`StickLLM-v0.8.0.iso`, `StickLLM-v0.7.8.iso`, older StickLink lab ISOs). Do not overwrite those names. `v0.7.8` is outside the rolling window.
+Previous published ships stay under their own names (`StickLLM-v0.8.7.iso`, older `StickLLM-v0.8.x.iso`, golden `v0.2`). Do not overwrite those names. Rolling window: **N** = v0.8.8, **N-1** = v0.8.7 — see [docs/RESTORE.md](docs/RESTORE.md).
 
 ### 2. Verify checksum
 
 **Hash of record is in this repo** — verify the Drive download against it (do not rely on a hash stored only on Drive):
 
-[`checksums/v0.8.1.sha256`](checksums/v0.8.1.sha256)
+[`checksums/v0.8.8.sha256`](checksums/v0.8.8.sha256)
 
 ```powershell
-(Get-FileHash .\StickLLM-v0.8.1.iso -Algorithm SHA256).Hash
+(Get-FileHash .\StickLLM-v0.8.8.iso -Algorithm SHA256).Hash
 ```
 
 ```bash
-sha256sum StickLLM-v0.8.1.iso
+sha256sum StickLLM-v0.8.8.iso
 ```
 
 ### 3. Flash to USB
@@ -57,8 +58,8 @@ Flashing **erases** the stick. Pick the correct disk.
 **Linux:**
 
 ```bash
-sudo dd if=StickLLM-v0.8.1.iso of=/dev/sdX bs=4M status=progress oflag=sync
-sudo cmp -n "$(stat -c%s StickLLM-v0.8.1.iso)" StickLLM-v0.8.1.iso /dev/sdX
+sudo dd if=StickLLM-v0.8.8.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo cmp -n "$(stat -c%s StickLLM-v0.8.8.iso)" StickLLM-v0.8.8.iso /dev/sdX
 ```
 
 After flash, Windows often shows **no drive letter** — that is normal for this
@@ -68,46 +69,36 @@ Full flash notes: [docs/FLASH.md](docs/FLASH.md). Then boot: [docs/BOOT.md](docs
 
 ---
 
-## What's in v0.8.2
+## What's in v0.8.8
 
-About and `stickllm.json` say **v0.8.2**. Base OS is **Debian 13 (trixie)**. StickLink Method C phone join / Always-On peer remains in the shipping ISO (built from **private** StickLink sources). StickLink rendezvous/signalling remains **closed source / commercial** — see [docs/sticklink/README.md](docs/sticklink/README.md).
+About and `stickllm.json` say **v0.8.8**. Base OS is **Debian 13 (trixie)**. Default engine remains **llama.cpp** with baked **Qwen2.5-7B Instruct Q4_K_M**. Experimental **NInfer** / Strata can be set as default on `:8080` (Confirm; switch back to llama.cpp). StickLink Method C phone join / Always-On peer remains in the shipping ISO (built from **private** StickLink sources). StickLink rendezvous/signalling remains **closed source / commercial** — see [docs/sticklink/README.md](docs/sticklink/README.md).
 
-Also in this line: Experimental **Set default** wires NInfer-all / Strata onto `:8080` (Confirm; switch back to llama.cpp); weak **VL-3B** catalog pin dropped for quality — pin **Qwen2.5-VL-7B** (≥12 GB) instead; llama.cpp b12617 + mmproj; MoE/32K refuse-if-unfit; HF typo fuzzy search; firmware-mediatek. Baked default model remains **Qwen2.5-7B Instruct Q4_K_M**.
+Highlights in this ship (ISS-065 … ISS-073):
+
+- NInfer status accuracy (no false “loading / Downloading Qwen2.5” from parked GGUF / leftovers)
+- Download to free RAM + async USB persist; RAM spike guard; Models shows Saving to USB while the durable copy finishes
+- NInfer HF token for catalog pulls; Stop / Resume / Delete for NInfer queue jobs
+- NInfer Context slider + Load guard (refuse when context / headroom unsafe; prefer existing tmpfs stage)
+- Local timezone on first internet (geolocate public IP; not hard-locked to Eastern/UTC)
+
+Carry from recent ships still in the ISO: USB→RAM stage before Load, NInfer Models/HF search, Agent Zero offline first-start, vault erase-in-setup, StickLink keepalive / A0 sync over phone, vision image shrink. Full list: [CHANGELOG.md](CHANGELOG.md) §0.8.8 (and §0.8.7).
 
 **Not in the ISO:** StickDroid keep-pins APK; StickLink Worker cloud. Full CMP unlock still needs nvidia-open (this bake keeps proprietary `nvidia-kernel-dkms`).
 
-## What's in v0.8.1 (N-1)
+## What's in v0.8.7 (N-1)
 
-About **v0.8.1**. Experimental download/unlock helpers; VL-3B was briefly catalogued (replaced in 0.8.2). Artifact `StickLLM-v0.8.1.iso` — do not overwrite.
-## What’s in v0.4.2 (older)
+USB→RAM stage, NInfer Load/HF/search parity, clock NTP on Wi‑Fi, StickLink keepalive + A0 sync/vision/files. Artifact `StickLLM-v0.8.7.iso` — do not overwrite. Restore: [docs/RESTORE.md](docs/RESTORE.md).
 
-Voice chat, USB settings partition, and load-meter fixes. ISO `StickLLM-v0.4.2.iso` + [`checksums/v0.4.2.sha256`](checksums/v0.4.2.sha256) (`3a50eb56…`) stays published — do not overwrite.
+## What’s older
 
-## What’s in v0.3.9
-
-- Built-in model is **Qwen2.5 3B** only. **Qwen2.5 7B** is download-only (it is not in the ISO).
-- Hugging Face search, including uncensored/abliterated, and a one-at-a-time download queue with stop, start, and delete. The queue is saved in the models folder and resumes after reboot.
-- Fit labels use the combined VRAM of the suitable GPUs.
-- Chat footer shows speed and how much of the loaded context the reply used.
-- Boot: **Local/Server**, **Terminal**, **Test - SSH Enabled**
-- Inference: **CUDA → Vulkan → CPU** fallback
-- Kiosk chat UI on `:80`; LAN pair code (loopback needs no pair; **F9** remints PAIR CODE on kiosk)
-- Ephemeral by default; optional encrypted SSD vault unlock from the UI (file blob; Find/Open existing after reflash)
-- Mount host drives; claim stick free space for durable downloads
-- llama on **127.0.0.1:8080** only
-- **StickLLM UI only** — external OpenAI-style `/v1` clients get **410** (see [FEATURES.md](FEATURES.md))
-
-Release notes: v0.3.9 (Drive / private archive).
-
-## What’s in v0.3.8
-
-Previous ship (~8.7 GB), still recoverable. It baked both the 3B and the 7B. Notes: v0.3.8 (Drive / private archive).
+Older public ships (`v0.8.6` … `v0.8.0`, `v0.4.2`, `v0.3.9`, golden `v0.2.0`) stay under their original names and checksums. Leave Drive golden **v0.2** alone.
 
 ## Threat model (summary)
 
 - Default session is **ephemeral** (RAM overlay; reboot clears chats/config).
 - Inference is **local**; StickLLM web UI + pair code on LAN.
 - **Persist config** and **Download model** require explicit confirmation.
+- Optional encrypted SSD vault unlock from the UI (file blob; Find/Open existing after reflash) — [docs/VAULT.md](docs/VAULT.md).
 - Local ≠ safe against LAN sniffers, GPU/firmware vendors, phones, or physical access.
 - **Web / Tor / No internet** (taskbar Web, Settings → Network) applies to the **stick kiosk browser** and stick-local Chromium only. Paired phones and PCs on the LAN use their own network — StickLLM cannot force their traffic through Tor or offline. Details: [docs/WEB-MODE.md](docs/WEB-MODE.md).
 - High-risk use: [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
@@ -150,7 +141,7 @@ cd stickllm
 ./scripts/download-model.sh
 ./scripts/build-llama-server.sh
 ./scripts/build.sh
-# → out/v0.7.8/StickLLM-v0.7.8.iso  (+ SHA256SUMS; integrity-checked in-build)
+# → out/v0.8.8/StickLLM-v0.8.8.iso  (+ SHA256SUMS; integrity-checked in-build)
 ```
 
 Windows (Git Bash):
@@ -168,12 +159,11 @@ Troubleshooting (e.g. Agent Zero apps open in a panel, not a new tab): [docs/TRO
 
 | Artifact | Public? |
 |---|---|
-| **v0.7.8** `StickLLM-v0.7.8.iso` + [`checksums/v0.7.8.sha256`](checksums/v0.7.8.sha256) | Hash is in git. The ISO is not (GitHub’s 2 GB limit). Put that file on the Drive folder and check it against the digest |
-| **v0.4.2** `StickLLM-v0.4.2.iso` + [`checksums/v0.4.2.sha256`](checksums/v0.4.2.sha256) | Older published ship — leave name/hash alone |
-| **v0.3.9** ISO on Google Drive + [`checksums/v0.3.9.sha256`](checksums/v0.3.9.sha256) | Yes — previous published ship |
-| **v0.3.8** ISO on Google Drive + [`checksums/v0.3.8.sha256`](checksums/v0.3.8.sha256) | Yes — older published ship |
-| Git tags `v0.3.9`, `v0.3.8`, `v0.3.6`, `v0.2.0` + checksum files in git | Yes |
-| **v0.2.0** GitHub Release (split `.7z` + Drive link) | Yes — older golden |
+| **v0.8.8** `StickLLM-v0.8.8.iso` + [`checksums/v0.8.8.sha256`](checksums/v0.8.8.sha256) | Hash is in git. ISO on [Google Drive](https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing) (GitHub’s 2 GB limit) |
+| **v0.8.7** `StickLLM-v0.8.7.iso` + [`checksums/v0.8.7.sha256`](checksums/v0.8.7.sha256) | N-1 restore — same Drive folder; do not overwrite |
+| Git tags `v0.8.8`, `v0.8.7`, … + checksum files in git | Yes |
+| Golden **v0.2.0** + [`checksums/v0.2.sha256`](checksums/v0.2.sha256) | Yes — forever; never overwrite |
+| Older `StickLLM-v0.8.x.iso` / `v0.4.2` / `v0.3.9` | Drive / checksums as published — leave names alone |
 | `out/v0.3.0/…` apiready ISO | **No** — local/maintainer restore only |
 | Maintainer Windows Python flasher, ISO-READY gates, lab hardware notes | [docs/MAINTAINER.md](docs/MAINTAINER.md) |
 
@@ -216,6 +206,3 @@ NVIDIA drivers, model weights, companion apps, etc.) remain under their own lice
 ## StickLink
 
 Rendezvous/signalling server source is private ([StickLLM/sticklink](https://github.com/StickLLM/sticklink)). Prior full monorepo history is private (StickLLM/stickllm-archive).
-
-
-

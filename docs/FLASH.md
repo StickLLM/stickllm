@@ -43,24 +43,24 @@ Avoid naive PowerShell `FileStream` raw write (Access Denied even when elevated)
 lsblk -d -o NAME,SIZE,MODEL,TRAN
 # REPLACE sdX with your USB device
 sudo wipefs -a /dev/sdX
-sudo dd if=StickLLM-v0.8.3.iso \
+sudo dd if=StickLLM-v0.8.8.iso \
   of=/dev/sdX bs=4M status=progress oflag=sync
 # Full readback (required for v0.8.0+)
-sudo cmp -n "$(stat -c%s StickLLM-v0.8.3.iso)" StickLLM-v0.8.3.iso /dev/sdX
+sudo cmp -n "$(stat -c%s StickLLM-v0.8.8.iso)" StickLLM-v0.8.8.iso /dev/sdX
 sudo eject /dev/sdX
 ```
 
 Optional helper (same `dd` path):
 
 ```bash
-ISO=StickLLM-v0.8.3.iso ./scripts/flash-linux.sh /dev/sdX
+ISO=StickLLM-v0.8.8.iso ./scripts/flash-linux.sh /dev/sdX
 ```
 
 ## macOS
 
 ```bash
 diskutil list
-ISO=StickLLM-v0.8.3.iso ./scripts/flash-macos.sh /dev/diskN
+ISO=StickLLM-v0.8.8.iso ./scripts/flash-macos.sh /dev/diskN
 ```
 
 ## After flash
@@ -73,10 +73,10 @@ ISO=StickLLM-v0.8.3.iso ./scripts/flash-macos.sh /dev/diskN
    exists, models live in RAM and are lost on reboot.
 4. Confirm Debian 13: `grep VERSION_ID /etc/os-release` should show `13`.
 
-## Debian 13 line — **v0.8.3**
+## Debian 13 line — **v0.8.8**
 
-NInfer-all Linux builds need **Debian 13**. Artifact:
-`out/v0.8.3/StickLLM-v0.8.3.iso` (fresh image, not an in-place dist-upgrade),
+NInfer-all Linux builds need **Debian 13**. Current artifact:
+`StickLLM-v0.8.8.iso` / `out/v0.8.8/` (fresh image, not an in-place dist-upgrade),
 flashed then verified with a **full readback** of the written ISO bytes. See
 [DEBIAN13-EXPERIMENTAL.md](DEBIAN13-EXPERIMENTAL.md). Never overwrite shipping ISO names
-(`v0.8.2`, `v0.8.1`, `v0.8.0`, golden `v0.2.0`).
+(`v0.8.8`, `v0.8.7`, older `v0.8.x`, golden `v0.2.0`).
