@@ -15,6 +15,18 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 **Source of truth for next bake:** [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Closed** below.
 
+### ISS-083 — Settings → About hardcodes “llama.cpp” (ignore active engine)
+| | |
+|---|---|
+| **ID** | ISS-083 |
+| **Date** | 2026-11-24 |
+| **Mode** | Settings / About |
+| **Severity** | LOW (misleading copy when NInfer/Strata is Set default) |
+| **Status** | Open — In tree → bake v0.8.9 |
+| **Summary** | About said models run with llama.cpp and only listed a llama.cpp build row, even when Experimental **NInfer** / **Strata** is the active default on `:8080`. |
+| **Fix** | Show **Default engine** (current), **Supported engines** (llama.cpp · NInfer · Strata), and keep **llama.cpp build** as the baked pin. Blurb mentions Experimental Set default. |
+
+
 ### ISS-082 — NInfer Models fit label uses GGUF math → false “Partial” at 32K/64K
 | | |
 |---|---|

@@ -7521,6 +7521,19 @@ async function refreshSystemInfo() {
   if ($("#sysData")) $("#sysData").textContent = sy.data_free_gb != null ? sy.data_free_gb + " GiB free" : "Not mounted";
   if ($("#sysRam")) $("#sysRam").textContent = sy.ram_total_gb ? sy.ram_total_gb + " GB" : "—";
   if ($("#aboutLlama")) $("#aboutLlama").textContent = sy.llama_version || "—";
+  {
+    const eng = String(sy.active_engine || state.activeEngine || "llama.cpp");
+    const label = eng === "ninfer-all" ? "NInfer"
+      : eng === "strata" ? "Strata"
+      : eng === "llama.cpp" ? "llama.cpp"
+      : eng;
+    if ($("#aboutEngine")) {
+      $("#aboutEngine").textContent = label + (eng !== "llama.cpp" ? " (Experimental Set default)" : " (default)");
+    }
+    if ($("#aboutEngines")) {
+      $("#aboutEngines").textContent = "llama.cpp · NInfer · Strata";
+    }
+  }
 }
 let advState = { gpus: [], allowed: [], pin: null, cacheTypes: [] };
 function advNum(v) { const t = String(v ?? "").trim(); return t === "" ? null : t; }

@@ -20,6 +20,7 @@ Post-**v0.8.8** punch list. Shipping tag/ISO must be a **new** name
 | **AZ1** | Corrupt USB A0 docker graph `/bin/bash` missing (ISS-075) | Agreed → implement → **bake v0.8.9** | Lab manually reseeded (moved corrupt graph, `ensure-seeded`) → A0 HTTP 200. Product smoke+auto-reseed + UI still to land. |
 | **TU3** | Optional Advanced VRAM-ceiling warn for NInfer high ctx (follow-on from ISS-072 lab) | Agreed → implement → **bake v0.8.9** | Host MemAvailable guard still passes 128K on 3090/27B while VRAM fails (~22 GiB used at 96K; 128K exits). Warn near VRAM ceiling so refuse copy is not only host-RAM. |
 | **NF1** | NInfer fit labels use GGUF math (ISS-082) | In tree → bake v0.8.9 | `fitOf()` false **Partial** at 32K/64K for qwen36-27b; lab Load 96K ≈ 22.5 GB. NInfer-specific VRAM estimate. |
+| **AB1** | About page engine copy (ISS-083) | In tree → bake v0.8.9 | Default engine + supported list; keep llama.cpp build pin. |
 
 ## Later (not must-bake for v0.8.9)
 

@@ -2311,11 +2311,22 @@ def system_info() -> dict:
             if m:
                 llama = f"b{m.group(1)} ({m.group(2)})"
             break
+    active_engine = "llama.cpp"
+    try:
+        _emod = __import__("stickllm_experimental")
+        if hasattr(_emod, "read_active_engine"):
+            active_engine = str(
+                (_emod.read_active_engine() or {}).get("engine") or "llama.cpp"
+            )
+    except Exception:
+        active_engine = "llama.cpp"
     return {
         "ram_total_gb": round(total, 1),
         "driver": driver,
         "data_free_gb": free_gb,
         "llama_version": llama,
+        "active_engine": active_engine,
+        "supported_engines": ["llama.cpp", "ninfer-all", "strata"],
     }
 
 
