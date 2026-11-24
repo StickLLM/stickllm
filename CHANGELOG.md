@@ -12,7 +12,7 @@ Must-bake checklist: [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 - **Multi-device pairing roadmap (ISS-077).** Capture: up to **8** concurrent paired clients on one stick (phone / browser / AIKVM / speaker-mic; LAN + StickLink). Phase 1 = shared vault; Phase 2 = admin/roles / separate vaults (open). Not a v0.8.9 must-bake — FEATURES + NEXT Later.
 - **Phone Chat / Work / A0 (ISS-078).** Chat = old StickLLM `/api/chat` UI; Work = today’s simplified A0 “Chat” renamed; A0 = full agent. **Chat can hand off to A0** (explicit Work/A0 / send-to-agent; soft suggest OK; silent auto-escalate later). Not a v0.8.9 must-bake.
 - **Phone web client roadmap (ISS-079).** https://stickllm.com/app/ as StickDroid APK alternative (QR → connect → site); connection/timeout issues still open in lab.
-- **Experimental future: Project Maya / sfnx (ISS-080).** Track [johnfink8/sfnx](https://github.com/johnfink8/sfnx) (or similar) for **RTX 3090 + Inkling-2-mini ~200 tok/s** as a later Experimental engine offer — not the upstream 3× V100 demo target; not wired; not a v0.8.9 must-bake.
+- **Experimental future: Project Maya + Inkling 2 Mini (ISS-080).** Track [mw00/project-maya](https://github.com/mw00/project-maya) `maya-ik2` on **RTX 3090** (~125 tok/s plain, ~200 with DSpark on code/edits). [sfnx](https://github.com/johnfink8/sfnx) is a separate 3× V100 / Qwen Flash engine — not this path. Not wired; not a v0.8.9 must-bake.
 
 ## 0.8.8 - NInfer status/queue + RAM land + async USB + context guard
 

@@ -27,7 +27,7 @@ Post-**v0.8.8** punch list. Shipping tag/ISO must be a **new** name
 | **MD1** | Multi-device pairing up to 8 on one stick / shared vault (ISS-077) | Agreed → plan / implement post-0.8.9 | Phase 1: concurrent LAN + StickLink sessions, one vault. Phase 2: admin/roles / separate vaults — open. |
 | **CW1** | Phone Chat / Work / A0 (ISS-078) | Agreed → plan / implement post-0.8.9 | Chat = `/api/chat` (old UI); Work = simplified A0; A0 = full. **Explicit Chat→A0 handoff** (send to agent / mode switch; soft suggest OK; auto-escalate later). StickDroid + web client. |
 | **WA1** | Phone web client stickllm.com/app (ISS-079) | Agreed → roadmap post-0.8.9 | APK alternative; QR → connect → site. Fix connection/timeouts before calling it shipping. |
-| **MY1** | Experimental Project Maya / sfnx (ISS-080) | Agreed → future | [johnfink8/sfnx](https://github.com/johnfink8/sfnx) (or similar): **3090 + Inkling-2-mini ~200 tok/s**; not 3× V100. Evaluate before Experimental UI. |
+| **MY1** | Experimental Project Maya + Inkling 2 Mini (ISS-080) | Agreed → future | [mw00/project-maya](https://github.com/mw00/project-maya) `maya-ik2` on **3090**: ~125 plain / ~200 DSpark. Not sfnx. Evaluate before Experimental UI. |
 
 ## Product rules
 

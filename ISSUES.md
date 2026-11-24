@@ -15,7 +15,7 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 **Source of truth for next bake:** [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Closed** below.
 
-### ISS-080 — Experimental: Project Maya / sfnx (RTX 3090 + Inkling-class, ~200 tok/s)
+### ISS-080 — Experimental: Project Maya + Inkling-2-Mini on RTX 3090 (~125 plain / ~200 with DSpark)
 | | |
 |---|---|
 | **ID** | ISS-080 |
@@ -23,11 +23,12 @@ ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Close
 | **Mode** | Experimental / Models / RTX 3090 |
 | **Severity** | LOW (future Experimental offer; not blocking v0.8.9) |
 | **Status** | Open — future requirement; no bake commitment yet |
-| **Summary** | Track **Project Maya** / [sfnx](https://github.com/johnfink8/sfnx) (or similar CUDA engine) as a future **Settings → Experimental** offer aimed at StickLLM lab hardware: **RTX 3090** running **Inkling-2-mini** (or similar small/fast MoE / catalog model), targeting about **~200 tok/s**. |
-| **Not the product target** | Upstream README demos **3× PCIe V100** MoE split (~382 tok/s on a used box). That is upstream marketing — StickLLM’s interest is **single (or StickLLM-tested) 3090 + Inkling-2-mini / similar**, not requiring a 3× V100 chassis. |
-| **Fit** | Same Experimental pattern as NInfer / Strata: opt-in download + Confirm / Cancel/Continue; Set default on `:8080` when mature; Models Activate for Inkling-class weights; no NVIDIA blobs in StickLLM git; no auto-install. |
-| **Out of scope for now** | Must-bake for v0.8.9; shipping as default engine; redistributing weights or proprietary blobs. |
-| **Notes** | Upstream: https://github.com/johnfink8/sfnx — evaluate license, 3090 support, Inkling-2-mini (or similar) path, OpenAI-compatible serve, and real tok/s on lab 3090 before wiring UI. |
+| **Summary** | Future **Settings → Experimental** offer for **Project Maya**’s **`maya-ik2`** engine + **Inkling 2 Mini** on StickLLM’s lab **RTX 3090** (24 GB). Public measurements (Maya PR #1095 / v1.1.72–75, alesha-pro): **~125 tok/s** plain decode (vs ~57 llama.cpp); **~182–212 tok/s** on code/edits with **DSpark** drafter through HTTP — the “~200 tok/s” story. Prefill ~2.5k tok/s; full experts in VRAM (Unsloth `UD-Q4_K_XL` ~17.6 GB + FP8 KV; up to ~262K–344K ctx). OpenAI/Anthropic-compatible `/v1`. |
+| **Correct upstream** | **[mw00/project-maya](https://github.com/mw00/project-maya)** (`maya-ik2`, `./maya.sh --setup --model inkling-2-mini`). Companion notes: [alesha-pro/maya-inkling-mini](https://github.com/alesha-pro/maya-inkling-mini). Weights: Unsloth `Inkling-2-Mini-GGUF` / `Inkling-2-Mini-UD-Q4_K_XL`. |
+| **Not the same as sfnx** | [johnfink8/sfnx](https://github.com/johnfink8/sfnx) is a **different** engine: **3× V100** layer-split for **Qwen3.8-Flash-Next** (~382 tok/s code-edit). Do **not** treat sfnx as the 3090+Inkling path. Optional later Experimental curiosity only. |
+| **Related engines (context)** | StickLLM already ships **NInfer** Experimental; NInfer-3090 also serves Inkling-2-Mini on 3090 (~104 tok/s plain per HF card) — slower than Maya’s published 3090 numbers. vLLM Inkling Ampere path ~100 / ~177 with DSpark (TP=2). |
+| **Fit** | Same Experimental pattern as NInfer / Strata: Cancel/Continue, download, Set default on `:8080` when mature; Models Activate for Inkling; no NVIDIA blobs in StickLLM git; no auto-install. Lab-verify tok/s + OpenAI compat on StickLLM Debian 13 / CUDA bake before UI row. |
+| **Out of scope for now** | Must-bake for v0.8.9; default engine; shipping Maya binaries or weights inside the ISO without opt-in. |
 
 
 ### ISS-079 — Phone web client (stickllm.com/app) as StickDroid APK alternative
