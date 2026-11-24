@@ -15,6 +15,9 @@ Post-**v0.8.8** punch list. Shipping tag/ISO must be a **new** name
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
+| **VL1** | Vault locked ≠ block A0 / core StickLLM (ISS-076) | Agreed → implement → **bake v0.8.9** | Design: lock = ephemeral only (no durable chats/secrets). Unlock = vault save / HF in settings / durable A0. Tree still hard-gates dockerd/A0 on vault mount (`docker_may_start`, systemd ConditionPath, UI “Unlock vault”). Separate from DU1/AZ1. |
+| **DU1** | Dual-USB vault unlock → A0 `settings_missing` (ISS-074) | Agreed → implement → **bake v0.8.9** | Boot ISO stick + second-slot DATA/settings: vault unlocks, StickLink pairs, A0 503 `agent_not_running`. Open settings on DATA disk (or ensure boot settings); honest UI when settings missing. |
+| **AZ1** | Corrupt USB A0 docker graph `/bin/bash` missing (ISS-075) | Agreed → implement → **bake v0.8.9** | Lab manually reseeded (moved corrupt graph, `ensure-seeded`) → A0 HTTP 200. Product smoke+auto-reseed + UI still to land. |
 | **TU3** | Optional Advanced VRAM-ceiling warn for NInfer high ctx (follow-on from ISS-072 lab) | Agreed → implement → **bake v0.8.9** | Host MemAvailable guard still passes 128K on 3090/27B while VRAM fails (~22 GiB used at 96K; 128K exits). Warn near VRAM ceiling so refuse copy is not only host-RAM. |
 
 ## Product rules

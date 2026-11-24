@@ -2,8 +2,11 @@
 
 Must-bake checklist: [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 
-- **Retire golden v0.2.0.** Early/broken-days baseline is no longer “golden forever.” Rolling window is **N** = v0.8.8 / **N-1** = v0.8.7 only; remove `checksums/v0.2.sha256` and Drive golden ISO when present; docs/rules updated.
+- **Vault lock is ephemeral, not an A0/core hard gate (ISS-076).** StickLLM + Agent Zero must run when the vault is locked (tmpfs / no durable chats/secrets); unlock enables vault save, HF in settings, durable A0 chats. Remove `docker_may_start`/systemd/UI unlock gates that refuse A0 while locked.
+- **Dual-USB A0 gate (ISS-074).** Boot stick + second-slot DATA/settings: vault unlock must open `STICKLLM-SETTINGS` on the DATA disk (not boot-only), and UI must not look A0-ready while `settings_missing`.
+- **Corrupt USB A0 graph (ISS-075).** Detect/repair broken `stickllm-docker` on DATA (`/bin/bash` missing) — smoke + reseed from ISO seed; do not loop “starting” on a bad tagged image.
 - **NInfer VRAM-ceiling warn (follow-on ISS-072).** Optional Advanced warn when requested context is near GPU VRAM capacity (host MemAvailable can still pass 128K while 3090/27B fails).
+- **Retire golden v0.2.0.** Early/broken-days baseline is no longer “golden forever.” Rolling window is **N** = v0.8.8 / **N-1** = v0.8.7 only; remove `checksums/v0.2.sha256` and Drive golden ISO when present; docs/rules updated.
 
 ## 0.8.8 - NInfer status/queue + RAM land + async USB + context guard
 

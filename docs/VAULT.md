@@ -32,16 +32,18 @@ Wrong passcode or missing `DELETE_VAULT` → no disk changes. Never prints the p
 
 ## Lock while using the computer
 
-**Lock vault** (taskbar Vault → Lock, or Ctrl+Shift+L) encrypts chats, secrets, and Agent Zero memory again. That requires Agent Zero and vault add-ons to stop — their data lives under the LUKS mount.
+**Product rule (ISS-076):** StickLLM and Agent Zero **must work when the vault is locked.** Lock only means no durable chat/secrets persistence (ephemeral). Unlock enables save to vault / HF in settings / durable A0 chats — not a hard gate that blocks A0 or core StickLLM.
+
+**Lock vault** (taskbar Vault → Lock, or Ctrl+Shift+L) closes the LUKS blob so chats, secrets, and vault-backed Agent Zero memory are encrypted again. Vault-backed add-ons that bind under the mount must stop or remount before umount. After lock, session mode is Ephemeral: StickLLM stays usable; Agent Zero may run again with tmpfs chats (`/run/stickllm/a0-chats`) and without durable vault/settings writes until unlock.
 
 Intended UX:
 
-1. **Close Agent Zero UI first.** Desktop blanks/closes the Agent Zero window (and other vault app windows) so no live iframe keeps talking to `127.0.0.1:5099` / `/agent-zero/`.
-2. **Stop Agent Zero cleanly**, then umount/lock LUKS (`vault_lock` via control → `stickllm-vault lock`). Connection-refused / “agent not responding” toasts are suppressed during this intentional stop.
-3. **After lock:** session mode is Ephemeral. The desktop stays usable for non-vault work (browser, models still in RAM if loaded, Settings). Chat history on screen is cleared. No spam popups from a dead Agent Zero embed.
-4. **Unlock:** opens the vault and USB settings; does **not** auto-open Agent Zero. When you open Agent Zero later, it starts fresh (no leftover dead iframe pointing at loopback).
+1. **Close vault-backed UI first.** Desktop blanks/closes vault app windows (and any live A0 iframe bound to vault state) so nothing keeps talking through a dying LUKS mount.
+2. **Stop or remount vault-backed services**, then umount/lock LUKS (`vault_lock` via control → `stickllm-vault lock`). Connection-refused toasts are suppressed during this intentional stop.
+3. **After lock:** session mode is Ephemeral. Desktop + core StickLLM stay usable (browser, models still in RAM if loaded, Settings). Chat history that lived only on the vault is cleared from the screen. Agent Zero is allowed in ephemeral mode — do **not** require unlock to open/start A0.
+4. **Unlock:** opens the vault and USB settings; enables durable A0 chats, vault save, and HF token persistence in settings. Does **not** force-open Agent Zero.
 
-**Ephemeral vs Vault:** Ephemeral never writes StickLLM or Agent Zero chats to the SSD blob (A0 uses tmpfs under `/run`). Switching Ephemeral ↔ Vault alone does not lock or unlock LUKS — only **Lock** / **Unlock** does. Lock always stops Agent Zero because A0’s memory/settings/addons stay vault-backed even when chats are ephemeral.
+**Ephemeral vs Vault:** Ephemeral never writes StickLLM or Agent Zero chats to the SSD blob (A0 uses tmpfs under `/run`). Switching Ephemeral ↔ Vault alone does not lock or unlock LUKS — only **Lock** / **Unlock** does. Tree still hard-gates A0/dockerd on vault mount in places (`docker_may_start`, systemd `ConditionPathIsMountPoint`, UI “Unlock vault”) — that is a bug vs this rule (**ISS-076**), separate from dual-USB settings (**ISS-074**) and corrupt USB docker graph (**ISS-075**).
 
 ## Safety (fail-closed)
 

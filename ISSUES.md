@@ -15,6 +15,49 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 **Source of truth for next bake:** [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Closed** below.
 
+### ISS-076 — Design: StickLLM + Agent Zero must work when vault is locked (ephemeral)
+| | |
+|---|---|
+| **ID** | ISS-076 |
+| **Date** | 2026-11-23 |
+| **Mode** | Local / Agent Zero / StickLink / all |
+| **Severity** | HIGH (product design; hard-gates A0 + dockerd on vault mount) |
+| **Status** | Open — bake in v0.8.9 |
+| **Summary** | **Agreed product rule:** StickLLM and Agent Zero must work when the vault is locked. Vault lock only means no durable chat/secrets persistence (ephemeral). Unlock enables save to vault / HF in settings / durable A0 chats — **not** a hard gate that blocks A0 or core StickLLM. |
+| **Docs vs code** | Session mode already documents ephemeral A0 chats on `/run/stickllm/a0-chats` (tmpfs). Older Lock / ARCHITECTURE text said A0 stops until vault mounts — that hard-gate reading is **superseded** by this rule (see [docs/VAULT.md](docs/VAULT.md)). Tree still implements the old gate. |
+| **Tree blocks today (Y)** | (1) `stickllm_agent.docker_may_start` = vault mounted only (`Vault locked => docker must not start`). (2) `stickllm-agent` `ensure_dockerd` / `cmd_run_container` / `cmd_gate` → `refuse_locked` / state `locked`. (3) systemd `ConditionPathIsMountPoint=/var/lib/stickllm/vault` on `stickllm-agent.service` (+ install unit). (4) `status_document`: `state=locked`, message “Unlock vault to use Agent”; `running` requires `vault_open`. (5) UI: `ensureAgentZeroStarted` skips start when `!vault_unlocked`; Agent link detail “Unlock vault on this page”. |
+| **Fix** | Remove vault-mount hard gate for A0/dockerd/core StickLLM. Locked → ephemeral A0 (tmpfs chats; no vault memory/secrets writes; no HF save to settings). Unlocked → durable vault store / HF in settings / durable A0 chats. Keep intentional Lock teardown of vault-backed add-ons, but allow (re)start A0 in ephemeral mode after lock without requiring unlock. Update ARCHITECTURE “skipped until vault mounted” accordingly. |
+| **Not this ISS** | (a) Ephemeral A0 path itself — already partially in tree via session mode / `a0-chats-dir`. (b) Dual-USB settings discovery — **ISS-074**. (c) Corrupt USB docker graph — **ISS-075**. |
+
+
+### ISS-075 — Corrupt A0 docker graph on USB DATA: `/bin/bash` missing → 503
+| | |
+|---|---|
+| **ID** | ISS-075 |
+| **Date** | 2026-11-23 |
+| **Mode** | Local / Agent Zero / StickLink |
+| **Severity** | HIGH (dockerd up; container never starts; StickLink 503) |
+| **Status** | Open — bake in v0.8.9 |
+| **Summary** | On a dual-USB lab stick (boot ISO + second-slot `STICKLLM-DATA`), `stickllm-dockerd` and image tag `stickllm/agent-zero:v2.15` look present, but `docker run … /bin/bash` fails with `stat /bin/bash: no such file or directory`. `stickllm-agent` restart-loops; gateway `/agent-zero/` returns `agent_not_running`. System `docker.service` masked is normal — StickLLM uses `stickllm-dockerd` + `/run/stickllm/agent-docker.sock`. |
+| **Root cause (lab)** | Writable docker data-root at `/mnt/stickllm-data/stickllm-docker` held a broken overlay2 graph (corrupt/incomplete layer diffs or lost bind mounts / exec bits from prior USB use). `image-ready` / `image_present` stayed true so install was skipped; runtime only failed at runc. |
+| **Fix** | (1) Detect broken graph (smoke `/bin/bash` or layer exec check on the **active** data-root, not only seed). (2) Auto-reseed from `/opt/stickllm/docker` via `ensure-seeded` / materialize when smoke fails — do not trust a tagged image that cannot exec. (3) Surface honest UI: “Agent image on DATA is damaged — repairing…” instead of endless starting. (4) Dual-USB: reclaiming old DATA must re-verify A0 graph, not assume old `stickllm-docker` is healthy. |
+| **Lab (2026-11-23)** | v0.8.8 Lexar boot + old DATA @ 192.168.72.50. Moved corrupt `stickllm-docker` aside → `ensure-seeded` from `/opt/stickllm/docker` → bash smoke OK → A0 **running**, `/agent-zero/` **HTTP 200**. Product auto-detect/reseed still → bake v0.8.9. Related: ISS-074. |
+
+
+### ISS-074 — Dual-USB: vault unlocks on second stick; A0 stuck `settings_missing` / `agent_not_running`
+| | |
+|---|---|
+| **ID** | ISS-074 |
+| **Date** | 2026-11-23 |
+| **Mode** | Local / StickLink / Agent Zero |
+| **Severity** | HIGH (UI looks unlocked; StickLink pairs then 503) |
+| **Status** | Open — bake in v0.8.9 |
+| **Summary** | Boot from a **new** StickLLM USB (iso only) with the **old** vault/DATA USB in a second slot: `STICKLLM-DATA` mounts from the second stick, vault unlock succeeds, Terminal/session UI looks ready, StickLink pairs (`noise ok`, `agent_ready`) then `A0 ui/index HTTP 503 agent_not_running`. Control says `vault_unlocked: true` but `state: settings_missing` — “Unlock the USB settings partition to use Agent”. |
+| **Root cause** | `stickllm-usb-settings find_settings_part` only accepts `STICKLLM-SETTINGS` on the **boot** disk. Lab: boot=`sda` (no DATA/settings), DATA+LUKS settings on `sdb3`/`sdb4`. Labeled `sdb4` is rejected (`pk != boot_disk`) → status `usb_settings: absent`. Vault unlock’s `sync_usb_settings` therefore never opens settings even though the passcode was just accepted. Stale `stickllm-settings-part.json` can still point at `/dev/sda4` (missing). Agent loops “USB settings partition is not mounted” → `start-limit-hit`. `vault.key` alone does **not** open settings LUKS (needs vault passcode / matching keyslot). |
+| **Fix** | (1) When mounted `STICKLLM-DATA` is off-boot, still discover/open `STICKLLM-SETTINGS` on that same DATA disk (or create settings on boot free space — do not exit early after mounting foreign DATA). (2) On vault unlock, if settings open fails as “absent” while a labeled settings LUKS exists on the DATA disk, open that partition with the same passcode and refresh the pointer. (3) UI: vault unlocked + `settings_missing` must not read as “A0 ready” (honest copy / gate). (4) Docs: preferred boot+DATA+settings on one stick; dual-USB reclaim is supported only if settings can open from the DATA stick. |
+| **Lab (2026-11-23)** | v0.8.8 Lexar boot + old DATA stick @ 192.168.72.50. `vault.key` alone cannot open settings; vault passcode opens `sdb4` → real `/mnt/stickllm-settings` (HF token present). Product still boot-disk-only for `find_settings_part` → bake v0.8.9. Stacked with ISS-075 corrupt A0 graph; after manual settings open + reseed, A0 **running**. |
+
+
 ### ISS-036 — Peer reconnect still requires a WebRTC DataChannel; durable `?rt=` WSS resume deadlocks
 | | |
 |---|---|
