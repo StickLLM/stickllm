@@ -22,7 +22,7 @@ ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Close
 | **Date** | 2026-11-24 |
 | **Mode** | Models / NInfer / Local |
 | **Severity** | MED (wrong fit UX; Load still works) |
-| **Status** | Open — bake in v0.8.9 |
+| **Status** | Open — In tree → bake v0.8.9 |
 | **Summary** | Qwen3.6 27B (NInfer) shows **Partial** at 32K (and looks wrong at 64K) on a 24 GB 3090, but Load at **96K** succeeds at **~22.54 GB** VRAM — so 32K/64K should read **Fits in VRAM**. |
 | **Cause** | UI `fitOf()` uses dense GGUF heuristic `need = file_gb + (gb/8)*(ctx/8192)*kvMul + 1`. NInfer MoE pack size ≠ dense weights+KV the same way; KV is overstated → need > 24 GB at 32K. |
 | **Fix** | Separate NInfer fit estimate (weights ≈ pack; KV ~1.8 GiB / 32K calibrated to lab 96K@22.5 GB). Do not paint GGUF “Partial · offload” for NInfer. Related: TU3 / ISS-072 VRAM-ceiling warn. |
