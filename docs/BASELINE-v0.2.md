@@ -1,6 +1,6 @@
 # StickLLM v0.2 — RETIRED
 
-**Status:** early/broken-days baseline — **retired**. No longer a golden forever restore slot.
+**Status:** early/broken-days baseline — **retired**. Not a restore slot.
 
 Use current **N** / **N-1** instead: [RESTORE.md](RESTORE.md) (`v0.8.8` / `v0.8.7`).
 
@@ -11,13 +11,13 @@ Use current **N** / **N-1** instead: [RESTORE.md](RESTORE.md) (`v0.8.8` / `v0.8.
 - Former git tag: `v0.2.0` (remote tag removed on retirement; local tag may still exist briefly)
 - Checksum file `checksums/v0.2.sha256` removed from the tree
 
-If a copy still appears on Drive StickLLM-releases, delete it (see [RESTORE.md](RESTORE.md) retired section). ADC reauth may be required:
+If a copy still appears on Drive StickLLM-releases, delete it (see [RESTORE.md](RESTORE.md) § Outside the window). ADC reauth may be required:
 
 `gcloud auth application-default login`
 
 ## Local checkpoint (optional, separate)
 
-Lab-only Local browser + keyboard checkpoint (not the retired Drive golden):
+Lab-only Local browser + keyboard checkpoint (not a public restore ship):
 
 | | |
 |---|---|

@@ -10,7 +10,7 @@ It does **not** prove real NIC drivers, Wi‑Fi association, or NVIDIA GPU load.
 3. If `out/ISO-NOT-READY.txt` exists → do not flash.
 4. Flash a spare stick only. Prefer current **N** (**v0.8.8**); never flash **v0.3.5** (truncated).
    Never overwrite Drive **v0.8.8** / **v0.8.7** (or other published names) with a
-   different digest under the same name. Early **v0.2** golden is retired. On Windows use
+   different digest under the same name. On Windows use
    `out/safe-flash-samsung-auth.py` or Rufus DD (see [FLASH.md](FLASH.md)).
 
 ## On real hardware

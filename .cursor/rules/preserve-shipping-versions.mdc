@@ -18,7 +18,7 @@ Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship)
 
 Older public/local ships (`v0.8.6`, `v0.8.5`, `v0.8.4`, …) are **outside** the rolling window. Tags/checksums may remain; local `out/` / Drive ISOs for those may be removed after N advances again.
 
-**Retired:** early **v0.2.0** is no longer a golden forever slot (removed from restore policy; checksum/Drive golden retired). Prefer **v0.8.8** (or **v0.8.7** as restore).
+**Retired:** early **v0.2.0** is outside the rolling window (checksum removed; not a restore slot). Prefer **v0.8.8** (or **v0.8.7** as restore).
 
 **Do not flash `v0.3.5`** (truncated ISO).
 

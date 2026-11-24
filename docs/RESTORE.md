@@ -16,8 +16,6 @@ https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sha
 
 **Public current ship on that folder: `StickLLM-v0.8.8.iso`.** Ships older than N-1 may leave the rolling window.
 
-**Retired:** early **v0.2.0** is no longer a golden forever restore slot (checksum removed; Drive golden ISO may be deleted when ADC allows — see below). Prefer **v0.8.8** / **v0.8.7**.
-
 **Do not flash `v0.3.5`** — truncated/broken. Prefer **v0.8.8** (or **v0.8.7** as restore).
 
 **Hash of record is on GitHub** (`checksums/v0.8.8.sha256`). After Drive upload, verify the ISO against that digest — do not treat a hash only on Drive as authoritative.
@@ -68,11 +66,9 @@ ISO:      out/v0.8.3/StickLLM-v0.8.3.iso (or Drive if published)
 Checksum: checksums/v0.8.3.sha256 → 26ceba9f…
 ```
 
-## Retired: v0.2.0 golden
+## Outside the window
 
-Early **v0.2.0** is **retired** (no longer golden forever). Do not restore or flash it as a supported baseline.
-
-If a copy still appears on Drive StickLLM-releases, delete manually (ADC reauth may be required):
+Early **v0.2.0** is not a restore slot. Do not flash or document it as a supported baseline. If an old hybrid ISO for that line still appears on Drive StickLLM-releases, it may be deleted (ADC reauth may be required):
 
 - Folder: https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing
-- Typical name: `stickllm-amd-rtx3090-v0.2.hybrid.iso` (and any StickLLM / hybrid ISO named for 0.2 golden)
+- Typical name: `stickllm-amd-rtx3090-v0.2.hybrid.iso`
