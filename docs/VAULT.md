@@ -1,8 +1,9 @@
-# Encrypted SSD vault (v0.3.6 / `feature/encrypted-ssd-vault`)
+# Encrypted SSD vault
 
 **Creates a file in a folder you choose. Never formats your drive.**
 
-Shipping ISO: **v0.3.6** on Google Drive — see [RESTORE.md](RESTORE.md) / [README.md](../README.md).
+Current ship: **v0.8.8** — see [RESTORE.md](RESTORE.md) / [README.md](../README.md).
+USB layout (DATA + settings): [USB-LAYOUT.md](USB-LAYOUT.md).
 **Do not flash v0.3.5** (truncated).
 
 ## Session mode (UI header)

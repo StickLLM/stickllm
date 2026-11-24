@@ -22,7 +22,7 @@ model / probe default. **Q5_K_M** stays a pinned optional download (catalog
 `min_vram_gb = 10`) — slightly better quality, but tight on a true 8 GB card at
 the Agent Zero **32K** floor. **Qwen3.5-4B** stays an **optional catalog download**
 (`probe_recommend = false`); it is **not** baked and not on the Open model screen.
-Experimental **NInfer** profiles (e.g. Qwen3.6 27B) are download-on-demand into the shared models dir — see [FEATURES.md](../FEATURES.md) and [CHANGELOG.md](../CHANGELOG.md) §0.8.7–0.8.8.
+Experimental **NInfer** profiles (e.g. Qwen3.6 27B) are download-on-demand into the shared models dir — user steps: [NINFER.md](NINFER.md); also [FEATURES.md](../FEATURES.md) and [CHANGELOG.md](../CHANGELOG.md) §0.8.7–0.8.8.
 
 **v0.3.8** and earlier 0.3.x ships baked both the **3B** and the **7B**. **v0.3.9**
 baked the 3B only. Mid-0.5.x / 0.6.x through 0.6.6 baked **Qwen3.5-4B**. Optional

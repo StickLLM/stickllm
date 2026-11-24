@@ -13,6 +13,8 @@ Front door: [README.md](../README.md) · Features: [FEATURES.md](../FEATURES.md)
 | [RESTORE.md](RESTORE.md) | N / N-1 rolling window |
 | [HARDWARE.md](HARDWARE.md) | Minimum + tested GPUs |
 | [VAULT.md](VAULT.md) | Passcode, settings partition, recovery |
+| [USB-LAYOUT.md](USB-LAYOUT.md) | One stick vs dual USB / DATA + settings |
+| [NINFER.md](NINFER.md) | Set default → download → Load (NInfer how-to) |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Common kiosk / A0 / pair issues |
 
 ## Build & maintain
@@ -20,6 +22,7 @@ Front door: [README.md](../README.md) · Features: [FEATURES.md](../FEATURES.md)
 | Doc | Use |
 |-----|-----|
 | [BUILD.md](BUILD.md) | Host tools → `STICKLLM_VERSION=… ./scripts/build.sh` |
+| [RELEASE.md](RELEASE.md) | Cut checklist: bake → checksum → Drive → docs |
 | [DEV-WORKFLOW.md](DEV-WORKFLOW.md) | Hotfix loop, product vs A0 fork |
 | [MAINTAINER.md](MAINTAINER.md) | Lab flash / integrity / not for end users |
 | [MODELS.md](MODELS.md) | Baked vs catalog models |

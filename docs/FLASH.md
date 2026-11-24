@@ -70,7 +70,8 @@ ISO=StickLLM-v0.8.8.iso ./scripts/flash-macos.sh /dev/diskN
 3. First boot can claim free space as `STICKLLM-DATA` for durable model downloads,
    and reserve about 256 MB beside the live image for the encrypted settings
    partition (same vault passcode; not a file inside the ISO). Until DATA
-   exists, models live in RAM and are lost on reboot.
+   exists, models live in RAM and are lost on reboot. Preferred layout vs dual USB:
+   [USB-LAYOUT.md](USB-LAYOUT.md).
 4. Confirm Debian 13: `grep VERSION_ID /etc/os-release` should show `13`.
 
 ## Debian 13 line — **v0.8.8**

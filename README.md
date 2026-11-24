@@ -151,7 +151,8 @@ Windows (Git Bash):
 "C:\Program Files\Git\bin\bash.exe" -lc "./scripts/build.sh"
 ```
 
-Docs index: [docs/README.md](docs/README.md). Cold-start: [docs/BUILD.md](docs/BUILD.md). Dev loop: [docs/DEV-WORKFLOW.md](docs/DEV-WORKFLOW.md).  
+Docs index: [docs/README.md](docs/README.md). Cold-start: [docs/BUILD.md](docs/BUILD.md). Release cut: [docs/RELEASE.md](docs/RELEASE.md).  
+NInfer how-to: [docs/NINFER.md](docs/NINFER.md). USB layout: [docs/USB-LAYOUT.md](docs/USB-LAYOUT.md).  
 Roadmap: [FEATURES.md](FEATURES.md). Next bake: [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md). Vault: [docs/VAULT.md](docs/VAULT.md).  
 Companion apps: [docs/APPS.md](docs/APPS.md). Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 

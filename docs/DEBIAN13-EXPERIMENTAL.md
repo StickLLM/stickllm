@@ -38,6 +38,8 @@ Product line: GitHub `main` (tag `v0.8.8` for the ship commit).
 - `/usr/local/bin/stickllm-experimental-unlock` — `--i-understand apply|disable --path cmpunlocker|gpu_unlock --bus BDF`
 - Lib: `/usr/local/lib/stickllm_experimental.py`
 
+User walkthrough (Models + Load): [NINFER.md](NINFER.md). USB DATA/settings: [USB-LAYOUT.md](USB-LAYOUT.md).
+
 ### How to use (after NInfer / Strata download)
 
 1. **Settings → Experimental → Engine downloads** — row shows **Installed** (tag + size) when files exist under `/var/lib/stickllm/experimental/engines/<engine>/<tag>/` (marker `stickllm-download.json`).
@@ -56,4 +58,4 @@ Product line: GitHub `main` (tag `v0.8.8` for the ship commit).
 2. **Live mixed-host test** (2× 3090 + CMP) — apply gpu-unlock BDFs + cmpunlocker coexistence; cold reboot verify.
 3. **Legal fetch** — NVIDIA firmware for gpu-unlock build downloads at install time (NOTICE.md); not redistributed in StickLLM git/ISO.
 4. StickDroid keep-pins APK and StickLink Worker cloud remain **outside** the ISO.
-5. **NInfer / Strata model catalog UI** — StickLLM Models page remains llama.cpp/GGUF-oriented while Experimental engines are default.
+5. NInfer Models UX ships in v0.8.6+ — walkthrough [NINFER.md](NINFER.md).

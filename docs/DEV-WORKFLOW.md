@@ -48,6 +48,8 @@ Useful: `stickllm-status`, `nvidia-smi`, `curl -s localhost:8080/health`,
 | llama.cpp CUDA / Vulkan / CPU binaries | `STICKLLM_FORCE_LLAMA_BUILD=1 ./scripts/build-llama-server.sh` then clean ISO |
 | Kernel / initramfs / live-boot | Clean ISO only |
 
+Full cut checklist (tag, Drive, NEXT/ISSUES, rolling window): [RELEASE.md](RELEASE.md).
+
 ## Clean release bake
 
 ```bash
