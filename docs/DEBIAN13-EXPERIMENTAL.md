@@ -28,7 +28,7 @@ Product line: GitHub `main` (tag `v0.8.8` for the ship commit).
 | Experimental tab | Settings → Experimental; detect/offer; **wired** download + unlock helpers |
 | GPU PCI table | CMP `20c2` / `2082` + RTX 3090 `2204`; 32 GB subsystem `1586` skipped; 3090 Ti out of scope |
 | Engines | Strata + NInfer-all via GitHub latest + SHA-256; download + **Set default** swaps :8080 off llama.cpp; shared progress UI/API |
-| Future engines | **Project Maya** ([mw00/project-maya](https://github.com/mw00/project-maya) `maya-ik2`) + **Inkling 2 Mini** on **RTX 3090** (~125 plain / ~200 DSpark) — **ISS-080**. [sfnx](https://github.com/johnfink8/sfnx) is a separate 3× V100 / Qwen Flash project. |
+| Future engines | **Maya + Inkling 2 Mini** — [alesha-pro/maya-inkling-mini](https://github.com/alesha-pro/maya-inkling-mini) / [mw00/project-maya](https://github.com/mw00/project-maya) `maya-ik2` on **RTX 3090** (~125 / ~200 DSpark) — **ISS-080**. [sfnx](https://github.com/johnfink8/sfnx) is separate (3× V100 / Qwen Flash). |
 | Unlocks | CMP=`stickllm-experimental-unlock` → cmpunlocker; 3090 → gpu-unlock 2.0 (git or curl/tar archive); per-card off-by-default; **no master toggle** |
 | Flash | Rufus DD / safe-flash + **full readback** ([FLASH.md](FLASH.md)) |
 | Other keep | `firmware-mediatek`; eth-skip WiFi when Ethernet up; StickLink peer-enable; model world-readable perms |
@@ -55,7 +55,7 @@ User walkthrough (Models + Load): [NINFER.md](NINFER.md). USB DATA/settings: [US
 
 ## Future (not wired)
 
-- **Project Maya + Inkling 2 Mini** — https://github.com/mw00/project-maya (`maya-ik2`, `--model inkling-2-mini`) — ISS-080. Lab target: one **RTX 3090**, ~125 tok/s plain / ~182–212 with DSpark on code/edits (public benches). Do not confuse with **sfnx** (3× V100 Qwen Flash). Evaluate on StickLLM Debian 13 before UI download row.
+- **Maya + Inkling 2 Mini** — https://github.com/alesha-pro/maya-inkling-mini (primary 3090 writeup) · https://github.com/mw00/project-maya (`maya-ik2`) — ISS-080. Lab: one **RTX 3090**, ~125 plain / ~182–212 DSpark. Not **sfnx**. Evaluate on StickLLM Debian 13 before UI download row.
 
 ## Still blocked / lab follow-up
 

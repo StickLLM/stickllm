@@ -60,7 +60,7 @@ Parked with security (do not build yet):
 - [x] P1 CPU-only fallback (v0.3: CPU llama binary + `-ngl 0`, RAM fits check; HW OK on Asus no-NVIDIA)
 - [ ] P1 Auto-detect which GPU the monitor is on; pick DRM device automatically
 - [ ] P2 Multi-GPU model splitting
-- [ ] **P2 Experimental — Project Maya + Inkling 2 Mini** — [mw00/project-maya](https://github.com/mw00/project-maya) `maya-ik2` on **RTX 3090**: ~125 tok/s plain, **~200 tok/s** code/edits with DSpark (published). Not [sfnx](https://github.com/johnfink8/sfnx) (3× V100 / Qwen Flash). Same Experimental Cancel/Continue + Set default as NInfer/Strata. Track: **ISS-080**
+- [ ] **P2 Experimental — Project Maya + Inkling 2 Mini** — [alesha-pro/maya-inkling-mini](https://github.com/alesha-pro/maya-inkling-mini) (3090 guide) / [mw00/project-maya](https://github.com/mw00/project-maya) `maya-ik2`: ~125 tok/s plain, **~200 tok/s** code/edits with DSpark. Not [sfnx](https://github.com/johnfink8/sfnx). Same Experimental Cancel/Continue + Set default as NInfer/Strata. Track: **ISS-080**
 - [ ] P2 GPU power/thermal limits (laptops)
 - [ ] P1 First-boot hardware report ("your GPU can run X, Y, Z")
 
