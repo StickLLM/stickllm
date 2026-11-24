@@ -25,6 +25,8 @@ Post-**v0.8.8** punch list. Shipping tag/ISO must be a **new** name
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | **MD1** | Multi-device pairing up to 8 on one stick / shared vault (ISS-077) | Agreed → plan / implement post-0.8.9 | Phase 1: concurrent LAN + StickLink sessions, one vault. Phase 2: admin/roles / separate vaults — open. |
+| **CW1** | Phone Chat / Work / A0 (ISS-078) | Agreed → plan / implement post-0.8.9 | Chat = `/api/chat` (old UI); Work = simplified A0; A0 = full. StickDroid + web client. |
+| **WA1** | Phone web client stickllm.com/app (ISS-079) | Agreed → roadmap post-0.8.9 | APK alternative; QR → connect → site. Fix connection/timeouts before calling it shipping. |
 
 ## Product rules
 

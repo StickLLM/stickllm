@@ -10,6 +10,8 @@ Must-bake checklist: [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 - **Docs currency (post-v0.8.8).** Front-door stamps aligned to **N=v0.8.8 / N-1=v0.8.7 / next=v0.8.9** (`BOOT`, `DEV-WORKFLOW`, `BUILD`, `DEBIAN13-EXPERIMENTAL`, `CONTRIBUTING`, `MODELS`, `APPS`, `FEATURES`, `MAINTAINER`); added `docs/README.md` index; marked `HOTFIX-AFTER-STICK-SWAP` historical.
 - **Docs guides.** Added [docs/NINFER.md](docs/NINFER.md) (Set default → download → Load), [docs/USB-LAYOUT.md](docs/USB-LAYOUT.md) (one stick vs dual USB / ISS-074), [docs/RELEASE.md](docs/RELEASE.md) (ship cut checklist); fixed `VAULT.md` ship stamp.
 - **Multi-device pairing roadmap (ISS-077).** Capture: up to **8** concurrent paired clients on one stick (phone / browser / AIKVM / speaker-mic; LAN + StickLink). Phase 1 = shared vault; Phase 2 = admin/roles / separate vaults (open). Not a v0.8.9 must-bake — FEATURES + NEXT Later.
+- **Phone Chat / Work / A0 (ISS-078).** Chat = old StickLLM `/api/chat` UI; Work = today’s simplified A0 “Chat” renamed; A0 = full agent. Not a v0.8.9 must-bake.
+- **Phone web client roadmap (ISS-079).** https://stickllm.com/app/ as StickDroid APK alternative (QR → connect → site); connection/timeout issues still open in lab.
 
 ## 0.8.8 - NInfer status/queue + RAM land + async USB + context guard
 

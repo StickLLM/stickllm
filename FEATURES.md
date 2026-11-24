@@ -31,11 +31,12 @@ Still to build, in order. Each line points at the checklist section that owns it
 2. Finish model filters on installed models, and wire the greyed Advanced section — Models, Settings (ISS-021)
 3. Stronger AMD / Intel GPU paths and broader hardware coverage — Boot and hardware
 4. **Multi-device pairing (up to 8)** on one stick / shared vault — phone, LAN browser, AIKVM, speaker/mic, etc. (LAN + StickLink). Today = one paired device at a time. Admin / per-user vaults later — Client and networking (ISS-077)
-5. Rest of the vault story: stick key + PIN. The 12-word recovery phrase already exists. Panic / duress PIN stays parked — Vault and security
-6. Saved settings and per-model presets (saved chats already exist) — Settings
-7. Document RAG (vision / phone image attach already ships for VL) — Chats and documents
-8. Agent voice (wake word) — chat Voice on/off, streaming speech, and read-aloud already ship; see Companion apps
-9. More apps from the catalog — [docs/APPS.md](docs/APPS.md)
+5. **Phone Chat / Work / A0** — restore StickLLM Chat for simple; Work = simplified A0; A0 = full agent (ISS-078). **Web client** https://stickllm.com/app/ as APK alternative (ISS-079)
+6. Rest of the vault story: stick key + PIN. The 12-word recovery phrase already exists. Panic / duress PIN stays parked — Vault and security
+7. Saved settings and per-model presets (saved chats already exist) — Settings
+8. Document RAG (vision / phone image attach already ships for VL) — Chats and documents
+9. Agent voice (wake word) — chat Voice on/off, streaming speech, and read-aloud already ship; see Companion apps
+10. More apps from the catalog — [docs/APPS.md](docs/APPS.md)
 
 Parked with security (do not build yet):
 
@@ -163,10 +164,12 @@ Parked with security (do not build yet):
 - [ ] P2 Multi-user / roles + optional separate vault per user (after Phase 1 multi-device) — ISS-077 phase 2
 
 ## Mobile
-- [ ] P1 PWA client (iOS, Android, GrapheneOS)
-- [ ] P1 QR pairing via phone camera (StickLink QR path ships on the stick; native app UX is StickDroid / separate)
+- [ ] **P1 Chat / Work / A0 modes** — **Chat** = StickLLM `/api/chat` (old `#app` UI; simple + optional Web). **Work** = today’s Android “Chat” renamed (A0 with complexity hidden). **A0** = full Agent Zero. ChatGPT-style: simple vs multi-step. Stick code for Chat still present; desk WinBox mount retired. Track: **ISS-078**
+- [ ] **P1 Phone web client** — https://stickllm.com/app/ (QR scan → connect → phone site). Goal: replace StickDroid APK when connection/timeouts are solid. Lab WIP; APK remains until then. Track: **ISS-079**
+- [ ] P1 PWA / installable web client (iOS, Android, GrapheneOS) — overlaps ISS-079
+- [ ] P1 QR pairing via phone camera (StickLink QR path ships on the stick; StickDroid / stickllm.com/app)
 - [ ] P1 Chats in memory or vault only, never on phone
-- [ ] P2 Native apps: iOS, Android (Play, F-Droid / direct APK, no Google services)
+- [ ] P2 Native apps: iOS, Android (Play, F-Droid / direct APK, no Google services) — fallback if web client is not enough
 
 ## Updates
 - [ ] P1 A/B system slots (squashfs) with automatic rollback via GRUB

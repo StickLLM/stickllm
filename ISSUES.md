@@ -15,6 +15,35 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 **Source of truth for next bake:** [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Closed** below.
 
+### ISS-079 — Phone web client (stickllm.com/app) as StickDroid APK alternative
+| | |
+|---|---|
+| **ID** | ISS-079 |
+| **Date** | 2026-11-24 |
+| **Mode** | StickLink / Mobile / Web |
+| **Severity** | MED (product roadmap; not blocking v0.8.9 must-bake) |
+| **Status** | Open — roadmap; lab WIP has connection / timeout issues |
+| **Summary** | Prefer a **browser web app** that can eventually replace the StickDroid APK. Staging/live entry today: https://stickllm.com/app/ — scans StickLink QR, then opens a phone website after connect. |
+| **Current state** | Early development (lab 2026-11-23 area): QR → connect → launch site works in outline; **connection drops / timeouts** still open. Not a shipping phone client yet. |
+| **Goal** | Reliable Always-On session (pair once, resume, Chat / Work / A0 from ISS-078) without requiring Play/sideload APK. APK may remain a fallback until the web path is solid. |
+| **Notes** | StickLink Worker / signalling stays closed source. Public stickllm.com/app is the client shell only. Related: ISS-036 (WSS resume), ISS-077 (multi-device). |
+
+
+### ISS-078 — Phone modes: Chat / Work / A0 (restore StickLLM Chat for simple)
+| | |
+|---|---|
+| **ID** | ISS-078 |
+| **Date** | 2026-11-24 |
+| **Mode** | StickDroid / web client / StickLink |
+| **Severity** | MED (product roadmap; not blocking v0.8.9 must-bake) |
+| **Status** | Open — design agreed; implement on phone clients post-0.8.9 unless pulled forward |
+| **Summary** | Today Android “Chat” and “A0” are **both Agent Zero** (Chat only hides complexity). Product: three modes like ChatGPT simple vs agentic. |
+| **Modes** | **Chat** = old StickLLM Chat UI (`ui/#app`, `/api/chat`) — simple Q&A, optional Web lookup, no A0 monologue. **Work** = rename today’s simplified A0 “Chat” (agent tasks, chrome stripped). **A0** = full Agent Zero UI. |
+| **Why** | Simple asks (e.g. price lookup with Web) should not pay full A0 planning tax; complex multi-step work stays in Work/A0. Desk still A0-only until we choose to re-host `#app` there. |
+| **Code already on stick** | Chat UI + `/api/chat` never deleted — only desk WinBox mount retired (~0.6.5). Phone / web client must route Chat → `/api/chat`, Work/A0 → Agent Zero. |
+| **Related** | ISS-079 (web app may replace APK); ISS-077 (multi-device). |
+
+
 ### ISS-077 — Multi-device pairing: up to 8 clients on one stick (shared vault first)
 | | |
 |---|---|
