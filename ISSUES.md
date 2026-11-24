@@ -15,6 +15,20 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 **Source of truth for next bake:** [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Closed** below.
 
+### ISS-080 — Experimental: Project Maya / sfnx (multi-V100 MoE CUDA engine)
+| | |
+|---|---|
+| **ID** | ISS-080 |
+| **Date** | 2026-11-24 |
+| **Mode** | Experimental / Models / multi-GPU |
+| **Severity** | LOW (future Experimental offer; not blocking v0.8.9) |
+| **Status** | Open — future requirement; no bake commitment yet |
+| **Summary** | Track **Project Maya** / [sfnx](https://github.com/johnfink8/sfnx) as a future **Settings → Experimental** engine offer: CUDA path that splits MoE LLM layers across **three PCIe V100** cards (upstream claims ~382 tok/s on used ~$1,800 hardware). |
+| **Fit** | Same Experimental pattern as NInfer / Strata: opt-in download + Confirm / Cancel/Continue; Set default on `:8080` when mature; no NVIDIA blobs in StickLLM git; no auto-install. Complements FEATURES “Multi-GPU model splitting” / optional large MoE. |
+| **Out of scope for now** | Must-bake for v0.8.9; shipping as default engine; redistributing weights or proprietary blobs. |
+| **Notes** | Upstream: https://github.com/johnfink8/sfnx — evaluate license, runtime deps, OpenAI-compatible serve, and StickLLM Models Activate story before wiring UI. |
+
+
 ### ISS-079 — Phone web client (stickllm.com/app) as StickDroid APK alternative
 | | |
 |---|---|

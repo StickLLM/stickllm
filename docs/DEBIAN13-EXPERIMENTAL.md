@@ -28,6 +28,7 @@ Product line: GitHub `main` (tag `v0.8.8` for the ship commit).
 | Experimental tab | Settings → Experimental; detect/offer; **wired** download + unlock helpers |
 | GPU PCI table | CMP `20c2` / `2082` + RTX 3090 `2204`; 32 GB subsystem `1586` skipped; 3090 Ti out of scope |
 | Engines | Strata + NInfer-all via GitHub latest + SHA-256; download + **Set default** swaps :8080 off llama.cpp; shared progress UI/API |
+| Future engines | **Project Maya / sfnx** ([johnfink8/sfnx](https://github.com/johnfink8/sfnx)) — 3× V100 MoE CUDA split; track **ISS-080** (not wired) |
 | Unlocks | CMP=`stickllm-experimental-unlock` → cmpunlocker; 3090 → gpu-unlock 2.0 (git or curl/tar archive); per-card off-by-default; **no master toggle** |
 | Flash | Rufus DD / safe-flash + **full readback** ([FLASH.md](FLASH.md)) |
 | Other keep | `firmware-mediatek`; eth-skip WiFi when Ethernet up; StickLink peer-enable; model world-readable perms |
@@ -51,6 +52,10 @@ User walkthrough (Models + Load): [NINFER.md](NINFER.md). USB DATA/settings: [US
 7. **Reboot** — not required for download/status/set-default. Unlock apply still needs reboot when used.
 
 ---
+
+## Future (not wired)
+
+- **Project Maya / sfnx** — https://github.com/johnfink8/sfnx — Experimental offer candidate for multi-V100 MoE (ISS-080). Evaluate before UI download row.
 
 ## Still blocked / lab follow-up
 
