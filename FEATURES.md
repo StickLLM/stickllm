@@ -2,44 +2,47 @@
 
 Legend: [x] working today, [ ] planned. Priority: P0 = next, P1 = soon, P2 = later.
 
-The high-level idea list and the checklist below are one plan (2026-10-16). Security architecture is parked until the working product is settled. Do not start NINO, the client-stick lockdown, zero-trust remote access, or signed multi-signer updates before then.
+Ship through **v0.8.8** (`StickLLM-v0.8.8.iso`, `c5aa2305…`). Next bake: [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md) — that file is the source of truth for must-bake, not this checklist and not chat. Security architecture is parked until the working product is settled. Do not start NINO, the client-stick lockdown, zero-trust remote access, or signed multi-signer updates before then.
 
-**Next (P0):** finish Models, then wire the greyed Advanced controls (ISS-021). Hugging Face search, the download queue, hash checks, and VRAM fit labels already ship. Still open: the same filters when choosing an installed model to load, and the Advanced knobs that are on screen but not applied (temperature, top-p, top-k, repeat penalty, max reply tokens, KV cache type, backend). AMD and Intel coverage stays on the hardware list after that.
+**Next (P0 / v0.8.9):** vault lock = ephemeral only so StickLLM + Agent Zero keep running without unlock (ISS-076); dual-USB settings open when DATA is on a second stick (ISS-074); corrupt A0 docker graph detect/reseed (ISS-075); optional Advanced VRAM-ceiling warn for NInfer high context (TU3 / follow-on ISS-072). Still open later: same load filters on installed models and Advanced sampling knobs that are greyed (ISS-021); AMD / Intel polish.
 
 ## Ideas
 
 Working today:
 
 - Boot menu: Local / Server (GPU chat or share on the LAN), Terminal, Test (SSH enabled for maintainers)
-- NVIDIA CUDA acceleration, with Vulkan and CPU fallback
-- Built-in small model (3B), plus downloadable larger models from Settings
+- Debian 13 base; NVIDIA CUDA acceleration, with Vulkan and CPU fallback
+- Built-in model, plus Hugging Face download for GGUF and NInfer `.ninfer` (queue Stop / Resume / Delete, hash check, VRAM fit labels)
+- Experimental **NInfer** / Strata Set default on `:8080` (Confirm; switch back to llama.cpp); NInfer HF token; Context slider + Load guard
+- Download to free RAM + async USB persist when RAM allows; USB→RAM stage before Load; RAM spike guard
 - Kiosk chat UI (desktop and phone browser), pair on the LAN with a one-time code
-- Ephemeral by default: reboot clears the session
-- Optional encrypted vault unlock from the UI for saved storage (saved chats already live here, and a saved chat can be deleted)
-- About 256 MB USB settings partition: raw on first boot, formatted with the vault passcode on unlock
+- **StickLink** Method C phone join / Always-On peer (in the ISO; Worker/cloud and StickDroid APK are separate)
+- **Agent Zero** seeded in Docker; desk + StickLink open `/agent-zero/`; VL / phone image attach when a vision model is loaded
+- Ephemeral by default: reboot clears the session. Optional encrypted vault for durable chats/secrets (tree still hard-gates A0 on vault unlock — **planned v0.8.9**, ISS-076)
+- About 256 MB USB settings partition: raw on first boot, formatted with the vault passcode on unlock (HF token lives here when unlocked)
+- Web mode: Internet / Tor / No internet (taskbar Web + Settings → Network)
 - Voice on/off: resident Whisper and Kitten, streaming speech, stop button, one-second silence sends after real speech
 - Mount host drives or claim free space on the StickLLM stick
-- Model selection, download, and verification from Hugging Face
 - Shipping ISOs as `StickLLM-vX.Y.Z.iso` (flash with Rufus DD Image, or build from source)
 
 Still to build, in order. Each line points at the checklist section that owns it:
 
-1. **Next.** Finish model filters on installed models, and wire the greyed Advanced section — Models, Settings
-2. Stronger AMD / Intel GPU paths and broader hardware coverage — Boot and hardware
-3. Rest of the vault story: stick key + PIN. The 12-word recovery phrase already exists. Panic / duress PIN stays parked — Vault and security. The 256 MB USB settings partition ships in v0.4.2 (raw on first boot, same vault passcode on unlock)
-4. Saved settings and per-model presets (saved chats already exist) — Settings
-5. Vision (image input) and document RAG — Chats and documents. Voice chat ships in v0.4.2
-6. Agent voice (wake word) — chat Voice on/off, streaming speech, and read-aloud ship in v0.4.2; see Companion apps
-7. Agent Zero, installable — Companion apps
-8. Apps from a catalog, for a person or an agent — [docs/APPS.md](docs/APPS.md)
+1. **Next (v0.8.9).** Vault lock = ephemeral (not an A0 hard gate); dual-USB settings; A0 graph repair — Vault and security, Companion apps (ISS-076 / 074 / 075; NEXT-0.8.9)
+2. Finish model filters on installed models, and wire the greyed Advanced section — Models, Settings (ISS-021)
+3. Stronger AMD / Intel GPU paths and broader hardware coverage — Boot and hardware
+4. Rest of the vault story: stick key + PIN. The 12-word recovery phrase already exists. Panic / duress PIN stays parked — Vault and security
+5. Saved settings and per-model presets (saved chats already exist) — Settings
+6. Document RAG (vision / phone image attach already ships for VL) — Chats and documents
+7. Agent voice (wake word) — chat Voice on/off, streaming speech, and read-aloud already ship; see Companion apps
+8. More apps from the catalog — [docs/APPS.md](docs/APPS.md)
 
 Parked with security (do not build yet):
 
 - Dedicated client stick paired with a server stick — Client and networking
-- Mobile apps (iOS, Android, GrapheneOS) with QR pairing and authentication — Mobile
-- Zero-trust remote access: keys pinned at pairing, hole punching or relay, Tor — Client and networking
+- Mobile apps (iOS, GrapheneOS store builds) with QR pairing — Mobile (StickDroid / StickLink phone path is separate from this parked native-apps line)
+- Zero-trust remote access redesign beyond StickLink: keys pinned at pairing, hole punching or relay, Tor — Client and networking
 - Signed, reproducible builds with multi-signer updates and A/B rollback — Updates
-- Tor for web search — Settings, Client and networking
+- Tor for model downloads / “everything” mode — Settings, Client and networking (stick **Web** Tor mode already ships)
 
 ## Boot and hardware
 - [x] Boot menu: Server / Local, Terminal, Test - SSH Enabled (chat UI + SSH); Secure Client deferred until available
@@ -65,12 +68,17 @@ Parked with security (do not build yet):
 - [x] P0 Accurate loaded-model identity in UI/status (show what's actually loaded)
 - [x] P0 Model load progress UX — clear Loading model / progress so Term/LAN 503 isn't mistaken for broken pairing. v0.4.2: the status poll does not paint Loading until the browser is paired, and the meter starts at 1% instead of jumping to a fake 30%
 - [x] P0 Signed model catalog, pinned SHA-256, re-checked at load (v0.3: fatal sha256 on download)
-- [x] Slim ISO: bake **3B Q4 only** (~2 GB). **Qwen2.5-7B Q5_K_M** is download-only — shipped v0.3.9 (ISS-020)
+- [x] Slim ISO: bake **3B Q4 only** (~2 GB). **Qwen2.5-7B Q5_K_M** is download-only — shipped v0.3.9 (ISS-020). Current ship also bakes a default GGUF for lab (see README / About)
 - [x] Hugging Face search, one-at-a-time download queue (stop / start / delete, resume), hash check, and VRAM fit labels — v0.3.9
+- [x] **v0.8.7–v0.8.8** NInfer Models path: HF search for `.ninfer`, Load / sticky Load, queue Stop / Resume / Delete, engine-scoped search (no GGUF as NInfer), false “loading / Downloading Qwen2.5” fixed (ISS-044…046, 052, 059, 060, 065, 068, 069)
+- [x] **v0.8.7–v0.8.8** USB→RAM stage before Load; download to free RAM + async USB persist; RAM spike guard; Models “Saving to USB” while durable copy finishes (ISS-053, 070, 071, 073)
+- [x] **v0.8.8** NInfer HF token export for catalog / gated pulls; Test whoami (ISS-066)
+- [x] **v0.8.8** NInfer Context slider + Load guard (`--max-context` / `--kv-capacity`, refuse when headroom unsafe; prefer existing tmpfs stage) (ISS-072)
 - [ ] **Next** Same filters (Verified / known-hash, Fits in VRAM, Untrusted, quant, licence, abliterated) on **installed models** when choosing what to load into memory — ISS-021
-- [ ] **Next** Wire Advanced controls that are on screen but not applied to the running model (sampling, KV cache type, backend). Context size is the part that already moves — ISS-021
+- [ ] **Next** Wire Advanced controls that are on screen but not applied to the running model (sampling, KV cache type, backend). Context size already moves for llama and NInfer — ISS-021 / ISS-058
 - [ ] P1 VRAM-based model suggestions
-- [ ] P1 Vision models (restore image input; mmproj hash-pinned)
+- [x] P1 Vision models (VL catalog + mmproj; phone / chat image attach when VL loaded — v0.8.3+)
+  - Still open: broader vision catalog polish; mmproj hash-pin policy continues as today
 - [ ] P1 Download unsupported models with explicit warning
   - TODO: decide where the approved/pinned list lives (`catalog.toml` today), how it updates, and how non-list downloads warn + verify (see MODELS.md)
 - [ ] P2 Optional large MoE recipe (Strata-style) for high-RAM machines
@@ -82,18 +90,19 @@ Parked with security (do not build yet):
 - [ ] P0 Last boot mode is default on menu timeout (GRUB grubenv / savedefault)
 - [ ] P0 Menu timeout length
 - [ ] P0 Auto-load last model
-- [ ] P1 Web search on/off
-- [ ] P1 Tor: off / web only / everything
+- [x] P1 Web mode: Internet / Tor / No internet (taskbar **Web** + Settings → Network; persists; Tor on demand) — see [docs/WEB-MODE.md](docs/WEB-MODE.md)
+- [ ] P1 Tor: “everything” / model downloads over Tor (Web Tor mode already ships)
 - [ ] P1 Vault on/off; wipe-after-N-failed-tries (configurable or off)
 - [ ] P1 Manual display/GPU override
 - [x] P1 Settings menu (split from Models) — Network/WiFi, claim USB; stubs for context size / SSD vault / setup AP (v0.3.1)
 - [ ] P1 Settings page + reset to defaults (persist all prefs)
 - [ ] **Next** Advanced settings panel (per-model inference params) — ISS-021
-  - On screen today: context size, presets, KV cache type, temperature, top-p, top-k, repeat penalty, max reply tokens. Presets only move the context slider. Sampling and KV are not sent to llama. The backend segment is disabled (“auto-selected”)
+  - On screen today: context size, presets, KV cache type, temperature, top-p, top-k, repeat penalty, max reply tokens. Context moves for llama and NInfer. Sampling and KV are not fully applied to llama; KV greyed under NInfer. The backend segment is disabled (“auto-selected”)
   - Defaults from per-model presets in the signed catalog (template via --jinja, sampling, auto-sized context from free VRAM); see Models → Signed model catalog
   - Still to expose once the greyed knobs work: MoE expert offload, system prompt, thinking toggle
   - Changes save per model in settings; reset-to-preset option
   - UI shows active context size and warns near the limit
+  - **Planned v0.8.9:** optional Advanced warn near GPU VRAM ceiling for NInfer high ctx (TU3)
 - Rule: ordinary UI prefs are not a secret store. Portable secrets (API keys, passwords) and per-computer SSD vault locations live in the encrypted USB settings partition, opened with the same vault passcode. Chats stay in the SSD vault. Voice weights stay in `/opt/stickllm/speech`
 
 ## Vault and security
@@ -104,6 +113,9 @@ Parked with security (do not build yet):
 - [x] P1 USB settings partition, about 256 MB, on the boot stick beside the live image (not a file inside the ISO). In the **v0.4.2** image, first boot reserves it raw; `stickllm-usb-settings` encrypts it with the same LUKS passcode, stick keyfile, and recovery digest as the SSD vault when that vault is unlocked. No second password. Holds per-computer vault locations and portable secrets (the Hugging Face token is stored here once the partition is unlocked). Voice weights stay in `/opt/stickllm/speech`. Chats stay in the SSD vault. A stick whose `STICKLLM-DATA` already fills the disk is not shrunk. Open an existing SSD vault with [Opening an existing vault](docs/VAULT.md#opening-an-existing-vault)
 - [x] P1 One-time 12-word recovery phrase shown once at setup
 - [x] P1 Failed-attempt counter; wipe-after-N destroys **blob** LUKS header only (default **off**)
+- [x] P1 Delete vault and start fresh in setup (corrupt / wrong password / Forgot password?) — **v0.8.5** (ISS-037)
+- [ ] **P0 / planned v0.8.9** Vault lock = ephemeral only: StickLLM + Agent Zero keep running without unlock (tmpfs chats; no durable secrets). Unlock enables vault save / HF in settings / durable A0. Tree still hard-gates dockerd/A0 on vault mount today — ISS-076
+- [ ] **P0 / planned v0.8.9** Dual-USB: open `STICKLLM-SETTINGS` on the DATA disk when boot stick has no settings — ISS-074
 - [ ] P1 Panic / duress PIN: opens decoy empty vault, silently destroys real key (server-side)
 - [ ] P2 Kiosk/client-stick hold-combo (e.g. hold Ctrl+Alt+W 2s) = quick lock, no wipe
 - [x] P1 Browser clients: lock button + Ctrl+Shift+L (auto-lock on disconnect later)
@@ -118,7 +130,8 @@ Parked with security (do not build yet):
 - [x] Chat UI
 - [x] P1 Multiple saved chats (titles, search, delete) inside vault — Vault mode only
 - [ ] P2 Documents chat / RAG (files + index in vault)
-- [ ] P2 Image input (upload, paste, phone camera)
+- [x] P1 Image input when a VL model is loaded (upload / phone attach; StickLink shrink ≤1280 JPEG — v0.8.3 / ISS-063)
+  - Paste / camera UX polish still open
 
 ## Client and networking
 - [x] P0 WiFi setup (SSID + password) — Settings → Network (when LAN already up); NM profile on STICKLLM-DATA (v0.3; Local WiFi HW OK)
@@ -126,12 +139,14 @@ Parked with security (do not build yet):
 - [x] P0 Console WiFi bootstrap (no browser) — `stickllm-wifi-setup` on Term/tty2 (scan + password); same `stickllm-wifi-apply` profile (v0.3.1)
   - Server with no Ethernet: Ctrl+Alt+F2 → `user` / `stickllm` → `stickllm-wifi-setup`; or Local-first WiFi then reboot Server; or one-time Ethernet
   - Setup AP for first-time config: deferred (stub in Settings only)
+- [x] P1 Local timezone on first internet (geolocate public IP; NTP after Wi‑Fi) — **v0.8.7–v0.8.8** (ISS-047, 067)
+- [x] P0 StickLink Method C phone join / Always-On peer in the shipping ISO (QR on Devices; keepalive under load; A0 sync rewrite; large photo mux; work-dir downloads — through **v0.8.8**). StickLink Worker / signalling remains closed source. StickDroid APK is not in the ISO
 - [ ] P1 True air-gap / NINO (“nothing in, nothing out”) OS network lockdown — ISS-023 (**parked**)
-  - Today: UI **Web** pill gates chat live lookup only; Settings **Offline mode** is Coming soon / not wired (does not firewall the OS)
+  - Today: UI **Web** pill gates stick browser uplink (Internet / Tor / No internet); Settings **Offline mode** Coming soon is not the same as NINO
   - Local/Server same machine: disable-network button (kill NIC / block all ingress+egress)
   - Remote client stick: allow only the secure tunnel to the paired server; block all other traffic
 - [ ] P0 Client USB stick (boots straight to browser)
-- [ ] P0 Pairing via QR / on-screen code with pinned TLS cert
+- [ ] P0 Pairing via QR / on-screen code with pinned TLS cert (LAN pair code ships; StickLink QR is the phone path)
 - [ ] P1 Trusted HTTPS with no browser warnings (Plex-style; StickLLM web clients only)
   - Each server gets a subdomain (e.g. a1b2c3.stickllm.net) pointing at its LAN IP
   - Let's Encrypt cert via DNS-01 through the rendezvous service
@@ -147,7 +162,7 @@ Parked with security (do not build yet):
 
 ## Mobile
 - [ ] P1 PWA client (iOS, Android, GrapheneOS)
-- [ ] P1 QR pairing via phone camera
+- [ ] P1 QR pairing via phone camera (StickLink QR path ships on the stick; native app UX is StickDroid / separate)
 - [ ] P1 Chats in memory or vault only, never on phone
 - [ ] P2 Native apps: iOS, Android (Play, F-Droid / direct APK, no Google services)
 
@@ -158,6 +173,7 @@ Parked with security (do not build yet):
 
 ## Companion apps (planned)
 - [x] P2 Starter add-ons installable from the Apps page — **0.5.0** (not hardware-tested yet): Radicale 3.9.0, Vikunja 2.7.1, Actual Budget 26.10.0, Trilium v0.106.1, Node-RED 5.0.9. **0.5.4:** Radicale, Vikunja and Actual removed; Tasks.md 3.3.0, Paisa v0.7.8 and ComfyUI (GPU optional) added; Trilium opens with no login after an automatic first-start setup. Pulled by digest on Install, data in the vault, no internet or LAN for the containers, no Docker logs, read-only root, opened in a new tab through the gateway. Node-RED flows can run arbitrary code. See [docs/APPS.md](docs/APPS.md#installable-from-the-apps-page-050)
+- [x] P1 Agent Zero — ships seeded (Docker on DATA); desk / LAN / StickLink open `/agent-zero/`; offline first-start + exec bits — **v0.8.5** (ISS-038). **Planned v0.8.9:** run when vault locked (ISS-076); dual-USB settings (ISS-074); corrupt graph reseed (ISS-075)
 - [x] P1 Agent Zero plugins: banned unless allowlisted — **0.5.0**; removed altogether — **0.5.4** (empty allowlist enforced by the build, installer plugins deleted in the container, kiosk console included). The two 0.5.0 plugins (clock_24h, chat_status_marklet) are gone; see [docs/PLUGIN-REVIEWS.md](docs/PLUGIN-REVIEWS.md)
 - [ ] P2 Rest of the companion catalog (Immich, Paperless-ngx, …; ComfyUI ships in 0.5.4) — [docs/APPS.md](docs/APPS.md) (ISS-022); not shipping yet
 - [x] P2 Voice input + read-aloud — in the **v0.4.2** ISO. Voice on/off keeps whisper.cpp tiny.en and KittenTTS mini 0.8 resident (Bella by default), including `whisper-server`. Replies stream to speech; Stop speaking cuts that audio. While Voice is on, the reply budget is 80 tokens, a short spoken-style instruction is sent without appearing in the thread, and thinking text is not shown or spoken. After real speech, 1 second of silence sends the line. Weights are image-build pins (`overlay/usr/local/lib/stickllm-speech.pin`), not downloaded at runtime, and not stored in the vault. Wake word is still later.
