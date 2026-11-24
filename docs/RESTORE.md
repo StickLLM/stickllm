@@ -1,6 +1,6 @@
-﻿# Restore policy (N-2)
+﻿# Restore policy (N / N-1)
 
-Keep the **last two recoverable product ships** plus the immutable Drive golden.
+Keep the **last two recoverable product ships** (**N** and **N-1**).
 Be honest about what a stranger can download vs what only maintainers have locally.
 
 ## Public artifacts
@@ -10,12 +10,13 @@ Be honest about what a stranger can download vs what only maintainers have local
 | **N** (current) | `v0.8.8` | Google Drive `StickLLM-v0.8.8.iso` / `out/v0.8.8/` | `checksums/v0.8.8.sha256` → `c5aa2305…` |
 | **N-1** | `v0.8.7` | Google Drive `StickLLM-v0.8.7.iso` / `out/v0.8.7/` | `checksums/v0.8.7.sha256` → `5e554919…` |
 | Older public | `v0.8.6` / `v0.8.5` / `v0.8.4` / … | Drive ISOs under their original names (optional retention) | matching `checksums/v0.*.sha256` |
-| Golden | `v0.2.0` | [GitHub Release v0.2.0](https://github.com/StickLLM/stickllm/releases/tag/v0.2.0) (split `.7z` and/or Drive link in release notes) | `checksums/v0.2.sha256` → `4914087d…` |
 
 Drive folder (ISOs over GitHub’s 2 GB limit):  
 https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing  
 
-**Public current ship on that folder: `StickLLM-v0.8.8.iso`.** Older filenames may still be listed — leave golden **v0.2** alone. Ships older than N-1 may leave the rolling window.
+**Public current ship on that folder: `StickLLM-v0.8.8.iso`.** Ships older than N-1 may leave the rolling window.
+
+**Retired:** early **v0.2.0** is no longer a golden forever restore slot (checksum removed; Drive golden ISO may be deleted when ADC allows — see below). Prefer **v0.8.8** / **v0.8.7**.
 
 **Do not flash `v0.3.5`** — truncated/broken. Prefer **v0.8.8** (or **v0.8.7** as restore).
 
@@ -29,7 +30,7 @@ https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sha
 | N-1 local | `v0.8.7` | `out/v0.8.7/StickLLM-v0.8.7.iso` | `checksums/v0.8.7.sha256` |
 | Older local | `v0.8.6` / `v0.8.5` / … | `out/v0.8.x/` / `E:\stickllm-isos\` | matching `checksums/v0.*.sha256` |
 
-Older tags and `out/` dirs remain recoverable locally when kept; they are outside the rolling N/N-1 window. Never delete golden **v0.2.0** when cutting the next ship. Local cleanup of slots older than N-1 is allowed after N advances.
+Older tags and `out/` dirs remain recoverable locally when kept; they are outside the rolling N/N-1 window. Local cleanup of slots older than N-1 is allowed after N advances.
 
 ## ISO naming (future N)
 
@@ -39,7 +40,6 @@ Older tags and `out/` dirs remain recoverable locally when kept; they are outsid
 ## Rules
 
 - When cutting the next ship: keep **N** and **N-1** tags and local `out/` ISO dirs; do not delete or overwrite them.
-- Drive / Release **v0.2.0** is outside the rolling window — never retag, rewrite checksum, or replace under the same name.
 - Current **v0.8.8** / prior **v0.8.7** on Drive — never overwrite under the same name with a different digest.
 - Prior **v0.8.6** / **v0.8.5** / **v0.8.4** / … on Drive — do not overwrite under the same name with a different digest if still published.
 - Ships older than N-1 may leave the rolling window — removable from Drive/local; do not reuse the name for different contents.
@@ -68,11 +68,11 @@ ISO:      out/v0.8.3/StickLLM-v0.8.3.iso (or Drive if published)
 Checksum: checksums/v0.8.3.sha256 → 26ceba9f…
 ```
 
-## Restore golden v0.2.0
+## Retired: v0.2.0 golden
 
-```text
-git checkout v0.2.0
-ISO:      GitHub Release assets and/or Drive (see release notes)
-Checksum: checksums/v0.2.sha256
-Expect:   4914087D502D13327DBBD9196C9A4A7DF46EE079D423FF4B0BC6280E1C7B1A48
-```
+Early **v0.2.0** is **retired** (no longer golden forever). Do not restore or flash it as a supported baseline.
+
+If a copy still appears on Drive StickLLM-releases, delete manually (ADC reauth may be required):
+
+- Folder: https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing
+- Typical name: `stickllm-amd-rtx3090-v0.2.hybrid.iso` (and any StickLLM / hybrid ISO named for 0.2 golden)

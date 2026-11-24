@@ -2,6 +2,7 @@
 
 Must-bake checklist: [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 
+- **Retire golden v0.2.0.** Early/broken-days baseline is no longer “golden forever.” Rolling window is **N** = v0.8.8 / **N-1** = v0.8.7 only; remove `checksums/v0.2.sha256` and Drive golden ISO when present; docs/rules updated.
 - **NInfer VRAM-ceiling warn (follow-on ISS-072).** Optional Advanced warn when requested context is near GPU VRAM capacity (host MemAvailable can still pass 128K while 3090/27B fails).
 
 ## 0.8.8 - NInfer status/queue + RAM land + async USB + context guard

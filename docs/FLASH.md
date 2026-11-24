@@ -10,7 +10,7 @@ node / disk number before writing.
 | **Current** v0.8.8 | Google Drive `StickLLM-v0.8.8.iso` | [`checksums/v0.8.8.sha256`](../checksums/v0.8.8.sha256) → `c5aa2305…` |
 | **N-1** v0.8.7 | Google Drive `StickLLM-v0.8.7.iso` | [`checksums/v0.8.7.sha256`](../checksums/v0.8.7.sha256) → `5e554919…` |
 
-**Hash of record is in this repo** (`checksums/v0.8.8.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous published ships stay under their own names — never overwrite those files with different contents. Never touch Drive golden **v0.2**.
+**Hash of record is in this repo** (`checksums/v0.8.8.sha256`). Verify the Drive download against that digest — do not treat a hash only on Drive as authoritative. Previous published ships stay under their own names — never overwrite those files with different contents. Early **v0.2.0** golden is retired — see [RESTORE.md](RESTORE.md).
 
 N-1 restore: `StickLLM-v0.8.7.iso` — see [RESTORE.md](RESTORE.md).
 
@@ -79,4 +79,4 @@ NInfer-all Linux builds need **Debian 13**. Current artifact:
 `StickLLM-v0.8.8.iso` / `out/v0.8.8/` (fresh image, not an in-place dist-upgrade),
 flashed then verified with a **full readback** of the written ISO bytes. See
 [DEBIAN13-EXPERIMENTAL.md](DEBIAN13-EXPERIMENTAL.md). Never overwrite shipping ISO names
-(`v0.8.8`, `v0.8.7`, older `v0.8.x`, golden `v0.2.0`).
+(`v0.8.8`, `v0.8.7`, older `v0.8.x`). Early **v0.2.0** golden is retired.

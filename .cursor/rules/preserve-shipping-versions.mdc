@@ -1,5 +1,5 @@
 ---
-description: Shipping versions are immutable; never overwrite released golden/N artifacts when building later versions
+description: Shipping versions are immutable; never overwrite released N/N-1 artifacts when building later versions
 alwaysApply: true
 ---
 
@@ -7,25 +7,25 @@ alwaysApply: true
 
 Shipping releases are immutable. Versions exist so a known-good ship stays recoverable.
 
-## N-2 rolling window + golden
+## N / N-1 rolling window
 
-Keep the **last two** recoverable ships (**N** and **N-1**) plus Drive golden forever. See [docs/RESTORE.md](docs/RESTORE.md).
+Keep the **last two** recoverable ships (**N** and **N-1**). See [docs/RESTORE.md](docs/RESTORE.md).
 
 Current slots (do not delete tags or `out/` ISO dirs when cutting the next ship):
 
-- **Golden (forever):** `v0.2.0` / Drive ISO / `checksums/v0.2.sha256` (`4914087d…`)
-- **N-1:** `v0.8.7` / Drive + `out/v0.8.7/` / `checksums/v0.8.7.sha256` (`5e554919…`)
 - **N:** `v0.8.8` / Drive + `out/v0.8.8/` / `checksums/v0.8.8.sha256` (`c5aa2305…`)
+- **N-1:** `v0.8.7` / Drive + `out/v0.8.7/` / `checksums/v0.8.7.sha256` (`5e554919…`)
 
-Older public/local ships (`v0.8.6`, `v0.8.5`, `v0.8.4`, …) are **outside** the rolling window. Tags/checksums may remain; local `out/` / Drive ISOs for those may be removed after N advances again. **Never** delete or overwrite Drive golden **v0.2.0**.
+Older public/local ships (`v0.8.6`, `v0.8.5`, `v0.8.4`, …) are **outside** the rolling window. Tags/checksums may remain; local `out/` / Drive ISOs for those may be removed after N advances again.
 
-**Do not flash `v0.3.5`** (truncated ISO). Prefer **v0.8.8** (or **v0.8.7** as restore).
+**Retired:** early **v0.2.0** is no longer a golden forever slot (removed from restore policy; checksum/Drive golden retired). Prefer **v0.8.8** (or **v0.8.7** as restore).
+
+**Do not flash `v0.3.5`** (truncated ISO).
 
 ## Never overwrite
 
-- Do **not** move, retag, delete, or force-rewrite tag `v0.2.0`, `v0.8.7`, `v0.8.8`, or any published shipping tag once cut.
+- Do **not** move, retag, delete, or force-rewrite tag `v0.8.7`, `v0.8.8`, or any published shipping tag once cut.
 - Do **not** change or replace published checksum files once shipped.
-- Do **not** overwrite the Drive / StickLLM-releases **v0.2** ISO artifact (hash `4914087d…`).
 - Do **not** overwrite the Drive **v0.8.7** ISO under the same name if contents differ.
 - Do **not** overwrite the Drive **v0.8.8** ISO under the same name if contents differ.
 - Do **not** flash or publish a later build under an existing release name if contents differ.
@@ -43,12 +43,11 @@ Older public/local ships (`v0.8.6`, `v0.8.5`, `v0.8.4`, …) are **outside** the
 ```text
 ❌ BAD: build v0.8.3 and delete out/v0.8.2/ or tag -d v0.8.2
 ❌ BAD: build v0.8.2 and write over StickLLM-v0.8.1.iso on Drive
-❌ BAD: git tag -f v0.2.0 <new-commit>
-❌ BAD: edit checksums/v0.2.sha256 to match a different ISO
+❌ BAD: git tag -f v0.8.8 <new-commit>
+❌ BAD: edit checksums/v0.8.8.sha256 to match a different ISO
 
 ✅ GOOD: out/v0.8.5/StickLLM-v0.8.5.iso + checksums/v0.8.5.sha256 (N-1; leave as-is)
 ✅ GOOD: out/v0.8.6/StickLLM-v0.8.6.iso + checksums/v0.8.6.sha256 + tag v0.8.6
 ✅ GOOD: out/v0.8.7/StickLLM-v0.8.7.iso + checksums/v0.8.7.sha256 + tag v0.8.7 (keep prior N/N-1)
-✅ GOOD: remove local out/v0.8.3/ or Drive StickLLM-v0.8.3.iso (outside rolling window; never touch v0.2)
+✅ GOOD: remove local out/v0.8.3/ or Drive StickLLM-v0.8.3.iso (outside rolling window)
 ```
-

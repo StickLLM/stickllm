@@ -8,10 +8,10 @@ It does **not** prove real NIC drivers, Wi‑Fi association, or NVIDIA GPU load.
 1. `out/ISO-READY.txt` must contain `SCREENSHOT_PROOF=PASS` (and hostfwd/UI proof lines as applicable).
 2. Listed `SCREENSHOT_PATH` / `SCREENSHOT_PATHS` PNG files must exist and have been reviewed.
 3. If `out/ISO-NOT-READY.txt` exists → do not flash.
-4. Flash a spare stick only. Prefer **v0.3.6**; never flash **v0.3.5** (truncated).
-   Never overwrite Drive golden / Samsung shipping **v0.2** or Drive **v0.3.6** with a
-   different digest under the same name. On Windows use `out/safe-flash-samsung-auth.py`
-   or Rufus DD (see [FLASH.md](FLASH.md)).
+4. Flash a spare stick only. Prefer current **N** (**v0.8.8**); never flash **v0.3.5** (truncated).
+   Never overwrite Drive **v0.8.8** / **v0.8.7** (or other published names) with a
+   different digest under the same name. Early **v0.2** golden is retired. On Windows use
+   `out/safe-flash-samsung-auth.py` or Rufus DD (see [FLASH.md](FLASH.md)).
 
 ## On real hardware
 

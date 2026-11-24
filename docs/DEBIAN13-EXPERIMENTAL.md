@@ -2,7 +2,7 @@
 
 **Status:** shipping cut `v0.8.2` (NInfer/Strata Set default wired).  
 **Authority:** `C:\Users\peter\stickllm\GROK-GPU-UNLOCK-HANDOFF.md` (21 Nov 2026) + Nink voice refinements (no master unlock toggle; Cancel/Continue only).  
-**Never rewrite:** `v0.8.1`, `v0.8.0`, `v0.7.8`, or golden `v0.2.0`.
+**Never rewrite:** published shipping tags / ISO names under the same name with different contents. Early **v0.2.0** golden is retired.
 
 NVIDIA firmware / `.run` files / prebuilt patched `nvidia.ko` stay **out of the public git tree**. Helpers clone/fetch upstream **after** Cancel/Continue.
 
@@ -14,9 +14,8 @@ NVIDIA firmware / `.run` files / prebuilt patched `nvidia.ko` stay **out of the 
 
 | Slot | Tag |
 | --- | --- |
-| **N** | `v0.8.6` |
-| **N-1** | `v0.8.5` |
-| **Golden** | `v0.2.0` (unchanged) |
+| **N** | `v0.8.8` |
+| **N-1** | `v0.8.7` |
 
 ---
 

@@ -33,7 +33,7 @@ File: `StickLLM-v0.8.8.iso`
 Release notes: [GitHub Release v0.8.8](https://github.com/StickLLM/stickllm/releases/tag/v0.8.8).  
 The hash of record is in this repo. Check the file you download against it.
 
-Previous published ships stay under their own names (`StickLLM-v0.8.7.iso`, older `StickLLM-v0.8.x.iso`, golden `v0.2`). Do not overwrite those names. Rolling window: **N** = v0.8.8, **N-1** = v0.8.7 — see [docs/RESTORE.md](docs/RESTORE.md).
+Previous published ships stay under their own names (`StickLLM-v0.8.7.iso`, older `StickLLM-v0.8.x.iso`). Do not overwrite those names. Rolling window: **N** = v0.8.8, **N-1** = v0.8.7 — see [docs/RESTORE.md](docs/RESTORE.md). Early **v0.2.0** golden is retired.
 
 ### 2. Verify checksum
 
@@ -91,7 +91,7 @@ USB→RAM stage, NInfer Load/HF/search parity, clock NTP on Wi‑Fi, StickLink k
 
 ## What’s older
 
-Older public ships (`v0.8.6` … `v0.8.0`, `v0.4.2`, `v0.3.9`, golden `v0.2.0`) stay under their original names and checksums. Leave Drive golden **v0.2** alone.
+Older public ships (`v0.8.6` … `v0.8.0`, `v0.4.2`, `v0.3.9`) stay under their original names and checksums. Early **v0.2.0** golden is retired — see [docs/RESTORE.md](docs/RESTORE.md).
 
 ## Threat model (summary)
 
@@ -162,7 +162,7 @@ Troubleshooting (e.g. Agent Zero apps open in a panel, not a new tab): [docs/TRO
 | **v0.8.8** `StickLLM-v0.8.8.iso` + [`checksums/v0.8.8.sha256`](checksums/v0.8.8.sha256) | Hash is in git. ISO on [Google Drive](https://drive.google.com/drive/folders/1sTgvoyQi3aU-sauolWd35bKTLGynNEd-?usp=sharing) (GitHub’s 2 GB limit) |
 | **v0.8.7** `StickLLM-v0.8.7.iso` + [`checksums/v0.8.7.sha256`](checksums/v0.8.7.sha256) | N-1 restore — same Drive folder; do not overwrite |
 | Git tags `v0.8.8`, `v0.8.7`, … + checksum files in git | Yes |
-| Golden **v0.2.0** + [`checksums/v0.2.sha256`](checksums/v0.2.sha256) | Yes — forever; never overwrite |
+| Early **v0.2.0** golden | **Retired** — not a restore slot; see [docs/RESTORE.md](docs/RESTORE.md) |
 | Older `StickLLM-v0.8.x.iso` / `v0.4.2` / `v0.3.9` | Drive / checksums as published — leave names alone |
 | `out/v0.3.0/…` apiready ISO | **No** — local/maintainer restore only |
 | Maintainer Windows Python flasher, ISO-READY gates, lab hardware notes | [docs/MAINTAINER.md](docs/MAINTAINER.md) |
