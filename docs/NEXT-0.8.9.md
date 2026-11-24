@@ -27,7 +27,8 @@ Post-**v0.8.8** punch list. Shipping tag/ISO must be a **new** name
 | **MD1** | Multi-device pairing up to 8 on one stick / shared vault (ISS-077) | Agreed → plan / implement post-0.8.9 | Phase 1: concurrent LAN + StickLink sessions, one vault. Phase 2: admin/roles / separate vaults — open. |
 | **CW1** | Phone Chat / Work / A0 (ISS-078) | Agreed → plan / implement post-0.8.9 | Chat = `/api/chat` (old UI); Work = simplified A0; A0 = full. **Explicit Chat→A0 handoff** (send to agent / mode switch; soft suggest OK; auto-escalate later). StickDroid + web client. |
 | **WA1** | Phone web client stickllm.com/app (ISS-079) | Agreed → roadmap post-0.8.9 | APK alternative; QR → connect → site. Fix connection/timeouts before calling it shipping. |
-| **MY1** | Experimental Maya + Inkling 2 Mini (ISS-080) | Agreed → future | [alesha-pro/maya-inkling-mini](https://github.com/alesha-pro/maya-inkling-mini) / [mw00/project-maya](https://github.com/mw00/project-maya): **3090** ~125 / ~200 DSpark. Not sfnx. |
+| **ST1** | Experimental finish Strata Models/config (ISS-081) | Agreed → after NInfer polish | Set default exists; catalog/Load parity with NInfer still open. NInfer first → Strata next → Maya later. |
+| **MY1** | Experimental Maya + Inkling 2 Mini (ISS-080) | Agreed → future (after ST1) | [alesha-pro/maya-inkling-mini](https://github.com/alesha-pro/maya-inkling-mini): **3090** ~125 / ~200 DSpark. Keep NInfer; Maya = Inkling-fast. Not sfnx. |
 
 ## Product rules
 

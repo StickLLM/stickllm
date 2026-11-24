@@ -15,6 +15,20 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 **Source of truth for next bake:** [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Closed** below.
 
+### ISS-081 — Experimental: finish Strata (NInfer first; Strata next)
+| | |
+|---|---|
+| **ID** | ISS-081 |
+| **Date** | 2026-11-24 |
+| **Mode** | Experimental / Models |
+| **Severity** | MED (product completeness; not blocking v0.8.9 must-bake unless pulled) |
+| **Status** | Open — agreed order: **NInfer first** (largely done through v0.8.8), **Strata next**, Maya (ISS-080) later |
+| **Summary** | Experimental **Strata** can download + Set default on `:8080` (since v0.8.2), but **Models / Activate / catalog parity** still lags NInfer. Agreed: keep focusing polish on NInfer; then **configure Strata** the same way (compatible models list, download/Load path, honest copy, A0 on `:8080`). |
+| **Already wired** | Engine download helper `strata`; Set default / Use llama.cpp; AppImage extract + CUDA pack notes in [DEBIAN13-EXPERIMENTAL.md](docs/DEBIAN13-EXPERIMENTAL.md). |
+| **Still to do** | Strata-scoped Models catalog + filters; download/Load (or Activate) for Strata weights; queue/status parity with NInfer; lab confirm on 3090; docs walkthrough like [NINFER.md](docs/NINFER.md). Carry-forward from ISS-041 (“Strata same pattern later”) and ISS-044/045 notes. |
+| **Not this ISS** | Maya + Inkling (ISS-080); sfnx 3× V100. |
+
+
 ### ISS-080 — Experimental: Project Maya + Inkling-2-Mini on RTX 3090 (~125 plain / ~200 with DSpark)
 | | |
 |---|---|

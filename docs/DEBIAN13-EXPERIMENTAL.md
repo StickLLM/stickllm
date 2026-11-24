@@ -48,7 +48,7 @@ User walkthrough (Models + Load): [NINFER.md](NINFER.md). USB DATA/settings: [US
 3. **Use llama.cpp** — appears when an Experimental engine is active; Confirm restores llama-server.
 4. **Re-download…** — optional re-fetch (Confirm). Does not switch engines by itself.
 5. **NInfer models** — NInfer does **not** load StickLLM GGUF weights. **v0.8.6 ([ISS-041](../ISSUES.md)):** after Set default, open **Models**, download a **compatible** NInfer profile into the **same models directory** as GGUF, then **Activate**. No hard-coded auto weight. Serve refuses to start until a profile is selected and present on disk. GGUF **Activate** applies again only after restoring llama.cpp.
-6. **Strata** — AppImage extract + CUDA engine; driver &lt; 580 uses CUDA 12 pack. May use a local GGUF or download a Strata model on first start.
+6. **Strata** — AppImage extract + CUDA engine; driver &lt; 580 uses CUDA 12 pack. May use a local GGUF or download a Strata model on first start. **Models/catalog/Load parity with NInfer is still incomplete** — agreed order: NInfer first (done through v0.8.8), finish Strata next (**ISS-081**), Maya Inkling-fast later (**ISS-080**).
 7. **Reboot** — not required for download/status/set-default. Unlock apply still needs reboot when used.
 
 ---

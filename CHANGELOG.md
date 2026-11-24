@@ -12,7 +12,8 @@ Must-bake checklist: [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 - **Multi-device pairing roadmap (ISS-077).** Capture: up to **8** concurrent paired clients on one stick (phone / browser / AIKVM / speaker-mic; LAN + StickLink). Phase 1 = shared vault; Phase 2 = admin/roles / separate vaults (open). Not a v0.8.9 must-bake — FEATURES + NEXT Later.
 - **Phone Chat / Work / A0 (ISS-078).** Chat = old StickLLM `/api/chat` UI; Work = today’s simplified A0 “Chat” renamed; A0 = full agent. **Chat can hand off to A0** (explicit Work/A0 / send-to-agent; soft suggest OK; silent auto-escalate later). Not a v0.8.9 must-bake.
 - **Phone web client roadmap (ISS-079).** https://stickllm.com/app/ as StickDroid APK alternative (QR → connect → site); connection/timeout issues still open in lab.
-- **Experimental future: Maya + Inkling 2 Mini (ISS-080).** Primary ref [alesha-pro/maya-inkling-mini](https://github.com/alesha-pro/maya-inkling-mini); engine [mw00/project-maya](https://github.com/mw00/project-maya) `maya-ik2` on **RTX 3090** (~125 plain / ~200 DSpark). Not sfnx. Not wired; not a v0.8.9 must-bake.
+- **Experimental future: Maya + Inkling 2 Mini (ISS-080).** Primary ref [alesha-pro/maya-inkling-mini](https://github.com/alesha-pro/maya-inkling-mini); engine [mw00/project-maya](https://github.com/mw00/project-maya) `maya-ik2` on **RTX 3090** (~125 plain / ~200 DSpark). Keep NInfer; Maya = Inkling-fast later. Not sfnx. Not a v0.8.9 must-bake.
+- **Experimental: finish Strata next (ISS-081).** NInfer Models path prioritized through v0.8.8; Strata Set default exists but catalog/Load parity still open — configure Strata after NInfer, before Maya.
 
 ## 0.8.8 - NInfer status/queue + RAM land + async USB + context guard
 

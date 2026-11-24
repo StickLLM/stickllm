@@ -85,6 +85,7 @@ Parked with security (do not build yet):
 - [ ] P1 Download unsupported models with explicit warning
   - TODO: decide where the approved/pinned list lives (`catalog.toml` today), how it updates, and how non-list downloads warn + verify (see MODELS.md)
 - [ ] P2 Optional large MoE recipe (Strata-style) for high-RAM machines
+- [ ] **P1 Experimental — finish Strata Models/config** — engine Set default exists; catalog / Load / Activate parity with NInfer still open. Agreed order: NInfer first (done through v0.8.8), **Strata next**, Maya later. Track: **ISS-081**
 - [ ] P2 Experimental Project Maya `maya-ik2` + Inkling 2 Mini on 3090 (~125 / ~200 tok/s) — ISS-080; [docs/DEBIAN13-EXPERIMENTAL.md](docs/DEBIAN13-EXPERIMENTAL.md)
 - [x] P1 **v0.8.0** Debian 13 fresh image + Experimental tab scaffolding (Strata / NInfer-all offers; CMP 170HX + RTX 3090 unlock UI stubs) — [docs/DEBIAN13-EXPERIMENTAL.md](docs/DEBIAN13-EXPERIMENTAL.md); artifact `StickLLM-v0.8.0.iso`; no auto-install; no NVIDIA blobs in git
 - [x] P1 **v0.8.2** Experimental Set default (NInfer/Strata on :8080); VL-3B dropped → VL-7B (≥12 GB); prior 0.8.1 hotfixes — artifact `StickLLM-v0.8.2.iso`
