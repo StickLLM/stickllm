@@ -30,11 +30,12 @@ Still to build, in order. Each line points at the checklist section that owns it
 1. **Next (v0.8.9).** Vault lock = ephemeral (not an A0 hard gate); dual-USB settings; A0 graph repair — Vault and security, Companion apps (ISS-076 / 074 / 075; NEXT-0.8.9)
 2. Finish model filters on installed models, and wire the greyed Advanced section — Models, Settings (ISS-021)
 3. Stronger AMD / Intel GPU paths and broader hardware coverage — Boot and hardware
-4. Rest of the vault story: stick key + PIN. The 12-word recovery phrase already exists. Panic / duress PIN stays parked — Vault and security
-5. Saved settings and per-model presets (saved chats already exist) — Settings
-6. Document RAG (vision / phone image attach already ships for VL) — Chats and documents
-7. Agent voice (wake word) — chat Voice on/off, streaming speech, and read-aloud already ship; see Companion apps
-8. More apps from the catalog — [docs/APPS.md](docs/APPS.md)
+4. **Multi-device pairing (up to 8)** on one stick / shared vault — phone, LAN browser, AIKVM, speaker/mic, etc. (LAN + StickLink). Today = one paired device at a time. Admin / per-user vaults later — Client and networking (ISS-077)
+5. Rest of the vault story: stick key + PIN. The 12-word recovery phrase already exists. Panic / duress PIN stays parked — Vault and security
+6. Saved settings and per-model presets (saved chats already exist) — Settings
+7. Document RAG (vision / phone image attach already ships for VL) — Chats and documents
+8. Agent voice (wake word) — chat Voice on/off, streaming speech, and read-aloud already ship; see Companion apps
+9. More apps from the catalog — [docs/APPS.md](docs/APPS.md)
 
 Parked with security (do not build yet):
 
@@ -158,7 +159,8 @@ Parked with security (do not build yet):
 - [ ] P2 Tor onion service for remote access (no open ports)
 - [ ] P2 Model downloads over Tor (hash-verified)
 - [x] ~~P2 OpenAI-compatible API for LAN apps~~ — **removed in v0.3** (ISS-004): StickLLM UI only (`/api/chat` + `X-StickLLM-Client`); `/v1/chat/completions` returns 410 for third parties.
-- [ ] P2 Multi-user server, separate vault per client
+- [ ] **P1 Multi-device pairing (up to 8)** — several clients paired to **one stick** at once (phone, LAN/browser, AIKVM, speaker/mic, …) over **LAN pair and/or StickLink**. Today effectively **one** active paired device. **Phase 1:** concurrent sessions sharing the stick’s single vault / session mode (no admin/roles yet). **Phase 2 (later):** admin vs other users, shared vs separate vaults — open design. Track: **ISS-077**. Supersedes the old one-liner “multi-user server, separate vault per client” as the first milestone.
+- [ ] P2 Multi-user / roles + optional separate vault per user (after Phase 1 multi-device) — ISS-077 phase 2
 
 ## Mobile
 - [ ] P1 PWA client (iOS, Android, GrapheneOS)

@@ -15,6 +15,20 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 **Source of truth for next bake:** [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Closed** below.
 
+### ISS-077 — Multi-device pairing: up to 8 clients on one stick (shared vault first)
+| | |
+|---|---|
+| **ID** | ISS-077 |
+| **Date** | 2026-11-24 |
+| **Mode** | LAN / StickLink / Devices / all |
+| **Severity** | MED (product roadmap; not blocking v0.8.9 must-bake) |
+| **Status** | Open — design + implement after v0.8.9 unless pulled forward |
+| **Summary** | Today StickLLM effectively supports **one** paired device at a time. Product need: **up to 8** devices paired to the **same stick** so a phone, LAN browser, AIKVM, speaker/mic, etc. can all stay paired and talk (same LAN and/or via StickLink). |
+| **Phase 1 (agreed first step)** | Multiple concurrent paired sessions → **one stick / one vault** (shared session mode + shared models). Pair + resume for each device without kicking the others. Cap **8**. Device list / revoke in Settings → Devices. |
+| **Phase 2 (open design)** | Admin vs other users; shared vault vs per-user vaults; who can unlock, change models, flash, or revoke peers. Do **not** block Phase 1 on Phase 2. |
+| **Notes** | Old FEATURES P2 “Multi-user server, separate vault per client” was only the Phase 2 shape. Capture lives in [FEATURES.md](FEATURES.md) Client and networking. StickLink Always-On / Method C and LAN pair both need a concurrent-session story. |
+
+
 ### ISS-076 — Design: StickLLM + Agent Zero must work when vault is locked (ephemeral)
 | | |
 |---|---|
