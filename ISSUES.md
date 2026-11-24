@@ -15,18 +15,19 @@ Lightweight product/bug log (same spirit as [FEATURES.md](FEATURES.md)). Not a G
 **Source of truth for next bake:** [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md).
 ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Closed** below.
 
-### ISS-080 — Experimental: Project Maya / sfnx (multi-V100 MoE CUDA engine)
+### ISS-080 — Experimental: Project Maya / sfnx (RTX 3090 + Inkling-class, ~200 tok/s)
 | | |
 |---|---|
 | **ID** | ISS-080 |
 | **Date** | 2026-11-24 |
-| **Mode** | Experimental / Models / multi-GPU |
+| **Mode** | Experimental / Models / RTX 3090 |
 | **Severity** | LOW (future Experimental offer; not blocking v0.8.9) |
 | **Status** | Open — future requirement; no bake commitment yet |
-| **Summary** | Track **Project Maya** / [sfnx](https://github.com/johnfink8/sfnx) as a future **Settings → Experimental** engine offer: CUDA path that splits MoE LLM layers across **three PCIe V100** cards (upstream claims ~382 tok/s on used ~$1,800 hardware). |
-| **Fit** | Same Experimental pattern as NInfer / Strata: opt-in download + Confirm / Cancel/Continue; Set default on `:8080` when mature; no NVIDIA blobs in StickLLM git; no auto-install. Complements FEATURES “Multi-GPU model splitting” / optional large MoE. |
+| **Summary** | Track **Project Maya** / [sfnx](https://github.com/johnfink8/sfnx) (or similar CUDA engine) as a future **Settings → Experimental** offer aimed at StickLLM lab hardware: **RTX 3090** running **Inkling-2-mini** (or similar small/fast MoE / catalog model), targeting about **~200 tok/s**. |
+| **Not the product target** | Upstream README demos **3× PCIe V100** MoE split (~382 tok/s on a used box). That is upstream marketing — StickLLM’s interest is **single (or StickLLM-tested) 3090 + Inkling-2-mini / similar**, not requiring a 3× V100 chassis. |
+| **Fit** | Same Experimental pattern as NInfer / Strata: opt-in download + Confirm / Cancel/Continue; Set default on `:8080` when mature; Models Activate for Inkling-class weights; no NVIDIA blobs in StickLLM git; no auto-install. |
 | **Out of scope for now** | Must-bake for v0.8.9; shipping as default engine; redistributing weights or proprietary blobs. |
-| **Notes** | Upstream: https://github.com/johnfink8/sfnx — evaluate license, runtime deps, OpenAI-compatible serve, and StickLLM Models Activate story before wiring UI. |
+| **Notes** | Upstream: https://github.com/johnfink8/sfnx — evaluate license, 3090 support, Inkling-2-mini (or similar) path, OpenAI-compatible serve, and real tok/s on lab 3090 before wiring UI. |
 
 
 ### ISS-079 — Phone web client (stickllm.com/app) as StickDroid APK alternative

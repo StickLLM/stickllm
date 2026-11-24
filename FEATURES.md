@@ -60,7 +60,7 @@ Parked with security (do not build yet):
 - [x] P1 CPU-only fallback (v0.3: CPU llama binary + `-ngl 0`, RAM fits check; HW OK on Asus no-NVIDIA)
 - [ ] P1 Auto-detect which GPU the monitor is on; pick DRM device automatically
 - [ ] P2 Multi-GPU model splitting
-- [ ] **P2 Experimental — Project Maya / sfnx** — future engine offer ([johnfink8/sfnx](https://github.com/johnfink8/sfnx)): CUDA MoE split across **3× PCIe V100**; same Experimental Cancel/Continue + optional Set default pattern as NInfer/Strata. Track: **ISS-080**
+- [ ] **P2 Experimental — Project Maya / sfnx** — future engine offer ([johnfink8/sfnx](https://github.com/johnfink8/sfnx) or similar): **RTX 3090** + **Inkling-2-mini** (or similar), aim **~200 tok/s**. Upstream’s 3× V100 demo is not StickLLM’s target. Same Experimental Cancel/Continue + Set default pattern as NInfer/Strata. Track: **ISS-080**
 - [ ] P2 GPU power/thermal limits (laptops)
 - [ ] P1 First-boot hardware report ("your GPU can run X, Y, Z")
 
@@ -85,7 +85,7 @@ Parked with security (do not build yet):
 - [ ] P1 Download unsupported models with explicit warning
   - TODO: decide where the approved/pinned list lives (`catalog.toml` today), how it updates, and how non-list downloads warn + verify (see MODELS.md)
 - [ ] P2 Optional large MoE recipe (Strata-style) for high-RAM machines
-- [ ] P2 Experimental Project Maya / sfnx (3× V100 MoE CUDA) — ISS-080; [docs/DEBIAN13-EXPERIMENTAL.md](docs/DEBIAN13-EXPERIMENTAL.md)
+- [ ] P2 Experimental Project Maya / sfnx (3090 + Inkling-2-mini ~200 tok/s) — ISS-080; [docs/DEBIAN13-EXPERIMENTAL.md](docs/DEBIAN13-EXPERIMENTAL.md)
 - [x] P1 **v0.8.0** Debian 13 fresh image + Experimental tab scaffolding (Strata / NInfer-all offers; CMP 170HX + RTX 3090 unlock UI stubs) — [docs/DEBIAN13-EXPERIMENTAL.md](docs/DEBIAN13-EXPERIMENTAL.md); artifact `StickLLM-v0.8.0.iso`; no auto-install; no NVIDIA blobs in git
 - [x] P1 **v0.8.2** Experimental Set default (NInfer/Strata on :8080); VL-3B dropped → VL-7B (≥12 GB); prior 0.8.1 hotfixes — artifact `StickLLM-v0.8.2.iso`
 - [x] P1 **v0.8.1** Experimental engines + unlocks wired (Cancel/Continue; no master toggle); vault delete / novault probe; llama b12617 + mmproj; MoE/32K refuse-if-unfit; HF typo search; download→Installed refresh; firmware-mediatek; A0 MiniLM skip — artifact `StickLLM-v0.8.1.iso`
