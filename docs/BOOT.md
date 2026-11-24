@@ -1,7 +1,7 @@
 ﻿# Booting StickLLM
 
-Current ship: **v0.7.8** (Drive ISO + [`checksums/v0.7.8.sha256`](../checksums/v0.7.8.sha256)).
-Do **not** flash **v0.3.5** (truncated). Flash notes: [FLASH.md](FLASH.md). Vault after
+Current ship: **v0.8.8** (Drive ISO + [`checksums/v0.8.8.sha256`](../checksums/v0.8.8.sha256) → `c5aa2305…`).
+N-1 restore: **v0.8.7**. Do **not** flash **v0.3.5** (truncated). Flash notes: [FLASH.md](FLASH.md). Vault after
 reflash: [VAULT.md](VAULT.md).
 
 ## Always prefer the USB (recommended)
@@ -14,7 +14,7 @@ boot order does.
 3. Save & exit.
 
 Until USB is first, another OS’s bootloader may keep winning after reboot.
-Secure Boot: turn **off** (or enroll custom keys later — not required for v0.7.8).
+Secure Boot: turn **off** (or enroll custom keys later — not required for v0.8.8).
 
 Example lab host (AMD desktop / ROMED8-class board with Ubuntu on NVMe): same
 steps — USB above the NVMe entry. That hardware is an example, not a requirement.

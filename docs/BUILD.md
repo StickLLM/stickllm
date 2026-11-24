@@ -9,25 +9,26 @@
 4. No prebuilt llama binaries or CUDA libs are in git — you must build them
 5. Run the one-shot commands below
 6. Output (v0.3.7+): out/vX.Y.Z/StickLLM-vX.Y.Z.iso
+   Current public ship example: out/v0.8.8/StickLLM-v0.8.8.iso
 ```
 
 ```bash
 ./scripts/verify-host.sh
 ./scripts/download-model.sh      # GGUF cache under models/ (gitignored)
 ./scripts/build-llama-server.sh  # CUDA + Vulkan + CPU llama-server in Docker
-./scripts/build.sh               # Debian live-build → StickLLM-v*.iso
+STICKLLM_VERSION=0.8.8 ./scripts/build.sh   # Debian live-build → StickLLM-v0.8.8.iso
 ```
 
-Or: `./scripts/build.sh` (calls the above as needed). Dev loop: [DEV-WORKFLOW.md](DEV-WORKFLOW.md).
+Or: `./scripts/build.sh` (calls the above as needed; set `STICKLLM_VERSION` for the cut you want). Dev loop: [DEV-WORKFLOW.md](DEV-WORKFLOW.md). Exact ISO-matching source for the published ship: `git checkout v0.8.8`.
 
-Override version: `STICKLLM_VERSION=0.3.7 ./scripts/build.sh` → `out/v0.3.7/StickLLM-v0.3.7.iso`.
+Override version: `STICKLLM_VERSION=0.8.9 ./scripts/build.sh` → `out/v0.8.9/StickLLM-v0.8.9.iso` (never overwrite an existing shipping name).
 
 Builds run `scripts/lib/iso-integrity-check.sh` inside Docker so truncated hybrids fail before publish. On Windows hosts, `xorriso` is usually absent — re-check with Docker if you need a second pass:
 
 ```bash
 docker run --rm -v "$PWD/scripts/lib/iso-integrity-check.sh:/check.sh:ro" \
-  -v "$PWD/out/v0.3.7:/iso:ro" debian:bookworm \
-  bash -c 'apt-get update -qq && apt-get install -y -qq xorriso >/dev/null && bash /check.sh /iso/StickLLM-v0.3.7.iso'
+  -v "$PWD/out/v0.8.8:/iso:ro" debian:bookworm \
+  bash -c 'apt-get update -qq && apt-get install -y -qq xorriso >/dev/null && bash /check.sh /iso/StickLLM-v0.8.8.iso'
 ```
 That check needs `xorriso`; on Windows/Git Bash (no host xorriso) it uses Docker
 automatically — same Docker dependency as the build itself.

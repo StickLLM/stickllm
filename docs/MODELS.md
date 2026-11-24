@@ -16,12 +16,13 @@ Hugging Face catalog**, with hashes that live on the USB.
 | **Base (default ship)** | ~6–8 GB ISO | **16 GB** USB is enough; **32 GB** preferred | OS + runtime + **7B Q4_K_M** (~4.4 GB; 8 GB GPU @ 32K) |
 | **Optional fat build** | ~18–22 GB | 32–64 GB | Base + large model pre-baked (power users / air-gap) |
 
-**v0.6.7+** bakes **Qwen2.5-7B Instruct Q4_K_M** (official split GGUF under
+**Through current ship v0.8.8** the ISO still bakes **Qwen2.5-7B Instruct Q4_K_M** (official split GGUF under
 `/opt/stickllm/models/appagent/`, catalog id `qwen25-7b-q4km`). That is the Open
 model / probe default. **Q5_K_M** stays a pinned optional download (catalog
 `min_vram_gb = 10`) — slightly better quality, but tight on a true 8 GB card at
 the Agent Zero **32K** floor. **Qwen3.5-4B** stays an **optional catalog download**
 (`probe_recommend = false`); it is **not** baked and not on the Open model screen.
+Experimental **NInfer** profiles (e.g. Qwen3.6 27B) are download-on-demand into the shared models dir — see [FEATURES.md](../FEATURES.md) and [CHANGELOG.md](../CHANGELOG.md) §0.8.7–0.8.8.
 
 **v0.3.8** and earlier 0.3.x ships baked both the **3B** and the **7B**. **v0.3.9**
 baked the 3B only. Mid-0.5.x / 0.6.x through 0.6.6 baked **Qwen3.5-4B**. Optional

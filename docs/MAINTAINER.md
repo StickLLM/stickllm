@@ -18,8 +18,10 @@ lives under `out/`, which is gitignored).
 Legacy helper (prefers a remountable letter):
 
 ```powershell
+# Prefer Rufus DD or elevated out/safe-flash-*-auth.py for current isohybrid ships.
+# Legacy letter-based helper (older hybrid naming only):
 .\scripts\flash-windows.ps1 `
-  -Iso .\out\v0.3.6\stickllm-amd-rtx3090-v0.3.6.hybrid.iso `
+  -Iso .\out\v0.8.8\StickLLM-v0.8.8.iso `
   -DriveLetter E
 ```
 

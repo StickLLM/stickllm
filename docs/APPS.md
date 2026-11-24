@@ -17,9 +17,9 @@ tiny.en for the mic, KittenTTS mini 0.8 for read-aloud. Pins live in
 This catalog is a planning surface for humans and agents, not a commitment to ship any
 specific app.
 
-## Installable from the Apps page (0.5.0)
+## Installable from the Apps page (ships in v0.8.8)
 
-ONLYOFFICE Docs (0.4) plus five add-ons (list as of 0.5.4) have a working **Install / Open / Remove**
+ONLYOFFICE Docs plus five add-ons (same set since mid-0.5.x) have a working **Install / Open / Remove**
 on the Apps page. Each needs the vault unlocked and the host drive used for Agent Zero
 (the image is stored there, pulled by digest). Pins: `overlay/usr/local/share/stickllm/addons/<id>.pin`.
 

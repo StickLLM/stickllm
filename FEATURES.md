@@ -68,7 +68,7 @@ Parked with security (do not build yet):
 - [x] P0 Accurate loaded-model identity in UI/status (show what's actually loaded)
 - [x] P0 Model load progress UX — clear Loading model / progress so Term/LAN 503 isn't mistaken for broken pairing. v0.4.2: the status poll does not paint Loading until the browser is paired, and the meter starts at 1% instead of jumping to a fake 30%
 - [x] P0 Signed model catalog, pinned SHA-256, re-checked at load (v0.3: fatal sha256 on download)
-- [x] Slim ISO: bake **3B Q4 only** (~2 GB). **Qwen2.5-7B Q5_K_M** is download-only — shipped v0.3.9 (ISS-020). Current ship also bakes a default GGUF for lab (see README / About)
+- [x] Baked default GGUF: **Qwen2.5-7B Instruct Q4_K_M** (current ship v0.8.8). **Q5_K_M** remains download-only. Earlier slim-ISO “3B only” experiment is historical — see [docs/MODELS.md](docs/MODELS.md)
 - [x] Hugging Face search, one-at-a-time download queue (stop / start / delete, resume), hash check, and VRAM fit labels — v0.3.9
 - [x] **v0.8.7–v0.8.8** NInfer Models path: HF search for `.ninfer`, Load / sticky Load, queue Stop / Resume / Delete, engine-scoped search (no GGUF as NInfer), false “loading / Downloading Qwen2.5” fixed (ISS-044…046, 052, 059, 060, 065, 068, 069)
 - [x] **v0.8.7–v0.8.8** USB→RAM stage before Load; download to free RAM + async USB persist; RAM spike guard; Models “Saving to USB” while durable copy finishes (ISS-053, 070, 071, 073)
@@ -172,7 +172,7 @@ Parked with security (do not build yet):
 - [ ] P1 Model updates via signed catalog
 
 ## Companion apps (planned)
-- [x] P2 Starter add-ons installable from the Apps page — **0.5.0** (not hardware-tested yet): Radicale 3.9.0, Vikunja 2.7.1, Actual Budget 26.10.0, Trilium v0.106.1, Node-RED 5.0.9. **0.5.4:** Radicale, Vikunja and Actual removed; Tasks.md 3.3.0, Paisa v0.7.8 and ComfyUI (GPU optional) added; Trilium opens with no login after an automatic first-start setup. Pulled by digest on Install, data in the vault, no internet or LAN for the containers, no Docker logs, read-only root, opened in a new tab through the gateway. Node-RED flows can run arbitrary code. See [docs/APPS.md](docs/APPS.md#installable-from-the-apps-page-050)
+- [x] P2 Starter add-ons installable from the Apps page — **0.5.0** (not hardware-tested yet): Radicale 3.9.0, Vikunja 2.7.1, Actual Budget 26.10.0, Trilium v0.106.1, Node-RED 5.0.9. **0.5.4:** Radicale, Vikunja and Actual removed; Tasks.md 3.3.0, Paisa v0.7.8 and ComfyUI (GPU optional) added; Trilium opens with no login after an automatic first-start setup. Pulled by digest on Install, data in the vault, no internet or LAN for the containers, no Docker logs, read-only root, opened in a new tab through the gateway. Node-RED flows can run arbitrary code. See [docs/APPS.md](docs/APPS.md#installable-from-the-apps-page-ships-in-v088)
 - [x] P1 Agent Zero — ships seeded (Docker on DATA); desk / LAN / StickLink open `/agent-zero/`; offline first-start + exec bits — **v0.8.5** (ISS-038). **Planned v0.8.9:** run when vault locked (ISS-076); dual-USB settings (ISS-074); corrupt graph reseed (ISS-075)
 - [x] P1 Agent Zero plugins: banned unless allowlisted — **0.5.0**; removed altogether — **0.5.4** (empty allowlist enforced by the build, installer plugins deleted in the container, kiosk console included). The two 0.5.0 plugins (clock_24h, chat_status_marklet) are gone; see [docs/PLUGIN-REVIEWS.md](docs/PLUGIN-REVIEWS.md)
 - [ ] P2 Rest of the companion catalog (Immich, Paperless-ngx, …; ComfyUI ships in 0.5.4) — [docs/APPS.md](docs/APPS.md) (ISS-022); not shipping yet

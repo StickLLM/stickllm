@@ -1,10 +1,13 @@
 # Hotfix after stick swap — COMPLETE checklist
 
-**This file is the durable list.** After every new stick flash, walk **§1 Master
-table** top-to-bottom. Do not improvise from memory. One row = one lab fix that
-was already proven on a previous stick.
+> **Historical (v0.8.2 → v0.8.3 era).** Most rows here are already in later shipping ISOs
+> (through **v0.8.8**). Prefer [NEXT-0.8.9.md](NEXT-0.8.9.md) + [ISSUES.md](../ISSUES.md) for
+> current open work. Keep this file for lab recovery when flashing an **old** restore ISO.
 
-Companion bake list: [NEXT-0.8.3.md](NEXT-0.8.3.md)  
+**This file is the durable list for that era.** After flashing a clean **pre-bake** stick from
+that window, walk **§1 Master table** top-to-bottom. Do not improvise from memory.
+
+Companion bake list (historical): [NEXT-0.8.3.md](NEXT-0.8.3.md)  
 How to push: stage under `/tmp/stickllm-hotfix/<overlay path>` then
 `sudo -n stickllm-hotfix [units…]` — [DEV-WORKFLOW.md](DEV-WORKFLOW.md).  
 Lab drivers: gitignored `out/_hotfix_*.py` (recreate from this table if missing).

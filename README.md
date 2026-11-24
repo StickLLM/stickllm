@@ -140,8 +140,9 @@ cd stickllm
 ./scripts/verify-host.sh
 ./scripts/download-model.sh
 ./scripts/build-llama-server.sh
-./scripts/build.sh
+STICKLLM_VERSION=0.8.8 ./scripts/build.sh
 # → out/v0.8.8/StickLLM-v0.8.8.iso  (+ SHA256SUMS; integrity-checked in-build)
+# Exact published-ship tree: git checkout v0.8.8
 ```
 
 Windows (Git Bash):
@@ -150,10 +151,9 @@ Windows (Git Bash):
 "C:\Program Files\Git\bin\bash.exe" -lc "./scripts/build.sh"
 ```
 
-Full cold-start notes: [docs/BUILD.md](docs/BUILD.md). Dev loop: [docs/DEV-WORKFLOW.md](docs/DEV-WORKFLOW.md).  
-Roadmap: [FEATURES.md](FEATURES.md). Vault: [docs/VAULT.md](docs/VAULT.md).  
-Companion apps (planned catalog): [docs/APPS.md](docs/APPS.md).  
-Troubleshooting (e.g. Agent Zero apps open in a panel, not a new tab): [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+Docs index: [docs/README.md](docs/README.md). Cold-start: [docs/BUILD.md](docs/BUILD.md). Dev loop: [docs/DEV-WORKFLOW.md](docs/DEV-WORKFLOW.md).  
+Roadmap: [FEATURES.md](FEATURES.md). Next bake: [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md). Vault: [docs/VAULT.md](docs/VAULT.md).  
+Companion apps: [docs/APPS.md](docs/APPS.md). Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## What’s public vs maintainer-only
 
@@ -179,7 +179,7 @@ Contributing pointers: [CONTRIBUTING.md](CONTRIBUTING.md).
 ```
 stickllm/
 ├── config/profiles/amd-rtx3090.toml   # sole supported host profile
-├── docs/                              # flash, boot, build, threat model
+├── docs/                              # index: docs/README.md (flash, boot, build, …)
 ├── FEATURES.md                        # working vs planned
 ├── ISSUES.md                          # open product/bug log
 ├── ui/                                # StickLLM chat UI (HTTP :80)

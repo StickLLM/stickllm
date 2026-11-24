@@ -1,18 +1,27 @@
 ---
-description: StickLLM Agent Zero context for new chats
+description: StickLLM product + Agent Zero context for new chats
 alwaysApply: true
 ---
 
 # StickLLM context
 
-Read these before changing the Agent Zero fork:
+**Current ship:** v0.8.8 · **Next:** [docs/NEXT-0.8.9.md](docs/NEXT-0.8.9.md) · **Docs index:** [docs/README.md](docs/README.md)
 
+## Product ISO (this repo)
+
+Work on a local-disk clone (e.g. `C:\Users\peter\stickllm-sticklink-wt` or `C:\Users\peter\stickllm`). Never use OneDrive. `main` tracks the shipping line. Product ISOs go in `out/vX.Y.Z/`. Do not print stick SSH / vault / HF secrets.
+
+Read before changing product behavior:
+
+- `docs/README.md` — doc map + current ship stamps
 - `docs/ARCHITECTURE-AGENTZERO.md` — ports, open_app, vault, Docker data-root
 - `docs/APPS.md` — catalog install path
-- `docs/DEV-WORKFLOW.md` — fork branch, hotfix, ISO location
-- `docs/CURSOR-HISTORY-agentzero.md` — what is already built
+- `docs/DEV-WORKFLOW.md` — hotfix, build, product vs A0 fork
 - `docs/VAULT.md` — passcode, key file, recovery phrase
-
-Work only in `C:\Users\peter\stickllm-vault-wt` on branch `stickllm-agentzero`. Never use OneDrive. Do not fast-forward `main` until that line is accepted. ISOs go in `build-agentzero\`. Do not print the stick SSH password.
+- `docs/FLASH.md` / `docs/RESTORE.md` — flash + N/N-1
 
 **Agreed fixes:** same turn → `ISSUES.md` + `docs/NEXT-<next>.md` + CHANGELOG Unreleased. See `record-agreed-fixes.mdc`. Chat is not the bake list.
+
+## Agent Zero fork (separate worktree)
+
+When changing the **Agent Zero fork** itself (not just stick overlay glue): work only in `C:\Users\peter\stickllm-vault-wt` on branch `stickllm-agentzero`. Historical notes: `docs/CURSOR-HISTORY-agentzero.md`. Do not confuse fork ISOs under `build-agentzero\` with public `StickLLM-vX.Y.Z.iso` ships.

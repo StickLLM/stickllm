@@ -3,16 +3,11 @@
 Goal: ship features without rebuilding (or patching) an ISO for every tweak.
 Hardware validation stays on real sticks (example: 3090 desktop + ASUS laptop).
 
-The working branch for Agent Zero is `stickllm-agentzero`. Do not fast-forward `main` until that line is accepted. Work on `C:\Users\peter\stickllm-vault-wt`. Never use OneDrive.
+**Product ISO (this repo / GitHub `StickLLM/stickllm`):** current ship **v0.8.8**, next bake [NEXT-0.8.9.md](NEXT-0.8.9.md). Work on a local disk clone (e.g. `C:\Users\peter\stickllm-sticklink-wt` or `C:\Users\peter\stickllm`). Never use OneDrive. `main` tracks the shipping line.
 
-## Agent Zero fork
+## Agent Zero fork (separate)
 
-1. Change the fork and test it on the stick with `sudo -n stickllm-hotfix`.
-2. Rebuild one clean ISO into `build-agentzero\` (not `out\`, not OneDrive).
-3. Nink tests that ISO on hardware.
-4. Push the fork after that test. Do not flash unless Nink asks.
-
-Keep the current Agent Zero ISO and the previous two (`n-2`) under `build-agentzero\`. Do not delete those restore copies to make room. Name the build `stickllm-agentzero-v0.5.1.iso` (About shows `0.5.1 · Agent Zero v0.5` from `stickllm.json`). Build it with `STICKLLM_VERSION=0.5.1 STICKLLM_ISO_PATH=build-agentzero/stickllm-agentzero-v0.5.1.iso ./scripts/build.sh`. The v0.5.0 and v0.4 ISOs stay as restore copies; the running stick is not replaced until Nink has tested 0.5.1. Details of the running system: [ARCHITECTURE-AGENTZERO.md](ARCHITECTURE-AGENTZERO.md).
+Agent Zero fork changes still use worktree `C:\Users\peter\stickllm-vault-wt` on branch `stickllm-agentzero` when touching that fork. Details of the running A0 stack on the stick: [ARCHITECTURE-AGENTZERO.md](ARCHITECTURE-AGENTZERO.md). Product ISOs for StickLLM itself go under `out/vX.Y.Z/` (not `build-agentzero\`).
 
 ## Rules
 
@@ -59,20 +54,21 @@ Useful: `stickllm-status`, `nvidia-smi`, `curl -s localhost:8080/health`,
 ./scripts/verify-host.sh
 ./scripts/download-model.sh
 ./scripts/build-llama-server.sh
-./scripts/build.sh
-# → out/v0.3.7/StickLLM-v0.3.7.iso + SHA256SUMS
+STICKLLM_VERSION=0.8.8 ./scripts/build.sh
+# → out/v0.8.8/StickLLM-v0.8.8.iso + SHA256SUMS
 # ISO integrity check runs in-build (reject truncated images like v0.3.5).
 ```
 
-Optional: `STICKLLM_VERSION=0.4.0 ./scripts/build.sh`. Force llama rebuild only if
-binaries missing: `STICKLLM_FORCE_LLAMA_BUILD=1 ./scripts/build.sh`.
+For a new ship, bump `STICKLLM_VERSION` (e.g. `0.8.9`) — never overwrite an existing
+shipping name. Force llama rebuild only if binaries missing:
+`STICKLLM_FORCE_LLAMA_BUILD=1 ./scripts/build.sh`.
 
 **ISO names (v0.3.7+):** exactly `StickLLM-vX.Y.Z.iso` under `out/vX.Y.Z/`.  
 Through **v0.3.6**, ships used `stickllm-amd-rtx3090-v….hybrid.iso` — leave those
 paths and checksums unchanged. Details: [BUILD.md](BUILD.md).
 
-Preserve N-2 restore slots — see [RESTORE.md](RESTORE.md). Current public **N** is
-**v0.7.8** (Drive `StickLLM-v0.7.8.iso`); **N-1** is **v0.7.7**. Never overwrite
+Preserve **N / N-1** restore slots — see [RESTORE.md](RESTORE.md). Current public **N** is
+**v0.8.8** (Drive `StickLLM-v0.8.8.iso`); **N-1** is **v0.8.7**. Never overwrite
 published checksums or shipping tags. **Do not flash v0.3.5** (truncated).
 
 ## After flash
@@ -148,7 +144,7 @@ Limits and gotchas:
 - **Deploy vs rebuild:** the SSH hotfix path deploys `/usr/local/bin`, UI, systemd units, and `etc/chromium/policies/managed/stickllm-*.json`. Other `/etc` drop-ins may still need a hand install or rebuild.
 - **Real-browser tests:** Playwright on the host in `C:\StickLLM-VM\browser-test`, with `--host-resolver-rules=MAP stickllm.test 127.0.0.1` so the LAN path isn't seen as local (with hostname 127.0.0.1 the UI shows "local"). Reach the kiosk through `ssh -N -L 28080:127.0.0.1:80`. Extra NAT rules (e.g. 5451 for add-ons) are runtime only; remove them afterwards.
 - **Realistic stick image:** test with the ISO converted and resized to ~60 GB (`VBoxManage modifymedium --resize 61184`). The raw ISO size has no free space, so there is no settings partition and no agent.
-- **Build:** Git Bash (not WSL), never on OneDrive. Same command as 0.5.1; `build.sh` defaults to 0.5.2 since `fe29472`. Output: `build-agentzero\stickllm-agentzero-v0.5.2.iso`, log `build-agentzero\v0.5.2-build.log`. Keep n-2 ISOs.
+- **Build (product ISO):** Git Bash (not WSL), never on OneDrive. `STICKLLM_VERSION=0.8.8 ./scripts/build.sh` → `out/v0.8.8/StickLLM-v0.8.8.iso`. Keep N/N-1 under `out/` — see [RESTORE.md](RESTORE.md). (Historical Agent Zero fork ISOs lived under `build-agentzero\`; do not confuse those with the public product ship.)
 - **Copying files:** the agent box copies files into `C:\Users\peter\...`, then you move them into `C:\StickLLM-VM`.
 - **Snapshots for 0.5.2** (powered off): `v052-dev-state`, `v052-reflash-base`, `v052-60g-base` (60 GB stick + test-vault SSD), `v052-fresh-base` (fresh 60 GB stick + blank SSD).
 - **Flash:** `out\_flash-agentzero-v052-safe-elev.ps1` (elevated) refuses every disk except the USB Samsung Type-C with serial `AA00000000000489`, then reads the stick back and verifies (`out\verify-boot-v052.out`).

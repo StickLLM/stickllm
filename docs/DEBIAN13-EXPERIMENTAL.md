@@ -1,14 +1,14 @@
-# Debian 13 + Experimental tab — **v0.8.2**
+# Debian 13 + Experimental tab
 
-**Status:** shipping cut `v0.8.2` (NInfer/Strata Set default wired).  
-**Authority:** `C:\Users\peter\stickllm\GROK-GPU-UNLOCK-HANDOFF.md` (21 Nov 2026) + Nink voice refinements (no master unlock toggle; Cancel/Continue only).  
+**Status:** in current ship **v0.8.8** (NInfer/Strata Set default wired since v0.8.2; later ships added HF token, queue Stop/Resume, context Load guard, etc. — see [CHANGELOG.md](../CHANGELOG.md)).  
+**Authority:** Experimental Cancel/Continue only (no master unlock toggle).  
 **Never rewrite:** published shipping tags / ISO names under the same name with different contents. Restore slots are **N** / **N-1** only — see [RESTORE.md](RESTORE.md).
 
 NVIDIA firmware / `.run` files / prebuilt patched `nvidia.ko` stay **out of the public git tree**. Helpers clone/fetch upstream **after** Cancel/Continue.
 
 ### Branch
 
-`release/v0.8.2`
+Product line: GitHub `main` (tag `v0.8.8` for the ship commit).
 
 ### Rolling slots (current)
 
