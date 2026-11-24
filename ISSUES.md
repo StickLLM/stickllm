@@ -42,6 +42,7 @@ ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Close
 | **Not the same as sfnx** | [johnfink8/sfnx](https://github.com/johnfink8/sfnx) is a **different** engine: **3× V100** layer-split for **Qwen3.8-Flash-Next** (~382 tok/s code-edit). Do **not** treat sfnx as the 3090+Inkling path. Optional later Experimental curiosity only. |
 | **Related engines (context)** | StickLLM already ships **NInfer** Experimental; NInfer-3090 also serves Inkling-2-Mini on 3090 (~104 tok/s plain per HF card) — slower than Maya’s published 3090 numbers. vLLM Inkling Ampere path ~100 / ~177 with DSpark (TP=2). |
 | **Fit** | Same Experimental pattern as NInfer / Strata: Cancel/Continue, download, Set default on `:8080` when mature; Models Activate for Inkling; no NVIDIA blobs in StickLLM git; no auto-install. Lab-verify tok/s + OpenAI compat on StickLLM Debian 13 / CUDA bake before UI row. |
+| **Order** | After Strata Models parity (**ISS-081**). Keep NInfer as general MoE; Maya as optional **Inkling-fast** — do not replace NInfer. |
 | **Out of scope for now** | Must-bake for v0.8.9; default engine; shipping Maya binaries or weights inside the ISO without opt-in. |
 
 
