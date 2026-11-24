@@ -7530,9 +7530,6 @@ async function refreshSystemInfo() {
     if ($("#aboutEngine")) {
       $("#aboutEngine").textContent = label + (eng !== "llama.cpp" ? " (Experimental Set default)" : " (default)");
     }
-    if ($("#aboutEngines")) {
-      $("#aboutEngines").textContent = "llama.cpp · NInfer · Strata";
-    }
   }
 }
 let advState = { gpus: [], allowed: [], pin: null, cacheTypes: [] };

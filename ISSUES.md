@@ -24,7 +24,7 @@ ISS-065…073 **shipped in v0.8.8 ISO**. Older shipped ISS ids are under **Close
 | **Severity** | LOW (misleading copy when NInfer/Strata is Set default) |
 | **Status** | Open — In tree → bake v0.8.9 |
 | **Summary** | About said models run with llama.cpp and only listed a llama.cpp build row, even when Experimental **NInfer** / **Strata** is the active default on `:8080`. |
-| **Fix** | Show **Default engine** (current), **Supported engines** (llama.cpp · NInfer · Strata), and keep **llama.cpp build** as the baked pin. Blurb mentions Experimental Set default. |
+| **Fix** | Show **Default engine** (what is on `:8080` now) and keep **llama.cpp build** as the baked pin. Do **not** list “Supported engines” — Experimental offers must not read as product-supported. |
 
 
 ### ISS-082 — NInfer Models fit label uses GGUF math → false “Partial” at 32K/64K

@@ -2326,7 +2326,6 @@ def system_info() -> dict:
         "data_free_gb": free_gb,
         "llama_version": llama,
         "active_engine": active_engine,
-        "supported_engines": ["llama.cpp", "ninfer-all", "strata"],
     }
 
 
